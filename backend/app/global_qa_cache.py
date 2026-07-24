@@ -21,7 +21,9 @@ from sqlmodel import Session, select
 
 from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, QACache
 from .openai_model_router import stable_user_hash
+from .openai_tracked import cached_text_embedding
 from .time_utils import utc_now
+from .vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 _SCHEMA_COMPAT_LOCK = threading.Lock()
@@ -287,6 +289,10 @@ def _enabled() -> bool:
     return _env_bool("GLOBAL_QA_CACHE_ENABLED", False)
 
 
+def _semantic_enabled() -> bool:
+    return _env_bool("GLOBAL_QA_SEMANTIC_ENABLED", False)
+
+
 def _row_scope(row: GlobalQACache) -> str:
     scope = str(getattr(row, "scope", "") or "").strip().lower()
     return _USER_SCOPE if scope == _USER_SCOPE else _GLOBAL_SCOPE
@@ -503,6 +509,13 @@ def _ensure_schema_compat(session: Session) -> None:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN real_embedding_norm FLOAT NOT NULL DEFAULT 0.0"))
             if "real_embedding_kind" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN real_embedding_kind VARCHAR"))
+            if "confidence" not in cache_columns:
+                session.exec(
+                    text(
+                        "ALTER TABLE global_qa_cache ADD COLUMN confidence FLOAT "
+                        "NOT NULL DEFAULT 0.0"
+                    )
+                )
             if "observed_safe_questions_json" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN observed_safe_questions_json VARCHAR NOT NULL DEFAULT '[]'"))
             if "aliases_json" not in cache_columns:
@@ -859,6 +872,10 @@ def _openai_embedding(text: str, model: str) -> List[float]:
 
 
 def real_embedding_for_global_cache(text: str) -> Optional[Tuple[List[float], float, str]]:
+    if _semantic_enabled():
+        vec = cached_text_embedding(text, route="global_qa_semantic")
+        if vec:
+            return vec, _vector_norm(vec), "openai:text-embedding-3-small"
     if not _env_bool("GLOBAL_QA_REAL_EMBEDDINGS_ENABLED", False):
         return None
     provider = str(os.getenv("GLOBAL_QA_EMBEDDING_PROVIDER") or "token_hash").strip().lower()
@@ -1112,11 +1129,14 @@ def _row_to_hit(row: GlobalQACache, score: float) -> dict:
         "scope": _row_scope(row),
         "cache_hit_source": source,
         "direct_answer_source": "global_qa_cache",
+        "cache_hit_kind": "exact",
     }
 
 
 def _row_lookup_safe(row: GlobalQACache, question: str, language: Optional[str], now: datetime, *, user_hash: Optional[str]) -> bool:
     if row.status != "approved":
+        return False
+    if float(row.confidence or 0.0) <= 0.0:
         return False
     if not _not_expired(row, now):
         return False
@@ -1130,6 +1150,132 @@ def _row_lookup_safe(row: GlobalQACache, question: str, language: Optional[str],
     if scope == _USER_SCOPE:
         return bool(user_hash and str(getattr(row, "user_id_hash", "") or "") == user_hash)
     return scope == _GLOBAL_SCOPE
+
+
+def _touch_cache_hit(session: Session, row: GlobalQACache, now: datetime) -> None:
+    row.hit_count = int(row.hit_count or 0) + 1
+    row.last_seen_at = now
+    session.add(row)
+    session.commit()
+    _populate_hot_cache_for_row(row)
+
+
+def _semantic_vector_lookup(
+    session: Session,
+    question: str,
+    language: Optional[str],
+    user_hash: Optional[str],
+    now: datetime,
+    *,
+    scope: str,
+) -> Optional[dict]:
+    query_vector = cached_text_embedding(question, route="global_qa_semantic_query")
+    if not query_vector:
+        return None
+    results = get_vector_store().search(
+        session,
+        user_id=None,
+        query_embedding=query_vector,
+        limit=50,
+        source_types=["global_qa"],
+    )
+    candidates: list[tuple[GlobalQACache, float]] = []
+    query_embedding = (query_vector, _vector_norm(query_vector))
+    for result in results:
+        if len(candidates) >= 5:
+            break
+        try:
+            row = session.get(GlobalQACache, int(result.get("source_id") or 0))
+        except (TypeError, ValueError):
+            row = None
+        if row is None or _row_scope(row) != scope:
+            continue
+        if not _row_lookup_safe(
+            row, question, language, now, user_hash=user_hash
+        ):
+            continue
+        row_real = _load_row_real_embedding(row)
+        if row_real is None:
+            continue
+        similarity = _question_similarity(
+            question,
+            row.canonical_question,
+            query_embedding,
+            (row_real[0], row_real[1]),
+        )
+        if similarity >= _min_similarity():
+            candidates.append((row, similarity))
+    if not candidates:
+        return None
+    row, score = max(candidates, key=lambda item: item[1])
+    _touch_cache_hit(session, row, now)
+    hit = _row_to_hit(row, score)
+    hit["cache_hit_kind"] = "semantic"
+    return hit
+
+
+def _semantic_lookup_after_exact_miss(
+    session: Session,
+    question: str,
+    language: Optional[str],
+    user_hash: Optional[str],
+    now: datetime,
+) -> Optional[dict]:
+    normalized = normalize_question(question)
+    scopes = [(_USER_SCOPE, user_hash)] if user_hash else []
+    scopes.append((_GLOBAL_SCOPE, None))
+    for scope, required_hash in scopes:
+        statement = (
+            select(GlobalQACache)
+            .where(GlobalQACache.status == "approved")
+            .where(GlobalQACache.normalized_question == normalized)
+        )
+        if scope == _USER_SCOPE:
+            statement = statement.where(
+                GlobalQACache.scope == _USER_SCOPE,
+                GlobalQACache.user_id_hash == required_hash,
+            )
+        else:
+            statement = statement.where(
+                or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None)  # noqa: E711
+            )
+        exact = session.exec(statement.order_by(GlobalQACache.updated_at.desc())).first()
+        if exact is not None and _row_lookup_safe(
+            exact, question, language, now, user_hash=user_hash
+        ):
+            _touch_cache_hit(session, exact, now)
+            return _row_to_hit(exact, 1.0)
+        semantic = _semantic_vector_lookup(
+            session,
+            question,
+            language,
+            user_hash,
+            now,
+            scope=scope,
+        )
+        if semantic is not None:
+            return semantic
+    return None
+
+
+def _upsert_vector_for_row(session: Session, row: GlobalQACache) -> None:
+    if row.id is None:
+        return
+    real = _load_row_real_embedding(row)
+    if real is None:
+        return
+    get_vector_store().upsert(
+        session,
+        user_id=None,
+        source_type="global_qa",
+        source_id=str(row.id),
+        content_hash=hashlib.sha256(
+            f"global_qa:{row.id}".encode("utf-8")
+        ).hexdigest(),
+        content_text=row.canonical_question,
+        embedding=real[0],
+        updated_at=row.updated_at,
+    )
 
 
 def _lookup_hot_cache(
@@ -1224,6 +1370,15 @@ def lookup_approved_global_cache(
         hot_user_hit = _lookup_hot_cache(session, question, language, user_hash, now, scope=_USER_SCOPE)
         if hot_user_hit is not None:
             return hot_user_hit
+    if _semantic_enabled():
+        hot_global_hit = _lookup_hot_cache(
+            session, question, language, user_hash, now, scope=_GLOBAL_SCOPE
+        )
+        if hot_global_hit is not None:
+            return hot_global_hit
+        return _semantic_lookup_after_exact_miss(
+            session, question, language, user_hash, now
+        )
     query_bundle: Optional[Dict[str, Any]] = None
     try:
         user_rows: List[GlobalQACache] = []
@@ -1487,6 +1642,7 @@ def _upsert_user_scoped_cache_row(
         session.add(row)
         session.commit()
         session.refresh(row)
+        _upsert_vector_for_row(session, row)
     else:
         hashes = _source_hashes(row)
         if q_hash not in hashes:
@@ -1518,6 +1674,7 @@ def _upsert_user_scoped_cache_row(
         session.add(row)
         session.commit()
         session.refresh(row)
+        _upsert_vector_for_row(session, row)
     _populate_hot_cache_for_row(row)
     return row
 
@@ -1644,6 +1801,7 @@ def _record_backend_openai_answer_impl(
         session.add(candidate)
         session.commit()
         session.refresh(candidate)
+        _upsert_vector_for_row(session, candidate)
         similarity = 1.0
     else:
         answer_similarity = _answer_similarity(candidate.answer, answer)
@@ -1684,6 +1842,7 @@ def _record_backend_openai_answer_impl(
         session.add(candidate)
         session.commit()
         session.refresh(candidate)
+        _upsert_vector_for_row(session, candidate)
         if answer_conflict:
             logger.info(
                 "global_cache_needs_review",
@@ -1826,6 +1985,7 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
     candidate.updated_at = utc_now()
     session.add(candidate)
     session.commit()
+    _upsert_vector_for_row(session, candidate)
     _populate_hot_cache_for_row(candidate)
     logger.info(
         "global_cache_promoted",
@@ -1836,6 +1996,38 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
         },
     )
     return True
+
+
+def backfill_global_qa_embeddings(
+    session: Session, *, batch_size: int = 100
+) -> dict[str, int]:
+    """Maintenance batch for rows written before semantic embeddings were enabled."""
+    if not _semantic_enabled():
+        return {"scanned": 0, "embedded": 0}
+    safe_batch = min(100, max(1, int(batch_size or 100)))
+    rows = list(
+        session.exec(
+            select(GlobalQACache)
+            .where(GlobalQACache.real_embedding_json == None)  # noqa: E711
+            .order_by(GlobalQACache.id.asc())
+            .limit(safe_batch)
+        ).all()
+    )
+    embedded = 0
+    for row in rows:
+        bundle = embedding_bundle_for_global_cache(
+            row.normalized_question or row.canonical_question
+        )
+        if not bundle.get("real_embedding"):
+            continue
+        _apply_embedding_bundle(row, bundle)
+        row.updated_at = utc_now()
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        _upsert_vector_for_row(session, row)
+        embedded += 1
+    return {"scanned": len(rows), "embedded": embedded}
 
 
 def _parse_since(value: Any) -> Optional[datetime]:

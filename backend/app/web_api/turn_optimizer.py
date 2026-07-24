@@ -6,6 +6,9 @@ import os
 import re
 from typing import Any, Literal
 
+from sqlalchemy import text as sql_text
+from sqlmodel import Session
+
 from ..ai.intent import classify_contextual_followup, classify_intent_with_metadata
 from ..ai.prompts import detailed_answer_requested
 from ..billing.pricing import estimate_tokens
@@ -110,6 +113,7 @@ def optimize_web_turn(
         context_turns or [],
         contextual=contextual,
         preferred_turn_count=(continuity.preferred_turn_count if continuity else None),
+        current_message=text,
     )
     profile_prompt = build_compact_profile_prompt(
         profile_context or {}, text, reply_language=reply_language
@@ -173,6 +177,9 @@ def with_prompt_estimate(
 def select_context_turns(
     turns: list[dict[str, str]], *, contextual: bool,
     preferred_turn_count: int | None = None,
+    current_message: str = "",
+    session: Session | None = None,
+    token_budget: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     if not contextual:
         return [], ""
@@ -194,16 +201,67 @@ def select_context_turns(
         seen.add(key)
         normalized.append({"user": user, "assistant": assistant})
 
+    ordered_turns = normalized[-max_turns:]
+    if (
+        _env_bool("WEB_CONTEXT_RELEVANCE_RANKING_ENABLED", False)
+        and len(normalized) > 2
+    ):
+        immediate = normalized[-2:]
+        immediate_keys = {
+            (turn["user"], turn["assistant"]) for turn in immediate
+        }
+        followup = bool(
+            re.search(
+                r"\b(?:it|that|this|they|them|those|these|he|she|there|"
+                r"above|previous|same)\b|(?:\.\.\.|…)$",
+                current_message,
+                re.IGNORECASE,
+            )
+        )
+        scored: list[tuple[float, int, dict[str, str]]] = []
+        total = len(normalized)
+        for index, turn in enumerate(normalized):
+            key = (turn["user"], turn["assistant"])
+            if key in immediate_keys:
+                continue
+            relevance = _keyword_relevance(
+                current_message, _context_text(turn), session=session
+            )
+            age = max(0, total - index - 1)
+            recency = 0.85 ** age
+            followup_score = 1.0 if followup and age <= 1 else 0.0
+            score = 0.5 * relevance + 0.3 * recency + 0.2 * followup_score
+            scored.append((score, index, turn))
+        remaining = max(0, max_turns - len(immediate))
+        filled = [
+            item[2]
+            for item in sorted(scored, key=lambda item: (-item[0], -item[1]))[:remaining]
+        ]
+        selected_keys = {
+            (turn["user"], turn["assistant"]) for turn in [*filled, *immediate]
+        }
+        ordered_turns = [
+            turn
+            for turn in normalized
+            if (turn["user"], turn["assistant"]) in selected_keys
+        ][-max_turns:]
+
     candidates: list[dict[str, str]] = []
     blocks: list[str] = []
     used = 0
-    for turn in reversed(normalized[-max_turns:]):
+    max_tokens = max(0, int(token_budget)) if token_budget is not None else None
+    used_tokens = 0
+    for turn in reversed(ordered_turns):
         block = _context_text(turn)
         separator = 1 if blocks else 0
+        block_tokens = estimate_tokens(block)
+        if max_tokens is not None and used_tokens + block_tokens > max_tokens:
+            continue
         if len(block) + separator + used <= max_chars:
             candidates.insert(0, turn)
             blocks.insert(0, block)
             used += len(block) + separator
+            used_tokens += block_tokens
             continue
         if not blocks:
             bounded = _bounded_turn(turn, max_chars)
@@ -212,6 +270,35 @@ def select_context_turns(
         # Older context is skipped if it cannot fit as a complete turn.
     formatted = "\n".join(blocks).strip()
     return candidates, formatted
+
+
+def _keyword_relevance(
+    query: str, content: str, *, session: Session | None = None
+) -> float:
+    if not query.strip() or not content.strip():
+        return 0.0
+    dialect = str(
+        getattr(getattr(session.get_bind(), "dialect", None), "name", "")
+        if session is not None else ""
+    ).lower()
+    if session is not None and dialect.startswith("postgres"):
+        try:
+            value = session.exec(
+                sql_text(
+                    "SELECT ts_rank_cd(to_tsvector('simple', :content), "
+                    "websearch_to_tsquery('simple', :query))"
+                ),
+                {"content": content, "query": query},
+            ).one()
+            score = float(getattr(value, "_mapping", {}).get("ts_rank_cd", value) or 0.0)
+            return max(0.0, min(1.0, score))
+        except Exception:
+            session.rollback()
+    query_terms = set(re.findall(r"[\w\u0B80-\u0BFF]+", query.casefold()))
+    content_terms = set(re.findall(r"[\w\u0B80-\u0BFF]+", content.casefold()))
+    if not query_terms or not content_terms:
+        return 0.0
+    return len(query_terms & content_terms) / len(query_terms)
 
 
 def build_compact_profile_prompt(

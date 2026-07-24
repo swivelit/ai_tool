@@ -390,6 +390,8 @@ class WebMemoryFact(SQLModel, table=True):
     category: str = Field(default="preference", max_length=40, index=True)
     salience: float = Field(default=0.5)
     confidence: float = Field(default=1.0)
+    embedding_json: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    embedding_norm: float = Field(default=0.0)
     source_thread_id: Optional[str] = Field(
         default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True,
         max_length=36,
@@ -400,7 +402,25 @@ class WebMemoryFact(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now, index=True)
+    accessed_at: datetime = Field(default_factory=utc_now, index=True)
     deleted_at: Optional[datetime] = Field(default=None, index=True)
+
+
+class WebMessageFeedback(SQLModel, table=True):
+    __tablename__ = "web_message_feedback"
+    __table_args__ = (
+        UniqueConstraint("user_id", "message_id", name="uq_web_message_feedback_user_message"),
+        Index("ix_web_message_feedback_user_updated", "user_id", "updated_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    message_id: str = Field(
+        foreign_key="web_chat_message.id", ondelete="CASCADE", index=True, max_length=36
+    )
+    rating: str = Field(max_length=8, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class WebConversationSummary(SQLModel, table=True):

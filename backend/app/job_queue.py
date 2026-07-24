@@ -26,6 +26,8 @@ class DBJobQueue:
         self._session_factory = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self.register("web_post_turn_distillation", _handle_web_post_turn_distillation)
+        self.register("web_memory_embedding_backfill", _handle_web_memory_embedding_backfill)
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[str(job_type)] = handler
@@ -162,3 +164,92 @@ class DBJobQueue:
                 session.commit()
                 logger.exception("job failed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
             return True
+
+
+def _handle_web_post_turn_distillation(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .continuous_learning import distill_web_turn_facts
+
+    return distill_web_turn_facts(
+        session,
+        user_id=int(payload["user_id"]),
+        user_message_id=str(payload["user_message_id"]),
+        thread_id=str(payload["thread_id"]),
+    )
+
+
+def _handle_web_memory_embedding_backfill(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .web_api.web_memory import backfill_memory_fact_embeddings
+
+    return backfill_memory_fact_embeddings(
+        session,
+        user_id=int(payload["user_id"]),
+        batch_size=int(payload.get("batch_size") or 20),
+    )
+
+
+def enqueue_memory_embedding_backfill(
+    session: Session, *, user_id: int, batch_size: int = 20
+) -> Job:
+    existing = session.exec(
+        select(Job).where(
+            Job.user_id == user_id,
+            Job.job_type == "web_memory_embedding_backfill",
+            Job.status.in_(["queued", "running", "retrying"]),
+        )
+    ).first()
+    if existing is not None:
+        return existing
+    job = Job(
+        user_id=user_id,
+        job_type="web_memory_embedding_backfill",
+        status="queued",
+        payload_json=json.dumps(
+            {"user_id": user_id, "batch_size": max(1, min(100, int(batch_size)))},
+            ensure_ascii=False,
+        ),
+        attempts=0,
+        max_attempts=3,
+        run_at=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def enqueue_post_turn_distillation(
+    session: Session,
+    *,
+    user_id: int,
+    user_message_id: str,
+    thread_id: str,
+) -> Job:
+    """Persist a distillation job without coupling chat_service to app.main."""
+    job = Job(
+        user_id=user_id,
+        job_type="web_post_turn_distillation",
+        status="queued",
+        payload_json=json.dumps(
+            {
+                "user_id": user_id,
+                "user_message_id": user_message_id,
+                "thread_id": thread_id,
+            },
+            ensure_ascii=False,
+        ),
+        attempts=0,
+        max_attempts=3,
+        run_at=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job

@@ -50,6 +50,12 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
         ]
     instructions = build_system_instructions(request, route, provider=provider)
     messages: list[dict[str, str]] = [{"role": "system", "content": instructions}]
+    if _env_bool("WEB_PROMPT_PREFIX_STABLE_ENABLED", False):
+        dynamic_instructions = _build_dynamic_system_instructions(
+            request, route, provider=provider, include_static=False
+        )
+        if dynamic_instructions:
+            messages.append({"role": "system", "content": dynamic_instructions})
     profile_context = str((request.metadata or {}).get("profile_prompt_context") or "").strip()
     if profile_context:
         messages.append(
@@ -124,9 +130,28 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     Uses request.metadata keys including age_group and client_context.life_context
     when present.
     """
+    if _env_bool("WEB_PROMPT_PREFIX_STABLE_ENABLED", False):
+        surface = (
+            "website"
+            if (request.metadata or {}).get("client_surface") == "web"
+            else "mobile"
+        )
+        return "\n".join(
+            (
+                STATIC_SYSTEM_PREFIX,
+                f"You are Swico, the {surface} assistant. Answer directly.",
+                f"Provider route contract: {provider}:{route.route}:{route.intent}.",
+            )
+        )
+    return _build_dynamic_system_instructions(request, route, provider=provider)
+
+
+def _build_dynamic_system_instructions(
+    request: AIRequest, route: AIRoute, *, provider: str, include_static: bool = True
+) -> str:
     language = request.reply_language or route.language or "en"
     parts = [
-        STATIC_SYSTEM_PREFIX,
+        STATIC_SYSTEM_PREFIX if include_static else "",
         (
             "You are Swico, the website assistant. Answer directly."
             if (request.metadata or {}).get("client_surface") == "web"
@@ -431,3 +456,10 @@ def _env_int(name: str, default: int) -> int:
         return max(1, int(str(os.getenv(name, default)).strip()))
     except Exception:
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}

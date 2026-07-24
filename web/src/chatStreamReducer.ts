@@ -69,6 +69,11 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
           finish_reason: String(data.finish_reason ?? 'unknown'),
           truncated: Boolean(data.truncated), can_continue: Boolean(data.can_continue),
           completion_status: String(data.completion_status ?? 'unknown'),
+          provenance: Array.isArray(data.provenance)
+            ? data.provenance.map(String).filter(value => [
+              'memory', 'document', 'cached_answer', 'semantic_cache', 'backend_tool', 'web_search',
+            ].includes(value)) as Message['provenance']
+            : [],
         } : null,
       }
     case 'error':

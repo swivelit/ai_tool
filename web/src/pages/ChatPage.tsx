@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets } from '../types'
+import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SearchResult, SwicoTier, Thread, Wallet, Wallets } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -31,6 +31,8 @@ export function ChatPage() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null)
   const [billing, setBilling] = useState(false); const [settings, setSettings] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
   const [billingBucket, setBillingBucket] = useState<'chat' | 'voice'>('chat')
   const [voiceMode, setVoiceMode] = useState(false)
@@ -136,6 +138,24 @@ export function ChatPage() {
     const timer = window.setTimeout(() => { void loadThreads(true).catch(() => setError('Chat history could not be loaded.')) }, 250)
     return () => window.clearTimeout(timer)
   }, [archived, query, user]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!user || !bootstrap?.features.web_content_search || !query.trim()) {
+      setSearchResults([])
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({ q: query.trim(), limit: '20' })
+      void apiJson<{ items: SearchResult[] }>(user, `/api/web/search?${params}`)
+        .then(value => setSearchResults(value.items))
+        .catch(() => setSearchResults([]))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [bootstrap?.features.web_content_search, query, user])
+  useEffect(() => {
+    if (!highlightMessageId) return
+    const timer = window.setTimeout(() => setHighlightMessageId(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [highlightMessageId])
   useEffect(() => { applyTheme(theme) }, [theme])
   useEffect(() => { setDraftVoiceTurnId(null) }, [active])
   useEffect(() => { localStorage.setItem('swico-sidebar-collapsed', String(collapsed)) }, [collapsed])
@@ -338,8 +358,28 @@ export function ChatPage() {
       inputMode: message.input_mode, voiceTurnId: message.voice_turn_id,
     }, { editMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setAttachments([]); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); setAttachments([]); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const selectSearch = (result: SearchResult) => {
+    if (!result.thread_id) return
+    setDraftVoiceTurnId(null); setAttachments([]); activeRef.current = result.thread_id
+    setActive(result.thread_id); setHighlightMessageId(result.message_id)
+    setDrawer(false); setError(''); setFocusKey(`search-${result.thread_id}`)
+  }
+  const submitFeedback = async (message: Message, rating: 'up' | 'down') => {
+    if (!user) return
+    const previous = message.feedback_rating ?? null
+    setMessages(value => value.map(item => item.id === message.id ? { ...item, feedback_rating: rating } : item))
+    try {
+      await apiJson(user, `/api/web/messages/${message.id}/feedback`, {
+        method: 'POST', body: JSON.stringify({ rating }),
+      })
+    } catch (caught) {
+      setMessages(value => value.map(item => item.id === message.id ? { ...item, feedback_rating: previous } : item))
+      setError('Your feedback could not be saved.')
+      throw caught
+    }
+  }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
     const limits = bootstrap.uploads
@@ -425,13 +465,15 @@ export function ChatPage() {
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
-      select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
+      searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
-        retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')} />
+        retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
+        feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}
+        highlightMessageId={highlightMessageId} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         inlineThreshold={bootstrap.uploads.long_input_enabled ? bootstrap.uploads.long_input_inline_threshold_chars ?? 12000 : 16000}

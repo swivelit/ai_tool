@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import math
 import os
 import re
 from typing import Iterable
@@ -13,6 +15,8 @@ from ..models import (
     WebUsagePreferences,
 )
 from ..time_utils import utc_now
+from ..billing.pricing import estimate_tokens
+from ..openai_tracked import cached_text_embedding
 
 
 _MEMORY_REQUESTS = re.compile(
@@ -49,6 +53,7 @@ class MemoryRecord:
 class MemorySelection:
     prompt_context: str
     records: tuple[MemoryRecord, ...]
+    estimated_tokens: int = 0
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -64,6 +69,13 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     except ValueError:
         value = default
     return min(maximum, max(minimum, value))
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def needs_cross_thread_memory(message: str) -> bool:
@@ -93,13 +105,39 @@ def _score(query: set[str], value: str, recency_rank: int) -> float:
     return overlap * 4.0 + coverage * 3.0 + max(0.0, 1.0 - recency_rank * 0.01)
 
 
+def _embedding(raw: str | None) -> list[float]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    try:
+        return [float(value) for value in parsed]
+    except (TypeError, ValueError):
+        return []
+
+
+def _cosine(left: list[float], right: list[float], right_norm: float = 0.0) -> float:
+    if not left or not right:
+        return 0.0
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = right_norm or math.sqrt(sum(value * value for value in right))
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    dot = sum(left[index] * right[index] for index in range(min(len(left), len(right))))
+    return max(0.0, min(1.0, dot / (left_norm * right_norm)))
+
+
 def retrieve_memory(
     session: Session, *, user_id: int, message: str, current_thread_id: str | None,
     allow_natural_followup: bool = False,
 ) -> MemorySelection:
-    if (
-        not (needs_cross_thread_memory(message) or allow_natural_followup)
-        or not memory_enabled(session, user_id)
+    ranking_enabled = _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
+    if not memory_enabled(session, user_id):
+        return MemorySelection("", ())
+    if not ranking_enabled and not (
+        needs_cross_thread_memory(message) or allow_natural_followup
     ):
         return MemorySelection("", ())
     limit = _env_int("WEB_MEMORY_MAX_ITEMS", 4, 1, 4)
@@ -114,6 +152,59 @@ def retrieve_memory(
             WebMemoryFact.source_thread_id != current_thread_id,
         )] if current_thread_id else []),
     ).order_by(WebMemoryFact.updated_at.desc()).limit(100)).all()
+    if ranking_enabled:
+        query_embedding = cached_text_embedding(
+            message,
+            session=session,
+            user_id=user_id,
+            route="web_memory_query",
+        )
+        threshold = max(0.0, min(1.0, _env_float("WEB_MEMORY_FACT_MIN_SIMILARITY", 0.35)))
+        ranked: list[MemoryRecord] = []
+        fact_by_id: dict[str, WebMemoryFact] = {}
+        for fact in facts:
+            if fact.source_message_id:
+                source = session.get(WebChatMessage, fact.source_message_id)
+                if source is not None and source.superseded_at is not None:
+                    continue
+            score = _cosine(
+                query_embedding,
+                _embedding(fact.embedding_json),
+                float(fact.embedding_norm or 0.0),
+            )
+            if score < threshold:
+                continue
+            text = f"{fact.category}: {fact.value_text}"
+            ranked.append(
+                MemoryRecord(
+                    "fact", fact.id, fact.source_thread_id, fact.source_message_id,
+                    text, score,
+                )
+            )
+            fact_by_id[fact.id] = fact
+        selected = sorted(
+            ranked, key=lambda item: (-item.score, item.record_id)
+        )[:3]
+        blocks: list[str] = []
+        accepted: list[MemoryRecord] = []
+        used = 0
+        for item in selected:
+            block = item.text.strip()
+            remaining = char_limit - used - (2 if blocks else 0)
+            if remaining <= 20:
+                break
+            block = block[:remaining].rstrip()
+            blocks.append(block)
+            accepted.append(item)
+            used += len(block) + (2 if len(blocks) > 1 else 0)
+            fact = fact_by_id.get(item.record_id)
+            if fact is not None:
+                fact.accessed_at = utc_now()
+                session.add(fact)
+        context = "\n\n".join(blocks)
+        return MemorySelection(
+            context, tuple(accepted), estimate_tokens(context) if context else 0
+        )
     for rank, fact in enumerate(facts):
         if fact.source_message_id:
             source = session.get(WebChatMessage, fact.source_message_id)
@@ -157,7 +248,46 @@ def retrieve_memory(
         blocks.append(block)
         accepted.append(item)
         used += len(block) + separator
-    return MemorySelection("\n\n".join(blocks), tuple(accepted))
+    context = "\n\n".join(blocks)
+    return MemorySelection(
+        context, tuple(accepted), estimate_tokens(context) if context else 0
+    )
+
+
+def backfill_memory_fact_embeddings(
+    session: Session, *, user_id: int, batch_size: int = 20
+) -> dict[str, int]:
+    """Populate a bounded batch of legacy fact vectors outside the request path."""
+    if not _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
+        return {"scanned": 0, "embedded": 0}
+    facts = session.exec(
+        select(WebMemoryFact).where(
+            WebMemoryFact.user_id == user_id,
+            WebMemoryFact.deleted_at.is_(None),
+            or_(
+                WebMemoryFact.embedding_json.is_(None),
+                WebMemoryFact.embedding_json == "",
+            ),
+        ).order_by(WebMemoryFact.updated_at.desc()).limit(
+            max(1, min(100, int(batch_size)))
+        )
+    ).all()
+    embedded = 0
+    for fact in facts:
+        vector = cached_text_embedding(
+            fact.value_text,
+            session=session,
+            user_id=user_id,
+            route="web_memory_fact_backfill",
+        )
+        if not vector:
+            continue
+        fact.embedding_json = json.dumps(vector, separators=(",", ":"))
+        fact.embedding_norm = math.sqrt(sum(item * item for item in vector))
+        session.add(fact)
+        embedded += 1
+    session.commit()
+    return {"scanned": len(facts), "embedded": embedded}
 
 
 def _explicit_fact(message: str) -> tuple[str, str] | None:
@@ -212,6 +342,20 @@ def write_turn_memory(
                 row.updated_at = now
                 row.source_thread_id = thread_id
                 row.source_message_id = user_message.id
+            vector = (
+                cached_text_embedding(
+                    value,
+                    session=session,
+                    user_id=user_id,
+                    route="web_memory_fact_write",
+                )
+                if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
+                else []
+            )
+            if vector:
+                row.embedding_json = json.dumps(vector, separators=(",", ":"))
+                row.embedding_norm = math.sqrt(sum(item * item for item in vector))
+            row.accessed_at = now
             session.add(row)
     if answer_class not in {"detailed", "long_form"} and not re.search(
         r"\b(roadmap|plan|architecture|decision|project)\b", user_message.content, re.I

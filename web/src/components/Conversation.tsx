@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, Volume2, X } from 'lucide-react'
+import { Check, ChevronDown, Copy, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, ThumbsDown, ThumbsUp, Volume2, X } from 'lucide-react'
 import type { Message, MessageAttachment, VoiceReplyState } from '../types'
 import { messageRenderKey } from '../messageRenderKey'
 import { MarkdownMessage } from './MarkdownMessage'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined }: {
+export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
   messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
   editMessage?: (message: Message, content: string) => void; editingAvailable?: boolean; editingDisabled?: boolean;
   voiceStates?: Record<string, VoiceReplyState>; playVoice?: (messageId: string) => void;
   pauseVoice?: (messageId: string) => void; retryVoice?: (messageId: string, voiceTurnId: string) => void;
   addCredits?: () => void;
+  feedbackEnabled?: boolean; submitFeedback?: (message: Message, rating: 'up' | 'down') => Promise<void>;
+  highlightMessageId?: string | null;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -89,6 +91,17 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
     }
   }, [])
 
+  useEffect(() => {
+    if (!highlightMessageId) return
+    const element = Array.from(
+      contentRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
+    ).find(item => item.dataset.messageId === highlightMessageId)
+    if (element) {
+      pinnedToBottom.current = false
+      element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  }, [highlightMessageId, messages])
+
   const scrollBottom = useCallback(() => {
     pinnedToBottom.current = true
     setBottomButtonVisible(false)
@@ -107,7 +120,8 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
           canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
           editMessage={editMessage} editingDisabled={editingDisabled}
           voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
-          retryVoice={retryVoice} addCredits={addCredits} />)}
+          retryVoice={retryVoice} addCredits={addCredits} feedbackEnabled={feedbackEnabled}
+          submitFeedback={submitFeedback} highlighted={message.id === highlightMessageId} />)}
         {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
       </div>
     </div>
@@ -122,17 +136,26 @@ function EmptyState({ suggest }: { suggest: (text: string) => void }) {
   </div>
 }
 
-function MessageView({ message, retry, continueResponse, canEdit, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits }: {
+function MessageView({ message, retry, continueResponse, canEdit, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
   message: Message; retry: (message: Message) => void; voiceState?: VoiceReplyState;
   continueResponse: (message: Message) => void;
   canEdit: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean;
   playVoice: (messageId: string) => void; pauseVoice: (messageId: string) => void;
   retryVoice: (messageId: string, voiceTurnId: string) => void; addCredits: () => void;
+  feedbackEnabled: boolean; submitFeedback: (message: Message, rating: 'up' | 'down') => Promise<void>;
+  highlighted: boolean;
 }) {
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(message.content)
-  if (message.role === 'user') return <article className="message user">
+  const [feedback, setFeedback] = useState(message.feedback_rating ?? null)
+  useEffect(() => { setFeedback(message.feedback_rating ?? null) }, [message.feedback_rating])
+  const rate = (rating: 'up' | 'down') => {
+    const previous = feedback
+    setFeedback(rating)
+    void submitFeedback(message, rating).catch(() => setFeedback(previous))
+  }
+  if (message.role === 'user') return <article className={`message user ${highlighted ? 'search-highlight' : ''}`} data-message-id={message.id}>
     {!!message.attachments?.length && <div className="message-attachments">{message.attachments.map(attachment => <AttachmentCard attachment={attachment} key={attachment.id} />)}</div>}
     {editing ? <div className="message-editor">
       <label htmlFor={`edit-${message.id}`}>Edit message</label>
@@ -144,12 +167,15 @@ function MessageView({ message, retry, continueResponse, canEdit, editMessage, e
       {canEdit && message.status === 'complete' && <button className="edit-message" type="button" aria-label="Edit message" title="Edit and regenerate" disabled={editingDisabled} onClick={() => { setEditValue(message.content); setEditing(true) }}><Pencil size={14} /> Edit</button>}</>}
     {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
   </article>
-  return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}
+  return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''} ${highlighted ? 'search-highlight' : ''}`}
     data-message-id={message.id} data-request-id={message.request_id ?? undefined}><div className="message-body">
     {message.content ? <MarkdownMessage streaming={message.status === 'streaming'}>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
+    {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
     {message.status !== 'streaming' && <div className="answer-actions">
       <button aria-label="Copy answer" title="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) })}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+      {feedbackEnabled && message.status === 'complete' && <><button className={feedback === 'up' ? 'selected' : ''} aria-label="Good answer" title="Good answer" aria-pressed={feedback === 'up'} onClick={() => rate('up')}><ThumbsUp size={15} /></button>
+        <button className={feedback === 'down' ? 'selected' : ''} aria-label="Bad answer" title="Bad answer" aria-pressed={feedback === 'down'} onClick={() => rate('down')}><ThumbsDown size={15} /></button></>}
       {voiceState?.status === 'generating' && <span className="voice-reply-status" role="status"><Volume2 size={16} aria-hidden="true" /> Generating voice reply…</span>}
       {voiceState && ['ready', 'paused'].includes(voiceState.status) && <button aria-label="Play voice reply" title="Play voice reply" onClick={() => playVoice(message.id)}><Play size={16} /></button>}
       {voiceState?.status === 'playing' && <button aria-label="Pause voice reply" title="Pause voice reply" onClick={() => pauseVoice(message.id)}><Pause size={16} /></button>}

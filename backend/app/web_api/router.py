@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from sqlalchemy import delete as sa_delete, text, update as sa_update
+from sqlalchemy import delete as sa_delete, or_, text, update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -71,8 +71,9 @@ from ..ai.swico_tiers import (
 )
 from ..database import SessionLocal, get_session
 from ..models import (
-    PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
-    WalletLedger, WebConversationSummary, WebMemoryFact, WebUsagePreferences,
+    GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
+    WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
+    WebMessageFeedback, WebUsagePreferences,
 )
 from ..observability import APP_RELEASE, get_request_id
 from ..time_utils import utc_now
@@ -86,7 +87,8 @@ from .document_extraction import (
 )
 from .schemas import (
     AssistantSettingsPatch, MemorySettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
-    UsagePreferencesPatch, VirtualTextUploadRequest, WebChatRequest, WebTTSRequest,
+    MessageFeedbackRequest, UsagePreferencesPatch, VirtualTextUploadRequest,
+    WebChatRequest, WebTTSRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
 from .upload_store import (
@@ -111,7 +113,7 @@ _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
-ALEMBIC_HEAD = "f9c2d7a4e1b6"
+ALEMBIC_HEAD = "3a7d9c2e5f10"
 
 
 def _tickets() -> VoiceTicketStore:
@@ -420,6 +422,23 @@ def _serialize_message(
         "can_continue": bool(metadata.get("truncated")) and row.role == "assistant" and row.status == "complete",
         "replaces_message_id": row.replaces_message_id,
         "revision_number": row.revision_number,
+        "feedback_rating": (
+            str(metadata.get("feedback_rating"))
+            if metadata.get("feedback_rating") in {"up", "down"} else None
+        ),
+        "provenance": (
+            [
+                str(value)
+                for value in metadata.get("provenance", [])
+                if value in {
+                    "memory", "document", "cached_answer", "semantic_cache",
+                    "backend_tool", "web_search",
+                }
+            ]
+            if _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED")
+            and isinstance(metadata.get("provenance"), list)
+            else []
+        ),
     }
 
 
@@ -485,6 +504,9 @@ def bootstrap(
             "web_message_edit": _env_enabled("WEB_MESSAGE_EDIT_ENABLED"),
             "web_cross_thread_memory": _env_enabled("WEB_CROSS_THREAD_MEMORY_ENABLED"),
             "web_long_input": _env_enabled("WEB_LONG_INPUT_ENABLED"),
+            "web_answer_feedback": _env_enabled("WEB_ANSWER_FEEDBACK_ENABLED"),
+            "web_content_search": _env_enabled("WEB_CONTENT_SEARCH_ENABLED"),
+            "web_response_provenance": _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED"),
         },
         "backend_release": _backend_release(),
         "voice_protocol_version": VOICE_PROTOCOL_VERSION,
@@ -2043,6 +2065,230 @@ def list_messages(
     }
 
 
+def _search_snippet(content: str, query: str) -> str:
+    compact = " ".join(str(content or "").split())
+    if not compact:
+        return ""
+    index = compact.casefold().find(query.casefold())
+    if index < 0:
+        query_terms = re.findall(r"[\w\u0B80-\u0BFF]+", query.casefold())
+        index = next(
+            (
+                compact.casefold().find(term)
+                for term in query_terms
+                if compact.casefold().find(term) >= 0
+            ),
+            0,
+        )
+    start = max(0, index - 80)
+    end = min(len(compact), index + len(query) + 80)
+    return ("…" if start else "") + compact[start:end] + ("…" if end < len(compact) else "")
+
+
+@router.get("/search")
+def search_web_content(
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(20, ge=1, le=50),
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    if not _env_enabled("WEB_CONTENT_SEARCH_ENABLED"):
+        raise HTTPException(404, "Search is not enabled")
+    user = get_owned_user(session, auth)
+    query = " ".join(q.split()).strip()
+    dialect = str(getattr(session.get_bind().dialect, "name", "")).lower()
+    results: list[dict[str, Any]] = []
+    if dialect.startswith("postgres"):
+        rows = session.exec(
+            text(
+                """
+                SELECT thread_id, id AS message_id, content, 'message' AS source_kind,
+                       created_at AS updated_at,
+                       ts_rank_cd(to_tsvector('simple', content),
+                                  websearch_to_tsquery('simple', :query)) AS rank
+                FROM web_chat_message
+                WHERE user_id = :user_id AND superseded_at IS NULL
+                  AND to_tsvector('simple', content) @@ websearch_to_tsquery('simple', :query)
+                UNION ALL
+                SELECT thread_id, NULL AS message_id, summary_text AS content,
+                       'summary' AS source_kind, updated_at,
+                       ts_rank_cd(to_tsvector('simple', summary_text || ' ' || keywords_text),
+                                  websearch_to_tsquery('simple', :query)) AS rank
+                FROM web_conversation_summary
+                WHERE user_id = :user_id
+                  AND to_tsvector('simple', summary_text || ' ' || keywords_text)
+                      @@ websearch_to_tsquery('simple', :query)
+                UNION ALL
+                SELECT source_thread_id AS thread_id, source_message_id AS message_id,
+                       value_text AS content, 'memory' AS source_kind, updated_at,
+                       ts_rank_cd(to_tsvector('simple', value_text),
+                                  websearch_to_tsquery('simple', :query)) AS rank
+                FROM web_memory_fact
+                WHERE user_id = :user_id AND deleted_at IS NULL
+                  AND to_tsvector('simple', value_text) @@ websearch_to_tsquery('simple', :query)
+                ORDER BY rank DESC, updated_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"query": query, "user_id": int(user.id), "limit": limit},
+        ).all()
+        for row in rows:
+            value = getattr(row, "_mapping", row)
+            results.append(
+                {
+                    "thread_id": value["thread_id"],
+                    "message_id": value["message_id"],
+                    "snippet": _search_snippet(value["content"], query),
+                    "source_kind": value["source_kind"],
+                    "updated_at": value["updated_at"],
+                    "rank": float(value["rank"] or 0.0),
+                }
+            )
+    else:
+        pattern = f"%{query}%"
+        messages = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.user_id == user.id,
+                WebChatMessage.superseded_at.is_(None),
+                WebChatMessage.content.ilike(pattern),
+            )
+        ).all()
+        summaries = session.exec(
+            select(WebConversationSummary).where(
+                WebConversationSummary.user_id == user.id,
+                or_(
+                    WebConversationSummary.summary_text.ilike(pattern),
+                    WebConversationSummary.keywords_text.ilike(pattern),
+                ),
+            )
+        ).all()
+        facts = session.exec(
+            select(WebMemoryFact).where(
+                WebMemoryFact.user_id == user.id,
+                WebMemoryFact.deleted_at.is_(None),
+                WebMemoryFact.value_text.ilike(pattern),
+            )
+        ).all()
+        for row in messages:
+            results.append(
+                {
+                    "thread_id": row.thread_id,
+                    "message_id": row.id,
+                    "snippet": _search_snippet(row.content, query),
+                    "source_kind": "message",
+                    "updated_at": row.created_at,
+                    "rank": 1.0,
+                }
+            )
+        for row in summaries:
+            results.append(
+                {
+                    "thread_id": row.thread_id,
+                    "message_id": None,
+                    "snippet": _search_snippet(
+                        f"{row.summary_text} {row.keywords_text}", query
+                    ),
+                    "source_kind": "summary",
+                    "updated_at": row.updated_at,
+                    "rank": 0.8,
+                }
+            )
+        for row in facts:
+            results.append(
+                {
+                    "thread_id": row.source_thread_id,
+                    "message_id": row.source_message_id,
+                    "snippet": _search_snippet(row.value_text, query),
+                    "source_kind": "memory",
+                    "updated_at": row.updated_at,
+                    "rank": 0.7,
+                }
+            )
+        results.sort(
+            key=lambda item: (item["rank"], item["updated_at"]), reverse=True
+        )
+        results = results[:limit]
+    return {"items": results, "query": query, "limit": limit}
+
+
+@router.post("/messages/{message_id}/feedback")
+def message_feedback(
+    message_id: str,
+    payload: MessageFeedbackRequest,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    if not _env_enabled("WEB_ANSWER_FEEDBACK_ENABLED"):
+        raise HTTPException(404, "Feedback is not enabled")
+    user = get_owned_user(session, auth)
+    message = session.exec(
+        select(WebChatMessage).where(
+            WebChatMessage.id == message_id,
+            WebChatMessage.user_id == user.id,
+            WebChatMessage.role == "assistant",
+        )
+    ).first()
+    if message is None:
+        raise HTTPException(404, "Message not found")
+    feedback = session.exec(
+        select(WebMessageFeedback).where(
+            WebMessageFeedback.user_id == user.id,
+            WebMessageFeedback.message_id == message.id,
+        )
+    ).first()
+    previous = feedback.rating if feedback is not None else None
+    if feedback is None:
+        feedback = WebMessageFeedback(
+            user_id=int(user.id), message_id=message.id, rating=payload.rating
+        )
+    else:
+        feedback.rating = payload.rating
+        feedback.updated_at = utc_now()
+    session.add(feedback)
+
+    try:
+        metadata = json.loads(message.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    metadata["feedback_rating"] = payload.rating
+    message.metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+    session.add(message)
+    session.commit()
+
+    cache_row_id = metadata.get("cache_row_id")
+    cache_confidence: float | None = None
+    tombstoned = False
+    if cache_row_id and previous != payload.rating:
+        cache_row = session.get(GlobalQACache, int(cache_row_id))
+        if cache_row is not None:
+            if payload.rating == "down":
+                from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
+
+                result = FeedbackQualityAgent().apply_negative_feedback(
+                    session,
+                    cache_row,
+                    amount=0.25,
+                    tombstone_at_zero=True,
+                )
+                cache_confidence = result.confidence
+                tombstoned = result.tombstoned
+            else:
+                cache_row.confidence = min(
+                    1.0, float(cache_row.confidence or 0.0) + 0.10
+                )
+                cache_row.updated_at = utc_now()
+                session.add(cache_row)
+                session.commit()
+                cache_confidence = cache_row.confidence
+    return {
+        "message_id": message.id,
+        "rating": payload.rating,
+        "cache_confidence": cache_confidence,
+        "cache_tombstoned": tombstoned,
+    }
+
+
 async def _save_temporary_upload(file: UploadFile, *, limit: int, suffix: str) -> tuple[str, int]:
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     path = handle.name
@@ -2722,6 +2968,10 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "truncated": bool(response.raw.get("truncated")),
                 "can_continue": bool(response.raw.get("truncated")) and completed.message.status == "complete",
                 "completion_status": str(response.raw.get("completion_status") or "unknown"),
+                "provenance": (
+                    response.raw.get("provenance")
+                    if _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED") else []
+                ),
             })
         except asyncio.CancelledError:
             cancellation.cancel()

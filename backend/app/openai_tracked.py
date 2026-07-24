@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import hashlib
+import json
+import threading
 import time
 from typing import Any, Iterable, Optional
 
@@ -39,6 +41,8 @@ class OpenAIProviderUnavailableError(RuntimeError):
 
 TRACKED_METADATA_ATTR = "_openai_tracked_metadata"
 _EMBEDDING_TURN_CACHE: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_TEXT_EMBEDDING_CACHE: dict[str, tuple[float, list[float]]] = {}
+_TEXT_EMBEDDING_CACHE_LOCK = threading.Lock()
 
 
 def get_tracked_chat_completion_metadata(response: Any) -> dict[str, Any]:
@@ -837,3 +841,106 @@ def tracked_embedding(
     finally:
         if owned_session is not None:
             owned_session.close()
+
+
+def embedding_vector(response: Any) -> list[float]:
+    """Extract a validated vector from an OpenAI-compatible embedding response."""
+    data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)
+    if not data:
+        return []
+    first = data[0]
+    value = first.get("embedding") if isinstance(first, dict) else getattr(first, "embedding", None)
+    if not isinstance(value, list):
+        return []
+    result: list[float] = []
+    for item in value:
+        try:
+            result.append(float(item))
+        except (TypeError, ValueError):
+            return []
+    return result
+
+
+def cached_text_embedding(
+    text_value: str,
+    *,
+    session: Optional[Session] = None,
+    user_id: Any = None,
+    request_id: Optional[str] = None,
+    route: str = "semantic_embedding",
+    ttl_seconds: int = 86_400,
+) -> list[float]:
+    """Embed normalized text once and cache it in Valkey (or process memory) for 24h."""
+    normalized = re.sub(r"\s+", " ", str(text_value or "")).strip().casefold()
+    if not normalized:
+        return []
+    model = (
+        str(os.getenv("RAG_EMBEDDING_MODEL") or os.getenv("OPENAI_EMBEDDING_MODEL") or "").strip()
+        or "text-embedding-3-small"
+    )
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    key = f"embedding:v1:{model}:{digest}"
+    now = time.time()
+    with _TEXT_EMBEDDING_CACHE_LOCK:
+        cached = _TEXT_EMBEDDING_CACHE.get(key)
+        if cached and cached[0] > now:
+            return list(cached[1])
+
+    redis_client = None
+    redis_url = str(os.getenv("REDIS_URL") or "").strip()
+    if redis_url:
+        try:
+            import redis  # type: ignore
+
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            raw = redis_client.get(key)
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    vector = [float(value) for value in parsed]
+                    with _TEXT_EMBEDDING_CACHE_LOCK:
+                        _TEXT_EMBEDDING_CACHE[key] = (
+                            now + max(1, int(ttl_seconds)),
+                            vector,
+                        )
+                    return vector
+        except Exception:
+            redis_client = None
+
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return []
+    try:
+        from openai import OpenAI  # type: ignore
+
+        response = tracked_embedding(
+            OpenAI(api_key=api_key),
+            input=[normalized],
+            session=session,
+            route=route,
+            user_id=user_id,
+            request_id=request_id or f"embedding:{digest}",
+            model=model,
+        )
+        vector = embedding_vector(response)
+    except Exception:
+        logger.exception("cached text embedding failed", extra={"route": route})
+        return []
+    if not vector:
+        return []
+    ttl = max(1, int(ttl_seconds))
+    with _TEXT_EMBEDDING_CACHE_LOCK:
+        _TEXT_EMBEDDING_CACHE[key] = (now + ttl, list(vector))
+        if len(_TEXT_EMBEDDING_CACHE) > 2048:
+            expired_or_old = sorted(
+                _TEXT_EMBEDDING_CACHE,
+                key=lambda item: _TEXT_EMBEDDING_CACHE[item][0],
+            )[:256]
+            for old_key in expired_or_old:
+                _TEXT_EMBEDDING_CACHE.pop(old_key, None)
+    if redis_client is not None:
+        try:
+            redis_client.setex(key, ttl, json.dumps(vector, separators=(",", ":")))
+        except Exception:
+            pass
+    return vector

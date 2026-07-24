@@ -177,3 +177,25 @@ class MemorySettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+
+
+class MessageFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rating: Literal["up", "down"]
+
+
+ResponseProvenance = Literal[
+    "memory",
+    "document",
+    "cached_answer",
+    "semantic_cache",
+    "backend_tool",
+    "web_search",
+]
+
+
+class AssistantMessageSchema(BaseModel):
+    """Shared assistant response extension used by list and SSE payloads."""
+
+    provenance: list[ResponseProvenance] = Field(default_factory=list)

@@ -43,6 +43,13 @@ export type Message = {
   finish_reason?: string; truncated?: boolean; can_continue?: boolean;
   completion_status?: string;
   replaces_message_id?: string | null; revision_number?: number;
+  feedback_rating?: 'up' | 'down' | null;
+  provenance?: ResponseProvenance[];
+}
+export type ResponseProvenance = 'memory' | 'document' | 'cached_answer' | 'semantic_cache' | 'backend_tool' | 'web_search'
+export type SearchResult = {
+  thread_id: string | null; message_id: string | null; snippet: string;
+  source_kind: 'message' | 'summary' | 'memory'; updated_at: string; rank: number;
 }
 export type VoiceCreditEstimate = {
   pricing_version: string; estimated_stt_seconds: number; estimated_stt_minutes: string;
@@ -63,6 +70,7 @@ export type Bootstrap = {
     web_voice_reply: boolean; web_voice_billing: boolean;
     web_realtime_voice: boolean; separate_voice_credits: boolean;
     web_message_edit?: boolean; web_cross_thread_memory?: boolean; web_long_input?: boolean;
+    web_answer_feedback?: boolean; web_content_search?: boolean; web_response_provenance?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;

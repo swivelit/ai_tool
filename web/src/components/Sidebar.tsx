@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
-import type { Thread, Wallet } from '../types'
+import type { SearchResult, Thread, Wallet } from '../types'
 import { compactTokens, estimatedTokenLabel } from '../credits'
 
 type Group = { label: string; threads: Thread[] }
@@ -19,13 +19,14 @@ function groupThreads(threads: Thread[]): Group[] {
 }
 
 export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, archived, hasMore, query,
-  setQuery, select, newChat, addCredit, openSettings, mutate, signOut, close, toggleCollapsed, toggleArchived, loadMore, toggleTheme }: {
+  setQuery, select, newChat, addCredit, openSettings, mutate, signOut, close, toggleCollapsed, toggleArchived, loadMore, toggleTheme, searchResults = [], selectSearch = () => undefined }: {
   threads: Thread[]; activeId: string | null; wallet: Wallet | null; userName: string; open: boolean; collapsed: boolean;
   archived: boolean; hasMore: boolean; query: string; setQuery: (value: string) => void;
   select: (id: string) => void; newChat: () => void; addCredit: () => void; openSettings: () => void;
   mutate: (thread: Thread, action: 'rename' | 'archive' | 'delete') => void;
   signOut: () => void; close: () => void; toggleCollapsed: () => void; toggleArchived: () => void;
   loadMore: () => void; toggleTheme: () => void;
+  searchResults?: SearchResult[]; selectSearch?: (result: SearchResult) => void;
 }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [account, setAccount] = useState(false)
@@ -60,6 +61,17 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     </div>
     <button className="archive-toggle rail-action" onClick={toggleArchived}><Archive size={18} /><span>{archived ? 'Back to chats' : 'Archived chats'}</span>{archived ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
     <nav className="threads" aria-label={archived ? 'Archived conversations' : 'Conversations'}>
+      {!!query.trim() && !!searchResults.length && <div className="content-search-results">
+        {(['message', 'summary', 'memory'] as const).map(kind => {
+          const items = searchResults.filter(item => item.source_kind === kind)
+          if (!items.length) return null
+          return <section key={kind}><h2>{kind === 'message' ? 'Messages' : kind === 'summary' ? 'Chat summaries' : 'Saved memory'}</h2>
+            {items.map((item, index) => <button type="button" key={`${kind}-${item.message_id ?? item.thread_id}-${index}`} disabled={!item.thread_id} onClick={() => selectSearch(item)}>
+              <span>{item.snippet}</span><small>{new Date(item.updated_at).toLocaleDateString()}</small>
+            </button>)}
+          </section>
+        })}
+      </div>}
       {groups.map(group => <section className="thread-group" key={group.label}><h2>{group.label}</h2>{group.threads.map(thread => <div className={`thread-row ${thread.id === activeId ? 'active' : ''}`} key={thread.id}>
         <button className="thread-select" onClick={() => select(thread.id)} title={thread.title}><span>{thread.title}</span></button>
         <button className="thread-more icon-button" aria-label={`Actions for ${thread.title}`} aria-expanded={menu === thread.id} onClick={() => setMenu(menu === thread.id ? null : thread.id)}><MoreHorizontal size={17} /></button>

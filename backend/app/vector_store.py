@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlmodel import Session
+from sqlmodel import select
 
+from .models import RagEmbedding
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -102,10 +106,39 @@ class VectorStore:
         embedding: List[float],
         updated_at: Optional[datetime] = None,
     ) -> None:
-        if self._resolved_backend != "pgvector" or not embedding:
+        if not embedding:
             return
 
         updated_at = updated_at or utc_now()
+        if self._resolved_backend != "pgvector":
+            row = session.exec(
+                select(RagEmbedding).where(RagEmbedding.content_hash == content_hash)
+            ).first()
+            payload = json.dumps([float(v) for v in embedding], ensure_ascii=False)
+            norm = math.sqrt(sum(float(v) * float(v) for v in embedding))
+            if row is None:
+                row = RagEmbedding(
+                    user_id=user_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    content_hash=content_hash,
+                    content_text=content_text,
+                    embedding_json=payload,
+                    embedding_norm=norm,
+                    updated_at=updated_at,
+                )
+            else:
+                row.user_id = user_id
+                row.source_type = source_type
+                row.source_id = source_id
+                row.content_text = content_text
+                row.embedding_json = payload
+                row.embedding_norm = norm
+                row.updated_at = updated_at
+            session.add(row)
+            session.commit()
+            return
+
         vector_literal = "[" + ",".join(f"{float(v):.8f}" for v in embedding) + "]"
         session.exec(
             text(
@@ -144,8 +177,46 @@ class VectorStore:
         limit: int = 8,
         source_types: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        if self._resolved_backend != "pgvector" or not query_embedding:
+        if not query_embedding:
             return []
+
+        if self._resolved_backend != "pgvector":
+            statement = select(RagEmbedding)
+            if user_id is not None:
+                statement = statement.where(RagEmbedding.user_id == user_id)
+            if source_types:
+                statement = statement.where(RagEmbedding.source_type.in_(source_types))
+            rows = list(
+                session.exec(statement.order_by(RagEmbedding.updated_at.desc()).limit(500)).all()
+            )
+            query_norm = math.sqrt(sum(float(v) * float(v) for v in query_embedding))
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                try:
+                    stored = [float(v) for v in json.loads(row.embedding_json or "[]")]
+                except (TypeError, ValueError):
+                    continue
+                norm = float(row.embedding_norm or 0.0) or math.sqrt(
+                    sum(value * value for value in stored)
+                )
+                if not stored or query_norm <= 0.0 or norm <= 0.0:
+                    continue
+                dot = sum(
+                    float(query_embedding[index]) * stored[index]
+                    for index in range(min(len(query_embedding), len(stored)))
+                )
+                results.append(
+                    {
+                        "source_type": row.source_type,
+                        "source_id": row.source_id,
+                        "content_text": row.content_text,
+                        "updated_at": row.updated_at,
+                        "score_semantic": max(0.0, min(1.0, dot / (query_norm * norm))),
+                    }
+                )
+            return sorted(
+                results, key=lambda item: float(item["score_semantic"]), reverse=True
+            )[: max(1, int(limit))]
 
         vector_literal = "[" + ",".join(f"{float(v):.8f}" for v in query_embedding) + "]"
         source_filter_sql = ""
@@ -186,3 +257,23 @@ class VectorStore:
                 }
             )
         return results
+
+
+_DEFAULT_STORE: Optional[VectorStore] = None
+_DEFAULT_STORE_LOCK = threading.Lock()
+
+
+def get_vector_store() -> VectorStore:
+    """Return the process-wide store used by cache and memory write paths."""
+    global _DEFAULT_STORE
+    if _DEFAULT_STORE is not None:
+        return _DEFAULT_STORE
+    with _DEFAULT_STORE_LOCK:
+        if _DEFAULT_STORE is None:
+            from .database import engine
+
+            _DEFAULT_STORE = VectorStore(
+                engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto")
+            )
+            _DEFAULT_STORE.initialize()
+    return _DEFAULT_STORE

@@ -414,6 +414,87 @@ class OpenAIModelRouter:
         )
         return selections
 
+    def select_web_ladder_candidates(
+        self,
+        *,
+        saved_tier: str,
+        answer_class: str,
+        message: str,
+        user_tier: Optional[str] = None,
+        estimated_input_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+    ) -> list[ModelSelection]:
+        """Apply the confidence-gated web tier policy without changing saved settings."""
+        normalized_saved = normalize_swico_tier(saved_tier)
+        answer = str(answer_class or "normal").strip().lower()
+        if not _env_bool("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", False):
+            return self.select_swico_candidates(
+                normalized_saved,
+                message,
+                user_tier=user_tier,
+                estimated_input_tokens=estimated_input_tokens,
+                max_output_tokens=max_output_tokens,
+                answer_class=answer,
+            )
+        if answer == "simple":
+            initial = "lite"
+        elif answer == "normal":
+            from .ai.swico_tiers import default_swico_tier
+
+            initial = default_swico_tier()
+        else:
+            initial = normalized_saved
+        tier_order = ["lite", "standard", "pro"]
+        tiers = [initial]
+        current_index = tier_order.index(initial)
+        if current_index + 1 < len(tier_order):
+            next_tier = tier_order[current_index + 1]
+            if next_tier != "pro" or _env_bool("SWICO_PRO_ENABLED", False):
+                tiers.append(next_tier)
+        combined: list[ModelSelection] = []
+        for index, tier in enumerate(tiers):
+            selections = self.select_swico_candidates(
+                tier,
+                message,
+                user_tier=user_tier,
+                estimated_input_tokens=estimated_input_tokens,
+                max_output_tokens=max_output_tokens,
+                answer_class=answer,
+            )
+            for selection in selections:
+                if any(item.model == selection.model for item in combined):
+                    continue
+                combined.append(
+                    ModelSelection(
+                        **{
+                            **selection.__dict__,
+                            "reason": (
+                                f"answer_class_{answer}_initial_tier"
+                                if index == 0
+                                else "confidence_escalation_candidate"
+                            ),
+                        }
+                    )
+                )
+        self.last_selection_metadata = {
+            **self.last_selection_metadata,
+            "answer_class": answer,
+            "initial_tier": initial,
+            "tier_decision": f"{answer}:{initial}",
+            "selected_model_reason": f"answer_class_{answer}_tier_{initial}",
+        }
+        logger.info(
+            "web_model_ladder_decision",
+            extra={
+                "event": "web_model_ladder_decision",
+                "answer_class": answer,
+                "saved_tier": normalized_saved,
+                "initial_tier": initial,
+                "models": [item.model for item in combined],
+            },
+        )
+        return combined
+
     def _daily_budget_available(self) -> bool:
         # This is a conservative selector guard. Precise spend aggregation is
         # recorded in OpenAIUsageLog and can be enforced by a scheduler/report.

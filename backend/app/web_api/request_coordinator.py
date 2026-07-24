@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import os
 from typing import Any, Literal
 
+from sqlmodel import Session
+
+from ..ai.context_compressor import ContextCompressor
+from ..ai.prompts import STATIC_SYSTEM_PREFIX
 from ..billing.pricing import estimate_tokens
 from .conversation_continuity import SameThreadContinuityDecision
-from .turn_optimizer import WebTurnOptimization, optimize_web_turn, with_prompt_estimate
+from .turn_optimizer import (
+    WebTurnOptimization, optimize_web_turn, select_context_turns,
+    with_prompt_estimate,
+)
 
 
 AnswerClass = Literal["simple", "normal", "detailed", "long_form"]
@@ -126,6 +134,7 @@ class WebRequestCoordinator:
         has_attachments: bool = False,
         previous_topic: str | None = None,
         continuity: SameThreadContinuityDecision,
+        session: Session | None = None,
     ) -> WebRequestDecision:
         optimization = optimize_web_turn(
             message,
@@ -136,6 +145,29 @@ class WebRequestCoordinator:
             has_attachments=has_attachments,
             previous_topic=previous_topic,
             continuity=continuity,
+        )
+        selected_turns, formatted = select_context_turns(
+            context_turns or [],
+            contextual=continuity.use_context,
+            preferred_turn_count=continuity.preferred_turn_count,
+            current_message=message,
+            session=session,
+        )
+        optimization = replace(
+            optimization,
+            selected_context_turns=selected_turns,
+            formatted_context=formatted,
+            context_chars_sent=len(formatted),
+            metrics={
+                **optimization.metrics,
+                "context_turns_sent": len(selected_turns),
+                "context_chars_sent": len(formatted),
+            },
+        )
+        optimization, memory_context = _apply_prompt_budget(
+            optimization,
+            message=message,
+            memory_context=memory_context,
         )
         selected = tuple(
             (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
@@ -191,3 +223,121 @@ class WebRequestCoordinator:
             total_estimated_prompt_tokens=optimization.estimated_prompt_tokens,
             optimization=optimization,
         )
+
+
+def _max_prompt_tokens() -> int:
+    try:
+        return max(0, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
+    except (TypeError, ValueError):
+        return 6000
+
+
+def _truncate_tokens(value: str, token_limit: int) -> str:
+    text = str(value or "").strip()
+    if token_limit <= 0:
+        return ""
+    if estimate_tokens(text) <= token_limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if estimate_tokens(text[:middle]) <= token_limit:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip()
+
+
+def _history_within_budget(
+    turns: list[dict[str, str]], token_budget: int
+) -> tuple[list[dict[str, str]], str]:
+    kept: list[dict[str, str]] = []
+    used = 0
+    for turn in reversed(turns):
+        block = "\n".join(
+            value
+            for value in (
+                str(turn.get("user") or ""),
+                str(turn.get("assistant") or ""),
+            )
+            if value
+        )
+        tokens = estimate_tokens(block)
+        if used + tokens > token_budget:
+            continue
+        kept.insert(0, turn)
+        used += tokens
+    formatted = "\n".join(
+        value
+        for turn in kept
+        for value in (
+            str(turn.get("user") or ""),
+            str(turn.get("assistant") or ""),
+        )
+        if value
+    )
+    return kept, formatted
+
+
+def _apply_prompt_budget(
+    optimization: WebTurnOptimization,
+    *,
+    message: str,
+    memory_context: str,
+) -> tuple[WebTurnOptimization, str]:
+    maximum = _max_prompt_tokens()
+    if maximum <= 0:
+        return optimization, str(memory_context or "")
+    fixed = estimate_tokens(message) + estimate_tokens(STATIC_SYSTEM_PREFIX) + 320
+    remaining = max(0, maximum - fixed)
+    memory_cap = int(remaining * 0.15)
+    profile_cap = int(remaining * 0.10)
+    document_cap = int(remaining * 0.25)
+
+    memory = _truncate_tokens(memory_context, memory_cap)
+    profile = _truncate_tokens(optimization.compact_profile_prompt, profile_cap)
+    compressor = ContextCompressor(
+        max_chunks=8,
+        max_chunk_chars=max(64, document_cap * 4),
+        max_total_chars=max(64, document_cap * 4),
+    )
+    document_chunks = [
+        chunk for chunk in str(optimization.attachment_prompt_context or "").split("\n\n")
+        if chunk.strip()
+    ]
+    document = "\n\n".join(compressor.compress(document_chunks))
+    document = _truncate_tokens(document, document_cap)
+
+    # Memory replaces history token-for-token. Empty or unused section shares
+    # naturally flow back to history.
+    section_tokens = (
+        estimate_tokens(memory) + estimate_tokens(profile) + estimate_tokens(document)
+    )
+    history_budget = max(0, remaining - section_tokens)
+    history, formatted = _history_within_budget(
+        optimization.selected_context_turns, history_budget
+    )
+    metrics = {
+        **optimization.metrics,
+        "context_turns_sent": len(history),
+        "context_chars_sent": len(formatted),
+        "memory_estimated_tokens": estimate_tokens(memory) if memory else 0,
+        "profile_estimated_tokens": estimate_tokens(profile) if profile else 0,
+        "attachment_estimated_tokens": estimate_tokens(document) if document else 0,
+        "history_token_allocation": history_budget,
+        "prompt_token_budget": maximum,
+    }
+    return (
+        replace(
+            optimization,
+            selected_context_turns=history,
+            formatted_context=formatted,
+            context_chars_sent=len(formatted),
+            compact_profile_prompt=profile,
+            profile_chars_sent=len(profile),
+            attachment_prompt_context=document,
+            attachment_chars_sent=len(document),
+            metrics=metrics,
+        ),
+        memory,
+    )

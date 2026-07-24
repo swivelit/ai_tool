@@ -15,9 +15,18 @@ class FeedbackQualityResult:
 
 
 class FeedbackQualityAgent:
-    def apply_negative_feedback(self, session: Session, row: GlobalQACache, amount: float = 0.15) -> FeedbackQualityResult:
+    def apply_negative_feedback(
+        self,
+        session: Session,
+        row: GlobalQACache,
+        amount: float = 0.15,
+        *,
+        tombstone_at_zero: bool = False,
+    ) -> FeedbackQualityResult:
         row.confidence = max(0.0, float(row.confidence or 0.0) - max(0.0, amount))
-        tombstoned = row.confidence < 0.35
+        tombstoned = (
+            row.confidence <= 0.0 if tombstone_at_zero else row.confidence < 0.35
+        )
         if tombstoned:
             row.status = "rejected"
             row.review_notes = ((row.review_notes or "") + "\nnegative_feedback_threshold").strip()

@@ -134,6 +134,13 @@ class OpenAIProvider(AIProvider):
             cancellation = None
         last_error: Exception | None = None
         provider_attempts = 0
+        accumulated_input_tokens = 0
+        accumulated_output_tokens = 0
+        accumulated_cost = 0.0
+        accumulated_usage_calls = 0
+        confidence_ladder = os.getenv(
+            "WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         max_attempts = min(2, max(1, int(request.metadata.get("max_provider_attempts") or 2)))
         for index, model in enumerate(candidates):
             endpoint = str(
@@ -151,6 +158,7 @@ class OpenAIProvider(AIProvider):
             finish_reason = "unknown"
             completion_status = "unknown"
             incomplete_reason = ""
+            reported_confidence: float | None = None
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
@@ -215,8 +223,15 @@ class OpenAIProvider(AIProvider):
                             delta = str(getattr(event, "delta", "") or "")
                             if delta:
                                 text_parts.append(delta)
-                                on_delta(delta)
+                                if not confidence_ladder:
+                                    on_delta(delta)
                         response = getattr(event, "response", None)
+                        confidence_value = getattr(response, "confidence", None)
+                        if confidence_value is not None:
+                            try:
+                                reported_confidence = float(confidence_value)
+                            except (TypeError, ValueError):
+                                pass
                         if event_type == "response.created" and response is not None:
                             completion_status = str(getattr(response, "status", "") or "in_progress")
                         if event_type in {"response.completed", "response.incomplete", "response.failed"}:
@@ -259,7 +274,14 @@ class OpenAIProvider(AIProvider):
                             )
                             if delta:
                                 text_parts.append(delta)
-                                on_delta(delta)
+                                if not confidence_ladder:
+                                    on_delta(delta)
+                        confidence_value = getattr(chunk, "confidence", None)
+                        if confidence_value is not None:
+                            try:
+                                reported_confidence = float(confidence_value)
+                            except (TypeError, ValueError):
+                                pass
                         usage = getattr(chunk, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
@@ -300,12 +322,30 @@ class OpenAIProvider(AIProvider):
                 else:
                     with SessionLocal() as created_usage_session:
                         record_openai_usage(created_usage_session, **record_kwargs)
+                low_confidence = bool(
+                    reported_confidence is not None and reported_confidence < 0.5
+                )
+                degraded = finish_reason == "length" or low_confidence
+                if (
+                    confidence_ladder
+                    and degraded
+                    and provider_attempts < max_attempts
+                    and index + 1 < len(candidates)
+                ):
+                    accumulated_input_tokens += input_tokens
+                    accumulated_output_tokens += output_tokens
+                    accumulated_cost += actual_cost
+                    accumulated_usage_calls += 1 if provider_usage_received else 0
+                    continue
+                if confidence_ladder:
+                    on_delta(text)
                 return AIProviderResponse(
                     text=text, provider="openai", model=model, route=route.route,
                     reason=route.reason, language=route.language, intent=route.intent,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    input_tokens=input_tokens + accumulated_input_tokens,
+                    output_tokens=output_tokens + accumulated_output_tokens,
                     characters=len(text),
-                    estimated_cost_amount=actual_cost,
+                    estimated_cost_amount=actual_cost + accumulated_cost,
                     estimated_cost_currency="USD",
                     raw={
                         "usage_actual": provider_usage_received,
@@ -314,7 +354,7 @@ class OpenAIProvider(AIProvider):
                         "endpoint": endpoint,
                         "fallback_attempted": provider_attempts > 1,
                         "provider_attempts": provider_attempts,
-                        "provider_calls_with_usage": 1 if provider_usage_received else 0,
+                        "provider_calls_with_usage": accumulated_usage_calls + (1 if provider_usage_received else 0),
                         "primary_model_candidate": route.metadata.get("primary_model_candidate") or (candidates[0] if candidates else model),
                         "selected_model_reason": (
                             "zero_output_zero_usage_failover"
@@ -325,6 +365,8 @@ class OpenAIProvider(AIProvider):
                         "truncated": finish_reason == "length",
                         "completion_status": completion_status,
                         "incomplete_reason": incomplete_reason,
+                        "low_confidence": low_confidence,
+                        "tier_escalated": accumulated_input_tokens > 0,
                     },
                 )
             except GenerationCancelled:

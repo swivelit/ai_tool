@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
+from ..ai.context_compressor import ContextCompressor
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import GenerationCancelled
@@ -24,6 +25,10 @@ from ..billing.service import (
     settle_billing_exempt_usage, settle_usage_reservation,
 )
 from ..database import SessionLocal
+from ..job_queue import (
+    enqueue_memory_embedding_backfill,
+    enqueue_post_turn_distillation,
+)
 from ..models import (
     UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
     WebMemoryFact,
@@ -42,8 +47,11 @@ from .turn_optimizer import (
     WebTurnOptimization, optimizer_enabled, select_context_turns, with_prompt_estimate,
 )
 from .request_coordinator import WebRequestCoordinator, WebRequestDecision
+from .deterministic_answers import try_deterministic_answer
 from .swico_brand import swico_brand_response
-from .web_memory import needs_cross_thread_memory, retrieve_memory, write_turn_memory
+from .web_memory import (
+    memory_enabled, needs_cross_thread_memory, retrieve_memory, write_turn_memory,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +169,44 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _hard_budget_provider_messages(
+    request: AIRequest, route: AIRoute
+) -> list[dict[str, str]]:
+    messages = build_provider_messages(request, route, provider=route.provider)
+    try:
+        maximum = max(0, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
+    except (TypeError, ValueError):
+        maximum = 6000
+    if maximum <= 0:
+        return messages
+    while (
+        request.context_turns
+        and estimate_tokens(serialize_provider_messages(messages)) > maximum
+    ):
+        request.context_turns = request.context_turns[1:]
+        messages = build_provider_messages(request, route, provider=route.provider)
+    if estimate_tokens(serialize_provider_messages(messages)) <= maximum:
+        return messages
+    attachment = str(request.metadata.get("attachment_prompt_context") or "")
+    if attachment:
+        overflow = (
+            estimate_tokens(serialize_provider_messages(messages)) - maximum
+        )
+        target_chars = max(0, len(attachment) - overflow * 4)
+        compressor = ContextCompressor(
+            max_chunks=8,
+            max_chunk_chars=max(1, target_chars),
+            max_total_chars=max(1, target_chars),
+        )
+        request.metadata["attachment_prompt_context"] = "\n\n".join(
+            compressor.compress(
+                [value for value in attachment.split("\n\n") if value.strip()]
+            )
+        )
+        messages = build_provider_messages(request, route, provider=route.provider)
+    return messages
+
+
 def _candidate_swico_tier(
     swico_tier: str,
     *,
@@ -181,6 +227,8 @@ def _candidate_swico_tier(
 
 
 def _max_provider_attempts() -> int:
+    if _env_bool("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", False):
+        return 2
     try:
         configured = os.getenv(
             "WEB_PROVIDER_CALLS_PER_TURN_MAX",
@@ -230,11 +278,40 @@ def _cache_response(user_id: int, message: str, reply_language: str | None) -> A
         raw={
             "cache_hit": True,
             "cache_hit_source": hit.get("cache_hit_source") or "L3_global_qa",
+            "cache_row_id": hit.get("id"),
+            "cache_hit_kind": hit.get("cache_hit_kind") or "exact",
             "provider_attempts": 0,
             "provider_calls_with_usage": 0,
             "fallback_attempted": False,
         },
     )
+
+
+def _response_provenance(
+    prepared: PreparedWebTurn, response: AIProviderResponse
+) -> list[str]:
+    if not _env_bool("WEB_RESPONSE_PROVENANCE_ENABLED", False):
+        return []
+    values: list[str] = []
+    if str(prepared.ai_request.metadata.get("memory_prompt_context") or "").strip():
+        values.append("memory")
+    if str(prepared.ai_request.metadata.get("attachment_prompt_context") or "").strip():
+        values.append("document")
+    if response.provider == "cache" or response.raw.get("cache_hit"):
+        values.append(
+            "semantic_cache"
+            if response.raw.get("cache_hit_kind") == "semantic"
+            else "cached_answer"
+        )
+    if response.provider == "backend_tool":
+        values.append("backend_tool")
+    if response.raw.get("web_search") or response.raw.get("web_search_used"):
+        values.append("web_search")
+    allowed = {
+        "memory", "document", "cached_answer", "semantic_cache",
+        "backend_tool", "web_search",
+    }
+    return list(dict.fromkeys(value for value in values if value in allowed))
 
 
 def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
@@ -398,6 +475,29 @@ def prepare_web_turn(
                 WebChatMessage.superseded_at.is_(None),
             ).order_by(WebChatMessage.created_at.asc()).limit(1)).first()
             if following_assistant is not None:
+                if _env_bool("WEB_ANSWER_FEEDBACK_ENABLED", False):
+                    try:
+                        cached_metadata = json.loads(
+                            following_assistant.metadata_json or "{}"
+                        )
+                    except (TypeError, ValueError):
+                        cached_metadata = {}
+                    cache_row_id = (
+                        cached_metadata.get("cache_row_id")
+                        if isinstance(cached_metadata, dict) else None
+                    )
+                    if cache_row_id:
+                        from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
+                        from ..models import GlobalQACache
+
+                        cache_row = session.get(GlobalQACache, int(cache_row_id))
+                        if cache_row is not None:
+                            FeedbackQualityAgent().apply_negative_feedback(
+                                session,
+                                cache_row,
+                                amount=max(0.15, float(cache_row.confidence or 0.0)),
+                                tombstone_at_zero=True,
+                            )
                 following_assistant.superseded_at = superseded_at
                 session.add(following_assistant)
             for fact in session.exec(select(WebMemoryFact).where(
@@ -480,7 +580,7 @@ def prepare_web_turn(
             )
         except (TypeError, ValueError):
             configured_context_turns = 2
-        candidate_turn_limit = 6 if not enabled else max(2, configured_context_turns)
+        candidate_turn_limit = 6 if not enabled else max(6, configured_context_turns)
         previous_safe_metadata: dict[str, str] = {}
         if continuation_row is not None:
             try:
@@ -544,6 +644,11 @@ def prepare_web_turn(
         needs_memory = bool(
             needs_cross_thread_memory(model_message) or natural_cross_thread_followup
         )
+        if (
+            _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
+            and memory_enabled(session, user_id)
+        ):
+            needs_memory = True
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads),
@@ -559,6 +664,52 @@ def prepare_web_turn(
             "prompt_cache_enabled": _env_bool("WEB_PROMPT_CACHE_ENABLED", False),
             "prompt_cache_version": os.getenv("WEB_PROMPT_CACHE_VERSION", "v1"),
         }
+
+        if _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False):
+            deterministic = try_deterministic_answer(
+                session,
+                user_id=user_id,
+                message=model_message,
+                reply_language=reply_language,
+                request_id=request_id,
+                previous_topic=previous_safe_metadata.get("topic"),
+            )
+            if deterministic is not None:
+                ai_request = AIRequest(
+                    user_id=user_id,
+                    message=model_message,
+                    reply_language=reply_language,
+                    channel="text",
+                    request_id=request_id,
+                    metadata=base_metadata,
+                )
+                route = AIRoute(
+                    "backend_tool",
+                    None,
+                    deterministic.route,
+                    deterministic.reason,
+                    deterministic.language,
+                    deterministic.intent,
+                    0,
+                )
+                session.commit()
+                return PreparedWebTurn(
+                    request_id=request_id,
+                    user_id=user_id,
+                    thread_id=thread.id,
+                    ai_request=ai_request,
+                    route=route,
+                    reserved_micros=0,
+                    swico_tier=swico_tier,
+                    input_mode=input_mode,
+                    voice_turn_id=voice_turn_id,
+                    reply_language=str(reply_language or "en"),
+                    billing_exempt=billing_exempt,
+                    optimization=preliminary,
+                    precomputed_response=deterministic,
+                    continuity_decision=continuity,
+                    billing_credit_bucket=authoritative_bucket,
+                )
 
         # Existing local routes remain ahead of profile/context selection,
         # cache/provider work, and therefore cannot create a reservation. The
@@ -666,11 +817,13 @@ def prepare_web_turn(
                 has_attachments=bool(uploads),
                 previous_topic=previous_safe_metadata.get("topic"),
                 continuity=continuity,
+                session=session,
             )
             optimization = coordinator_decision.optimization
             context_turns = optimization.selected_context_turns
             profile_prompt = optimization.compact_profile_prompt
             attachment_context = optimization.attachment_prompt_context
+            memory_context = coordinator_decision.memory_context
         else:
             context_turns, formatted_context = select_context_turns(
                 all_context,
@@ -731,7 +884,7 @@ def prepare_web_turn(
 
         if enabled:
             route = replace(route, max_output_tokens=optimization.max_output_tokens)
-        provider_messages = build_provider_messages(ai_request, route, provider=route.provider)
+        provider_messages = _hard_budget_provider_messages(ai_request, route)
         serialized_prompt = serialize_provider_messages(provider_messages)
         if coordinator_decision is not None:
             coordinator_decision = coordinator.with_exact_prompt(
@@ -756,12 +909,26 @@ def prepare_web_turn(
                 has_attachments=bool(uploads),
                 intent=route.intent,
             )
-            selections = model_router.select_swico_candidates(
-                candidate_tier, model_message, user_tier="paid",
-                estimated_input_tokens=input_tokens,
-                max_output_tokens=route.max_output_tokens,
-                answer_class=optimization.answer_class,
-            )
+            if _env_bool("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", False):
+                selections = model_router.select_web_ladder_candidates(
+                    saved_tier=swico_tier,
+                    answer_class=optimization.answer_class,
+                    message=model_message,
+                    user_tier="paid",
+                    estimated_input_tokens=input_tokens,
+                    max_output_tokens=route.max_output_tokens,
+                )
+                candidate_tier = str(
+                    model_router.last_selection_metadata.get("initial_tier")
+                    or candidate_tier
+                )
+            else:
+                selections = model_router.select_swico_candidates(
+                    candidate_tier, model_message, user_tier="paid",
+                    estimated_input_tokens=input_tokens,
+                    max_output_tokens=route.max_output_tokens,
+                    answer_class=optimization.answer_class,
+                )
             selection_meta = model_router.last_selection_metadata
             route = replace(
                 route,
@@ -1041,6 +1208,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             ),
         })
         response.raw.update(optimization_metrics)
+        provenance = _response_provenance(prepared, response)
+        response.raw["provenance"] = provenance
         usage_source = "actual" if bool(response.raw.get("usage_actual")) else "estimated"
         optimization_metrics["usage_source"] = usage_source
         response.raw["usage_source"] = usage_source
@@ -1070,6 +1239,9 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
+                "cache_row_id": response.raw.get("cache_row_id"),
+                "cache_hit_kind": response.raw.get("cache_hit_kind"),
+                "provenance": provenance,
                 **optimization_metrics,
             }, sort_keys=True, separators=(",", ":")),
         )
@@ -1124,6 +1296,31 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.refresh(assistant)
 
         if assistant.status == "complete":
+            if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
+                try:
+                    enqueue_memory_embedding_backfill(
+                        session, user_id=prepared.user_id
+                    )
+                except Exception:
+                    session.rollback()
+                    logger.exception(
+                        "web_memory_embedding_backfill_enqueue_failed",
+                        extra={"request_id": prepared.request_id},
+                    )
+            if _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False):
+                try:
+                    enqueue_post_turn_distillation(
+                        session,
+                        user_id=prepared.user_id,
+                        user_message_id=user_message.id,
+                        thread_id=prepared.thread_id,
+                    )
+                except Exception:
+                    session.rollback()
+                    logger.exception(
+                        "web_post_turn_distillation_enqueue_failed",
+                        extra={"request_id": prepared.request_id},
+                    )
             try:
                 with SessionLocal() as memory_session:
                     memory_user = memory_session.get(WebChatMessage, user_message.id)

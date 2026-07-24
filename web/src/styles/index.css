@@ -123,7 +123,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .answer-actions { display: flex; min-height: 30px; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
 .answer-actions > button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
 .answer-actions > button:hover { background: var(--surface) }
+.answer-actions > button.selected { background: var(--surface); color: var(--text) }
 .answer-actions > .continue-response { display: inline-flex; width: auto; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line) }
+.provenance-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px }
+.provenance-chips span { padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--subtle); font-size: 11px }
+.message.search-highlight { animation: search-highlight 2.8s ease-out }
+@keyframes search-highlight { 0%, 35% { background: color-mix(in srgb, var(--accent) 12%, transparent); } 100% { background: transparent; } }
+.content-search-results { display: grid; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line) }
+.content-search-results section { display: grid; gap: 3px }
+.content-search-results button { display: grid; gap: 3px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer }
+.content-search-results button:hover { background: var(--hover) }
+.content-search-results button span { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical }
+.content-search-results button small { color: var(--subtle); font-size: 10px }
 .edit-message { display: inline-flex; align-items: center; gap: 5px; margin: 5px 8px 0 0; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer }
 .edit-message:hover { background: var(--surface) }
 .edit-message:disabled { opacity: .45; cursor: default }

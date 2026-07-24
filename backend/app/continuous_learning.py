@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+import math
 import os
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -12,11 +16,15 @@ import numpy as np
 import openai
 from dotenv import load_dotenv
 from sqlalchemy import text
+from sqlmodel import Session, select
 
 from .database import SessionLocal, engine
+from .models import WebChatMessage, WebMemoryFact
 from .model_runtime import patch_openai_client
 from .observability import bootstrap_observability
 from .openai_tracked import tracked_chat_completion
+from .openai_tracked import cached_text_embedding
+from .time_utils import utc_now
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -43,6 +51,13 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)) or default)
     except (TypeError, ValueError):
         return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _load_config_from_env() -> None:
@@ -103,6 +118,165 @@ class LearningEvent:
 
 
 memory_queue: "queue.Queue[LearningEvent]" = queue.Queue()
+
+
+_DURABLE_FACT_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\bmy name is\s+([^.!?\n]{1,120})", "identity"),
+    (r"\bi work at\s+([^.!?\n]{1,180})", "work"),
+    (r"\bi prefer\s+([^.!?\n]{1,240})", "preference"),
+    (r"\bmy timezone(?: is|:)?\s+([A-Za-z_+\-/ ]{2,80})", "timezone"),
+    (
+        r"\b(?:actually|correction|to correct that),?\s+(?:my|i)\s+([^.!?\n]{2,240})",
+        "correction",
+    ),
+)
+_DISTILL_SENSITIVE = re.compile(
+    r"\b(password|passcode|otp|credit card|cvv|bank account|aadhaar|"
+    r"private key|api key|access token)\b",
+    re.IGNORECASE,
+)
+
+
+def _fact_candidates(user_text: str) -> list[tuple[str, str]]:
+    compact = " ".join(str(user_text or "").split()).strip()
+    if not compact or _DISTILL_SENSITIVE.search(compact):
+        return []
+    results: list[tuple[str, str]] = []
+    for pattern, category in _DURABLE_FACT_PATTERNS:
+        match = re.search(pattern, compact, re.IGNORECASE)
+        if not match:
+            continue
+        value = match.group(1).strip(" ,;:-")[:600]
+        if value and (category, value) not in results:
+            results.append((category, value))
+        if len(results) >= 2:
+            break
+    return results
+
+
+def _stored_vector(raw: str | None) -> list[float]:
+    try:
+        value = json.loads(raw or "[]")
+        return [float(item) for item in value] if isinstance(value, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _vector_cosine(left: list[float], right: list[float], right_norm: float) -> float:
+    if not left or not right:
+        return 0.0
+    left_norm = math.sqrt(sum(item * item for item in left))
+    right_norm = right_norm or math.sqrt(sum(item * item for item in right))
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    return sum(
+        left[index] * right[index] for index in range(min(len(left), len(right)))
+    ) / (left_norm * right_norm)
+
+
+def distill_web_turn_facts(
+    session: Session, *, user_id: int, user_message_id: str, thread_id: str
+) -> dict[str, int]:
+    """Heuristic-only post-turn fact distillation. This function never calls an LLM."""
+    if not _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False):
+        return {"extracted": 0, "inserted": 0, "deduped": 0, "evicted": 0}
+    message = session.get(WebChatMessage, user_message_id)
+    if (
+        message is None
+        or message.user_id != user_id
+        or message.role != "user"
+        or message.superseded_at is not None
+    ):
+        return {"extracted": 0, "inserted": 0, "deduped": 0, "evicted": 0}
+    candidates = _fact_candidates(message.content)[:2]
+    existing = list(
+        session.exec(
+            select(WebMemoryFact).where(
+                WebMemoryFact.user_id == user_id,
+                WebMemoryFact.deleted_at.is_(None),
+            )
+        ).all()
+    )
+    inserted = deduped = 0
+    for category, value in candidates:
+        normalized_text = re.sub(r"\s+", " ", value).strip().casefold()
+        normalized_key = (
+            f"{category}:{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:32]}"
+        )
+        vector = cached_text_embedding(
+            value,
+            session=session,
+            user_id=user_id,
+            request_id=f"distill:{message.id}:{inserted + deduped}",
+            route="web_memory_distillation",
+        )
+        duplicate = next(
+            (
+                fact
+                for fact in existing
+                if fact.normalized_key == normalized_key
+                or (
+                    vector
+                    and _vector_cosine(
+                        vector,
+                        _stored_vector(fact.embedding_json),
+                        float(fact.embedding_norm or 0.0),
+                    )
+                    > 0.9
+                )
+            ),
+            None,
+        )
+        if duplicate is not None:
+            duplicate.accessed_at = utc_now()
+            duplicate.updated_at = utc_now()
+            session.add(duplicate)
+            deduped += 1
+            continue
+        norm = math.sqrt(sum(item * item for item in vector)) if vector else 0.0
+        fact = WebMemoryFact(
+            user_id=user_id,
+            normalized_key=normalized_key,
+            value_text=value,
+            category=category,
+            salience=0.8,
+            confidence=1.0,
+            source_thread_id=thread_id,
+            source_message_id=message.id,
+            embedding_json=json.dumps(vector, separators=(",", ":")) if vector else None,
+            embedding_norm=norm,
+            accessed_at=utc_now(),
+        )
+        session.add(fact)
+        session.flush()
+        existing.append(fact)
+        inserted += 1
+    session.commit()
+
+    active = list(
+        session.exec(
+            select(WebMemoryFact)
+            .where(
+                WebMemoryFact.user_id == user_id,
+                WebMemoryFact.deleted_at.is_(None),
+            )
+            .order_by(WebMemoryFact.accessed_at.asc(), WebMemoryFact.updated_at.asc())
+        ).all()
+    )
+    evicted = max(0, len(active) - 50)
+    now = utc_now()
+    for fact in active[:evicted]:
+        fact.deleted_at = now
+        fact.updated_at = now
+        session.add(fact)
+    if evicted:
+        session.commit()
+    return {
+        "extracted": len(candidates),
+        "inserted": inserted,
+        "deduped": deduped,
+        "evicted": evicted,
+    }
 
 
 def _touch_activity() -> None:

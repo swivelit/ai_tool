@@ -30,6 +30,9 @@ class AggregatorReflectionAgent:
         *,
         apply_changes: bool = False,
     ) -> AggregatorReflectionResult:
+        from ...global_qa_cache import backfill_global_qa_embeddings
+
+        backfill_global_qa_embeddings(session, batch_size=100)
         query = select(GlobalQACache).where(GlobalQACache.status == "approved")
         if row_ids:
             query = query.where(GlobalQACache.id.in_([int(row_id) for row_id in row_ids]))  # type: ignore[attr-defined]
