@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import app.main as main_module
 from app.database import SessionLocal, engine
 from app.global_qa_cache import (
+    backfill_global_qa_embeddings,
     build_global_knowledge_sync_payload,
     embed_question_for_global_cache,
     global_qa_schema_ready,
@@ -14,14 +15,19 @@ from app.global_qa_cache import (
     record_backend_openai_answer,
     record_global_qa_tombstone,
 )
-from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
+from app.job_queue import enqueue_global_qa_embedding_backfill
+from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, Job
 from app.ai.agents.aggregator_reflection_agent import AggregatorReflectionAgent
 from app.ai.agents.feedback_quality_agent import FeedbackQualityAgent
 from app.ai.agents.live_data_classifier_agent import LiveDataClassifierAgent
 from app.ai.agents.web_search_agent import WebSearchAgent
+from app.time_utils import utc_now
 from conftest import auth_headers, create_test_user
 from sqlalchemy import text
 from sqlmodel import SQLModel, select
+from app.web_api.chat_service import (
+    _cache_response, execute_web_turn, prepare_web_turn,
+)
 
 
 def _stub_openai_pipeline(monkeypatch, calls: list[str]):
@@ -115,7 +121,9 @@ def test_repeated_unknown_questions_promote_and_then_hit_global_cache(client, mo
     assert calls == ["What is a compiler?", "Explain compiler"]
 
     with SessionLocal() as session:
-        candidate = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
+        candidate = session.exec(select(GlobalQACache).where(
+            GlobalQACache.scope == "global"
+        )).one()
         assert candidate.status == "approved"
         assert candidate.distinct_user_count == 2
         assert candidate.observed_question_count == 2
@@ -124,7 +132,11 @@ def test_repeated_unknown_questions_promote_and_then_hit_global_cache(client, mo
     res3 = client.post(
         "/api/chat",
         headers=auth_headers("uid-3", "u3@example.com"),
-        json={"message": "Tell me about compilers", "reply_language": "en", "request_id": "r3"},
+        json={
+            "message": "Tell me about compilers",
+            "reply_language": "en",
+            "request_id": "r3",
+        },
     )
     assert res3.status_code == 200
     payload = res3.json()
@@ -132,6 +144,121 @@ def test_repeated_unknown_questions_promote_and_then_hit_global_cache(client, mo
     assert payload["pipeline"]["direct_answer_source"] == "global_qa_cache"
     assert payload["pipeline"]["cache_hit"] == "true"
     assert calls == ["What is a compiler?", "Explain compiler"]
+
+
+def test_web_semantic_hit_precedes_chat_provider_invocation(monkeypatch):
+    monkeypatch.setenv("GLOBAL_QA_SEMANTIC_ENABLED", "true")
+    monkeypatch.setenv("WEB_CACHE_BEFORE_BILLING_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.global_qa_cache.cached_text_embedding",
+        lambda *_args, **_kwargs: [1.0, 0.0],
+    )
+    user = create_test_user("semantic-web", "semantic-web@example.com")
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question="What is a FIFO queue?",
+            normalized_question="what is a fifo queue",
+            answer="FIFO serves the oldest queued item first.",
+            answer_language="en", scope="global", status="approved",
+            hit_count=2, distinct_user_count=2, observed_question_count=2,
+            source_question_hashes_json="[]", answer_hash="semantic-web",
+            embedding_json="[1,0]", embedding_kind="openai:test",
+            embedding_norm=1.0, real_embedding_json="[1,0]",
+            real_embedding_norm=1.0, real_embedding_kind="openai:test",
+            confidence=0.95, safety_label="general",
+            expires_at=utc_now() + timedelta(days=1),
+        )
+        session.add(row); session.commit(); row_id = int(row.id)
+
+    class Store:
+        def search(self, *_args, **_kwargs):
+            return [{"source_id": str(row_id), "score_semantic": 1.0}]
+
+    monkeypatch.setattr("app.global_qa_cache.get_vector_store", lambda: Store())
+    with SessionLocal() as session:
+        semantic = lookup_approved_global_cache(
+            session, "Explain first-in-first-out ordering", "en",
+            user_id=int(user.id),
+        )
+    assert semantic and semantic["cache_hit_kind"] == "semantic"
+    cached_response = _cache_response(
+        int(user.id), "Explain first-in-first-out ordering", "en"
+    )
+    assert cached_response is not None
+    assert cached_response.raw["cache_hit_kind"] == "semantic"
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *_args, **_kwargs: cached_response,
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("semantic hit must precede reservation")
+        ),
+    )
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain first-in-first-out ordering",
+        request_id="semantic-web-request", thread_id=None, reply_language="en",
+    )
+
+    class ProviderSpy:
+        def complete(self, *_args, **_kwargs):
+            raise AssertionError("semantic cache hit must skip chat generation")
+
+        stream_complete = complete
+
+    completed = execute_web_turn(
+        prepared, providers={"openai": ProviderSpy(), "sarvam": ProviderSpy()}
+    )
+    assert completed.response.provider == "cache"
+    assert completed.response.raw["cache_hit_kind"] == "semantic"
+
+
+def test_global_embedding_backfill_job_is_bounded_and_deduplicated(monkeypatch):
+    monkeypatch.setenv("GLOBAL_QA_SEMANTIC_ENABLED", "true")
+    with SessionLocal() as session:
+        first = enqueue_global_qa_embedding_backfill(session, batch_size=2)
+        second = enqueue_global_qa_embedding_backfill(session, batch_size=50)
+        active = session.exec(select(Job).where(
+            Job.job_type == "global_qa_embedding_backfill"
+        )).all()
+    assert first.id == second.id
+    assert len(active) == 1
+
+    upserts = []
+    monkeypatch.setattr(
+        "app.global_qa_cache.embedding_bundle_for_global_cache",
+        lambda _text: {
+            "embedding": [1.0, 0.0], "embedding_norm": 1.0,
+            "embedding_kind": "openai:test",
+            "token_hash_embedding": [1.0, 0.0],
+            "token_hash_embedding_norm": 1.0,
+            "real_embedding": [1.0, 0.0],
+            "real_embedding_norm": 1.0,
+            "real_embedding_kind": "openai:test",
+        },
+    )
+    monkeypatch.setattr(
+        "app.global_qa_cache._upsert_vector_for_row",
+        lambda _session, row: upserts.append(row.id),
+    )
+    with SessionLocal() as session:
+        for index in range(3):
+            session.add(GlobalQACache(
+                canonical_question=f"Bounded {index}",
+                normalized_question=f"bounded {index}",
+                answer="A durable approved answer.",
+                answer_language="en", scope="global", status="approved",
+                hit_count=2, distinct_user_count=2,
+                observed_question_count=2, source_question_hashes_json="[]",
+                answer_hash=f"bounded-{index}", confidence=0.9,
+                safety_label="general",
+            ))
+        session.commit()
+        result = backfill_global_qa_embeddings(session, batch_size=2)
+    assert result["scanned"] == 2
+    assert result["has_more"] is True
+    assert len(upserts) == 2
 
 
 def test_live_current_question_is_not_cached_or_served(monkeypatch):

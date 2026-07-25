@@ -443,7 +443,20 @@ class OpenAIModelRouter:
 
             initial = default_swico_tier()
         else:
-            initial = normalized_saved
+            configured_minimum = str(
+                os.getenv("WEB_DETAILED_MIN_TIER", "standard")
+            ).strip().lower()
+            if configured_minimum not in {"lite", "standard", "pro"}:
+                configured_minimum = "standard"
+            tier_order = ["lite", "standard", "pro"]
+            initial = tier_order[
+                max(
+                    tier_order.index(normalized_saved),
+                    tier_order.index(configured_minimum),
+                )
+            ]
+            if initial == "pro" and not _env_bool("SWICO_PRO_ENABLED", False):
+                initial = "standard"
         tier_order = ["lite", "standard", "pro"]
         tiers = [initial]
         current_index = tier_order.index(initial)
@@ -461,9 +474,11 @@ class OpenAIModelRouter:
                 max_output_tokens=max_output_tokens,
                 answer_class=answer,
             )
-            for selection in selections:
-                if any(item.model == selection.model for item in combined):
-                    continue
+            # The confidence ladder gets exactly one candidate per tier. Model
+            # health and zero-usage errors can still advance to the second
+            # candidate, while a degraded answer can escalate at most once.
+            selection = selections[0]
+            if not any(item.model == selection.model for item in combined):
                 combined.append(
                     ModelSelection(
                         **{
@@ -598,10 +613,11 @@ class OpenAIModelRouter:
 
     def estimate_cost(
         self, model: str, input_tokens: int, output_tokens: int,
-        cached_input_tokens: int = 0,
+        cached_input_tokens: int = 0, cache_write_tokens: int = 0,
     ) -> float:
         return estimate_model_cost(
-            model, input_tokens, output_tokens, cached_input_tokens,
+            model, input_tokens, output_tokens,
+            cached_input_tokens, cache_write_tokens,
         )
 
     def _cheap_ladder(self) -> list[str]:

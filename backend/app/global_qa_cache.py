@@ -1224,6 +1224,8 @@ def _semantic_lookup_after_exact_miss(
     normalized = normalize_question(question)
     scopes = [(_USER_SCOPE, user_hash)] if user_hash else []
     scopes.append((_GLOBAL_SCOPE, None))
+    # Exhaust owner-scoped and global database exact matches before paying for
+    # a semantic query embedding or touching the vector store.
     for scope, required_hash in scopes:
         statement = (
             select(GlobalQACache)
@@ -1245,6 +1247,7 @@ def _semantic_lookup_after_exact_miss(
         ):
             _touch_cache_hit(session, exact, now)
             return _row_to_hit(exact, 1.0)
+    for scope, _required_hash in scopes:
         semantic = _semantic_vector_lookup(
             session,
             question,
@@ -1999,35 +2002,61 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
 
 
 def backfill_global_qa_embeddings(
-    session: Session, *, batch_size: int = 100
+    session: Session, *, batch_size: int = 100, after_id: int = 0
 ) -> dict[str, int]:
-    """Maintenance batch for rows written before semantic embeddings were enabled."""
+    """Repair one bounded page of approved, cross-user-safe global QA vectors."""
     if not _semantic_enabled():
-        return {"scanned": 0, "embedded": 0}
+        return {
+            "scanned": 0, "embedded": 0, "vector_upserts": 0,
+            "next_after_id": max(0, int(after_id)), "has_more": False,
+        }
     safe_batch = min(100, max(1, int(batch_size or 100)))
     rows = list(
         session.exec(
             select(GlobalQACache)
-            .where(GlobalQACache.real_embedding_json == None)  # noqa: E711
+            .where(GlobalQACache.id > max(0, int(after_id)))
+            .where(GlobalQACache.status == "approved")
+            .where(or_(
+                GlobalQACache.scope == _GLOBAL_SCOPE,
+                GlobalQACache.scope == None,  # noqa: E711
+            ))
             .order_by(GlobalQACache.id.asc())
             .limit(safe_batch)
         ).all()
     )
-    embedded = 0
+    embedded = vector_upserts = 0
     for row in rows:
-        bundle = embedding_bundle_for_global_cache(
-            row.normalized_question or row.canonical_question
-        )
-        if not bundle.get("real_embedding"):
+        if not _row_lookup_safe(
+            row, row.canonical_question, None, utc_now(), user_hash=None
+        ):
             continue
-        _apply_embedding_bundle(row, bundle)
-        row.updated_at = utc_now()
-        session.add(row)
-        session.commit()
-        session.refresh(row)
+        if _load_row_real_embedding(row) is None:
+            bundle = embedding_bundle_for_global_cache(
+                row.normalized_question or row.canonical_question
+            )
+            if not bundle.get("real_embedding"):
+                # Leave the cursor on this page so the queue retry policy can
+                # retry a transient embedding outage instead of silently
+                # declaring the backfill complete.
+                raise RuntimeError(
+                    f"Embedding unavailable for approved global QA row {row.id}"
+                )
+            _apply_embedding_bundle(row, bundle)
+            row.updated_at = utc_now()
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            embedded += 1
         _upsert_vector_for_row(session, row)
-        embedded += 1
-    return {"scanned": len(rows), "embedded": embedded}
+        vector_upserts += 1
+    next_after_id = int(rows[-1].id) if rows else max(0, int(after_id))
+    return {
+        "scanned": len(rows),
+        "embedded": embedded,
+        "vector_upserts": vector_upserts,
+        "next_after_id": next_after_id,
+        "has_more": len(rows) == safe_batch,
+    }
 
 
 def _parse_since(value: Any) -> Optional[datetime]:
@@ -2484,7 +2513,10 @@ def _topic_seed_prefetch_entries(
     return entries
 
 
-def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: str = "deleted") -> GlobalQATombstone:
+def record_global_qa_tombstone(
+    session: Session, global_cache_id: int, reason: str = "deleted",
+    *, commit: bool = True,
+) -> GlobalQATombstone:
     _ensure_schema_compat(session)
     existing = session.get(GlobalQACache, int(global_cache_id))
     if existing is not None:
@@ -2495,8 +2527,9 @@ def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: s
         reason=str(reason or "deleted"),
     )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
     return row
 
 

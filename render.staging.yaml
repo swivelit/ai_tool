@@ -62,7 +62,7 @@ projects:
               - key: WEB_CROSS_THREAD_MEMORY_ENABLED
                 value: "false"
               - key: WEB_MEMORY_MAX_ITEMS
-                value: "4"
+                value: "2"
               - key: WEB_MEMORY_MAX_CHARS
                 value: "1200"
               - key: WEB_MEMORY_LLM_SUMMARIZATION_ENABLED

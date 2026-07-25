@@ -72,7 +72,7 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
 }
 
 export async function streamChat(
-  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string },
+  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string },
   onEvent: (event: SSEEvent) => void, signal: AbortSignal, onAccepted?: () => void,
 ) {
   const response = await authorizedFetch(user, '/api/web/chat/stream', { method: 'POST', body: JSON.stringify(payload), signal })

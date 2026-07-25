@@ -7,7 +7,7 @@ from sqlmodel import select
 from app.ai.types import AIProviderResponse
 from app.database import SessionLocal
 from app.models import (
-    UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
+    GlobalQACache, UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
     WebMemoryFact, WebUsagePreferences,
 )
 from app.web_api.chat_service import EditRequestError, execute_web_turn, prepare_web_turn
@@ -206,7 +206,7 @@ def test_edit_rejects_cross_user_target(monkeypatch):
 
 def test_memory_retrieval_is_bounded_isolated_deleted_and_disabled(monkeypatch):
     monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "true")
-    monkeypatch.setenv("WEB_MEMORY_MAX_ITEMS", "4")
+    monkeypatch.setenv("WEB_MEMORY_MAX_ITEMS", "2")
     monkeypatch.setenv("WEB_MEMORY_MAX_CHARS", "1200")
     user = create_test_user("memory-user", "memory-user@example.com")
     other = create_test_user("memory-other", "memory-other@example.com")
@@ -238,7 +238,7 @@ def test_memory_retrieval_is_bounded_isolated_deleted_and_disabled(monkeypatch):
         assert "software developer roadmap" in result.prompt_context
         assert "secret architecture" not in result.prompt_context
         assert "deleted preference" not in result.prompt_context
-        assert len(result.records) <= 4 and len(result.prompt_context) <= 1200
+        assert len(result.records) <= 2 and len(result.prompt_context) <= 1200
         generic_memory = retrieve_memory(
             session, user_id=int(user.id), message="What did I decide yesterday?",
             current_thread_id=None,
@@ -258,6 +258,79 @@ def test_memory_retrieval_is_bounded_isolated_deleted_and_disabled(monkeypatch):
             message="Continue the roadmap we discussed", current_thread_id=None,
         )
         assert disabled.prompt_context == ""
+
+
+def test_ranked_memory_honors_top_one_top_two_threshold_and_superseded(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("WEB_MEMORY_FACT_RANKING_ENABLED", "true")
+    monkeypatch.setenv("WEB_MEMORY_FACT_MIN_SIMILARITY", "0.6")
+    monkeypatch.setattr(
+        "app.web_api.web_memory.cached_text_embedding",
+        lambda *_args, **_kwargs: [1.0, 0.0],
+    )
+    user = create_test_user("ranked-memory", "ranked-memory@example.com")
+    other = create_test_user("ranked-memory-other", "ranked-memory-other@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(
+            user_id=int(user.id), memory_enabled=True
+        ))
+        session.add(WebUsagePreferences(
+            user_id=int(other.id), memory_enabled=True
+        ))
+        thread = WebChatThread(user_id=int(user.id), title="Sources")
+        session.add(thread); session.flush()
+        superseded = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Old fact", request_id="ranked-old", status="complete",
+            superseded_at=thread.created_at,
+        )
+        session.add(superseded); session.flush()
+        session.add(WebMemoryFact(
+            user_id=int(user.id), normalized_key="ranked:first",
+            value_text="First relevant fact", category="preference",
+            embedding_json="[1,0]", embedding_norm=1.0,
+        ))
+        session.add(WebMemoryFact(
+            user_id=int(user.id), normalized_key="ranked:second",
+            value_text="Second relevant fact", category="decision",
+            embedding_json="[0.8,0.2]",
+            embedding_norm=(0.8 ** 2 + 0.2 ** 2) ** 0.5,
+        ))
+        session.add(WebMemoryFact(
+            user_id=int(user.id), normalized_key="ranked:below",
+            value_text="Below threshold", category="decision",
+            embedding_json="[0,1]", embedding_norm=1.0,
+        ))
+        session.add(WebMemoryFact(
+            user_id=int(user.id), normalized_key="ranked:superseded",
+            value_text="Superseded source", category="decision",
+            embedding_json="[1,0]", embedding_norm=1.0,
+            source_message_id=superseded.id,
+        ))
+        session.add(WebMemoryFact(
+            user_id=int(other.id), normalized_key="ranked:other",
+            value_text="Other user secret", category="decision",
+            embedding_json="[1,0]", embedding_norm=1.0,
+        ))
+        session.commit()
+
+        monkeypatch.setenv("WEB_MEMORY_MAX_ITEMS", "1")
+        top_one = retrieve_memory(
+            session, user_id=int(user.id), message="Relevant",
+            current_thread_id=None,
+        )
+        monkeypatch.setenv("WEB_MEMORY_MAX_ITEMS", "2")
+        top_two = retrieve_memory(
+            session, user_id=int(user.id), message="Relevant",
+            current_thread_id=None,
+        )
+    assert len(top_one.records) == 1
+    assert len(top_two.records) == 2
+    assert "Below threshold" not in top_two.prompt_context
+    assert "Superseded source" not in top_two.prompt_context
+    assert "Other user secret" not in top_two.prompt_context
 
 
 def test_disabled_memory_writer_creates_no_records(monkeypatch):
@@ -284,6 +357,70 @@ def test_disabled_memory_writer_creates_no_records(monkeypatch):
         session.commit()
         assert session.exec(select(WebMemoryFact)).all() == []
         assert session.exec(select(WebConversationSummary)).all() == []
+
+
+def test_completed_answer_regeneration_is_revisioned_billed_and_idempotent(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_MESSAGE_EDIT_ENABLED", "true")
+    monkeypatch.setenv("GLOBAL_QA_CONFIDENCE_FLOOR", "0.35")
+    user = create_test_user("regen-user", "regen-user@example.com")
+    _fund(int(user.id))
+    first = prepare_web_turn(
+        user_id=int(user.id), message="Give me a roadmap",
+        request_id="regen-request-1", thread_id=None, reply_language="en",
+    )
+    first_done = execute_web_turn(
+        first, on_delta=lambda _value: None, providers={"openai": Provider()}
+    )
+    with SessionLocal() as session:
+        cache = GlobalQACache(
+            canonical_question="Give me a roadmap",
+            normalized_question="give me a roadmap",
+            answer="Old cached roadmap", answer_language="en",
+            scope="global", status="approved", hit_count=2,
+            distinct_user_count=2, observed_question_count=2,
+            source_question_hashes_json="[]", answer_hash="regen-cache",
+            confidence=0.5, safety_label="general",
+        )
+        session.add(cache); session.flush()
+        original = session.get(WebChatMessage, first_done.message.id)
+        metadata = json.loads(original.metadata_json)
+        metadata["cache_row_id"] = cache.id
+        original.metadata_json = json.dumps(metadata)
+        session.add(original); session.commit()
+        original_id = original.id
+
+    regenerated = prepare_web_turn(
+        user_id=int(user.id), message="Give me a roadmap",
+        request_id="regen-request-2", thread_id=first_done.thread_id,
+        reply_language="en", regenerate_message_id=original_id,
+    )
+    regenerated_done = execute_web_turn(
+        regenerated, on_delta=lambda _value: None,
+        providers={"openai": Provider()},
+    )
+    replay = prepare_web_turn(
+        user_id=int(user.id), message="Give me a roadmap",
+        request_id="regen-request-2", thread_id=first_done.thread_id,
+        reply_language="en", regenerate_message_id=original_id,
+    )
+    assert replay.existing_response is not None
+    with SessionLocal() as session:
+        old = session.get(WebChatMessage, original_id)
+        new = session.get(WebChatMessage, regenerated_done.message.id)
+        cache = session.exec(select(GlobalQACache).where(
+            GlobalQACache.answer_hash == "regen-cache"
+        )).one()
+        charges = session.exec(select(UsageCharge).where(
+            UsageCharge.user_id == int(user.id)
+        )).all()
+    assert old is not None and old.superseded_at is not None
+    assert new is not None and new.replaces_message_id == original_id
+    assert new.revision_number == 2
+    assert json.loads(new.metadata_json)["regenerated_cache_row_id"] == cache.id
+    assert cache.confidence == 0.35 and cache.status == "rejected"
+    assert len(charges) == 2
 
 
 def test_memory_settings_are_owner_scoped_and_support_delete_and_clear(client, monkeypatch):

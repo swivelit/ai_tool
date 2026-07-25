@@ -28,6 +28,7 @@ class DBJobQueue:
         self._stop = threading.Event()
         self.register("web_post_turn_distillation", _handle_web_post_turn_distillation)
         self.register("web_memory_embedding_backfill", _handle_web_memory_embedding_backfill)
+        self.register("global_qa_embedding_backfill", _handle_global_qa_embedding_backfill)
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[str(job_type)] = handler
@@ -146,6 +147,15 @@ class DBJobQueue:
                 session.add(job)
                 session.commit()
                 logger.info("job completed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
+                if (
+                    job.job_type == "global_qa_embedding_backfill"
+                    and bool((result or {}).get("has_more"))
+                ):
+                    enqueue_global_qa_embedding_backfill(
+                        session,
+                        batch_size=int((result or {}).get("batch_size") or 50),
+                        after_id=int((result or {}).get("next_after_id") or 0),
+                    )
             except Exception as exc:
                 session.rollback()
                 job = session.get(Job, job.id)
@@ -175,6 +185,7 @@ def _handle_web_post_turn_distillation(
         session,
         user_id=int(payload["user_id"]),
         user_message_id=str(payload["user_message_id"]),
+        assistant_message_id=str(payload["assistant_message_id"]),
         thread_id=str(payload["thread_id"]),
     )
 
@@ -189,6 +200,20 @@ def _handle_web_memory_embedding_backfill(
         user_id=int(payload["user_id"]),
         batch_size=int(payload.get("batch_size") or 20),
     )
+
+
+def _handle_global_qa_embedding_backfill(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .global_qa_cache import backfill_global_qa_embeddings
+
+    batch_size = max(1, min(100, int(payload.get("batch_size") or 50)))
+    result = backfill_global_qa_embeddings(
+        session,
+        batch_size=batch_size,
+        after_id=max(0, int(payload.get("after_id") or 0)),
+    )
+    return {**result, "batch_size": batch_size}
 
 
 def enqueue_memory_embedding_backfill(
@@ -228,9 +253,25 @@ def enqueue_post_turn_distillation(
     *,
     user_id: int,
     user_message_id: str,
+    assistant_message_id: str,
     thread_id: str,
 ) -> Job:
     """Persist a distillation job without coupling chat_service to app.main."""
+    # Completion callbacks and HTTP retries may race.  Reuse any existing job
+    # for the completed assistant message, including a completed one.
+    recent = session.exec(
+        select(Job).where(
+            Job.user_id == user_id,
+            Job.job_type == "web_post_turn_distillation",
+        ).order_by(Job.created_at.desc()).limit(200)
+    ).all()
+    for existing in recent:
+        try:
+            existing_payload = json.loads(existing.payload_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        if str(existing_payload.get("assistant_message_id") or "") == assistant_message_id:
+            return existing
     job = Job(
         user_id=user_id,
         job_type="web_post_turn_distillation",
@@ -239,7 +280,43 @@ def enqueue_post_turn_distillation(
             {
                 "user_id": user_id,
                 "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
                 "thread_id": thread_id,
+            },
+            ensure_ascii=False,
+        ),
+        attempts=0,
+        max_attempts=3,
+        run_at=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def enqueue_global_qa_embedding_backfill(
+    session: Session, *, batch_size: int = 50, after_id: int = 0
+) -> Job:
+    """Ensure that at most one bounded global-QA backfill job is active."""
+    existing = session.exec(
+        select(Job).where(
+            Job.job_type == "global_qa_embedding_backfill",
+            Job.status.in_(["queued", "running", "retrying"]),
+        ).order_by(Job.created_at.asc())
+    ).first()
+    if existing is not None:
+        return existing
+    job = Job(
+        user_id=None,
+        job_type="global_qa_embedding_backfill",
+        status="queued",
+        payload_json=json.dumps(
+            {
+                "batch_size": max(1, min(100, int(batch_size))),
+                "after_id": max(0, int(after_id)),
             },
             ensure_ascii=False,
         ),

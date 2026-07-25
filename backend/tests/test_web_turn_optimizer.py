@@ -10,7 +10,7 @@ from app.ai.prompts import (
     UNCLEAR_MEDICAL_TERM_INSTRUCTION, build_provider_messages,
     build_system_instructions, serialize_provider_messages,
 )
-from app.ai.providers.openai_provider import OpenAIProvider
+from app.ai.providers.openai_provider import OpenAIProvider, _local_degradation_reason
 from app.ai.providers.base import GenerationCancelled
 from app.ai.types import AIProviderResponse, AIRequest, AIRoute
 from app.billing.pricing import estimate_tokens
@@ -22,8 +22,10 @@ from app.openai_model_router import OpenAIModelRouter
 from app.profile_context import build_profile_prompt_context
 from app.time_utils import utc_now
 from app.web_api.attachment_context import select_attachment_context
-from app.web_api.chat_service import execute_web_turn, prepare_web_turn
-from app.web_api.turn_optimizer import classify_answer_class, optimize_web_turn
+from app.web_api.chat_service import _context, execute_web_turn, prepare_web_turn
+from app.web_api.turn_optimizer import (
+    classify_answer_class, optimize_web_turn, select_context_turns,
+)
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, utc_iso
 from tests.conftest import auth_headers, create_test_user
 from tests.test_web_chat_api import _fund
@@ -157,6 +159,30 @@ def test_adaptive_context_obeys_turn_and_character_bounds(monkeypatch):
     safe = prepared.coordinator_decision.sanitized_metadata
     assert safe["same_thread_context_turns_sent"] <= 2
     assert safe["same_thread_context_chars_sent"] <= 900
+
+
+def test_relevant_history_can_select_a_turn_older_than_latest_six(monkeypatch):
+    monkeypatch.setenv("WEB_CONTEXT_RELEVANCE_RANKING_ENABLED", "true")
+    monkeypatch.setenv("WEB_CONTEXT_MAX_TURNS", "3")
+    monkeypatch.setenv("WEB_CONTEXT_MAX_CHARS", "5000")
+    user = create_test_user("old-history", "old-history@example.com")
+    turns = [
+        ("Rare quokka database migration", "Use a quokka-safe migration."),
+        *[(f"Recent unrelated topic {index}", f"Unrelated answer {index}")
+          for index in range(9)],
+    ]
+    thread_id = _seed_thread(int(user.id), turns)
+    with SessionLocal() as session:
+        candidates, _metadata = _context(
+            session, thread_id, int(user.id), turn_limit=80,
+            current_message="Tell me more about the quokka migration",
+        )
+        selected, _formatted = select_context_turns(
+            candidates, contextual=True,
+            current_message="Tell me more about the quokka migration",
+            session=session,
+        )
+    assert any("Rare quokka" in turn["user"] for turn in selected)
 
 
 def test_adaptive_history_excludes_superseded_and_mismatched_pairs(monkeypatch):
@@ -535,9 +561,12 @@ class _Stream:
         return None
 
 
-def _chunk(text: str = "", usage=None):
+def _chunk(text: str = "", usage=None, finish_reason=None):
     return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))] if text else [],
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=text),
+            finish_reason=finish_reason,
+        )] if text or finish_reason else [],
         usage=usage,
     )
 
@@ -593,6 +622,153 @@ def test_normal_success_one_attempt_and_zero_usage_failure_can_fail_over():
     assert response.raw["provider_attempts"] == 2
     assert response.raw["fallback_attempted"] is True
     assert len(calls) == 2
+
+
+def test_confidence_ladder_uses_local_truncation_and_combines_usage(monkeypatch):
+    monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.is_model_temporarily_unavailable",
+        lambda *_args: False,
+    )
+    calls = []
+    first_usage = SimpleNamespace(
+        prompt_tokens=10, completion_tokens=3,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=2, cache_write_tokens=1,
+        ),
+    )
+    second_usage = SimpleNamespace(
+        prompt_tokens=20, completion_tokens=5,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=4, cache_write_tokens=2,
+        ),
+    )
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _Stream([
+                _chunk("cut off", finish_reason="length"),
+                _chunk(usage=first_usage),
+            ])
+        return _Stream([
+            _chunk("A complete normal answer.", finish_reason="stop"),
+            _chunk(usage=second_usage),
+        ])
+
+    request = _stream_request()
+    request.metadata["answer_class"] = "normal"
+    provider = OpenAIProvider(SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    ))
+    response = provider.stream_complete(
+        request, _attempt_route(), lambda _value: None
+    )
+    assert len(calls) == 2
+    assert response.text == "A complete normal answer."
+    assert response.input_tokens == 30 and response.output_tokens == 8
+    assert response.raw["cached_input_tokens"] == 6
+    assert response.raw["cache_write_tokens"] == 3
+    assert response.raw["provider_attempts"] == 2
+    assert response.raw["provider_calls_with_usage"] == 2
+
+
+def test_confidence_ladder_does_not_escalate_complete_simple_answer(monkeypatch):
+    monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
+    calls = []
+    provider = OpenAIProvider(SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **kwargs: (
+                calls.append(kwargs) or _Stream([
+                    _chunk("42", finish_reason="stop")
+                ])
+            )
+        ))
+    ))
+    request = _stream_request()
+    request.metadata["answer_class"] = "simple"
+    response = provider.stream_complete(
+        request, _attempt_route(), lambda _value: None
+    )
+    assert response.text == "42"
+    assert len(calls) == 1
+    assert response.raw["provider_attempts"] == 1
+
+
+def test_incomplete_long_form_escalates_once_and_stops_at_two(monkeypatch):
+    monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return _Stream([
+            _chunk(
+                "Still too short for the requested long form.",
+                finish_reason="stop",
+            )
+        ])
+
+    request = _stream_request()
+    request.metadata["answer_class"] = "long_form"
+    provider = OpenAIProvider(SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    ))
+    response = provider.stream_complete(
+        request, _attempt_route(), lambda _value: None
+    )
+    assert len(calls) == 2
+    assert response.raw["provider_attempts"] == 2
+    assert response.raw["degradation_reason"] == "implausibly_short_long_form"
+
+
+def test_incomplete_structured_output_is_a_local_degradation_signal():
+    assert _local_degradation_reason(
+        '{"answer":',
+        answer_class="normal",
+        finish_reason="stop",
+        completion_status="complete",
+        provider_refusal=False,
+        request_message="Return valid JSON.",
+    ) == "incomplete_structured_response"
+
+
+def test_prompt_cache_key_is_stable_and_only_sent_when_enabled(monkeypatch):
+    monkeypatch.setenv("WEB_PROMPT_CACHE_ENABLED", "true")
+    monkeypatch.setenv("WEB_PROMPT_CACHE_VERSION", "billing-tested-v1")
+    calls = []
+    provider = OpenAIProvider(SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **kwargs: (
+                calls.append(kwargs) or _Stream([
+                    _chunk("ok", finish_reason="stop")
+                ])
+            )
+        ))
+    ))
+    provider.stream_complete(_stream_request(), _attempt_route(), lambda _value: None)
+    assert calls[0]["prompt_cache_key"].startswith("swico-web-")
+    assert "question" not in calls[0]["prompt_cache_key"]
+
+
+def test_current_message_only_prompt_overflow_returns_422_before_reservation(
+    client, monkeypatch,
+):
+    monkeypatch.setenv("WEB_MAX_PROMPT_TOKENS", "80")
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation",
+        lambda *_args, **_kwargs: pytest.fail("overflow must not reserve"),
+    )
+    create_test_user("prompt-overflow", "prompt-overflow@example.com")
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("prompt-overflow", "prompt-overflow@example.com"),
+        json={
+            "request_id": "85000000-0000-4000-8000-000000000001",
+            "message": "Explain " + ("very-long-input " * 120),
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "prompt_too_large"
 
 
 def test_provider_budget_guard_uses_exact_full_prompt(monkeypatch):

@@ -108,6 +108,51 @@ it('keeps the authoritative SSE thread for follow-ups, supports selection, and c
   expect(vi.mocked(streamChat).mock.calls[3][1]).not.toHaveProperty('thread_id')
 })
 
+it('regenerates a completed answer with the existing backend contract', async () => {
+  const thread = {
+    id:'regen-thread', title:'Regeneration', archived_at:null,
+    created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+  }
+  const original = {
+    id:'regen-user-message', thread_id:thread.id, role:'user' as const,
+    content:'Explain indexes', request_id:'regen-original-request',
+    tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0,
+    usage_source:null, charge_micros:0, status:'complete',
+    created_at:new Date().toISOString(), input_mode:'text' as const,
+    voice_turn_id:null, reply_language:'en' as const,
+  }
+  const answer = {
+    ...original, id:'regen-assistant-message', role:'assistant' as const,
+    content:'Indexes speed up selected reads.', tier:'lite' as const,
+    tier_label:'Swico Lite', input_tokens:10, output_tokens:8,
+    usage_source:'actual' as const, charge_micros:10,
+  }
+  vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return {
+      ...bootstrap,
+      features:{ ...bootstrap.features, web_message_edit:true },
+    } as never
+    if (path.startsWith('/api/web/threads?')) return {
+      items:[thread], has_more:false,
+    } as never
+    if (path.includes('/regen-thread/messages')) return {
+      items:[original, answer],
+    } as never
+    return {} as never
+  })
+  vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Regeneration' }))
+  await userEvent.click(await screen.findByRole('button', { name:'Regenerate answer' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({
+    message:'Explain indexes',
+    thread_id:'regen-thread',
+    regenerate_message_id:'regen-assistant-message',
+    input_mode:'text',
+  })
+})
+
 it('isolates late stream events from a different selected thread', async () => {
   const threads = [
     { id:'thread-a', title:'Thread A', archived_at:null, created_at:new Date().toISOString(), updated_at:new Date().toISOString() },

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
@@ -12,7 +14,9 @@ from ...openai_tracked import (
     tracked_openai_generation,
 )
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
-from ..prompts import build_provider_messages, serialize_provider_messages
+from ..prompts import (
+    build_provider_messages, serialize_provider_messages, stable_prompt_cache_key,
+)
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
@@ -61,6 +65,7 @@ class OpenAIProvider(AIProvider):
             max_output_tokens=route.max_output_tokens,
             max_provider_attempts=min(2, int(request.metadata.get("max_provider_attempts") or 2)),
             estimated_input_tokens=int(request.metadata.get("estimated_prompt_tokens") or 0) or None,
+            prompt_cache_key=stable_prompt_cache_key(request, route),
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
@@ -123,7 +128,12 @@ class OpenAIProvider(AIProvider):
     def stream_complete(
         self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
     ) -> AIProviderResponse:
-        """Stream one tier-contained candidate ladder and retain billing usage."""
+        """Stream normally, buffering only the enabled degradation ladder.
+
+        Buffering is required only when an attempt may be discarded before the
+        single permitted escalation. Non-ladder requests continue to emit every
+        provider delta immediately.
+        """
         client = self._client_or_create()
         messages = build_provider_messages(request, route, provider="openai")
         canonical_prompt = str(request.metadata.get("serialized_provider_prompt") or serialize_provider_messages(messages))
@@ -136,8 +146,11 @@ class OpenAIProvider(AIProvider):
         provider_attempts = 0
         accumulated_input_tokens = 0
         accumulated_output_tokens = 0
+        accumulated_cached_tokens = 0
+        accumulated_cache_write_tokens = 0
         accumulated_cost = 0.0
         accumulated_usage_calls = 0
+        accumulated_usage_actual = False
         confidence_ladder = os.getenv(
             "WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "false"
         ).strip().lower() in {"1", "true", "yes", "on"}
@@ -158,7 +171,7 @@ class OpenAIProvider(AIProvider):
             finish_reason = "unknown"
             completion_status = "unknown"
             incomplete_reason = ""
-            reported_confidence: float | None = None
+            provider_refusal = False
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
@@ -208,11 +221,17 @@ class OpenAIProvider(AIProvider):
                 if endpoint == "responses":
                     if not hasattr(client, "responses"):
                         raise RuntimeError("Responses API is unavailable in the configured client")
+                    response_kwargs: dict[str, Any] = {
+                        "model": model,
+                        "input": messages,
+                        "max_output_tokens": route.max_output_tokens,
+                        "stream": True,
+                    }
+                    prompt_cache_key = stable_prompt_cache_key(request, route)
+                    if prompt_cache_key:
+                        response_kwargs["prompt_cache_key"] = prompt_cache_key
                     stream = client.responses.create(
-                        model=model,
-                        input=messages,
-                        max_output_tokens=route.max_output_tokens,
-                        stream=True,
+                        **response_kwargs,
                     )
                     if cancellation:
                         cancellation.bind_stream(stream)
@@ -220,18 +239,14 @@ class OpenAIProvider(AIProvider):
                         check_cancelled()
                         event_type = str(getattr(event, "type", "") or "")
                         if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                            if event_type == "response.refusal.delta":
+                                provider_refusal = True
                             delta = str(getattr(event, "delta", "") or "")
                             if delta:
                                 text_parts.append(delta)
                                 if not confidence_ladder:
                                     on_delta(delta)
                         response = getattr(event, "response", None)
-                        confidence_value = getattr(response, "confidence", None)
-                        if confidence_value is not None:
-                            try:
-                                reported_confidence = float(confidence_value)
-                            except (TypeError, ValueError):
-                                pass
                         if event_type == "response.created" and response is not None:
                             completion_status = str(getattr(response, "status", "") or "in_progress")
                         if event_type in {"response.completed", "response.incomplete", "response.failed"}:
@@ -251,14 +266,18 @@ class OpenAIProvider(AIProvider):
                                 or getattr(details, "cache_creation_input_tokens", 0) or 0
                             )
                 else:
-                    stream = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        max_tokens=route.max_output_tokens,
-                        temperature=0.2,
-                        stream=True,
-                        stream_options={"include_usage": True},
-                    )
+                    chat_kwargs: dict[str, Any] = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": route.max_output_tokens,
+                        "temperature": 0.2,
+                        "stream": True,
+                        "stream_options": {"include_usage": True},
+                    }
+                    prompt_cache_key = stable_prompt_cache_key(request, route)
+                    if prompt_cache_key:
+                        chat_kwargs["prompt_cache_key"] = prompt_cache_key
+                    stream = client.chat.completions.create(**chat_kwargs)
                     if cancellation:
                         cancellation.bind_stream(stream)
                     for chunk in stream:
@@ -276,12 +295,6 @@ class OpenAIProvider(AIProvider):
                                 text_parts.append(delta)
                                 if not confidence_ladder:
                                     on_delta(delta)
-                        confidence_value = getattr(chunk, "confidence", None)
-                        if confidence_value is not None:
-                            try:
-                                reported_confidence = float(confidence_value)
-                            except (TypeError, ValueError):
-                                pass
                         usage = getattr(chunk, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
@@ -294,13 +307,12 @@ class OpenAIProvider(AIProvider):
                                 or getattr(details, "cache_creation_input_tokens", 0) or 0
                             )
                 text = "".join(text_parts).strip()
-                if not text:
-                    raise RuntimeError("Empty streamed response")
                 router = OpenAIModelRouter()
                 input_tokens = input_tokens or int(request.metadata.get("estimated_prompt_tokens") or router.estimate_tokens(canonical_prompt))
                 output_tokens = output_tokens or router.estimate_tokens(text)
                 actual_cost = router.estimate_cost(
-                    model, input_tokens, output_tokens, cached_tokens,
+                    model, input_tokens, output_tokens,
+                    cached_tokens, cache_write_tokens,
                 )
                 usage_session = request.metadata.get("session")
                 record_kwargs = {
@@ -322,10 +334,19 @@ class OpenAIProvider(AIProvider):
                 else:
                     with SessionLocal() as created_usage_session:
                         record_openai_usage(created_usage_session, **record_kwargs)
-                low_confidence = bool(
-                    reported_confidence is not None and reported_confidence < 0.5
+                degradation_reason = _local_degradation_reason(
+                    text,
+                    answer_class=str(
+                        request.metadata.get("answer_class")
+                        or route.metadata.get("answer_class")
+                        or "normal"
+                    ),
+                    finish_reason=finish_reason,
+                    completion_status=completion_status,
+                    provider_refusal=provider_refusal,
+                    request_message=request.message,
                 )
-                degraded = finish_reason == "length" or low_confidence
+                degraded = bool(degradation_reason)
                 if (
                     confidence_ladder
                     and degraded
@@ -334,9 +355,16 @@ class OpenAIProvider(AIProvider):
                 ):
                     accumulated_input_tokens += input_tokens
                     accumulated_output_tokens += output_tokens
+                    accumulated_cached_tokens += cached_tokens
+                    accumulated_cache_write_tokens += cache_write_tokens
                     accumulated_cost += actual_cost
                     accumulated_usage_calls += 1 if provider_usage_received else 0
+                    accumulated_usage_actual = (
+                        accumulated_usage_actual or provider_usage_received
+                    )
                     continue
+                if not text:
+                    raise RuntimeError("Empty streamed response")
                 if confidence_ladder:
                     on_delta(text)
                 return AIProviderResponse(
@@ -348,16 +376,24 @@ class OpenAIProvider(AIProvider):
                     estimated_cost_amount=actual_cost + accumulated_cost,
                     estimated_cost_currency="USD",
                     raw={
-                        "usage_actual": provider_usage_received,
-                        "cached_input_tokens": cached_tokens,
-                        "cache_write_tokens": cache_write_tokens,
+                        "usage_actual": (
+                            accumulated_usage_actual or provider_usage_received
+                        ),
+                        "cached_input_tokens": (
+                            cached_tokens + accumulated_cached_tokens
+                        ),
+                        "cache_write_tokens": (
+                            cache_write_tokens + accumulated_cache_write_tokens
+                        ),
                         "endpoint": endpoint,
                         "fallback_attempted": provider_attempts > 1,
                         "provider_attempts": provider_attempts,
                         "provider_calls_with_usage": accumulated_usage_calls + (1 if provider_usage_received else 0),
                         "primary_model_candidate": route.metadata.get("primary_model_candidate") or (candidates[0] if candidates else model),
                         "selected_model_reason": (
-                            "zero_output_zero_usage_failover"
+                            "local_degradation_escalation"
+                            if accumulated_input_tokens > 0
+                            else "zero_output_zero_usage_failover"
                             if provider_attempts > 1
                             else route.metadata.get("selected_model_reason") or "configured_primary"
                         ),
@@ -365,8 +401,13 @@ class OpenAIProvider(AIProvider):
                         "truncated": finish_reason == "length",
                         "completion_status": completion_status,
                         "incomplete_reason": incomplete_reason,
-                        "low_confidence": low_confidence,
+                        "degradation_reason": degradation_reason,
                         "tier_escalated": accumulated_input_tokens > 0,
+                        "actual_cost_usd": (
+                            actual_cost + accumulated_cost
+                            if accumulated_usage_actual or provider_usage_received
+                            else None
+                        ),
                     },
                 )
             except GenerationCancelled:
@@ -383,6 +424,67 @@ class OpenAIProvider(AIProvider):
             status_code=503,
             detail="The selected Swico mode is temporarily unavailable.",
         ) from last_error
+
+
+def _local_degradation_reason(
+    text: str,
+    *,
+    answer_class: str,
+    finish_reason: str,
+    completion_status: str,
+    provider_refusal: bool,
+    request_message: str,
+) -> str:
+    """Classify a completed attempt without relying on provider confidence."""
+    value = str(text or "").strip()
+    normalized_finish = _normalize_finish_reason(finish_reason)
+    normalized_status = str(completion_status or "").strip().lower()
+    if normalized_finish == "length":
+        return "finish_reason_length"
+    if provider_refusal or normalized_finish == "content_filter":
+        return "provider_refusal"
+    if normalized_status in {"failed", "incomplete"}:
+        return "provider_incomplete"
+    if not value:
+        return "empty_output"
+
+    structured_requested = bool(
+        re.search(
+            r"\b(?:json|structured response|valid object|machine[- ]readable)\b",
+            str(request_message or ""),
+            re.IGNORECASE,
+        )
+    )
+    structured_value = value
+    fenced = re.search(
+        r"```(?:json)?\s*(.*?)```", value, re.IGNORECASE | re.DOTALL
+    )
+    if fenced:
+        structured_value = fenced.group(1).strip()
+    if structured_requested or structured_value.startswith(("{", "[")):
+        try:
+            json.loads(structured_value)
+        except (TypeError, ValueError):
+            return "incomplete_structured_response"
+
+    answer = str(answer_class or "normal").strip().lower()
+    if answer in {"detailed", "long_form"}:
+        default_minimum = 45 if answer == "detailed" else 90
+        try:
+            minimum = max(
+                1,
+                int(os.getenv(
+                    "WEB_DETAILED_MIN_OUTPUT_WORDS"
+                    if answer == "detailed"
+                    else "WEB_LONG_FORM_MIN_OUTPUT_WORDS",
+                    str(default_minimum),
+                )),
+            )
+        except (TypeError, ValueError):
+            minimum = default_minimum
+        if len(re.findall(r"\S+", value)) < minimum:
+            return f"implausibly_short_{answer}"
+    return ""
 
 
 def _extract_response_text(response: Any) -> str:

@@ -59,6 +59,16 @@ it('does not collide user and assistant render keys for the same request', () =>
   expect(document.querySelectorAll('.message')).toHaveLength(2)
 })
 
+it('offers regeneration only for a completed assistant answer', () => {
+  controlledAnimationFrames()
+  const regenerate = vi.fn()
+  const completed = message('completed-answer')
+  render(<Conversation messages={[completed]} retry={vi.fn()} suggest={vi.fn()}
+    editingAvailable regenerateResponse={regenerate} />)
+  fireEvent.click(screen.getByRole('button', { name:'Regenerate answer' }))
+  expect(regenerate).toHaveBeenCalledWith(completed)
+})
+
 it('coalesces a burst of streaming deltas into one immediate animation-frame scroll', () => {
   const frames = controlledAnimationFrames()
   const stream = message('stream-burst', { request_id:'burst', content:'a', status:'streaming' })

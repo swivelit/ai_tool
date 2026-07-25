@@ -208,7 +208,7 @@ export function ChatPage() {
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
     attachmentOverride?: MessageAttachment[], originOverride?: { inputMode: InputMode; voiceTurnId: string | null },
-    requestOptions?: { continueMessageId?: string; editMessageId?: string },
+    requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string },
   ) => {
     let selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
     if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
@@ -255,8 +255,13 @@ export function ChatPage() {
     }
     const editTarget = requestOptions?.editMessageId
       ? messages.find(item => item.id === requestOptions.editMessageId && item.role === 'user') : undefined
+    const regenerateTarget = requestOptions?.regenerateMessageId
+      ? messages.find(item => item.id === requestOptions.regenerateMessageId && item.role === 'assistant') : undefined
+    const regenerateUser = regenerateTarget
+      ? messages.find(item => item.role === 'user' && item.request_id === regenerateTarget.request_id) : undefined
+    const revisionTarget = editTarget ?? regenerateUser
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
-    if (!existingUser && !editTarget) {
+    if (!existingUser && !revisionTarget) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: bootstrap.user.reply_language === 'ta' ? 'ta' : 'en' }
       setMessages(value => [...value, optimistic])
@@ -274,6 +279,7 @@ export function ChatPage() {
         ...(threadId ? { thread_id: threadId } : {}),
         ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
         ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
+        ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
       }, event => {
         const scope = streamScopeRef.current
         if (!scope || scope.requestId !== nextRequestId) return
@@ -293,21 +299,21 @@ export function ChatPage() {
         // Dictation is an input convenience only. Manual speaker playback remains
         // available from completed messages, but is never auto-generated here.
       }, abort.signal, () => {
-        if (!editTarget) return
+        if (!revisionTarget) return
         const replacement: Message = {
-          ...editTarget, id: `pending-${nextRequestId}`, content: providerText,
+          ...revisionTarget, id: `pending-${nextRequestId}`, content: providerText,
           request_id: nextRequestId, status: 'pending', created_at: new Date().toISOString(),
-          replaces_message_id: editTarget.id,
-          revision_number: (editTarget.revision_number ?? 1) + 1,
+          replaces_message_id: revisionTarget.id,
+          revision_number: (revisionTarget.revision_number ?? 1) + 1,
         }
         setMessages(value => [
-          ...value.filter(item => item.request_id !== editTarget.request_id && item.request_id !== nextRequestId),
+          ...value.filter(item => item.request_id !== revisionTarget.request_id && item.request_id !== nextRequestId),
           replacement,
         ])
       })
       setDraftVoiceTurnId(null)
       await loadThreads(true)
-      if (editTarget?.thread_id) await loadMessages(editTarget.thread_id)
+      if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
@@ -322,7 +328,7 @@ export function ChatPage() {
         setError(chatErrorMessage(caught, !navigator.onLine))
         if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
-      if (editTarget?.thread_id) await loadMessages(editTarget.thread_id)
+      if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
     } finally { setStreaming(false); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
   }
 
@@ -357,6 +363,16 @@ export function ChatPage() {
     void send(content, message.thread_id, undefined, message.attachments, {
       inputMode: message.input_mode, voiceTurnId: message.voice_turn_id,
     }, { editMessageId: message.id })
+  }
+  const regenerateResponse = (message: Message) => {
+    if (streaming || message.status !== 'complete' || !message.thread_id) return
+    const original = messages.find(item => (
+      item.role === 'user' && item.request_id === message.request_id
+    ))
+    if (!original) return
+    void send(original.content, message.thread_id, undefined, original.attachments, {
+      inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
+    }, { regenerateMessageId: message.id })
   }
   const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
   const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); setAttachments([]); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
@@ -469,7 +485,7 @@ export function ChatPage() {
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}

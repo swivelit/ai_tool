@@ -87,7 +87,8 @@ The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
 `swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
 the Valkey service, or billing cron jobs. No new Render resource is required;
-Alembic revision `f9c2d7a4e1b6` must run before enabling message editing or
+The single Alembic head `3a7d9c2e5f10` (which includes revision
+`f9c2d7a4e1b6`) must run before enabling message editing or
 cross-thread memory:
 
 ```text
@@ -111,7 +112,7 @@ WEB_PROMPT_CACHE_VERSION=v1
 WEB_MAX_PROVIDER_ATTEMPTS=1
 WEB_MESSAGE_EDIT_ENABLED=false
 WEB_CROSS_THREAD_MEMORY_ENABLED=false
-WEB_MEMORY_MAX_ITEMS=4
+WEB_MEMORY_MAX_ITEMS=2
 WEB_MEMORY_MAX_CHARS=1200
 WEB_MEMORY_LLM_SUMMARIZATION_ENABLED=false
 WEB_LONG_INPUT_ENABLED=false
@@ -121,8 +122,34 @@ WEB_DOCUMENT_OCR_ENABLED=false
 WEB_LEGACY_DOC_CONVERSION_ENABLED=false
 ```
 
-Keep prompt caching disabled for this pass: provider cache-write token billing
-is not part of wallet settlement yet, so enabling it could undercharge writes.
+Keep prompt caching disabled by default while rollout billing telemetry is
+reviewed. The guarded implementation uses a PII-free stable cache key and
+accounts for both cache-read and cache-write tokens.
+
+Add the intelligence variables below directly to the existing `ai_tool` Render
+service, not the shared environment group, static site, PostgreSQL, Valkey, or
+billing cron services. Do not expose them as `VITE_*` variables.
+
+```dotenv
+GLOBAL_QA_SEMANTIC_ENABLED=false
+GLOBAL_QA_EMBEDDING_BACKFILL_BATCH_SIZE=50
+GLOBAL_QA_CONFIDENCE_FLOOR=0.35
+GLOBAL_QA_CONFIDENCE_MAX=1.0
+WEB_MEMORY_FACT_RANKING_ENABLED=false
+WEB_MEMORY_FACT_MIN_SIMILARITY=0.35
+WEB_MEMORY_MAX_ITEMS=2
+WEB_DETERMINISTIC_TOOLS_ENABLED=false
+WEB_MODEL_LADDER_DOWNGRADE_ENABLED=false
+WEB_DETAILED_MIN_TIER=standard
+WEB_POST_TURN_DISTILLATION_ENABLED=false
+WEB_PROMPT_PREFIX_STABLE_ENABLED=false
+WEB_PROMPT_CACHE_ENABLED=false
+WEB_PROMPT_CACHE_VERSION=v1
+WEB_MAX_PROMPT_TOKENS=6000
+WEB_CONTEXT_RELEVANCE_RANKING_ENABLED=false
+WEB_CONTEXT_CANDIDATE_TURNS=80
+WEB_MEMORY_LLM_SUMMARIZATION_ENABLED=false
+```
 The normal continuity rollback is configuration-only: set
 `WEB_SAME_THREAD_CONTEXT_MODE=explicit_only` and redeploy the API. Do not disable
 the entire optimizer as the normal rollback.
@@ -201,7 +228,18 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, revision `c5d8a2e9f4b1` classifies authoritative chat/STT/TTS charges and their voice units, revision `e2b7c4d9a1f3` adds independent Chat and Voice credit buckets, and revision `f9c2d7a4e1b6` adds message revisions, the per-user memory switch, and user-scoped memory tables without changing settled charges. The earlier bucket migration backfills every historical wallet, ledger entry, payment order, and usage charge as Chat without changing an amount. Voice wallets are created idempotently with zero balance; existing funds are never copied. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, both wallet balances, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode Chat and Voice checkout, duplicate webhook replay, reconciliation, audit, and same-bucket refunds after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. The current single
+head is `3a7d9c2e5f10`; it includes the additive message revision, per-user memory,
+and billing audit migrations without changing settled amounts. The earlier
+bucket migration backfills every historical wallet, ledger entry, payment order,
+and usage charge as Chat without changing an amount. Voice wallets are created
+idempotently with zero balance; existing funds are never copied. The Alembic
+pre-deploy command must succeed before the new API starts. Verify
+`/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts,
+both wallet balances, each enabled tier's contained fallback behavior,
+existing-credit chat while checkout is disabled, then Test Mode Chat and Voice
+checkout, duplicate webhook replay, reconciliation, audit, and same-bucket
+refunds after intentionally enabling the switch there.
 
 This release uses the existing API service, PostgreSQL database, and private
 Valkey at `WEB_UPLOAD_CACHE_URL`. It needs no new Render service, database,

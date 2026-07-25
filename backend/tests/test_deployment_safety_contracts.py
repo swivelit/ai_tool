@@ -58,7 +58,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_MAX_PROVIDER_ATTEMPTS": "1",
         "WEB_MESSAGE_EDIT_ENABLED": "false",
         "WEB_CROSS_THREAD_MEMORY_ENABLED": "false",
-        "WEB_MEMORY_MAX_ITEMS": "4",
+        "WEB_MEMORY_MAX_ITEMS": "2",
         "WEB_MEMORY_MAX_CHARS": "1200",
         "WEB_MEMORY_LLM_SUMMARIZATION_ENABLED": "false",
         "WEB_LONG_INPUT_ENABLED": "false",

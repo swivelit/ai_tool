@@ -185,7 +185,7 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
     if input_tokens is not None or output_tokens is not None:
         metadata["actual_cost_usd"] = router.estimate_cost(
             model, input_tokens or 0, output_tokens or 0,
-            cached_input_tokens or 0,
+            cached_input_tokens or 0, cache_write_tokens or 0,
         )
     return metadata
 
@@ -495,6 +495,10 @@ def tracked_openai_generation(
                         request_kwargs["reasoning"] = {"effort": "low"}
                     if temperature is not None and spec.supports_temperature:
                         request_kwargs["temperature"] = temperature
+                    if extra.get("prompt_cache_key"):
+                        request_kwargs["prompt_cache_key"] = str(
+                            extra["prompt_cache_key"]
+                        )
                     response = client.responses.create(**request_kwargs)
                 else:
                     request_kwargs = {
@@ -508,6 +512,10 @@ def tracked_openai_generation(
                         request_kwargs["temperature"] = temperature
                     if response_format is not None and spec.supports_response_format:
                         request_kwargs["response_format"] = response_format
+                    if extra.get("prompt_cache_key"):
+                        request_kwargs["prompt_cache_key"] = str(
+                            extra["prompt_cache_key"]
+                        )
                     response = client.chat.completions.create(**request_kwargs)
             except Exception as exc:
                 if _is_budget_exception(exc):

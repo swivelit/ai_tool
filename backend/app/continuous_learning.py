@@ -131,26 +131,84 @@ _DURABLE_FACT_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
 )
 _DISTILL_SENSITIVE = re.compile(
-    r"\b(password|passcode|otp|credit card|cvv|bank account|aadhaar|"
-    r"private key|api key|access token)\b",
+    r"\b(password|passcode|otp|one[- ]time password|credit card|debit card|cvv|"
+    r"bank account|account number|ifsc|upi|aadhaar|pan number|social security|"
+    r"private key|api key|access token|refresh token|secret)\b",
     re.IGNORECASE,
+)
+_DISTILL_TRANSIENT = re.compile(
+    r"\b(?:for (?:this|the current) (?:message|turn|reply)|right now|today only|"
+    r"temporarily|do not remember|don'?t save|ignore previous|system prompt)\b",
+    re.IGNORECASE,
+)
+_DISTILL_SPECULATIVE = re.compile(
+    r"\b(?:might|may|could|perhaps|probably|possibly|I (?:suggest|recommend|guess|"
+    r"think)|consider using|one option)\b",
+    re.IGNORECASE,
+)
+_ASSISTANT_DURABLE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (
+        r"\b(?:we|you) (?:decided|chose|agreed) (?:to use|to|on|that)\s+"
+        r"([^.!?\n]{2,240})",
+        "decision",
+    ),
+    (
+        r"\bthe (?:selected|agreed) (?:stack|approach|plan) is\s+"
+        r"([^.!?\n]{2,240})",
+        "decision",
+    ),
 )
 
 
-def _fact_candidates(user_text: str) -> list[tuple[str, str]]:
+def _fact_candidates(
+    user_text: str, assistant_text: str = ""
+) -> list[tuple[str, str, str]]:
     compact = " ".join(str(user_text or "").split()).strip()
-    if not compact or _DISTILL_SENSITIVE.search(compact):
+    assistant = " ".join(str(assistant_text or "").split()).strip()
+    if (
+        not compact
+        or _DISTILL_SENSITIVE.search(compact)
+        or _DISTILL_TRANSIENT.search(compact)
+    ):
         return []
-    results: list[tuple[str, str]] = []
+    results: list[tuple[str, str, str]] = []
     for pattern, category in _DURABLE_FACT_PATTERNS:
         match = re.search(pattern, compact, re.IGNORECASE)
         if not match:
             continue
         value = match.group(1).strip(" ,;:-")[:600]
-        if value and (category, value) not in results:
-            results.append((category, value))
+        candidate = (category, value, "user")
+        if value and candidate not in results:
+            results.append(candidate)
         if len(results) >= 2:
             break
+    # Assistant text is only authoritative when it records an explicit joint
+    # decision. Advice, predictions and inferred user attributes are rejected.
+    decision_context = bool(
+        re.search(
+            r"\b(?:decide|decision|choose|chose|agree|agreed|finali[sz]e|"
+            r"which (?:stack|approach|plan))\b",
+            compact,
+            re.IGNORECASE,
+        )
+    )
+    if (
+        len(results) < 2
+        and decision_context
+        and assistant
+        and not _DISTILL_SENSITIVE.search(assistant)
+        and not _DISTILL_SPECULATIVE.search(assistant)
+    ):
+        for pattern, category in _ASSISTANT_DURABLE_PATTERNS:
+            match = re.search(pattern, assistant, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(1).strip(" ,;:-")[:600]
+            candidate = (category, value, "assistant")
+            if value and candidate not in results:
+                results.append(candidate)
+            if len(results) >= 2:
+                break
     return results
 
 
@@ -175,20 +233,32 @@ def _vector_cosine(left: list[float], right: list[float], right_norm: float) -> 
 
 
 def distill_web_turn_facts(
-    session: Session, *, user_id: int, user_message_id: str, thread_id: str
+    session: Session, *, user_id: int, user_message_id: str,
+    assistant_message_id: str, thread_id: str,
 ) -> dict[str, int]:
     """Heuristic-only post-turn fact distillation. This function never calls an LLM."""
     if not _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False):
         return {"extracted": 0, "inserted": 0, "deduped": 0, "evicted": 0}
     message = session.get(WebChatMessage, user_message_id)
+    assistant = session.get(WebChatMessage, assistant_message_id)
     if (
         message is None
+        or assistant is None
         or message.user_id != user_id
+        or assistant.user_id != user_id
         or message.role != "user"
+        or assistant.role != "assistant"
+        or message.thread_id != thread_id
+        or assistant.thread_id != thread_id
+        or not message.request_id
+        or message.request_id != assistant.request_id
+        or message.status != "complete"
+        or assistant.status != "complete"
         or message.superseded_at is not None
+        or assistant.superseded_at is not None
     ):
         return {"extracted": 0, "inserted": 0, "deduped": 0, "evicted": 0}
-    candidates = _fact_candidates(message.content)[:2]
+    candidates = _fact_candidates(message.content, assistant.content)[:2]
     existing = list(
         session.exec(
             select(WebMemoryFact).where(
@@ -198,24 +268,33 @@ def distill_web_turn_facts(
         ).all()
     )
     inserted = deduped = 0
-    for category, value in candidates:
+    for category, value, source_role in candidates:
         normalized_text = re.sub(r"\s+", " ", value).strip().casefold()
         normalized_key = (
             f"{category}:{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:32]}"
         )
+        duplicate = next(
+            (fact for fact in existing if fact.normalized_key == normalized_key),
+            None,
+        )
+        if duplicate is not None:
+            duplicate.accessed_at = utc_now()
+            duplicate.updated_at = utc_now()
+            session.add(duplicate)
+            deduped += 1
+            continue
         vector = cached_text_embedding(
             value,
             session=session,
             user_id=user_id,
-            request_id=f"distill:{message.id}:{inserted + deduped}",
+            request_id=f"distill:{assistant.id}:{inserted + deduped}",
             route="web_memory_distillation",
         )
         duplicate = next(
             (
                 fact
                 for fact in existing
-                if fact.normalized_key == normalized_key
-                or (
+                if (
                     vector
                     and _vector_cosine(
                         vector,
@@ -242,7 +321,9 @@ def distill_web_turn_facts(
             salience=0.8,
             confidence=1.0,
             source_thread_id=thread_id,
-            source_message_id=message.id,
+            source_message_id=(
+                assistant.id if source_role == "assistant" else message.id
+            ),
             embedding_json=json.dumps(vector, separators=(",", ":")) if vector else None,
             embedding_norm=norm,
             accessed_at=utc_now(),

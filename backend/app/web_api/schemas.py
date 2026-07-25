@@ -42,11 +42,20 @@ class WebChatRequest(BaseModel):
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
     continue_message_id: UUID | None = None
     edit_message_id: UUID | None = None
+    regenerate_message_id: UUID | None = None
 
     @model_validator(mode="after")
     def exclusive_mutation(self):
-        if self.continue_message_id is not None and self.edit_message_id is not None:
-            raise ValueError("continue_message_id and edit_message_id cannot be combined")
+        mutations = (
+            self.continue_message_id,
+            self.edit_message_id,
+            self.regenerate_message_id,
+        )
+        if sum(value is not None for value in mutations) > 1:
+            raise ValueError(
+                "continue_message_id, edit_message_id, and "
+                "regenerate_message_id cannot be combined"
+            )
         return self
 
     @field_validator("message")

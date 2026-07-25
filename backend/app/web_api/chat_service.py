@@ -7,10 +7,10 @@ import logging
 import os
 from typing import Any, Callable, Literal
 
+from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
-from ..ai.context_compressor import ContextCompressor
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import GenerationCancelled
@@ -77,6 +77,16 @@ class EditRequestError(RuntimeError):
         self.status_code = status_code
 
 
+class PromptBudgetExceeded(RuntimeError):
+    code = "prompt_too_large"
+    status_code = 422
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This message is too long to send safely. Shorten it and try again."
+        )
+
+
 @dataclass
 class PreparedWebTurn:
     request_id: str
@@ -97,6 +107,9 @@ class PreparedWebTurn:
     precomputed_response: AIProviderResponse | None = None
     continuity_decision: SameThreadContinuityDecision | None = None
     billing_credit_bucket: Literal["chat", "voice"] = "chat"
+    replaces_assistant_message_id: str | None = None
+    replacement_revision_number: int = 1
+    regeneration_cache_row_id: int | None = None
 
 
 @dataclass
@@ -122,17 +135,103 @@ def _owned_thread(session: Session, thread_id: str, user_id: int) -> WebChatThre
 
 
 def _context(
-    session: Session, thread_id: str, user_id: int, *, turn_limit: int = 2
+    session: Session, thread_id: str, user_id: int, *, turn_limit: int = 2,
+    current_message: str = "",
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
-    row_limit = min(24, max(8, max(1, turn_limit) * 4))
-    rows = list(session.exec(
-        select(WebChatMessage).where(
+    try:
+        configured_candidates = int(
+            os.getenv("WEB_CONTEXT_CANDIDATE_TURNS", "80")
+        )
+    except (TypeError, ValueError):
+        configured_candidates = 80
+    candidate_turns = min(200, max(8, configured_candidates, turn_limit))
+    row_limit = candidate_turns * 2 + 8
+    base = (
+        select(WebChatMessage)
+        .where(
             WebChatMessage.thread_id == thread_id,
             WebChatMessage.user_id == user_id,
             WebChatMessage.status == "complete",
             WebChatMessage.superseded_at.is_(None),
-        ).order_by(WebChatMessage.created_at.desc(), WebChatMessage.role.asc()).limit(row_limit)
-    ).all())
+        )
+        .order_by(
+            WebChatMessage.created_at.desc(), WebChatMessage.role.asc()
+        )
+        .limit(row_limit)
+    )
+    rows = list(session.exec(base).all())
+    matched_request_ids: set[str] = set()
+
+    # PostgreSQL can cheaply surface much older matching request pairs.  The
+    # broad bounded read above remains the deterministic development/test
+    # fallback and supplies recency candidates.
+    dialect = str(
+        getattr(getattr(session.get_bind(), "dialect", None), "name", "")
+    ).lower()
+    if (
+        dialect.startswith("postgres")
+        and current_message.strip()
+        and _env_bool("WEB_CONTEXT_RELEVANCE_RANKING_ENABLED", False)
+    ):
+        try:
+            with session.begin_nested():
+                matches = session.exec(
+                    sql_text(
+                        """
+                        SELECT request_id
+                        FROM web_chat_message
+                        WHERE user_id = :user_id
+                          AND thread_id = :thread_id
+                          AND status = 'complete'
+                          AND superseded_at IS NULL
+                          AND request_id IS NOT NULL
+                          AND to_tsvector('simple', content)
+                              @@ websearch_to_tsquery('simple', :query)
+                        GROUP BY request_id
+                        ORDER BY MAX(
+                            ts_rank_cd(
+                                to_tsvector('simple', content),
+                                websearch_to_tsquery('simple', :query)
+                            )
+                        ) DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {
+                        "user_id": user_id,
+                        "thread_id": thread_id,
+                        "query": current_message,
+                        "limit": candidate_turns,
+                    },
+                ).all()
+            request_ids = [
+                str(getattr(value, "_mapping", {}).get("request_id", value))
+                for value in matches
+                if value
+            ]
+            matched_request_ids = set(request_ids)
+            if request_ids:
+                with session.begin_nested():
+                    matched_rows = session.exec(
+                        select(WebChatMessage).where(
+                            WebChatMessage.thread_id == thread_id,
+                            WebChatMessage.user_id == user_id,
+                            WebChatMessage.status == "complete",
+                            WebChatMessage.superseded_at.is_(None),
+                            WebChatMessage.request_id.in_(request_ids),
+                        )
+                    ).all()
+                by_id = {row.id: row for row in [*rows, *matched_rows]}
+                rows = sorted(
+                    by_id.values(),
+                    key=lambda row: (
+                        row.created_at,
+                        1 if row.role == "assistant" else 0,
+                    ),
+                    reverse=True,
+                )
+        except Exception:
+            matched_request_ids.clear()
     previous_metadata: dict[str, str] = {}
     for row in rows:
         if row.role != "assistant":
@@ -157,9 +256,32 @@ def _context(
             if pending.request_id and row.request_id and pending.request_id != row.request_id:
                 pending = None
                 continue
-            turns.append({"user": pending.content, "assistant": row.content})
+            turns.append({
+                "user": pending.content,
+                "assistant": row.content,
+                "_request_id": str(row.request_id or pending.request_id or ""),
+            })
             pending = None
-    return turns[-max(1, turn_limit):], previous_metadata
+    recent = turns[-max(1, turn_limit):]
+    if matched_request_ids:
+        selected_ids = {
+            str(turn.get("_request_id") or "") for turn in recent
+        }
+        # Preserve bounded PostgreSQL full-text matches even when they are
+        # older than the recency candidate window. The local ranker below will
+        # decide which of this bounded union enters the prompt.
+        recent = [
+            turn
+            for turn in turns
+            if (
+                str(turn.get("_request_id") or "") in matched_request_ids
+                or str(turn.get("_request_id") or "") in selected_ids
+            )
+        ]
+    return [
+        {"user": turn["user"], "assistant": turn["assistant"]}
+        for turn in recent
+    ], previous_metadata
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -174,36 +296,60 @@ def _hard_budget_provider_messages(
 ) -> list[dict[str, str]]:
     messages = build_provider_messages(request, route, provider=route.provider)
     try:
-        maximum = max(0, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
+        maximum = max(1, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
     except (TypeError, ValueError):
         maximum = 6000
-    if maximum <= 0:
-        return messages
-    while (
-        request.context_turns
-        and estimate_tokens(serialize_provider_messages(messages)) > maximum
-    ):
+
+    def over_budget() -> bool:
+        return estimate_tokens(serialize_provider_messages(messages)) > maximum
+
+    # 1. Attachment excerpts are relevance ordered by the existing selector;
+    # remove the least relevant tail first.
+    document_blocks = [
+        value for value in str(
+            request.metadata.get("attachment_prompt_context") or ""
+        ).split("\n\n") if value.strip()
+    ]
+    while document_blocks and over_budget():
+        document_blocks.pop()
+        request.metadata["attachment_prompt_context"] = "\n\n".join(
+            document_blocks
+        )
+        messages = build_provider_messages(request, route, provider=route.provider)
+
+    # 2. Drop older history first, retaining the newest continuity pair while
+    # lower-priority optional sections are still available to remove.
+    while len(request.context_turns) > 1 and over_budget():
         request.context_turns = request.context_turns[1:]
         messages = build_provider_messages(request, route, provider=route.provider)
-    if estimate_tokens(serialize_provider_messages(messages)) <= maximum:
-        return messages
-    attachment = str(request.metadata.get("attachment_prompt_context") or "")
-    if attachment:
-        overflow = (
-            estimate_tokens(serialize_provider_messages(messages)) - maximum
-        )
-        target_chars = max(0, len(attachment) - overflow * 4)
-        compressor = ContextCompressor(
-            max_chunks=8,
-            max_chunk_chars=max(1, target_chars),
-            max_total_chars=max(1, target_chars),
-        )
-        request.metadata["attachment_prompt_context"] = "\n\n".join(
-            compressor.compress(
-                [value for value in attachment.split("\n\n") if value.strip()]
-            )
-        )
+
+    # 3. Ranked memory is highest-to-lowest, so remove its tail.
+    memory_blocks = [
+        value for value in str(
+            request.metadata.get("memory_prompt_context") or ""
+        ).split("\n\n") if value.strip()
+    ]
+    while memory_blocks and over_budget():
+        memory_blocks.pop()
+        request.metadata["memory_prompt_context"] = "\n\n".join(memory_blocks)
         messages = build_provider_messages(request, route, provider=route.provider)
+
+    # 4. Profile personalization is optional.
+    if over_budget() and request.metadata.get("profile_prompt_context"):
+        request.metadata["profile_prompt_context"] = ""
+        messages = build_provider_messages(request, route, provider=route.provider)
+
+    # If all lower-priority optional material is gone, the remaining newest
+    # history pair is no longer affordable and must yield to the absolute cap.
+    while request.context_turns and over_budget():
+        request.context_turns = request.context_turns[1:]
+        messages = build_provider_messages(request, route, provider=route.provider)
+
+    final_tokens = estimate_tokens(serialize_provider_messages(messages))
+    request.metadata["final_serialized_prompt_tokens"] = final_tokens
+    request.metadata["prompt_token_budget"] = maximum
+    if final_tokens > maximum:
+        raise PromptBudgetExceeded()
     return messages
 
 
@@ -364,6 +510,7 @@ def prepare_web_turn(
     voice_turn_id: str | None = None,
     continue_message_id: str | None = None,
     edit_message_id: str | None = None,
+    regenerate_message_id: str | None = None,
     billing_credit_bucket: Literal["chat", "voice"] = "chat",
 ) -> PreparedWebTurn:
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
@@ -475,29 +622,15 @@ def prepare_web_turn(
                 WebChatMessage.superseded_at.is_(None),
             ).order_by(WebChatMessage.created_at.asc()).limit(1)).first()
             if following_assistant is not None:
-                if _env_bool("WEB_ANSWER_FEEDBACK_ENABLED", False):
-                    try:
-                        cached_metadata = json.loads(
-                            following_assistant.metadata_json or "{}"
-                        )
-                    except (TypeError, ValueError):
-                        cached_metadata = {}
-                    cache_row_id = (
-                        cached_metadata.get("cache_row_id")
-                        if isinstance(cached_metadata, dict) else None
-                    )
-                    if cache_row_id:
-                        from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
-                        from ..models import GlobalQACache
+                from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
 
-                        cache_row = session.get(GlobalQACache, int(cache_row_id))
-                        if cache_row is not None:
-                            FeedbackQualityAgent().apply_negative_feedback(
-                                session,
-                                cache_row,
-                                amount=max(0.15, float(cache_row.confidence or 0.0)),
-                                tombstone_at_zero=True,
-                            )
+                FeedbackQualityAgent().apply_message_negative_once(
+                    session,
+                    following_assistant,
+                    action="edit",
+                    amount=0.15,
+                    commit=False,
+                )
                 following_assistant.superseded_at = superseded_at
                 session.add(following_assistant)
             for fact in session.exec(select(WebMemoryFact).where(
@@ -512,6 +645,110 @@ def prepare_web_turn(
                 WebConversationSummary.user_id == user_id,
                 WebConversationSummary.thread_id == thread.id,
             )).first()
+            if summary is not None:
+                session.delete(summary)
+
+        regenerate_target: WebChatMessage | None = None
+        regenerate_user: WebChatMessage | None = None
+        regeneration_cache_row_id: int | None = None
+        if regenerate_message_id and existing_user_message is None:
+            if not _env_bool("WEB_MESSAGE_EDIT_ENABLED", False):
+                raise EditRequestError(
+                    "regeneration_disabled",
+                    "Answer regeneration is not enabled.",
+                    503,
+                )
+            regenerate_target = session.exec(
+                select(WebChatMessage).where(
+                    WebChatMessage.id == regenerate_message_id,
+                    WebChatMessage.thread_id == thread.id,
+                    WebChatMessage.user_id == user_id,
+                    WebChatMessage.role == "assistant",
+                    WebChatMessage.status == "complete",
+                    WebChatMessage.superseded_at.is_(None),
+                )
+            ).first()
+            if regenerate_target is None:
+                raise EditRequestError(
+                    "regeneration_not_authorized",
+                    "This completed answer cannot be regenerated.",
+                    404,
+                )
+            regenerate_user = session.exec(
+                select(WebChatMessage).where(
+                    WebChatMessage.thread_id == thread.id,
+                    WebChatMessage.user_id == user_id,
+                    WebChatMessage.role == "user",
+                    WebChatMessage.request_id == regenerate_target.request_id,
+                    WebChatMessage.status == "complete",
+                    WebChatMessage.superseded_at.is_(None),
+                )
+            ).first()
+            if regenerate_user is None:
+                raise EditRequestError(
+                    "regeneration_source_missing",
+                    "The original request is no longer available.",
+                    409,
+                )
+            active_request = session.exec(
+                select(WebChatMessage).where(
+                    WebChatMessage.thread_id == thread.id,
+                    WebChatMessage.user_id == user_id,
+                    WebChatMessage.status == "pending",
+                    WebChatMessage.superseded_at.is_(None),
+                )
+            ).first()
+            if active_request is not None:
+                raise EditRequestError(
+                    "regeneration_conflict",
+                    "Wait for the active response to finish before regenerating.",
+                    409,
+                )
+            try:
+                regeneration_metadata = json.loads(
+                    regenerate_target.metadata_json or "{}"
+                )
+            except (TypeError, ValueError):
+                regeneration_metadata = {}
+            if isinstance(regeneration_metadata, dict):
+                raw_cache_id = regeneration_metadata.get("cache_row_id")
+                if raw_cache_id is not None:
+                    try:
+                        regeneration_cache_row_id = int(raw_cache_id)
+                    except (TypeError, ValueError):
+                        regeneration_cache_row_id = None
+            from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
+
+            FeedbackQualityAgent().apply_message_negative_once(
+                session,
+                regenerate_target,
+                action="regenerate",
+                amount=0.15,
+                commit=False,
+            )
+            superseded_at = utc_now()
+            regenerate_target.superseded_at = superseded_at
+            regenerate_user.superseded_at = superseded_at
+            session.add(regenerate_target)
+            session.add(regenerate_user)
+            for fact in session.exec(
+                select(WebMemoryFact).where(
+                    WebMemoryFact.user_id == user_id,
+                    WebMemoryFact.source_message_id.in_(
+                        [regenerate_user.id, regenerate_target.id]
+                    ),
+                    WebMemoryFact.deleted_at.is_(None),
+                )
+            ).all():
+                fact.deleted_at = superseded_at
+                fact.updated_at = superseded_at
+                session.add(fact)
+            summary = session.exec(
+                select(WebConversationSummary).where(
+                    WebConversationSummary.user_id == user_id,
+                    WebConversationSummary.thread_id == thread.id,
+                )
+            ).first()
             if summary is not None:
                 session.delete(summary)
 
@@ -541,6 +778,9 @@ def prepare_web_turn(
         uploads = _load_attachments(user_id, attachment_ids or [])
         visible_message = message.strip()
         model_message = visible_message or "Review and summarize the attached document."
+        if regenerate_user is not None:
+            visible_message = regenerate_user.content
+            model_message = regenerate_user.content
         if continuation_row is not None:
             visible_message = "Continue response"
             model_message = (
@@ -559,13 +799,24 @@ def prepare_web_turn(
                 "voice_turn_id": voice_turn_id,
                 "reply_language": reply_language,
                 "continue_message_id": continue_message_id,
+                "regenerate_message_id": regenerate_message_id,
             }
             session.add(WebChatMessage(
                 thread_id=thread.id, user_id=user_id, role="user", content=visible_content,
                 request_id=request_id, status="pending",
                 metadata_json=json.dumps(message_metadata, ensure_ascii=False),
-                replaces_message_id=edit_target.id if edit_target is not None else None,
-                revision_number=(edit_target.revision_number + 1) if edit_target is not None else 1,
+                replaces_message_id=(
+                    edit_target.id
+                    if edit_target is not None
+                    else regenerate_user.id if regenerate_user is not None else None
+                ),
+                revision_number=(
+                    edit_target.revision_number + 1
+                    if edit_target is not None
+                    else regenerate_user.revision_number + 1
+                    if regenerate_user is not None
+                    else 1
+                ),
             ))
         thread.updated_at = utc_now()
         session.add(thread)
@@ -580,7 +831,17 @@ def prepare_web_turn(
             )
         except (TypeError, ValueError):
             configured_context_turns = 2
-        candidate_turn_limit = 6 if not enabled else max(6, configured_context_turns)
+        try:
+            configured_candidate_turns = int(
+                os.getenv("WEB_CONTEXT_CANDIDATE_TURNS", "80")
+            )
+        except (TypeError, ValueError):
+            configured_candidate_turns = 80
+        candidate_turn_limit = (
+            6
+            if not enabled
+            else min(200, max(8, configured_context_turns, configured_candidate_turns))
+        )
         previous_safe_metadata: dict[str, str] = {}
         if continuation_row is not None:
             try:
@@ -604,7 +865,8 @@ def prepare_web_turn(
             all_context = []
         else:
             all_context, previous_safe_metadata = _context(
-                session, thread.id, user_id, turn_limit=candidate_turn_limit
+                session, thread.id, user_id, turn_limit=candidate_turn_limit,
+                current_message=model_message,
             )
 
         if continuation_row is not None and context_mode != "off":
@@ -709,6 +971,14 @@ def prepare_web_turn(
                     precomputed_response=deterministic,
                     continuity_decision=continuity,
                     billing_credit_bucket=authoritative_bucket,
+                    replaces_assistant_message_id=(
+                        regenerate_target.id if regenerate_target is not None else None
+                    ),
+                    replacement_revision_number=(
+                        regenerate_target.revision_number + 1
+                        if regenerate_target is not None else 1
+                    ),
+                    regeneration_cache_row_id=regeneration_cache_row_id,
                 )
 
         # Existing local routes remain ahead of profile/context selection,
@@ -753,6 +1023,14 @@ def prepare_web_turn(
                 billing_exempt=billing_exempt, optimization=preliminary,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
+                replaces_assistant_message_id=(
+                    regenerate_target.id if regenerate_target is not None else None
+                ),
+                replacement_revision_number=(
+                    regenerate_target.revision_number + 1
+                    if regenerate_target is not None else 1
+                ),
+                regeneration_cache_row_id=regeneration_cache_row_id,
             )
 
         if (
@@ -760,6 +1038,7 @@ def prepare_web_turn(
             and preliminary.cache_eligible
             and not needs_memory
             and not continuity.use_context
+            and regenerate_target is None
         ):
             cached = _cache_response(user_id, model_message, reply_language)
             if cached is not None:
@@ -791,6 +1070,14 @@ def prepare_web_turn(
                     precomputed_response=cached,
                     continuity_decision=continuity,
                     billing_credit_bucket=authoritative_bucket,
+                    replaces_assistant_message_id=(
+                        regenerate_target.id if regenerate_target is not None else None
+                    ),
+                    replacement_revision_number=(
+                        regenerate_target.revision_number + 1
+                        if regenerate_target is not None else 1
+                    ),
+                    regeneration_cache_row_id=regeneration_cache_row_id,
                 )
 
         profile_context = build_profile_prompt_context(session, user_id)
@@ -880,6 +1167,14 @@ def prepare_web_turn(
                 coordinator_decision=coordinator_decision,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
+                replaces_assistant_message_id=(
+                    regenerate_target.id if regenerate_target is not None else None
+                ),
+                replacement_revision_number=(
+                    regenerate_target.revision_number + 1
+                    if regenerate_target is not None else 1
+                ),
+                regeneration_cache_row_id=regeneration_cache_row_id,
             )
 
         if enabled:
@@ -891,6 +1186,16 @@ def prepare_web_turn(
                 coordinator_decision,
                 serialized_prompt=serialized_prompt,
                 system_prompt=str(provider_messages[0].get("content") or "") if provider_messages else "",
+                context_turns=ai_request.context_turns,
+                memory_context=str(
+                    ai_request.metadata.get("memory_prompt_context") or ""
+                ),
+                profile_context=str(
+                    ai_request.metadata.get("profile_prompt_context") or ""
+                ),
+                attachment_context=str(
+                    ai_request.metadata.get("attachment_prompt_context") or ""
+                ),
             )
             optimization = coordinator_decision.optimization
         else:
@@ -959,7 +1264,45 @@ def prepare_web_turn(
             "WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED", True
         ):
             ai_request.metadata["coordinator_metadata"] = coordinator_decision.sanitized_metadata
-        reserve = reserve_price(route.provider, route.model or "", input_tokens, route.max_output_tokens)
+        reserve = reserve_price(
+            route.provider, route.model or "", input_tokens,
+            route.max_output_tokens,
+        )
+        if (
+            _env_bool("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", False)
+            and route.provider == "openai"
+            and len(route.model_candidates) > 1
+        ):
+            attempt_reserves = [
+                reserve_price(
+                    route.provider,
+                    model,
+                    input_tokens,
+                    route.max_output_tokens,
+                )
+                for model in route.model_candidates[:2]
+            ]
+            reserve = replace(
+                reserve,
+                amount=sum(
+                    (item.amount for item in attempt_reserves), Decimal("0")
+                ),
+                micros=sum(item.micros for item in attempt_reserves),
+                snapshot={
+                    **reserve.snapshot,
+                    "ladder_attempt_reservations": [
+                        {
+                            "model": model,
+                            "micros": item.micros,
+                            "snapshot": item.snapshot,
+                        }
+                        for model, item in zip(
+                            route.model_candidates[:2], attempt_reserves
+                        )
+                    ],
+                    "reserved_provider_attempts": len(attempt_reserves),
+                },
+            )
         if billing_exempt:
             create_billing_exempt_usage(
                 session, request_id=request_id, user_id=user_id, thread_id=thread.id,
@@ -990,6 +1333,14 @@ def prepare_web_turn(
             coordinator_decision=coordinator_decision,
             continuity_decision=continuity,
             billing_credit_bucket=authoritative_bucket,
+            replaces_assistant_message_id=(
+                regenerate_target.id if regenerate_target is not None else None
+            ),
+            replacement_revision_number=(
+                regenerate_target.revision_number + 1
+                if regenerate_target is not None else 1
+            ),
+            regeneration_cache_row_id=regeneration_cache_row_id,
         )
 
 
@@ -1176,6 +1527,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         if response.raw.get("usage_actual") and provider_calls_with_usage <= 0:
             provider_calls_with_usage = 1
         cached_tokens = int(response.raw.get("cached_input_tokens") or 0)
+        cache_write_tokens = int(response.raw.get("cache_write_tokens") or 0)
         input_tokens = max(0, int(response.input_tokens or 0))
         cached_input_ratio = (
             min(max(0, cached_tokens), input_tokens) / input_tokens
@@ -1189,7 +1541,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             "cache_hit_source": str(response.raw.get("cache_hit_source") or ""),
             "cached_input_tokens": cached_tokens,
             "cached_input_ratio": cached_input_ratio,
-            "cache_write_tokens": int(response.raw.get("cache_write_tokens") or 0),
+            "cache_write_tokens": cache_write_tokens,
             "primary_model_candidate": str(
                 response.raw.get("primary_model_candidate")
                 or prepared.route.metadata.get("primary_model_candidate") or ""
@@ -1215,7 +1567,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         response.raw["usage_source"] = usage_source
         price = price_usage(
             response.provider, response.model or "", response.input_tokens,
-            response.output_tokens, cached_tokens,
+            response.output_tokens, cached_tokens, cache_write_tokens,
         )
         if response.provider == "openai" and response.raw.get("actual_cost_usd") is not None:
             price = openai_reported_price(
@@ -1234,13 +1586,22 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             ),
             charge_micros=0 if prepared.billing_exempt else price.micros,
             status="cancelled" if cancelled else "complete",
+            replaces_message_id=prepared.replaces_assistant_message_id,
+            revision_number=prepared.replacement_revision_number,
             metadata_json=json.dumps({
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
-                "cache_row_id": response.raw.get("cache_row_id"),
+                "cache_row_id": (
+                    response.raw.get("cache_row_id")
+                    or prepared.regeneration_cache_row_id
+                ),
                 "cache_hit_kind": response.raw.get("cache_hit_kind"),
+                "regenerated_from_message_id": (
+                    prepared.replaces_assistant_message_id
+                ),
+                "regenerated_cache_row_id": prepared.regeneration_cache_row_id,
                 "provenance": provenance,
                 **optimization_metrics,
             }, sort_keys=True, separators=(",", ":")),
@@ -1313,6 +1674,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                         session,
                         user_id=prepared.user_id,
                         user_message_id=user_message.id,
+                        assistant_message_id=assistant.id,
                         thread_id=prepared.thread_id,
                     )
                 except Exception:

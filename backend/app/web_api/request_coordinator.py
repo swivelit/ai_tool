@@ -215,11 +215,78 @@ class WebRequestCoordinator:
         *,
         serialized_prompt: str,
         system_prompt: str,
+        context_turns: list[dict[str, str]] | None = None,
+        memory_context: str | None = None,
+        profile_context: str | None = None,
+        attachment_context: str | None = None,
     ) -> WebRequestDecision:
-        optimization = with_prompt_estimate(decision.optimization, serialized_prompt)
+        turns = (
+            context_turns
+            if context_turns is not None
+            else decision.optimization.selected_context_turns
+        )
+        memory_value = (
+            decision.memory_context if memory_context is None else memory_context
+        )
+        profile_value = (
+            decision.profile_context if profile_context is None else profile_context
+        )
+        attachment_value = (
+            decision.document_excerpts
+            if attachment_context is None else attachment_context
+        )
+        formatted = "\n".join(
+            value
+            for turn in turns
+            for value in (
+                str(turn.get("user") or ""),
+                str(turn.get("assistant") or ""),
+            )
+            if value
+        )
+        exact_metrics = {
+            **decision.optimization.metrics,
+            "context_turns_sent": len(turns),
+            "context_chars_sent": len(formatted),
+            "memory_estimated_tokens": (
+                estimate_tokens(memory_value) if memory_value else 0
+            ),
+            "profile_estimated_tokens": (
+                estimate_tokens(profile_value) if profile_value else 0
+            ),
+            "attachment_estimated_tokens": (
+                estimate_tokens(attachment_value) if attachment_value else 0
+            ),
+        }
+        exact_optimization = replace(
+            decision.optimization,
+            selected_context_turns=list(turns),
+            formatted_context=formatted,
+            context_chars_sent=len(formatted),
+            compact_profile_prompt=profile_value,
+            profile_chars_sent=len(profile_value),
+            attachment_prompt_context=attachment_value,
+            attachment_chars_sent=len(attachment_value),
+            metrics=exact_metrics,
+        )
+        optimization = with_prompt_estimate(
+            exact_optimization, serialized_prompt
+        )
+        selected = tuple(
+            (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
+            for turn in turns
+        )
         return replace(
             decision,
             system_prompt=_usage(system_prompt),
+            same_thread_context=selected,
+            memory_context=memory_value,
+            document_excerpts=attachment_value,
+            profile_context=profile_value,
+            same_thread=_usage(formatted),
+            memory=_usage(memory_value),
+            profile=_usage(profile_value),
+            attachment=_usage(attachment_value),
             total_estimated_prompt_tokens=optimization.estimated_prompt_tokens,
             optimization=optimization,
         )
@@ -227,7 +294,7 @@ class WebRequestCoordinator:
 
 def _max_prompt_tokens() -> int:
     try:
-        return max(0, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
+        return max(1, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
     except (TypeError, ValueError):
         return 6000
 
@@ -286,8 +353,6 @@ def _apply_prompt_budget(
     memory_context: str,
 ) -> tuple[WebTurnOptimization, str]:
     maximum = _max_prompt_tokens()
-    if maximum <= 0:
-        return optimization, str(memory_context or "")
     fixed = estimate_tokens(message) + estimate_tokens(STATIC_SYSTEM_PREFIX) + 320
     remaining = max(0, maximum - fixed)
     memory_cap = int(remaining * 0.15)

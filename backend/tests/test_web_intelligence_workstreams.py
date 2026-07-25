@@ -9,16 +9,19 @@ from app.ai.prompts import build_provider_messages
 from app.ai.types import AIRequest, AIRoute
 from app.continuous_learning import distill_web_turn_facts
 from app.database import SessionLocal
+from app.billing.pricing import openai_price
 from app.global_qa_cache import (
     lookup_approved_global_cache, reset_global_qa_hot_cache_for_tests,
 )
+from app.job_queue import enqueue_post_turn_distillation
 from app.models import (
-    GlobalQACache, User, WebChatMessage, WebChatThread, WebMemoryFact,
+    GlobalQACache, UsageCharge, User, WebChatMessage, WebChatThread, WebMemoryFact,
     WebUsagePreferences,
 )
 from app.openai_model_router import OpenAIModelRouter
 from app.time_utils import utc_now
 from app.web_api.deterministic_answers import try_deterministic_answer
+from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.request_coordinator import _apply_prompt_budget
 from app.web_api.router import _serialize_message
 from app.web_api.turn_optimizer import WebTurnOptimization, select_context_turns
@@ -145,13 +148,117 @@ def test_ws5_distillation_is_heuristic_and_bounded(monkeypatch):
             content="My name is Hari. I work at Swico. I prefer short replies.",
             request_id="ws5", status="complete",
         )
-        session.add(message); session.commit(); session.refresh(message)
+        assistant = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="I saved those durable preferences.",
+            request_id="ws5", status="complete",
+        )
+        session.add(message); session.add(assistant)
+        session.commit(); session.refresh(message); session.refresh(assistant)
         result = distill_web_turn_facts(
             session, user_id=int(user.id), user_message_id=message.id,
+            assistant_message_id=assistant.id,
             thread_id=thread.id,
         )
     assert result["extracted"] == 2
     assert result["inserted"] <= 2
+
+
+def test_ws5_distillation_considers_completed_assistant_decision(monkeypatch):
+    monkeypatch.setenv("WEB_POST_TURN_DISTILLATION_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.continuous_learning.cached_text_embedding",
+        lambda *_args, **_kwargs: [1.0, 0.0],
+    )
+    user = create_test_user("ws5-assistant", "ws5-assistant@example.com")
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Decision")
+        session.add(thread); session.flush()
+        request = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Which stack did we finally decide on?",
+            request_id="ws5-assistant", status="complete",
+        )
+        answer = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="We decided to use PostgreSQL with FastAPI.",
+            request_id="ws5-assistant", status="complete",
+        )
+        session.add(request); session.add(answer); session.commit()
+        result = distill_web_turn_facts(
+            session, user_id=int(user.id), user_message_id=request.id,
+            assistant_message_id=answer.id, thread_id=thread.id,
+        )
+        facts = session.exec(select(WebMemoryFact).where(
+            WebMemoryFact.user_id == int(user.id)
+        )).all()
+    assert result["inserted"] == 1
+    assert facts[0].source_message_id == answer.id
+    assert "PostgreSQL" in facts[0].value_text
+
+
+def test_ws5_distillation_job_payload_is_assistant_idempotent():
+    user = create_test_user("ws5-job", "ws5-job@example.com")
+    with SessionLocal() as session:
+        first = enqueue_post_turn_distillation(
+            session, user_id=int(user.id), user_message_id="user-message",
+            assistant_message_id="assistant-message", thread_id="thread",
+        )
+        second = enqueue_post_turn_distillation(
+            session, user_id=int(user.id), user_message_id="user-message",
+            assistant_message_id="assistant-message", thread_id="thread",
+        )
+        payload = json.loads(first.payload_json)
+    assert first.id == second.id
+    assert payload["assistant_message_id"] == "assistant-message"
+
+
+def test_ws3_configured_billing_faq_is_model_and_embedding_free(monkeypatch):
+    monkeypatch.setenv("BILLING_TOPUP_PACKAGES_PAISE", "2500,9900")
+    monkeypatch.setenv("BILLING_MIN_TOPUP_PAISE", "2500")
+    monkeypatch.setenv("BILLING_MAX_TOPUP_PAISE", "20000")
+    monkeypatch.setenv("BILLING_ENFORCE_TOPUP_PACKAGES", "true")
+    user = create_test_user("ws3-billing", "ws3-billing@example.com")
+    with SessionLocal() as session:
+        response = try_deterministic_answer(
+            session, user_id=int(user.id),
+            message="What recharge packages are available?",
+            reply_language="en", request_id="ws3-billing",
+        )
+    assert response and response.provider == "backend_tool"
+    assert "₹25" in response.text and "₹99" in response.text
+    assert response.raw["provider_attempts"] == 0
+    assert response.raw["provenance"] == ["backend_tool"]
+
+
+def test_ws3_billing_faq_returns_before_cache_reservation_and_provider(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_DETERMINISTIC_TOOLS_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deterministic billing must precede cache")
+        ),
+    )
+    user = create_test_user("ws3-routing", "ws3-routing@example.com")
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="recharge panna eppadi",
+        request_id="ws3-routing", thread_id=None, reply_language="en",
+    )
+
+    class ProviderSpy:
+        def complete(self, *_args, **_kwargs):
+            raise AssertionError("deterministic billing must skip provider")
+
+        stream_complete = complete
+
+    completed = execute_web_turn(
+        prepared, providers={"openai": ProviderSpy(), "sarvam": ProviderSpy()}
+    )
+    assert completed.response.provider == "backend_tool"
+    with SessionLocal() as session:
+        assert session.exec(select(UsageCharge)).all() == []
 
 
 def test_ws6_first_prompt_message_is_byte_stable(monkeypatch):
@@ -165,6 +272,44 @@ def test_ws6_first_prompt_message_is_byte_stable(monkeypatch):
     left = build_provider_messages(first, _route(), provider="openai")[0]["content"]
     right = build_provider_messages(second, _route(), provider="openai")[0]["content"]
     assert left.encode() == right.encode()
+
+
+def test_ws6_dynamic_context_follows_stable_prefix_in_fixed_order(monkeypatch):
+    monkeypatch.setenv("WEB_PROMPT_PREFIX_STABLE_ENABLED", "true")
+    request = AIRequest(
+        1, "Current question", "ta", "text", "dynamic-order",
+        {
+            "client_surface": "web",
+            "answer_class": "normal",
+            "profile_prompt_context": '{"tone":"concise"}',
+            "memory_prompt_context": "Saved memory",
+            "attachment_prompt_context": "[document] excerpt",
+        },
+        context_turns=[{"user": "Earlier question", "assistant": "Earlier answer"}],
+    )
+    messages = build_provider_messages(request, _route(), provider="openai")
+    contents = [item["content"] for item in messages]
+    assert "Provider route class" in contents[0]
+    dynamic_index = next(index for index, value in enumerate(contents) if "Requested reply language" in value)
+    profile_index = next(index for index, value in enumerate(contents) if "Saved user profile" in value)
+    memory_index = next(index for index, value in enumerate(contents) if "Relevant saved memory" in value)
+    document_index = next(index for index, value in enumerate(contents) if "BEGIN UNTRUSTED" in value)
+    history_index = next(index for index, value in enumerate(contents) if "Bounded same-chat history" in value)
+    assert 0 < dynamic_index < profile_index < memory_index < document_index < history_index
+    assert messages[-1] == {"role": "user", "content": "Current question"}
+
+
+def test_prompt_cache_write_tokens_cannot_be_undercharged():
+    without_write = openai_price(
+        "gpt-4.1-nano", input_tokens=10, output_tokens=0,
+        cached_input_tokens=10, cache_write_tokens=0,
+    )
+    with_write = openai_price(
+        "gpt-4.1-nano", input_tokens=10, output_tokens=0,
+        cached_input_tokens=10, cache_write_tokens=10,
+    )
+    assert with_write.amount > without_write.amount
+    assert with_write.snapshot["cache_write_tokens"] == 10
 
 
 def test_ws7_prompt_allocator_trims_sections(monkeypatch):
@@ -271,12 +416,29 @@ def test_ws12_content_search_sqlite_fallback(client, monkeypatch):
             content="The rare pineapple keyword is here.", request_id="ws12",
             status="complete",
         ))
+        archived = WebChatThread(
+            user_id=int(user.id), title="Archived",
+            archived_at=utc_now(),
+        )
+        session.add(archived); session.flush()
+        session.add(WebChatMessage(
+            thread_id=archived.id, user_id=int(user.id), role="user",
+            content="An archived pineapple must stay hidden.",
+            request_id="ws12-archived", status="complete",
+        ))
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="A superseded pineapple must stay hidden.",
+            request_id="ws12-old", status="complete",
+            superseded_at=utc_now(),
+        ))
         session.commit()
     response = client.get(
         "/api/web/search?q=pineapple",
         headers=auth_headers("ws12", "ws12@example.com"),
     )
     assert response.status_code == 200
+    assert len(response.json()["items"]) == 1
     assert response.json()["items"][0]["source_kind"] == "message"
 
 

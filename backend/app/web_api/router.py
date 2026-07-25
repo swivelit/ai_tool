@@ -79,7 +79,7 @@ from ..observability import APP_RELEASE, get_request_id
 from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
-    execute_web_turn, prepare_web_turn,
+    PromptBudgetExceeded, execute_web_turn, prepare_web_turn,
 )
 from .document_extraction import (
     DocumentValidationError, SUPPORTED_EXTENSIONS, chunk_virtual_text, extract_document, max_file_bytes,
@@ -2102,30 +2102,42 @@ def search_web_content(
         rows = session.exec(
             text(
                 """
-                SELECT thread_id, id AS message_id, content, 'message' AS source_kind,
-                       created_at AS updated_at,
-                       ts_rank_cd(to_tsvector('simple', content),
+                SELECT m.thread_id, m.id AS message_id, m.content,
+                       'message' AS source_kind, m.created_at AS updated_at,
+                       ts_rank_cd(to_tsvector('simple', m.content),
                                   websearch_to_tsquery('simple', :query)) AS rank
-                FROM web_chat_message
-                WHERE user_id = :user_id AND superseded_at IS NULL
-                  AND to_tsvector('simple', content) @@ websearch_to_tsquery('simple', :query)
+                FROM web_chat_message m
+                JOIN web_chat_thread t ON t.id = m.thread_id
+                WHERE m.user_id = :user_id AND m.superseded_at IS NULL
+                  AND m.status = 'complete' AND t.archived_at IS NULL
+                  AND to_tsvector('simple', m.content) @@ websearch_to_tsquery('simple', :query)
                 UNION ALL
-                SELECT thread_id, NULL AS message_id, summary_text AS content,
-                       'summary' AS source_kind, updated_at,
-                       ts_rank_cd(to_tsvector('simple', summary_text || ' ' || keywords_text),
+                SELECT s.thread_id, NULL AS message_id, s.summary_text AS content,
+                       'summary' AS source_kind, s.updated_at,
+                       ts_rank_cd(to_tsvector('simple', s.summary_text || ' ' || s.keywords_text),
                                   websearch_to_tsquery('simple', :query)) AS rank
-                FROM web_conversation_summary
-                WHERE user_id = :user_id
-                  AND to_tsvector('simple', summary_text || ' ' || keywords_text)
+                FROM web_conversation_summary s
+                JOIN web_chat_thread t ON t.id = s.thread_id
+                WHERE s.user_id = :user_id AND t.archived_at IS NULL
+                  AND to_tsvector('simple', s.summary_text || ' ' || s.keywords_text)
                       @@ websearch_to_tsquery('simple', :query)
                 UNION ALL
-                SELECT source_thread_id AS thread_id, source_message_id AS message_id,
-                       value_text AS content, 'memory' AS source_kind, updated_at,
-                       ts_rank_cd(to_tsvector('simple', value_text),
+                SELECT f.source_thread_id AS thread_id,
+                       f.source_message_id AS message_id,
+                       f.value_text AS content, 'memory' AS source_kind,
+                       f.updated_at,
+                       ts_rank_cd(to_tsvector('simple', f.value_text),
                                   websearch_to_tsquery('simple', :query)) AS rank
-                FROM web_memory_fact
-                WHERE user_id = :user_id AND deleted_at IS NULL
-                  AND to_tsvector('simple', value_text) @@ websearch_to_tsquery('simple', :query)
+                FROM web_memory_fact f
+                LEFT JOIN web_chat_thread t ON t.id = f.source_thread_id
+                LEFT JOIN web_chat_message sm ON sm.id = f.source_message_id
+                WHERE f.user_id = :user_id AND f.deleted_at IS NULL
+                  AND (f.source_thread_id IS NULL OR
+                       (t.id IS NOT NULL AND t.archived_at IS NULL))
+                  AND (f.source_message_id IS NULL OR
+                       (sm.id IS NOT NULL AND sm.status = 'complete'
+                        AND sm.superseded_at IS NULL))
+                  AND to_tsvector('simple', f.value_text) @@ websearch_to_tsquery('simple', :query)
                 ORDER BY rank DESC, updated_at DESC
                 LIMIT :limit
                 """
@@ -2146,9 +2158,17 @@ def search_web_content(
             )
     else:
         pattern = f"%{query}%"
+        active_thread_ids = list(session.exec(
+            select(WebChatThread.id).where(
+                WebChatThread.user_id == user.id,
+                WebChatThread.archived_at.is_(None),
+            )
+        ).all())
         messages = session.exec(
             select(WebChatMessage).where(
                 WebChatMessage.user_id == user.id,
+                WebChatMessage.thread_id.in_(active_thread_ids),
+                WebChatMessage.status == "complete",
                 WebChatMessage.superseded_at.is_(None),
                 WebChatMessage.content.ilike(pattern),
             )
@@ -2156,6 +2176,7 @@ def search_web_content(
         summaries = session.exec(
             select(WebConversationSummary).where(
                 WebConversationSummary.user_id == user.id,
+                WebConversationSummary.thread_id.in_(active_thread_ids),
                 or_(
                     WebConversationSummary.summary_text.ilike(pattern),
                     WebConversationSummary.keywords_text.ilike(pattern),
@@ -2166,9 +2187,26 @@ def search_web_content(
             select(WebMemoryFact).where(
                 WebMemoryFact.user_id == user.id,
                 WebMemoryFact.deleted_at.is_(None),
+                or_(
+                    WebMemoryFact.source_thread_id.is_(None),
+                    WebMemoryFact.source_thread_id.in_(active_thread_ids),
+                ),
                 WebMemoryFact.value_text.ilike(pattern),
             )
         ).all()
+        facts = [
+            row for row in facts
+            if not row.source_message_id
+            or (
+                (source := session.exec(select(WebChatMessage).where(
+                    WebChatMessage.id == row.source_message_id,
+                    WebChatMessage.user_id == user.id,
+                )).first())
+                is not None
+                and source.status == "complete"
+                and source.superseded_at is None
+            )
+        ]
         for row in messages:
             results.append(
                 {
@@ -2256,31 +2294,23 @@ def message_feedback(
     session.add(message)
     session.commit()
 
-    cache_row_id = metadata.get("cache_row_id")
     cache_confidence: float | None = None
     tombstoned = False
-    if cache_row_id and previous != payload.rating:
-        cache_row = session.get(GlobalQACache, int(cache_row_id))
-        if cache_row is not None:
-            if payload.rating == "down":
-                from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
+    if previous != payload.rating:
+        from ..ai.agents.feedback_quality_agent import FeedbackQualityAgent
 
-                result = FeedbackQualityAgent().apply_negative_feedback(
-                    session,
-                    cache_row,
-                    amount=0.25,
-                    tombstone_at_zero=True,
-                )
-                cache_confidence = result.confidence
-                tombstoned = result.tombstoned
-            else:
-                cache_row.confidence = min(
-                    1.0, float(cache_row.confidence or 0.0) + 0.10
-                )
-                cache_row.updated_at = utc_now()
-                session.add(cache_row)
-                session.commit()
-                cache_confidence = cache_row.confidence
+        quality = FeedbackQualityAgent()
+        if payload.rating == "down":
+            result = quality.apply_message_negative_once(
+                session, message, action="feedback_down", amount=0.25
+            )
+        else:
+            result = quality.apply_message_positive_once(
+                session, message, action="feedback_up", amount=0.10
+            )
+        if result is not None:
+            cache_confidence = result.confidence
+            tombstoned = result.tombstoned
     return {
         "message_id": message.id,
         "rating": payload.rating,
@@ -2874,6 +2904,10 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
             continue_message_id=str(payload.continue_message_id) if payload.continue_message_id else None,
             edit_message_id=str(payload.edit_message_id) if payload.edit_message_id else None,
+            regenerate_message_id=(
+                str(payload.regenerate_message_id)
+                if payload.regenerate_message_id else None
+            ),
             billing_credit_bucket="chat",
         )
     except InsufficientCreditError as exc:
@@ -2906,6 +2940,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         return _temporary_error(exc.status_code, exc.code, exc.message)
     except EditRequestError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
+    except PromptBudgetExceeded as exc:
+        return _temporary_error(exc.status_code, exc.code, str(exc))
     except (SwicoTierUnavailableError, SwicoTierConfigurationError):
         return JSONResponse(status_code=503, content={"error": {
             "code": "swico_tier_unavailable",

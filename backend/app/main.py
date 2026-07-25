@@ -1110,6 +1110,28 @@ def startup_runtime_services() -> None:
         _register_job_handlers()
         if _job_worker_enabled():
             _get_job_queue().start()
+            if os.getenv(
+                "GLOBAL_QA_SEMANTIC_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"}:
+                # Seed one cursor-based maintenance chain.  The enqueue helper
+                # performs only an active-job lookup; row scanning remains
+                # bounded inside the background worker.
+                from .job_queue import enqueue_global_qa_embedding_backfill
+
+                with SessionLocal() as maintenance_session:
+                    enqueue_global_qa_embedding_backfill(
+                        maintenance_session,
+                        batch_size=max(
+                            1,
+                            min(
+                                100,
+                                int(os.getenv(
+                                    "GLOBAL_QA_EMBEDDING_BACKFILL_BATCH_SIZE",
+                                    "50",
+                                )),
+                            ),
+                        ),
+                    )
             detail = "worker started"
         else:
             detail = "worker disabled"

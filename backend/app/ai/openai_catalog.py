@@ -381,12 +381,19 @@ def get_model_spec(model: str) -> OpenAIModelSpec:
 
 def estimate_model_cost(
     model: str, input_tokens: int, output_tokens: int,
-    cached_input_tokens: int = 0,
+    cached_input_tokens: int = 0, cache_write_tokens: int = 0,
 ) -> float:
     spec = get_model_spec(model)
-    input_multiplier, output_multiplier, _rule = pricing_multipliers(model, input_tokens)
-    cached = min(max(0, int(cached_input_tokens)), max(0, int(input_tokens)))
-    uncached = max(0, int(input_tokens) - cached)
+    total_input = max(
+        0,
+        int(input_tokens),
+        int(cached_input_tokens) + max(0, int(cache_write_tokens)),
+    )
+    input_multiplier, output_multiplier, _rule = pricing_multipliers(
+        model, total_input
+    )
+    cached = min(max(0, int(cached_input_tokens)), total_input)
+    uncached = max(0, total_input - cached)
     cached_rate = spec.cached_input_price_per_1m or spec.input_price_per_1m
     return (
         (uncached / 1_000_000.0)

@@ -206,7 +206,8 @@ def select_context_turns(
         _env_bool("WEB_CONTEXT_RELEVANCE_RANKING_ENABLED", False)
         and len(normalized) > 2
     ):
-        immediate = normalized[-2:]
+        recent_count = 2 if max_turns >= 3 else 1
+        immediate = normalized[-recent_count:]
         immediate_keys = {
             (turn["user"], turn["assistant"]) for turn in immediate
         }
@@ -283,22 +284,41 @@ def _keyword_relevance(
     ).lower()
     if session is not None and dialect.startswith("postgres"):
         try:
-            value = session.exec(
-                sql_text(
-                    "SELECT ts_rank_cd(to_tsvector('simple', :content), "
-                    "websearch_to_tsquery('simple', :query))"
-                ),
-                {"content": content, "query": query},
-            ).one()
+            with session.begin_nested():
+                value = session.exec(
+                    sql_text(
+                        "SELECT ts_rank_cd(to_tsvector('simple', :content), "
+                        "websearch_to_tsquery('simple', :query))"
+                    ),
+                    {"content": content, "query": query},
+                ).one()
             score = float(getattr(value, "_mapping", {}).get("ts_rank_cd", value) or 0.0)
             return max(0.0, min(1.0, score))
         except Exception:
-            session.rollback()
-    query_terms = set(re.findall(r"[\w\u0B80-\u0BFF]+", query.casefold()))
-    content_terms = set(re.findall(r"[\w\u0B80-\u0BFF]+", content.casefold()))
+            pass
+    query_terms = re.findall(r"[\w\u0B80-\u0BFF]+", query.casefold())
+    content_terms = re.findall(r"[\w\u0B80-\u0BFF]+", content.casefold())
     if not query_terms or not content_terms:
         return 0.0
-    return len(query_terms & content_terms) / len(query_terms)
+    # Deterministic BM25-style development fallback. PostgreSQL uses ts_rank_cd
+    # above; this keeps test/development ordering comparable without a database
+    # extension or another search service.
+    frequencies: dict[str, int] = {}
+    for term in content_terms:
+        frequencies[term] = frequencies.get(term, 0) + 1
+    k1 = 1.2
+    b = 0.75
+    average_length = 120.0
+    length_factor = 1.0 - b + b * (len(content_terms) / average_length)
+    score = 0.0
+    for term in set(query_terms):
+        frequency = frequencies.get(term, 0)
+        if frequency <= 0:
+            continue
+        score += (frequency * (k1 + 1.0)) / (
+            frequency + k1 * length_factor
+        )
+    return max(0.0, min(1.0, score / max(1, len(set(query_terms)))))
 
 
 def build_compact_profile_prompt(

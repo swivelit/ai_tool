@@ -140,7 +140,10 @@ def retrieve_memory(
         needs_cross_thread_memory(message) or allow_natural_followup
     ):
         return MemorySelection("", ())
-    limit = _env_int("WEB_MEMORY_MAX_ITEMS", 4, 1, 4)
+    # Ranked website memory is intentionally limited to one or two facts for
+    # this rollout.  Larger legacy values are clamped instead of expanding the
+    # provider prompt.
+    limit = _env_int("WEB_MEMORY_MAX_ITEMS", 2, 1, 2)
     char_limit = _env_int("WEB_MEMORY_MAX_CHARS", 1200, 100, 1200)
     query = _terms(message)
     candidates: list[MemoryRecord] = []
@@ -164,8 +167,13 @@ def retrieve_memory(
         fact_by_id: dict[str, WebMemoryFact] = {}
         for fact in facts:
             if fact.source_message_id:
-                source = session.get(WebChatMessage, fact.source_message_id)
-                if source is not None and source.superseded_at is not None:
+                source = session.exec(select(WebChatMessage).where(
+                    WebChatMessage.id == fact.source_message_id,
+                    WebChatMessage.user_id == user_id,
+                    WebChatMessage.status == "complete",
+                    WebChatMessage.superseded_at.is_(None),
+                )).first()
+                if source is None:
                     continue
             score = _cosine(
                 query_embedding,
@@ -184,7 +192,7 @@ def retrieve_memory(
             fact_by_id[fact.id] = fact
         selected = sorted(
             ranked, key=lambda item: (-item.score, item.record_id)
-        )[:3]
+        )[:limit]
         blocks: list[str] = []
         accepted: list[MemoryRecord] = []
         used = 0
@@ -207,8 +215,13 @@ def retrieve_memory(
         )
     for rank, fact in enumerate(facts):
         if fact.source_message_id:
-            source = session.get(WebChatMessage, fact.source_message_id)
-            if source is not None and source.superseded_at is not None:
+            source = session.exec(select(WebChatMessage).where(
+                WebChatMessage.id == fact.source_message_id,
+                WebChatMessage.user_id == user_id,
+                WebChatMessage.status == "complete",
+                WebChatMessage.superseded_at.is_(None),
+            )).first()
+            if source is None:
                 continue
         text = f"{fact.category}: {fact.value_text}"
         candidates.append(MemoryRecord(
@@ -319,7 +332,14 @@ def write_turn_memory(
     if _SENSITIVE.search(user_message.content) or _SENSITIVE.search(assistant_message.content):
         return
     now = utc_now()
-    explicit = _explicit_fact(user_message.content)
+    # When post-turn distillation is enabled, fact extraction and embeddings
+    # belong exclusively to its background job. Conversation summaries remain
+    # here so the existing continuity/search behavior is preserved.
+    explicit = (
+        None
+        if _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False)
+        else _explicit_fact(user_message.content)
+    )
     if explicit:
         category, value = explicit
         normalized_terms = sorted(_terms(value))[:12]

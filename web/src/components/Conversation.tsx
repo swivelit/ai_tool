@@ -6,9 +6,10 @@ import { MarkdownMessage } from './MarkdownMessage'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
+export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
   messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
+  regenerateResponse?: (message: Message) => void;
   editMessage?: (message: Message, content: string) => void; editingAvailable?: boolean; editingDisabled?: boolean;
   voiceStates?: Record<string, VoiceReplyState>; playVoice?: (messageId: string) => void;
   pauseVoice?: (messageId: string) => void; retryVoice?: (messageId: string, voiceTurnId: string) => void;
@@ -116,8 +117,9 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
       <div className="conversation-content" ref={contentRef}>
         {!messages.length && <EmptyState suggest={suggest} />}
-        {messages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse}
+        {messages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse}
           canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
+          regenerationAvailable={editingAvailable}
           editMessage={editMessage} editingDisabled={editingDisabled}
           voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
           retryVoice={retryVoice} addCredits={addCredits} feedbackEnabled={feedbackEnabled}
@@ -136,10 +138,11 @@ function EmptyState({ suggest }: { suggest: (text: string) => void }) {
   </div>
 }
 
-function MessageView({ message, retry, continueResponse, canEdit, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
+function MessageView({ message, retry, continueResponse, regenerateResponse, canEdit, regenerationAvailable, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
   message: Message; retry: (message: Message) => void; voiceState?: VoiceReplyState;
   continueResponse: (message: Message) => void;
-  canEdit: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean;
+  regenerateResponse: (message: Message) => void;
+  canEdit: boolean; regenerationAvailable: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean;
   playVoice: (messageId: string) => void; pauseVoice: (messageId: string) => void;
   retryVoice: (messageId: string, voiceTurnId: string) => void; addCredits: () => void;
   feedbackEnabled: boolean; submitFeedback: (message: Message, rating: 'up' | 'down') => Promise<void>;
@@ -182,6 +185,7 @@ function MessageView({ message, retry, continueResponse, canEdit, editMessage, e
       {voiceState?.status === 'ended' && <button aria-label="Replay voice reply" title="Replay voice reply" onClick={() => playVoice(message.id)}><RotateCcw size={16} /></button>}
       {voiceState?.status === 'error' && <span className="voice-reply-error" role="status">{voiceState.error}{voiceState.canRetry !== false && <button aria-label="Retry voice reply" onClick={() => message.voice_turn_id && retryVoice(message.id, message.voice_turn_id)}><RefreshCw size={15} /> Retry</button>}{voiceState.insufficientCredits && <button onClick={addCredits}>Add credits</button>}</span>}
       {message.status === 'retryable' && <button aria-label="Retry answer" title="Retry answer" onClick={() => retry(message)}><RefreshCw size={16} /></button>}
+      {regenerationAvailable && message.status === 'complete' && <button className="regenerate-answer" aria-label="Regenerate answer" title="Regenerate answer" disabled={editingDisabled} onClick={() => regenerateResponse(message)}><RotateCcw size={16} /> Regenerate</button>}
       {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" onClick={() => continueResponse(message)}><RefreshCw size={16} /> Continue response</button>}
       {(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
         <span>{message.tier_label || 'Swico'}</span>

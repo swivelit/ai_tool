@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import math
 import operator
+import os
 import re
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -12,7 +13,11 @@ from zoneinfo import ZoneInfo
 from sqlmodel import Session
 
 from ..ai.tools import handle_backend_tool
+from ..ai.swico_tiers import public_tier_settings
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
+from ..billing.topups import (
+    custom_topup_enabled, enforce_topup_packages, topup_bounds, topup_packages,
+)
 from ..models import User
 from ..time_utils import utc_now
 from .swico_brand import classify_swico_brand_query, swico_brand_response
@@ -39,6 +44,38 @@ _JSON_INTENT = re.compile(
 _COMING_SOON = re.compile(
     r"^\s*(?:please\s+)?(?:create|add|save|set|make|remind)\b.*\b"
     r"(?:reminder|note|task|todo|to-do)\b|^\s*remind me\b",
+    re.IGNORECASE,
+)
+_TOPUP_HOW = re.compile(
+    r"\b(?:how (?:do|can) i (?:top[ -]?up|recharge|add (?:ai )?credits?|add money)|"
+    r"(?:top[ -]?up|recharge|add credits?) (?:how|steps?|process)|"
+    r"recharge (?:panna|seiya) (?:eppadi|epdi)|credits? (?:vaanga|add) "
+    r"(?:eppadi|epdi))\b",
+    re.IGNORECASE,
+)
+_TOPUP_PACKAGES = re.compile(
+    r"\b(?:(?:available|what|which|show|list).{0,24}"
+    r"(?:top[ -]?up|recharge|credit).{0,16}(?:packages?|options?|amounts?)|"
+    r"(?:top[ -]?up|recharge) packages?|recharge options?)\b",
+    re.IGNORECASE,
+)
+_TOPUP_BOUNDS = re.compile(
+    r"\b(?:(?:minimum|maximum|min|max|lowest|highest).{0,24}"
+    r"(?:top[ -]?up|recharge|credit)|(?:top[ -]?up|recharge).{0,24}"
+    r"(?:minimum|maximum|min|max|limit|range))\b",
+    re.IGNORECASE,
+)
+_TOPUP_CUSTOM = re.compile(
+    r"\b(?:(?:any|arbitrary|custom|my own|different).{0,20}"
+    r"(?:top[ -]?up|recharge|amount|value)|"
+    r"(?:top[ -]?up|recharge).{0,20}(?:any|arbitrary|custom|own amount))\b",
+    re.IGNORECASE,
+)
+_PLAN_PRICING = re.compile(
+    r"\b(?:swico )?(?:plans?|pricing|tiers?|modes?)\b.*"
+    r"\b(?:price|pricing|cost|difference|available|compare|which|what)\b|"
+    r"\b(?:price|pricing|cost|compare|difference)\b.*"
+    r"\b(?:swico )?(?:plans?|tiers?|modes?)\b",
     re.IGNORECASE,
 )
 
@@ -209,6 +246,93 @@ def _json_answer(message: str) -> str | None:
     return "Valid JSON:\n```json\n" + json.dumps(parsed, ensure_ascii=False, indent=2) + "\n```"
 
 
+def _rupees(paise: int) -> str:
+    value = int(paise)
+    if value % 100 == 0:
+        return f"₹{value // 100:,}"
+    return f"₹{value / 100:,.2f}"
+
+
+def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str] | None:
+    text = str(message or "").strip()
+    packages = topup_packages()
+    minimum, maximum = topup_bounds()
+    custom_enabled = custom_topup_enabled()
+    package_text = ", ".join(_rupees(value) for value in packages) or "none configured"
+    tanglish = (
+        str(reply_language or "").strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
+        or bool(re.search(r"\b(?:panna|seiya|eppadi|epdi|vaanga)\b", text, re.I))
+        or bool(re.search(r"[\u0B80-\u0BFF]", text))
+    )
+
+    if _TOPUP_HOW.search(text):
+        checkout_enabled = str(
+            os.getenv("BILLING_CHECKOUT_ENABLED", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not checkout_enabled:
+            answer = (
+                "AI credit top-up checkout is currently unavailable."
+                if not tanglish else
+                "AI credit top-up checkout ippo available illa."
+            )
+        elif tanglish:
+            answer = (
+                "Web-la **Add credits** open pannunga, package அல்லது allowed amount-a "
+                "select panni Razorpay checkout complete pannunga."
+            )
+        else:
+            answer = (
+                "Open **Add credits** on the website, choose a package"
+                + (" or enter an allowed whole-rupee amount" if custom_enabled else "")
+                + ", then complete the existing Razorpay checkout."
+            )
+        return answer, "billing_topup_how"
+    if _TOPUP_PACKAGES.search(text):
+        return (
+            (
+                f"Available top-up packages: {package_text}."
+                if not tanglish else
+                f"Available recharge packages: {package_text}."
+            ),
+            "billing_topup_packages",
+        )
+    if _TOPUP_BOUNDS.search(text):
+        return (
+            (
+                f"The configured top-up range is {_rupees(minimum)} to "
+                f"{_rupees(maximum)}, using whole-rupee amounts."
+            ),
+            "billing_topup_bounds",
+        )
+    if _TOPUP_CUSTOM.search(text):
+        if custom_enabled and not enforce_topup_packages():
+            return (
+                f"Yes. You can enter any whole-rupee top-up from "
+                f"{_rupees(minimum)} to {_rupees(maximum)}.",
+                "billing_custom_topup",
+            )
+        return (
+            f"No. Choose one of the configured packages: {package_text}.",
+            "billing_custom_topup",
+        )
+    if _PLAN_PRICING.search(text):
+        settings = public_tier_settings(
+            os.getenv("SWICO_DEFAULT_TIER", "lite")
+        )
+        tiers = [
+            f"{item['label']}: {item['description']}"
+            + ("" if item["available"] else " (not currently available)")
+            for item in settings["tiers"]
+        ]
+        return (
+            "Swico’s available modes are " + "; ".join(tiers)
+            + f". AI usage is paid from credits; configured top-up packages are "
+            f"{package_text}.",
+            "billing_tier_pricing",
+        )
+    return None
+
+
 def _time_answer(session: Session, user_id: int, message: str) -> str | None:
     if not _TIME_QUERY.search(message) or re.search(r"\btime complexity\b", message, re.I):
         return None
@@ -249,6 +373,11 @@ def try_deterministic_answer(
     answer = _unit_answer(text)
     if answer:
         return _response(answer, intent="unit_conversion", reason="static_unit_table")
+
+    billing = _billing_answer(text, reply_language)
+    if billing is not None:
+        answer, intent = billing
+        return _response(answer, intent=intent, reason="configured_billing_policy")
 
     brand = classify_swico_brand_query(text, previous_topic=previous_topic)
     if brand is not None:

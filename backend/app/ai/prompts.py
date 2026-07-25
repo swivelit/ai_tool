@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import hashlib
 from typing import Any
 
 from app.age_utils import normalize_age_group
@@ -124,6 +125,19 @@ def serialize_provider_messages(messages: list[dict[str, str]]) -> str:
     return json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def stable_prompt_cache_key(request: AIRequest, route: AIRoute) -> str | None:
+    """Return a PII-free key for an explicitly enabled provider cache path."""
+    if not _env_bool("WEB_PROMPT_CACHE_ENABLED", False):
+        return None
+    version = str(
+        (request.metadata or {}).get("prompt_cache_version")
+        or os.getenv("WEB_PROMPT_CACHE_VERSION", "v1")
+    ).strip() or "v1"
+    route_class = str(route.route or route.intent or "general").strip().lower()
+    material = f"swico-web-prompt|{version}|{route_class}"
+    return "swico-web-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:40]
+
+
 def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: str) -> str:
     """Build provider system instructions.
 
@@ -136,11 +150,15 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
             if (request.metadata or {}).get("client_surface") == "web"
             else "mobile"
         )
+        version = str(
+            (request.metadata or {}).get("prompt_cache_version")
+            or os.getenv("WEB_PROMPT_CACHE_VERSION", "v1")
+        ).strip() or "v1"
         return "\n".join(
             (
                 STATIC_SYSTEM_PREFIX,
                 f"You are Swico, the {surface} assistant. Answer directly.",
-                f"Provider route contract: {provider}:{route.route}:{route.intent}.",
+                f"Prompt schema {version}. Provider route class: {provider}:{route.route}.",
             )
         )
     return _build_dynamic_system_instructions(request, route, provider=provider)

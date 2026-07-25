@@ -51,9 +51,18 @@ def _ceil_micros(value_inr: Decimal) -> int:
     return int((value_inr * markup * MICROS_PER_INR).to_integral_value(rounding=ROUND_CEILING))
 
 
-def openai_price(model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> PriceResult:
+def openai_price(
+    model: str, input_tokens: int, output_tokens: int,
+    cached_input_tokens: int = 0, cache_write_tokens: int = 0,
+) -> PriceResult:
     spec = get_model_spec(model)
-    total_input = max(0, int(input_tokens))
+    writes = max(0, int(cache_write_tokens))
+    # Some provider payloads report cache creation separately from total input.
+    # Expanding the billable total prevents that representation from silently
+    # undercharging a cache write.
+    total_input = max(
+        0, int(input_tokens), max(0, int(cached_input_tokens)) + writes
+    )
     cached = min(max(0, int(cached_input_tokens)), total_input)
     uncached = total_input - cached
     input_multiplier, output_multiplier, pricing_rule = pricing_multipliers(
@@ -73,6 +82,8 @@ def openai_price(model: str, input_tokens: int, output_tokens: int, cached_input
         "provider": "openai", "model": model,
         "input_usd_per_1m": str(spec.input_price_per_1m),
         "cached_input_usd_per_1m": str(spec.cached_input_price_per_1m or spec.input_price_per_1m),
+        "cache_write_input_usd_per_1m": str(spec.input_price_per_1m),
+        "cache_write_tokens": writes,
         "output_usd_per_1m": str(spec.output_price_per_1m),
         "pricing_rule": pricing_rule,
         "input_price_multiplier": str(input_factor),
@@ -98,13 +109,21 @@ def openai_reported_price(model: str, amount_usd: Decimal, snapshot: dict[str, A
     )
 
 
-def sarvam_price(model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> PriceResult:
+def sarvam_price(
+    model: str, input_tokens: int, output_tokens: int,
+    cached_input_tokens: int = 0, cache_write_tokens: int = 0,
+) -> PriceResult:
     large = "105" in str(model).lower()
     prefix = "105B" if large else "30B"
     input_rate = env_decimal(f"SARVAM_PRICE_{prefix}_INPUT_INR_PER_1M", "4.0" if large else "2.5")
     cached_rate = env_decimal(f"SARVAM_PRICE_{prefix}_CACHED_INPUT_INR_PER_1M", "2.5" if large else "1.5")
     output_rate = env_decimal(f"SARVAM_PRICE_{prefix}_OUTPUT_INR_PER_1M", "16.0" if large else "10.0")
-    uncached = max(0, int(input_tokens) - int(cached_input_tokens))
+    total_input = max(
+        0,
+        int(input_tokens),
+        int(cached_input_tokens) + max(0, int(cache_write_tokens)),
+    )
+    uncached = max(0, total_input - int(cached_input_tokens))
     amount_inr = (
         Decimal(uncached) * input_rate
         + Decimal(max(0, int(cached_input_tokens))) * cached_rate
@@ -166,11 +185,20 @@ def tts_price(characters: int, model: str) -> PriceResult:
     )
 
 
-def price_usage(provider: str, model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> PriceResult:
+def price_usage(
+    provider: str, model: str, input_tokens: int, output_tokens: int,
+    cached_input_tokens: int = 0, cache_write_tokens: int = 0,
+) -> PriceResult:
     if provider == "openai":
-        return openai_price(model, input_tokens, output_tokens, cached_input_tokens)
+        return openai_price(
+            model, input_tokens, output_tokens,
+            cached_input_tokens, cache_write_tokens,
+        )
     if provider == "sarvam":
-        return sarvam_price(model, input_tokens, output_tokens, cached_input_tokens)
+        return sarvam_price(
+            model, input_tokens, output_tokens,
+            cached_input_tokens, cache_write_tokens,
+        )
     return PriceResult(Decimal("0"), "INR", 0, {"provider": provider, "zero_charge": True})
 
 
