@@ -291,7 +291,27 @@ def classify_swico_brand_query(
     text = " ".join(str(message or "").split()).strip()
     if not text or not swico_brand_guard_enabled():
         return None
-    explicit = bool(_PRODUCT_REFERENCE_RE.search(text) or _SELF_REFERENCE_RE.search(text))
+    # Product names inside validation payloads, code, JSON keys/values, or code
+    # fences are data rather than a request for the public Swico profile.
+    payload_free = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    payload_free = re.sub(r"\{.*\}|\[.*\]", " ", payload_free, flags=re.DOTALL)
+    payload_free = re.sub(
+        r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')""", " ", payload_free
+    )
+    validation_payload = bool(
+        re.search(
+            r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b"
+            r".*\b(?:json|code|data|payload)\b|"
+            r"\b(?:json|code|data|payload)\b.*"
+            r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    product_reference = bool(_PRODUCT_REFERENCE_RE.search(payload_free))
+    explicit = bool(product_reference or _SELF_REFERENCE_RE.search(text))
+    if validation_payload and not product_reference and not _SELF_REFERENCE_RE.search(text):
+        explicit = False
     contextual = bool(
         not explicit
         and previous_topic == "swico"

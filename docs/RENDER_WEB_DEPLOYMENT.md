@@ -157,6 +157,26 @@ The narrower Swico Brand Guard rollback is
 `WEB_SWICO_BRAND_GUARD_ENABLED=false`; it restores the previous provider path
 for public product questions while retaining the vendor-neutral public prompt.
 
+For the temporary production intelligence rollback, set exactly these values
+directly on the existing `ai_tool` service:
+
+```dotenv
+AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED=false
+GLOBAL_QA_SEMANTIC_ENABLED=false
+WEB_POST_TURN_DISTILLATION_ENABLED=false
+WEB_CROSS_THREAD_MEMORY_ENABLED=false
+WEB_MEMORY_FACT_RANKING_ENABLED=false
+WEB_MESSAGE_EDIT_ENABLED=false
+```
+
+Do not put these flags on `swico-web`, in `VITE_*` variables, in the
+`swico-backend-production` environment group, or on PostgreSQL, Valkey, or
+Razorpay cron jobs. Re-enable in this order: (1) message editing/regeneration,
+(2) memory ranking and distillation, then (3) semantic cache and global cache
+recording. Verify each stage before enabling the next. Keep
+`WEB_MEMORY_MAX_ITEMS=2`, `WEB_MEMORY_LLM_SUMMARIZATION_ENABLED=false`, and
+`WEB_PROMPT_CACHE_ENABLED=false`.
+
 After the migration and staging verification, enable high-impact features one
 at a time on the API service only: `WEB_MESSAGE_EDIT_ENABLED=true`, then
 `WEB_CROSS_THREAD_MEMORY_ENABLED=true` (users still opt in individually), then

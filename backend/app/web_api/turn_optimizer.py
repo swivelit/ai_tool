@@ -21,6 +21,13 @@ from .swico_brand import (
 
 
 AnswerClass = Literal["simple", "normal", "detailed", "long_form"]
+_STRUCTURED_VALIDATION_REQUEST = re.compile(
+    r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b"
+    r".*\b(?:json|code|structured data|payload)\b|"
+    r"\b(?:json|code|structured data|payload)\b.*"
+    r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,8 @@ class WebTurnOptimization:
     brand_topic: str = ""
     brand_subintent: str = ""
     brand_profile_version: str = ""
+    cache_scope: Literal["global", "owner", "disabled"] = "disabled"
+    cache_scope_reason: str = "turn_not_cache_eligible"
 
 
 def optimizer_enabled() -> bool:
@@ -62,7 +71,11 @@ def optimize_web_turn(
 ) -> WebTurnOptimization:
     """Build a deterministic, provider-free website turn policy."""
     text = str(message or "").strip()
-    brand_match = classify_swico_brand_query(text, previous_topic=previous_topic)
+    brand_match = (
+        None
+        if _STRUCTURED_VALIDATION_REQUEST.search(text)
+        else classify_swico_brand_query(text, previous_topic=previous_topic)
+    )
     if brand_match is not None:
         maximum = output_ceiling("simple")
         metrics = {
@@ -87,6 +100,8 @@ def optimize_web_turn(
             "brand_topic": "swico",
             "brand_subintent": brand_match.subintent.value,
             "brand_profile_version": SWICO_PUBLIC_PROFILE_VERSION,
+            "cache_scope": "disabled",
+            "cache_scope_reason": "deterministic_swico_brand",
         }
         return WebTurnOptimization(
             optimization_route="deterministic_swico_brand",
@@ -99,6 +114,8 @@ def optimize_web_turn(
             brand_topic="swico",
             brand_subintent=brand_match.subintent.value,
             brand_profile_version=SWICO_PUBLIC_PROFILE_VERSION,
+            cache_scope="disabled",
+            cache_scope_reason="deterministic_swico_brand",
         )
     decision = classify_intent_with_metadata(text)
     contextual = (
@@ -128,6 +145,14 @@ def optimize_web_turn(
         and not is_live_or_current_question(text)
         and not is_private_or_personal_question(text)
     )
+    cache_scope = "global" if cache_eligible else "disabled"
+    cache_scope_reason = (
+        "public_standalone"
+        if cache_eligible else
+        "owner_context_question"
+        if is_private_or_personal_question(text) else
+        "turn_not_cache_eligible"
+    )
     route = local_route or ("provider_contextual" if contextual else "provider_standalone")
     metrics = {
         "optimization_route": route,
@@ -145,6 +170,8 @@ def optimize_web_turn(
         "fallback_attempted": False,
         "cached_input_tokens": 0,
         "cache_write_tokens": 0,
+        "cache_scope": cache_scope,
+        "cache_scope_reason": cache_scope_reason,
     }
     return WebTurnOptimization(
         optimization_route=route,
@@ -161,6 +188,8 @@ def optimize_web_turn(
         metrics=metrics,
         formatted_context=formatted,
         local_intent=decision.intent if local_route else "",
+        cache_scope=cache_scope,
+        cache_scope_reason=cache_scope_reason,
     )
 
 

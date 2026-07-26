@@ -13,7 +13,7 @@ from app.models import (
 from app.web_api.chat_service import EditRequestError, execute_web_turn, prepare_web_turn
 from app.web_api.web_memory import retrieve_memory, write_turn_memory
 from tests.conftest import auth_headers, create_test_user
-from tests.test_web_chat_api import _fund
+from tests.test_web_chat_api import _fund, _sse_events
 
 
 class Provider:
@@ -70,7 +70,11 @@ def test_standalone_turn_has_no_history_memory_or_document_and_one_provider_call
         providers={"openai": CountingProvider()},
     )
     assert calls == 1
-    stored = json.loads(completed.message.metadata_json)
+    assert not isinstance(completed.message, WebChatMessage)
+    with SessionLocal() as session:
+        persisted = session.get(WebChatMessage, completed.message.id)
+        assert persisted is not None
+        stored = json.loads(persisted.metadata_json)
     for key in (
         "system_prompt_estimated_tokens", "user_message_estimated_tokens",
         "same_thread_estimated_tokens", "memory_estimated_tokens",
@@ -405,7 +409,7 @@ def test_completed_answer_regeneration_is_revisioned_billed_and_idempotent(
         request_id="regen-request-2", thread_id=first_done.thread_id,
         reply_language="en", regenerate_message_id=original_id,
     )
-    assert replay.existing_response is not None
+    assert replay.existing_response_id is not None
     with SessionLocal() as session:
         old = session.get(WebChatMessage, original_id)
         new = session.get(WebChatMessage, regenerated_done.message.id)
@@ -420,6 +424,89 @@ def test_completed_answer_regeneration_is_revisioned_billed_and_idempotent(
     assert new.revision_number == 2
     assert json.loads(new.metadata_json)["regenerated_cache_row_id"] == cache.id
     assert cache.confidence == 0.35 and cache.status == "rejected"
+    assert len(charges) == 2
+
+
+def test_regeneration_sse_finishes_after_cache_confidence_correction(
+    client, monkeypatch,
+):
+    monkeypatch.setenv("WEB_MESSAGE_EDIT_ENABLED", "true")
+    monkeypatch.setenv("GLOBAL_QA_CONFIDENCE_FLOOR", "0.35")
+    user = create_test_user("regen-sse", "regen-sse@example.com")
+    _fund(int(user.id))
+
+    def stream(self, request, route, on_delta):
+        return Provider().stream_complete(request, route, on_delta)
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete", stream
+    )
+    headers = auth_headers("regen-sse", "regen-sse@example.com")
+    first = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": "77000000-0000-4000-8000-000000000001",
+            "message": "Give me a roadmap",
+        },
+    )
+    first_done = _sse_events(first, "done")[0]
+    original_id = first_done["message_id"]
+    thread_id = first_done["thread_id"]
+    with SessionLocal() as session:
+        cache = GlobalQACache(
+            canonical_question="Give me a roadmap",
+            normalized_question="give me a roadmap",
+            answer="Old cached roadmap",
+            answer_language="en",
+            scope="global",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json="[]",
+            answer_hash="regen-sse-cache",
+            confidence=0.5,
+            safety_label="general",
+        )
+        session.add(cache)
+        session.flush()
+        original = session.get(WebChatMessage, original_id)
+        assert original is not None
+        metadata = json.loads(original.metadata_json)
+        metadata["cache_row_id"] = cache.id
+        original.metadata_json = json.dumps(metadata)
+        session.add(original)
+        session.commit()
+        cache_id = cache.id
+    regenerated = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": "77000000-0000-4000-8000-000000000002",
+            "message": "Give me a roadmap",
+            "thread_id": thread_id,
+            "regenerate_message_id": original_id,
+        },
+    )
+    assert regenerated.status_code == 200
+    assert _sse_events(regenerated, "usage")
+    assert _sse_events(regenerated, "wallet")
+    done = _sse_events(regenerated, "done")
+    assert done and not done[0]["cancelled"]
+    assert not _sse_events(regenerated, "error")
+    with SessionLocal() as session:
+        old = session.get(WebChatMessage, original_id)
+        new = session.get(WebChatMessage, done[0]["message_id"])
+        corrected = session.get(GlobalQACache, cache_id)
+        charges = session.exec(
+            select(UsageCharge).where(UsageCharge.user_id == int(user.id))
+        ).all()
+    assert old is not None and old.superseded_at is not None
+    assert new is not None and new.replaces_message_id == original_id
+    assert new.revision_number == 2
+    assert corrected is not None
+    assert corrected.confidence == 0.35 and corrected.status == "rejected"
     assert len(charges) == 2
 
 
@@ -457,3 +544,120 @@ def test_memory_settings_are_owner_scoped_and_support_delete_and_clear(client, m
     ).status_code == 204
     assert client.delete("/api/web/settings/memory", headers=owner_headers).status_code == 204
     assert client.get("/api/web/settings/memory", headers=owner_headers).json()["items"] == []
+
+
+def test_explicit_memory_write_and_cross_chat_retrieval_are_owner_scoped(
+    client, monkeypatch,
+):
+    monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("WEB_MEMORY_FACT_RANKING_ENABLED", "false")
+    monkeypatch.setenv("WEB_RESPONSE_PROVENANCE_ENABLED", "true")
+    owner = create_test_user("explicit-memory-owner", "explicit-memory-owner@example.com")
+    other = create_test_user("explicit-memory-other", "explicit-memory-other@example.com")
+    _fund(int(owner.id))
+    _fund(int(other.id))
+    owner_headers = auth_headers(
+        "explicit-memory-owner", "explicit-memory-owner@example.com"
+    )
+    other_headers = auth_headers(
+        "explicit-memory-other", "explicit-memory-other@example.com"
+    )
+    assert client.patch(
+        "/api/web/settings/memory",
+        headers=owner_headers,
+        json={"enabled": True},
+    ).json()["enabled"] is True
+    assert client.patch(
+        "/api/web/settings/memory",
+        headers=other_headers,
+        json={"enabled": True},
+    ).json()["enabled"] is True
+
+    monkeypatch.setattr(
+        "app.web_api.web_memory.cached_text_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit memory writes must not embed synchronously")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit memory writes must not call a chat model")
+        ),
+    )
+    write_response = client.post(
+        "/api/web/chat/stream",
+        headers=owner_headers,
+        json={
+            "request_id": "75000000-0000-4000-8000-000000000001",
+            "message": (
+                "Remember that my preferred reply style is concise "
+                "Tamil-English."
+            ),
+        },
+    )
+    assert write_response.status_code == 200
+    assert "Saved to cross-chat memory." in write_response.text
+    assert '"backend_tool"' in write_response.text
+    assert _sse_events(write_response, "done")[0]["memory_updated"] is True
+    listing = client.get("/api/web/settings/memory", headers=owner_headers).json()
+    assert [item["value_text"] for item in listing["items"]] == [
+        "concise Tamil-English."
+    ]
+
+    observed_contexts: dict[int, str] = {}
+
+    def answer_from_memory(self, request, route, on_delta):
+        context = str(request.metadata.get("memory_prompt_context") or "")
+        observed_contexts[int(request.user_id)] = context
+        text = (
+            "You prefer concise Tamil-English replies."
+            if context else "I do not have a saved reply preference for you."
+        )
+        on_delta(text)
+        return AIProviderResponse(
+            text=text,
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=20,
+            output_tokens=8,
+            raw={"usage_actual": True, "completion_status": "complete"},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        answer_from_memory,
+    )
+    owner_answer = client.post(
+        "/api/web/chat/stream",
+        headers=owner_headers,
+        json={
+            "request_id": "75000000-0000-4000-8000-000000000002",
+            "message": "What reply style do I prefer?",
+        },
+    )
+    other_answer = client.post(
+        "/api/web/chat/stream",
+        headers=other_headers,
+        json={
+            "request_id": "75000000-0000-4000-8000-000000000003",
+            "message": "What reply style do I prefer?",
+        },
+    )
+    assert owner_answer.status_code == other_answer.status_code == 200
+    assert "You prefer concise Tamil-English replies." in owner_answer.text
+    assert '"memory"' in owner_answer.text
+    assert "I do not have a saved reply preference for you." in other_answer.text
+    assert "concise Tamil-English" in observed_contexts[int(owner.id)]
+    assert observed_contexts[int(other.id)] == ""
+    with SessionLocal() as session:
+        assert session.exec(
+            select(GlobalQACache).where(
+                GlobalQACache.normalized_question
+                == "what reply style do i prefer"
+            )
+        ).all() == []

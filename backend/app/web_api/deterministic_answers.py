@@ -24,8 +24,9 @@ from .swico_brand import classify_swico_brand_query, swico_brand_response
 
 
 _TIME_QUERY = re.compile(
-    r"\b(?:what(?:'s| is) (?:the )?(?:time|date|day)|"
-    r"(?:current|local) (?:time|date)|what day is it|today'?s date|time now)\b",
+    r"\b(?:what\s+(?:time|date|day)\s+is\s+it|"
+    r"what(?:'s|\s+is)\s+(?:the\s+)?(?:time|date|day)|"
+    r"(?:current|local)\s+(?:time|date)|today'?s\s+date|time\s+now)\b",
     re.IGNORECASE,
 )
 _ARITHMETIC_PREFIX = re.compile(
@@ -337,12 +338,19 @@ def _time_answer(session: Session, user_id: int, message: str) -> str | None:
     if not _TIME_QUERY.search(message) or re.search(r"\btime complexity\b", message, re.I):
         return None
     user = session.get(User, user_id)
-    timezone_name = str(getattr(user, "timezone", "") or "Asia/Kolkata")
+    timezone_name = str(getattr(user, "timezone", "") or "").strip()
+    if not timezone_name:
+        return (
+            "Set a valid IANA timezone in Settings → Profile to use the "
+            "time and date tool."
+        )
     try:
         timezone = ZoneInfo(timezone_name)
     except Exception:
-        timezone_name = "Asia/Kolkata"
-        timezone = ZoneInfo(timezone_name)
+        return (
+            "Set a valid IANA timezone in Settings → Profile to use the "
+            "time and date tool."
+        )
     now = utc_now().astimezone(timezone)
     lowered = message.casefold()
     if "time" in lowered:
@@ -374,6 +382,10 @@ def try_deterministic_answer(
     if answer:
         return _response(answer, intent="unit_conversion", reason="static_unit_table")
 
+    answer = _json_answer(text)
+    if answer:
+        return _response(answer, intent="json_validation", reason="safe_json_parser")
+
     billing = _billing_answer(text, reply_language)
     if billing is not None:
         answer, intent = billing
@@ -385,10 +397,6 @@ def try_deterministic_answer(
             brand.subintent.value, reply_language=reply_language, message=text
         )
         return _response(answer, intent="swico_brand", reason="approved_swico_public_profile")
-
-    answer = _json_answer(text)
-    if answer:
-        return _response(answer, intent="json_validation", reason="safe_json_parser")
 
     lowered = text.casefold()
     tool_intent = ""

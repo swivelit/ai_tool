@@ -336,7 +336,7 @@ def test_deterministic_replay_cannot_switch_billing_bucket():
         thread_id=prepared.thread_id, reply_language="en",
         billing_credit_bucket="voice",
     )
-    assert replay.existing_response is not None
+    assert replay.existing_response_id is not None
     assert replay.billing_credit_bucket == "voice"
     with pytest.raises(PaymentValidationError, match="another credit bucket"):
         prepare_web_turn(

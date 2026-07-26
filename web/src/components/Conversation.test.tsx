@@ -65,7 +65,10 @@ it('offers regeneration only for a completed assistant answer', () => {
   const completed = message('completed-answer')
   render(<Conversation messages={[completed]} retry={vi.fn()} suggest={vi.fn()}
     editingAvailable regenerateResponse={regenerate} />)
-  fireEvent.click(screen.getByRole('button', { name:'Regenerate answer' }))
+  const button = screen.getByRole('button', { name:'Regenerate answer' })
+  expect(button).toHaveClass('regenerate-answer')
+  expect(button).not.toHaveClass('icon-button')
+  fireEvent.click(button)
   expect(regenerate).toHaveBeenCalledWith(completed)
 })
 

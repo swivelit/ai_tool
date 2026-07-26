@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import os
@@ -21,9 +22,19 @@ from ..openai_tracked import cached_text_embedding
 
 _MEMORY_REQUESTS = re.compile(
     r"\b(continue (?:the )?.*(?:we discussed|from (?:the )?other chat)|"
-    r"what did i (?:decide|say|plan)|use my previous|remember my (?:preferred|preference|project)|"
+    r"what did i (?:decide|say|plan|tell you(?: about my project)?)|"
+    r"what (?:reply style do i prefer|are my saved preferences)|"
+    r"how do i prefer you to answer|do you remember my preferred reply style|"
+    r"what do you remember about me|use my previous|"
+    r"remember my (?:preferred|preference|project)|"
     r"what was the .* from (?:the )?(?:other|previous) chat|previous (?:chat|thread|conversation)|"
-    r"we discussed (?:yesterday|before|earlier))\b",
+    r"we discussed (?:yesterday|before|earlier)|my (?:current )?project)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_MEMORY_WRITE = re.compile(
+    r"^\s*(?:remember(?:\s+that)?\s+|save\s+this\s+preference\s*:|"
+    r"my\s+preferred\s+reply\s+style\s+is\s+|i\s+prefer\s+|"
+    r"my\s+current\s+project\s+is\s+|i\s+am\s+working\s+on\s+)",
     re.IGNORECASE,
 )
 _TOKENS = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
@@ -34,7 +45,8 @@ _STOP = {
 }
 _SENSITIVE = re.compile(
     r"\b(password|passcode|otp|one[- ]time password|credit card|debit card|cvv|"
-    r"bank account|aadhaar|social security|private key|api key|access token)\b",
+    r"bank account|account number|ifsc|upi|aadhaar|pan number|social security|"
+    r"private key|api key|access token|refresh token|secret)\b",
     re.IGNORECASE,
 )
 
@@ -54,6 +66,13 @@ class MemorySelection:
     prompt_context: str
     records: tuple[MemoryRecord, ...]
     estimated_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class DurableMemoryFact:
+    category: str
+    value: str
+    normalized_key: str
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -89,6 +108,10 @@ def memory_enabled(session: Session, user_id: int) -> bool:
         WebUsagePreferences.user_id == user_id
     )).first()
     return bool(row and row.memory_enabled)
+
+
+def memory_deployment_available() -> bool:
+    return _env_bool("WEB_CROSS_THREAD_MEMORY_ENABLED", False)
 
 
 def _terms(value: str) -> set[str]:
@@ -303,12 +326,41 @@ def backfill_memory_fact_embeddings(
     return {"scanned": len(facts), "embedded": embedded}
 
 
-def _explicit_fact(message: str) -> tuple[str, str] | None:
+def explicit_memory_write_requested(message: str) -> bool:
+    return bool(_EXPLICIT_MEMORY_WRITE.search(str(message or "")))
+
+
+def normalized_memory_key(category: str, value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return f"{str(category or 'preference').strip().casefold()}:{digest}"[:160]
+
+
+def parse_durable_memory_fact(message: str) -> DurableMemoryFact | None:
     text = " ".join(str(message or "").split()).strip()
     if not text or _SENSITIVE.search(text):
         return None
+    if re.search(
+        r"\b(?:for (?:this|the current) (?:message|turn|reply)|right now|"
+        r"today only|temporarily|do not remember|don'?t save)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+    remember = re.match(r"^remember(?:\s+that)?\s+(.+)$", text, re.IGNORECASE)
+    if remember:
+        nested = parse_durable_memory_fact(remember.group(1))
+        if nested is not None:
+            return nested
+        value = remember.group(1).strip(" ,;:-")[:600]
+        return (
+            DurableMemoryFact(
+                "explicit", value, normalized_memory_key("explicit", value)
+            )
+            if value else None
+        )
     patterns: Iterable[tuple[str, str]] = (
-        (r"^remember that\s+(.+)$", "explicit"),
+        (r"^save this preference\s*:\s*(.+)$", "preference"),
         (r"^my preferred reply style is\s+(.+)$", "reply_style"),
         (r"^i prefer\s+(.+)$", "preference"),
         (r"^i(?:'m| am) (?:working|building) on\s+(.+)$", "ongoing_project"),
@@ -317,10 +369,55 @@ def _explicit_fact(message: str) -> tuple[str, str] | None:
     for pattern, category in patterns:
         match = re.match(pattern, text, re.IGNORECASE)
         if match:
-            value = match.group(1).strip()[:600]
+            value = match.group(1).strip(" ,;:-")[:600]
             if value:
-                return category, value
+                return DurableMemoryFact(
+                    category, value, normalized_memory_key(category, value)
+                )
     return None
+
+
+def store_explicit_memory_fact(
+    session: Session,
+    *,
+    user_id: int,
+    thread_id: str,
+    source_message_id: str,
+    fact: DurableMemoryFact,
+) -> WebMemoryFact:
+    """Upsert one owner-scoped fact without performing embedding work."""
+    row = session.exec(
+        select(WebMemoryFact).where(
+            WebMemoryFact.user_id == user_id,
+            WebMemoryFact.normalized_key == fact.normalized_key,
+        )
+    ).first()
+    now = utc_now()
+    if row is None:
+        row = WebMemoryFact(
+            user_id=user_id,
+            normalized_key=fact.normalized_key,
+            value_text=fact.value,
+            category=fact.category,
+            salience=0.8,
+            confidence=1.0,
+            source_thread_id=thread_id,
+            source_message_id=source_message_id,
+            accessed_at=now,
+        )
+    else:
+        # The unique key includes the owner. A deleted row is restored only by
+        # the same owner's exact normalized fact.
+        row.value_text = fact.value
+        row.category = fact.category
+        row.deleted_at = None
+        row.updated_at = now
+        row.accessed_at = now
+        row.source_thread_id = thread_id
+        row.source_message_id = source_message_id
+    session.add(row)
+    session.flush()
+    return row
 
 
 def write_turn_memory(
@@ -338,45 +435,16 @@ def write_turn_memory(
     explicit = (
         None
         if _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False)
-        else _explicit_fact(user_message.content)
+        else parse_durable_memory_fact(user_message.content)
     )
     if explicit:
-        category, value = explicit
-        normalized_terms = sorted(_terms(value))[:12]
-        normalized_key = f"{category}:{'-'.join(normalized_terms)}"[:160]
-        if normalized_key != f"{category}:":
-            row = session.exec(select(WebMemoryFact).where(
-                WebMemoryFact.user_id == user_id,
-                WebMemoryFact.normalized_key == normalized_key,
-            )).first()
-            if row is None:
-                row = WebMemoryFact(
-                    user_id=user_id, normalized_key=normalized_key,
-                    value_text=value, category=category, salience=0.8,
-                    confidence=1.0, source_thread_id=thread_id,
-                    source_message_id=user_message.id,
-                )
-            else:
-                row.value_text = value
-                row.deleted_at = None
-                row.updated_at = now
-                row.source_thread_id = thread_id
-                row.source_message_id = user_message.id
-            vector = (
-                cached_text_embedding(
-                    value,
-                    session=session,
-                    user_id=user_id,
-                    route="web_memory_fact_write",
-                )
-                if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
-                else []
-            )
-            if vector:
-                row.embedding_json = json.dumps(vector, separators=(",", ":"))
-                row.embedding_norm = math.sqrt(sum(item * item for item in vector))
-            row.accessed_at = now
-            session.add(row)
+        store_explicit_memory_fact(
+            session,
+            user_id=user_id,
+            thread_id=thread_id,
+            source_message_id=user_message.id,
+            fact=explicit,
+        )
     if answer_class not in {"detailed", "long_form"} and not re.search(
         r"\b(roadmap|plan|architecture|decision|project)\b", user_message.content, re.I
     ):

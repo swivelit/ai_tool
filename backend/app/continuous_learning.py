@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import hashlib
 import json
 import math
 import os
@@ -25,6 +24,10 @@ from .observability import bootstrap_observability
 from .openai_tracked import tracked_chat_completion
 from .openai_tracked import cached_text_embedding
 from .time_utils import utc_now
+from .web_api.web_memory import (
+    normalized_memory_key,
+    parse_durable_memory_fact,
+)
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -172,6 +175,9 @@ def _fact_candidates(
     ):
         return []
     results: list[tuple[str, str, str]] = []
+    explicit = parse_durable_memory_fact(compact)
+    if explicit is not None:
+        results.append((explicit.category, explicit.value, "user"))
     for pattern, category in _DURABLE_FACT_PATTERNS:
         match = re.search(pattern, compact, re.IGNORECASE)
         if not match:
@@ -263,16 +269,12 @@ def distill_web_turn_facts(
         session.exec(
             select(WebMemoryFact).where(
                 WebMemoryFact.user_id == user_id,
-                WebMemoryFact.deleted_at.is_(None),
             )
         ).all()
     )
     inserted = deduped = 0
     for category, value, source_role in candidates:
-        normalized_text = re.sub(r"\s+", " ", value).strip().casefold()
-        normalized_key = (
-            f"{category}:{hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()[:32]}"
-        )
+        normalized_key = normalized_memory_key(category, value)
         duplicate = next(
             (fact for fact in existing if fact.normalized_key == normalized_key),
             None,
@@ -280,6 +282,13 @@ def distill_web_turn_facts(
         if duplicate is not None:
             duplicate.accessed_at = utc_now()
             duplicate.updated_at = utc_now()
+            duplicate.deleted_at = None
+            duplicate.value_text = value
+            duplicate.category = category
+            duplicate.source_thread_id = thread_id
+            duplicate.source_message_id = (
+                assistant.id if source_role == "assistant" else message.id
+            )
             session.add(duplicate)
             deduped += 1
             continue

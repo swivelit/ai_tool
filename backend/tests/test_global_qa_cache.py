@@ -1082,3 +1082,71 @@ def test_web_search_agent_disabled_by_default_and_mocked_wikipedia_enabled(monke
     assert result.reason == "wikipedia_summary"
     assert result.results[0]["source"] == "wikipedia"
     assert result.results[0]["url"].startswith("https://en.wikipedia.org/")
+
+
+def test_owner_memory_questions_never_enter_or_hit_shared_cache(monkeypatch):
+    monkeypatch.setenv("GLOBAL_QA_SEMANTIC_ENABLED", "true")
+    owner = create_test_user("cache-memory-owner", "cache-memory-owner@example.com")
+    other = create_test_user("cache-memory-other", "cache-memory-other@example.com")
+    questions = [
+        "What reply style do I prefer?",
+        "What are my saved preferences?",
+        "What did I tell you about my project?",
+        "What do you remember about me?",
+        "Show my profile and user settings",
+    ]
+    with SessionLocal() as session:
+        for question in questions:
+            result = record_backend_openai_answer(
+                session,
+                int(owner.id),
+                question,
+                "You prefer concise Tamil-English replies.",
+                "test-model",
+            )
+            assert result["skipped"] is True
+        assert session.exec(select(GlobalQACache)).all() == []
+        poisoned = GlobalQACache(
+            scope="global",
+            user_id_hash=None,
+            canonical_question="What reply style do I prefer?",
+            normalized_question="what reply style do i prefer",
+            answer="Owner A private preference",
+            answer_language="en",
+            status="approved",
+            hit_count=5,
+            distinct_user_count=5,
+            observed_question_count=5,
+            source_question_hashes_json="[]",
+            answer_hash="private-poison",
+            confidence=1.0,
+            safety_label="general",
+        )
+        session.add(poisoned)
+        session.commit()
+        # The owner-context privacy gate must run before the shared hot-cache
+        # adapter (Redis or in-process), exact rows, and semantic fallback.
+        monkeypatch.setattr(
+            "app.global_qa_cache._lookup_hot_cache",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("private questions must not reach a hot cache")
+            ),
+        )
+        monkeypatch.setattr(
+            "app.global_qa_cache._semantic_lookup_after_exact_miss",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("private questions must not reach semantic cache")
+            ),
+        )
+        assert lookup_approved_global_cache(
+            session,
+            "What reply style do I prefer?",
+            "en",
+            user_id=int(owner.id),
+        ) is None
+        assert lookup_approved_global_cache(
+            session,
+            "What reply style do I prefer?",
+            "en",
+            user_id=int(other.id),
+        ) is None

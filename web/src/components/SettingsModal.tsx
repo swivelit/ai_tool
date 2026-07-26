@@ -96,6 +96,15 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
   }
   useEffect(() => { void load() }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
+    const refreshMemory = () => {
+      void apiJson<MemorySettings>(user, '/api/web/settings/memory')
+        .then(memory => setLoaded(value => value ? { ...value, memory } : value))
+        .catch(() => undefined)
+    }
+    window.addEventListener('swico:memory-updated', refreshMemory)
+    return () => window.removeEventListener('swico:memory-updated', refreshMemory)
+  }, [user])
+  useEffect(() => {
     closeRef.current?.focus()
     const keyboard = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !saving) {

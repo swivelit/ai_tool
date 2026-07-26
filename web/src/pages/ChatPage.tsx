@@ -296,6 +296,10 @@ export function ChatPage() {
             }
           }
         }
+        if (event.event === 'done' && typeof event.data === 'object' && event.data
+          && Boolean((event.data as Record<string, unknown>).memory_updated)) {
+          window.dispatchEvent(new Event('swico:memory-updated'))
+        }
         // Dictation is an input convenience only. Manual speaker playback remains
         // available from completed messages, but is never auto-generated here.
       }, abort.signal, () => {

@@ -70,6 +70,20 @@ it('controls owner-scoped cross-chat memory when the backend exposes it', async 
   confirm.mockRestore()
 })
 
+it('reloads memory from the endpoint after an explicit memory-write event', async () => {
+  const memory = { available:true, enabled:true, items:[] as Array<Record<string, string>> }
+  mockSettingsApi([], usage, memory)
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
+  await screen.findByRole('heading', { name:'General' })
+  memory.items = [{
+    id:'memory-new', category:'reply_style', value_text:'concise Tamil-English',
+    created_at:'2026-07-25T00:00:00Z', updated_at:'2026-07-25T00:00:00Z',
+  }]
+  window.dispatchEvent(new Event('swico:memory-updated'))
+  await userEvent.click(screen.getByRole('button', { name:'Data controls' }))
+  expect(await screen.findByText('concise Tamil-English')).toBeInTheDocument()
+})
+
 it('uses the same conservative created-checkout presentation in settings', async () => {
   mockSettingsApi([{ id:'created-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'created', created_at:'2026-07-17T00:00:00Z', updated_at:'2026-07-17T00:00:00Z', paid_at:null, refunded_at:null, payment_received:false, credit_applied:false }])
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)

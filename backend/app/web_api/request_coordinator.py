@@ -53,6 +53,8 @@ class WebRequestDecision:
     max_output_tokens: int
     model_candidate_strategy: str
     cache_eligible: bool
+    cache_scope: Literal["global", "owner", "disabled"]
+    cache_scope_reason: str
     expected_provider_call_count: int
     continuity: SameThreadContinuityDecision
     optimization: WebTurnOptimization
@@ -82,6 +84,8 @@ class WebRequestDecision:
             "max_output_tokens": self.max_output_tokens,
             "model_candidate_strategy": self.model_candidate_strategy,
             "cache_eligible": self.cache_eligible,
+            "cache_scope": self.cache_scope,
+            "cache_scope_reason": self.cache_scope_reason,
             "expected_provider_call_count": self.expected_provider_call_count,
             "same_thread_context_mode": self.continuity.mode,
             "same_thread_context_reason": self.continuity.reason,
@@ -169,6 +173,23 @@ class WebRequestCoordinator:
             message=message,
             memory_context=memory_context,
         )
+        uses_memory = bool(str(memory_context or "").strip())
+        uses_profile = bool(str(optimization.compact_profile_prompt or "").strip())
+        if uses_memory or uses_profile:
+            cache_scope_reason = (
+                "used_memory" if uses_memory else "used_profile"
+            )
+            optimization = replace(
+                optimization,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason=cache_scope_reason,
+                metrics={
+                    **optimization.metrics,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": cache_scope_reason,
+                },
+            )
         selected = tuple(
             (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
             for turn in optimization.selected_context_turns
@@ -203,6 +224,24 @@ class WebRequestCoordinator:
             ),
             cache_eligible=(
                 optimization.cache_eligible and not memory_context and not same_thread_used
+            ),
+            cache_scope=(
+                optimization.cache_scope
+                if optimization.cache_eligible
+                and not memory_context
+                and not same_thread_used
+                else "disabled"
+            ),
+            cache_scope_reason=(
+                optimization.cache_scope_reason
+                if optimization.cache_eligible
+                and not memory_context
+                and not same_thread_used
+                else "used_memory"
+                if memory_context
+                else "used_same_thread_context"
+                if same_thread_used
+                else optimization.cache_scope_reason
             ),
             expected_provider_call_count=1,
             continuity=continuity,

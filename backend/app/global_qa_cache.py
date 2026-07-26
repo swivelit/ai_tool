@@ -167,6 +167,16 @@ _PRIVATE_PATTERNS = [
     re.compile(r"(?i)\b\d{1,5}\s+[A-Za-z0-9 .'-]{2,}\s+(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|nagar|colony|layout)\b"),
 ]
 _PERSONAL_PRONOUN_RE = re.compile(r"(?i)\b(i|me|my|mine|we|our|ours)\b")
+_OWNER_CONTEXT_PATTERN = re.compile(
+    r"(?i)\b(?:saved\s+memory|saved\s+preferences?|reply\s+style|"
+    r"user\s+preferences?|my\s+preferences?|my\s+profile|saved\s+profile|"
+    r"(?:user|account)\s+profile|(?:my|user)\s+settings?|"
+    r"what\s+do\s+you\s+know\s+about\s+me|what\s+did\s+i\s+tell\s+you|"
+    r"what\s+do\s+you\s+remember\s+about\s+me|"
+    r"what\s+reply\s+style\s+do\s+i\s+prefer|"
+    r"how\s+do\s+i\s+prefer\s+you\s+to\s+answer|"
+    r"do\s+you\s+remember\s+my|my\s+(?:current\s+)?project)\b"
+)
 _MEDICAL_TERMS = {
     "medical",
     "medicine",
@@ -726,6 +736,8 @@ def is_live_or_current_question(text: str) -> bool:
 def is_private_or_personal_question(text: str) -> bool:
     raw = str(text or "")
     if any(pattern.search(raw) for pattern in _PRIVATE_PATTERNS):
+        return True
+    if _OWNER_CONTEXT_PATTERN.search(raw):
         return True
     normalized = normalize_question(raw)
     tokens = set(_semantic_tokens(normalized))

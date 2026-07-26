@@ -25,7 +25,10 @@ from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.request_coordinator import _apply_prompt_budget
 from app.web_api.router import _serialize_message
 from app.web_api.turn_optimizer import WebTurnOptimization, select_context_turns
-from app.web_api.web_memory import retrieve_memory
+from app.web_api.web_memory import (
+    parse_durable_memory_fact,
+    retrieve_memory,
+)
 from conftest import auth_headers, create_test_user
 
 
@@ -195,6 +198,69 @@ def test_ws5_distillation_considers_completed_assistant_decision(monkeypatch):
     assert result["inserted"] == 1
     assert facts[0].source_message_id == answer.id
     assert "PostgreSQL" in facts[0].value_text
+
+
+def test_ws5_distillation_reuses_explicit_parser_and_deduplicates_sync_fact(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_POST_TURN_DISTILLATION_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.continuous_learning.cached_text_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("exactly deduplicated facts must not be embedded")
+        ),
+    )
+    text = (
+        "Remember that my preferred reply style is concise Tamil-English."
+    )
+    parsed = parse_durable_memory_fact(text)
+    assert parsed is not None and parsed.category == "reply_style"
+    user = create_test_user("ws5-explicit", "ws5-explicit@example.com")
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Preference")
+        session.add(thread)
+        session.flush()
+        request = WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="user",
+            content=text,
+            request_id="ws5-explicit",
+            status="complete",
+        )
+        answer = WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="assistant",
+            content="Saved to cross-chat memory.",
+            request_id="ws5-explicit",
+            status="complete",
+        )
+        session.add(request)
+        session.add(answer)
+        session.flush()
+        session.add(WebMemoryFact(
+            user_id=int(user.id),
+            normalized_key=parsed.normalized_key,
+            value_text=parsed.value,
+            category=parsed.category,
+            source_thread_id=thread.id,
+            source_message_id=request.id,
+        ))
+        session.commit()
+        result = distill_web_turn_facts(
+            session,
+            user_id=int(user.id),
+            user_message_id=request.id,
+            assistant_message_id=answer.id,
+            thread_id=thread.id,
+        )
+        facts = session.exec(
+            select(WebMemoryFact).where(WebMemoryFact.user_id == int(user.id))
+        ).all()
+    assert result["inserted"] == 0
+    assert result["deduped"] == 1
+    assert len(facts) == 1
 
 
 def test_ws5_distillation_job_payload_is_assistant_idempotent():
@@ -374,6 +440,25 @@ def test_ws10_json_backend_tool_pretty_prints():
         )
     assert response and response.provider == "backend_tool"
     assert '"b": 2' in response.text
+
+
+def test_time_tool_requires_a_valid_saved_iana_timezone():
+    user = create_test_user("time-invalid-zone", "time-invalid-zone@example.com")
+    with SessionLocal() as session:
+        stored = session.get(User, int(user.id))
+        assert stored is not None
+        stored.timezone = "Not/A_Timezone"
+        session.add(stored)
+        session.commit()
+        response = try_deterministic_answer(
+            session,
+            user_id=int(user.id),
+            message="What time is it?",
+            reply_language="en",
+            request_id="time-invalid-zone",
+        )
+    assert response is not None
+    assert "Settings → Profile" in response.text
 
 
 def test_ws11_feedback_is_owner_scoped_and_corrects_cache(client, monkeypatch):

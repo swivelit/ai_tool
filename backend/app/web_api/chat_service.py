@@ -50,7 +50,14 @@ from .request_coordinator import WebRequestCoordinator, WebRequestDecision
 from .deterministic_answers import try_deterministic_answer
 from .swico_brand import swico_brand_response
 from .web_memory import (
-    memory_enabled, needs_cross_thread_memory, retrieve_memory, write_turn_memory,
+    explicit_memory_write_requested,
+    memory_deployment_available,
+    memory_enabled,
+    needs_cross_thread_memory,
+    parse_durable_memory_fact,
+    retrieve_memory,
+    store_explicit_memory_fact,
+    write_turn_memory,
 )
 
 
@@ -87,6 +94,37 @@ class PromptBudgetExceeded(RuntimeError):
         )
 
 
+@dataclass(frozen=True)
+class CompletedWebMessage:
+    id: str
+    content: str
+    status: str
+    swico_tier: str | None
+    usage_source: str | None
+    charge_micros: int
+    provider: str | None
+    model: str | None
+    request_id: str | None
+    replaces_message_id: str | None
+    revision_number: int
+
+
+def _completed_message_snapshot(message: WebChatMessage) -> CompletedWebMessage:
+    return CompletedWebMessage(
+        id=message.id,
+        content=message.content,
+        status=message.status,
+        swico_tier=message.swico_tier,
+        usage_source=message.usage_source,
+        charge_micros=int(message.charge_micros or 0),
+        provider=message.provider,
+        model=message.model,
+        request_id=message.request_id,
+        replaces_message_id=message.replaces_message_id,
+        revision_number=int(message.revision_number or 1),
+    )
+
+
 @dataclass
 class PreparedWebTurn:
     request_id: str
@@ -100,7 +138,7 @@ class PreparedWebTurn:
     voice_turn_id: str | None = None
     reply_language: str = "en"
     billing_exempt: bool = False
-    existing_response: WebChatMessage | None = None
+    existing_response_id: str | None = None
     provider_messages: list[dict[str, str]] | None = None
     optimization: WebTurnOptimization | None = None
     coordinator_decision: WebRequestDecision | None = None
@@ -112,10 +150,10 @@ class PreparedWebTurn:
     regeneration_cache_row_id: int | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CompletedWebTurn:
     thread_id: str
-    message: WebChatMessage
+    message: CompletedWebMessage
     wallet: dict[str, int]
     response: AIProviderResponse
 
@@ -551,7 +589,8 @@ def prepare_web_turn(
                 ai_request=dummy, route=route, reserved_micros=0,
                 swico_tier=swico_tier, input_mode=input_mode,
                 voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
-                billing_exempt=billing_exempt, existing_response=existing_assistant,
+                billing_exempt=billing_exempt,
+                existing_response_id=existing_assistant.id,
                 billing_credit_bucket=stored_bucket,
             )
 
@@ -925,7 +964,140 @@ def prepare_web_turn(
             "max_provider_attempts": _max_provider_attempts(),
             "prompt_cache_enabled": _env_bool("WEB_PROMPT_CACHE_ENABLED", False),
             "prompt_cache_version": os.getenv("WEB_PROMPT_CACHE_VERSION", "v1"),
+            "cache_scope": preliminary.cache_scope,
+            "cache_scope_reason": preliminary.cache_scope_reason,
         }
+
+        if explicit_memory_write_requested(model_message):
+            memory_updated = False
+            if not memory_deployment_available():
+                memory_text = "Cross-chat memory is not enabled on this deployment."
+                memory_reason = "cross_chat_memory_unavailable"
+            elif not memory_enabled(session, user_id):
+                memory_text = (
+                    "Enable Settings → Data controls → Cross-chat memory to save this."
+                )
+                memory_reason = "cross_chat_memory_opt_in_required"
+            else:
+                fact = parse_durable_memory_fact(model_message)
+                if fact is None:
+                    memory_text = (
+                        "I can’t save sensitive or transient information to "
+                        "cross-chat memory."
+                    )
+                    memory_reason = "cross_chat_memory_fact_rejected"
+                else:
+                    session.flush()
+                    source_message = session.exec(
+                        select(WebChatMessage).where(
+                            WebChatMessage.user_id == user_id,
+                            WebChatMessage.request_id == request_id,
+                            WebChatMessage.role == "user",
+                        )
+                    ).one()
+                    store_explicit_memory_fact(
+                        session,
+                        user_id=user_id,
+                        thread_id=thread.id,
+                        source_message_id=source_message.id,
+                        fact=fact,
+                    )
+                    memory_text = "Saved to cross-chat memory."
+                    memory_reason = "explicit_cross_chat_memory_write"
+                    memory_updated = True
+            explicit_metrics = {
+                **preliminary.metrics,
+                "optimization_route": "explicit_memory_write",
+                "cache_scope": "disabled",
+                "cache_scope_reason": "explicit_memory_write",
+            }
+            preliminary = replace(
+                preliminary,
+                optimization_route="explicit_memory_write",
+                cache_eligible=False,
+                metrics=explicit_metrics,
+                local_intent="memory_write",
+            )
+            response = AIProviderResponse(
+                text=memory_text,
+                provider="backend_tool",
+                model=None,
+                route="deterministic_memory_write",
+                reason=memory_reason,
+                language=str(reply_language or "en"),
+                intent="memory_write",
+                characters=len(memory_text),
+                raw={
+                    "deterministic": True,
+                    "zero_charge": True,
+                    "provider_attempts": 0,
+                    "provider_calls_with_usage": 0,
+                    "fallback_attempted": False,
+                    "cache_hit": False,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": "explicit_memory_write",
+                    "memory_updated": memory_updated,
+                    "provenance": ["backend_tool"],
+                },
+            )
+            ai_request = AIRequest(
+                user_id=user_id,
+                message=model_message,
+                reply_language=reply_language,
+                channel="text",
+                request_id=request_id,
+                metadata={
+                    **base_metadata,
+                    "explicit_memory_write": True,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": "explicit_memory_write",
+                },
+            )
+            route = AIRoute(
+                "backend_tool",
+                None,
+                response.route,
+                response.reason,
+                response.language,
+                response.intent,
+                0,
+            )
+            session.commit()
+            if memory_updated:
+                _run_post_turn_operation(
+                    request_id=request_id,
+                    operation="enqueue_memory_embedding_backfill",
+                    callback=lambda enqueue_session: (
+                        enqueue_memory_embedding_backfill(
+                            enqueue_session, user_id=user_id
+                        )
+                    ),
+                )
+            return PreparedWebTurn(
+                request_id=request_id,
+                user_id=user_id,
+                thread_id=thread.id,
+                ai_request=ai_request,
+                route=route,
+                reserved_micros=0,
+                swico_tier=swico_tier,
+                input_mode=input_mode,
+                voice_turn_id=voice_turn_id,
+                reply_language=str(reply_language or "en"),
+                billing_exempt=billing_exempt,
+                optimization=preliminary,
+                precomputed_response=response,
+                continuity_decision=continuity,
+                billing_credit_bucket=authoritative_bucket,
+                replaces_assistant_message_id=(
+                    regenerate_target.id if regenerate_target is not None else None
+                ),
+                replacement_revision_number=(
+                    regenerate_target.revision_number + 1
+                    if regenerate_target is not None else 1
+                ),
+                regeneration_cache_row_id=regeneration_cache_row_id,
+            )
 
         if _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False):
             deterministic = try_deterministic_answer(
@@ -1147,6 +1319,8 @@ def prepare_web_turn(
             "attachment_prompt_context": attachment_context,
             "memory_prompt_context": memory_context,
             "answer_class": optimization.answer_class,
+            "cache_scope": optimization.cache_scope,
+            "cache_scope_reason": optimization.cache_scope_reason,
         }
         ai_request = AIRequest(
             user_id=user_id, message=model_message, reply_language=reply_language,
@@ -1381,42 +1555,77 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
     )
 
 
-def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], None] | None = None, providers: dict[str, Any] | None = None) -> CompletedWebTurn:
-    if prepared.existing_response is not None:
-        with SessionLocal() as session:
-            message = session.get(WebChatMessage, prepared.existing_response.id)
-            assert message is not None
+def _run_post_turn_operation(
+    *,
+    request_id: str,
+    operation: str,
+    callback: Callable[[Session], None],
+) -> None:
+    try:
+        with SessionLocal() as operation_session:
             try:
-                replay_metadata = json.loads(message.metadata_json or "{}")
+                callback(operation_session)
+                operation_session.commit()
+            except Exception:
+                operation_session.rollback()
+                raise
+    except Exception:
+        logger.exception(
+            "web_post_turn_operation_failed",
+            extra={"request_id": request_id, "operation": operation},
+        )
+
+
+def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], None] | None = None, providers: dict[str, Any] | None = None) -> CompletedWebTurn:
+    if prepared.existing_response_id is not None:
+        with SessionLocal() as session:
+            stored = session.get(WebChatMessage, prepared.existing_response_id)
+            assert stored is not None
+            try:
+                replay_metadata = json.loads(stored.metadata_json or "{}")
             except (TypeError, ValueError):
                 replay_metadata = {}
             response = AIProviderResponse(
-                text=message.content, provider=message.provider or "", model=message.model,
-                route="idempotent_replay", reason="already_complete", language="en", intent="replay",
-                input_tokens=message.input_tokens, output_tokens=message.output_tokens,
+                text=stored.content,
+                provider=stored.provider or "",
+                model=stored.model,
+                route="idempotent_replay",
+                reason="already_complete",
+                language="en",
+                intent="replay",
+                input_tokens=stored.input_tokens,
+                output_tokens=stored.output_tokens,
                 raw={
-                    "finish_reason": str(replay_metadata.get("finish_reason") or "unknown"),
+                    "finish_reason": str(
+                        replay_metadata.get("finish_reason") or "unknown"
+                    ),
                     "truncated": bool(replay_metadata.get("truncated")),
                     "completion_status": str(
                         replay_metadata.get("completion_status") or "unknown"
                     ),
-                    "usage_source": str(message.usage_source or "estimated"),
+                    "usage_source": str(stored.usage_source or "estimated"),
                     "provider_attempts": 0,
                     "provider_calls_with_usage": 0,
+                    "provenance": list(replay_metadata.get("provenance") or []),
+                    "memory_updated": bool(replay_metadata.get("memory_updated")),
                 },
             )
-            if on_delta:
-                on_delta(message.content)
-            return CompletedWebTurn(
-                prepared.thread_id,
-                message,
-                get_wallet_summary(
-                    session, prepared.user_id, swico_tier=prepared.swico_tier,
-                    billing_exempt=prepared.billing_exempt,
-                    credit_bucket=prepared.billing_credit_bucket,
-                ),
-                response,
+            message = _completed_message_snapshot(stored)
+            wallet = get_wallet_summary(
+                session,
+                prepared.user_id,
+                swico_tier=prepared.swico_tier,
+                billing_exempt=prepared.billing_exempt,
+                credit_bucket=prepared.billing_credit_bucket,
             )
+        if on_delta:
+            on_delta(message.content)
+        return CompletedWebTurn(
+            prepared.thread_id,
+            message,
+            wallet,
+            response,
+        )
 
     cancelled = False
     try:
@@ -1562,6 +1771,42 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         response.raw.update(optimization_metrics)
         provenance = _response_provenance(prepared, response)
         response.raw["provenance"] = provenance
+        used_memory = bool(
+            str(
+                prepared.ai_request.metadata.get("memory_prompt_context") or ""
+            ).strip()
+        )
+        used_profile = bool(
+            str(
+                prepared.ai_request.metadata.get("profile_prompt_context") or ""
+            ).strip()
+        )
+        turn_cache_eligible = bool(
+            prepared.optimization is not None
+            and prepared.optimization.cache_eligible
+            and not used_memory
+            and not used_profile
+            and not prepared.ai_request.metadata.get("explicit_memory_write")
+        )
+        cache_scope_reason = (
+            "public_standalone"
+            if turn_cache_eligible else
+            "used_memory" if used_memory else
+            "used_profile" if used_profile else
+            "explicit_memory_write"
+            if prepared.ai_request.metadata.get("explicit_memory_write") else
+            "turn_not_cache_eligible"
+        )
+        optimization_metrics.update({
+            "cache_eligible": turn_cache_eligible,
+            "cache_scope": "global" if turn_cache_eligible else "disabled",
+            "cache_scope_reason": cache_scope_reason,
+        })
+        response.raw.update({
+            "cache_eligible": turn_cache_eligible,
+            "cache_scope": "global" if turn_cache_eligible else "disabled",
+            "cache_scope_reason": cache_scope_reason,
+        })
         usage_source = "actual" if bool(response.raw.get("usage_actual")) else "estimated"
         optimization_metrics["usage_source"] = usage_source
         response.raw["usage_source"] = usage_source
@@ -1603,6 +1848,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 ),
                 "regenerated_cache_row_id": prepared.regeneration_cache_row_id,
                 "provenance": provenance,
+                "memory_updated": bool(response.raw.get("memory_updated")),
                 **optimization_metrics,
             }, sort_keys=True, separators=(",", ":")),
         )
@@ -1655,99 +1901,115 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.add(thread)
         session.commit()
         session.refresh(assistant)
-
-        if assistant.status == "complete":
-            if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
-                try:
-                    enqueue_memory_embedding_backfill(
-                        session, user_id=prepared.user_id
-                    )
-                except Exception:
-                    session.rollback()
-                    logger.exception(
-                        "web_memory_embedding_backfill_enqueue_failed",
-                        extra={"request_id": prepared.request_id},
-                    )
-            if _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False):
-                try:
-                    enqueue_post_turn_distillation(
-                        session,
-                        user_id=prepared.user_id,
-                        user_message_id=user_message.id,
-                        assistant_message_id=assistant.id,
-                        thread_id=prepared.thread_id,
-                    )
-                except Exception:
-                    session.rollback()
-                    logger.exception(
-                        "web_post_turn_distillation_enqueue_failed",
-                        extra={"request_id": prepared.request_id},
-                    )
-            try:
-                with SessionLocal() as memory_session:
-                    memory_user = memory_session.get(WebChatMessage, user_message.id)
-                    memory_assistant = memory_session.get(WebChatMessage, assistant.id)
-                    if memory_user is not None and memory_assistant is not None:
-                        write_turn_memory(
-                            memory_session, user_id=prepared.user_id,
-                            thread_id=prepared.thread_id,
-                            user_message=memory_user, assistant_message=memory_assistant,
-                            answer_class=(prepared.optimization.answer_class if prepared.optimization else "normal"),
-                        )
-                        memory_session.commit()
-            except Exception:
-                logger.exception(
-                    "web_memory_write_failed",
-                    extra={"request_id": prepared.request_id, "thread_id": prepared.thread_id},
-                )
-
-        if (
-            response.provider == "openai"
-            and assistant.status == "complete"
-            and prepared.optimization is not None
-            and prepared.optimization.cache_eligible
-            and _env_bool("AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED", True)
-        ):
-            try:
-                from ..global_qa_cache import record_backend_openai_answer
-
-                record_backend_openai_answer(
-                    session, prepared.user_id, prepared.ai_request.message,
-                    response.text, response.model, request_id=prepared.request_id,
-                )
-            except Exception:
-                session.rollback()
-
-        logger.info(
-            "web_turn_optimized",
-            extra={
-                "event": "web_turn_optimized",
-                **{
-                    key: optimization_metrics.get(key)
-                    for key in (
-                        "optimization_route", "answer_class", "context_turns_sent",
-                        "context_chars_sent", "profile_chars_sent", "attachment_chars_sent",
-                        "cache_hit", "cache_hit_source", "estimated_prompt_tokens",
-                        "max_output_tokens", "provider_attempts", "provider_calls_with_usage",
-                        "fallback_attempted", "reserved_micros", "charged_micros",
-                        "cached_input_tokens", "cached_input_ratio", "cache_write_tokens",
-                        "primary_model_candidate",
-                        "selected_model", "selected_model_reason",
-                        "system_prompt_estimated_tokens", "user_message_estimated_tokens",
-                        "same_thread_estimated_tokens", "memory_estimated_tokens",
-                        "profile_estimated_tokens", "attachment_estimated_tokens",
-                        "total_estimated_prompt_tokens", "usage_source", "finish_reason",
-                        "truncated", "completion_status",
-                        "same_thread_context_mode", "same_thread_context_reason",
-                        "same_thread_context_confidence", "same_thread_context_turns_sent",
-                        "same_thread_context_chars_sent",
-                    )
-                },
-            },
-        )
+        assistant_snapshot = _completed_message_snapshot(assistant)
+        user_message_id = user_message.id
         wallet = get_wallet_summary(
             session, prepared.user_id, swico_tier=prepared.swico_tier,
             billing_exempt=prepared.billing_exempt,
             credit_bucket=prepared.billing_credit_bucket,
         )
-        return CompletedWebTurn(prepared.thread_id, assistant, wallet, response)
+
+    if assistant_snapshot.status == "complete":
+        if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
+            _run_post_turn_operation(
+                request_id=prepared.request_id,
+                operation="enqueue_memory_embedding_backfill",
+                callback=lambda post_session: enqueue_memory_embedding_backfill(
+                    post_session, user_id=prepared.user_id
+                ),
+            )
+        if _env_bool("WEB_POST_TURN_DISTILLATION_ENABLED", False):
+            _run_post_turn_operation(
+                request_id=prepared.request_id,
+                operation="enqueue_post_turn_distillation",
+                callback=lambda post_session: enqueue_post_turn_distillation(
+                    post_session,
+                    user_id=prepared.user_id,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_snapshot.id,
+                    thread_id=prepared.thread_id,
+                ),
+            )
+
+        def write_memory(post_session: Session) -> None:
+            memory_user = post_session.get(WebChatMessage, user_message_id)
+            memory_assistant = post_session.get(
+                WebChatMessage, assistant_snapshot.id
+            )
+            if memory_user is not None and memory_assistant is not None:
+                write_turn_memory(
+                    post_session,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_id,
+                    user_message=memory_user,
+                    assistant_message=memory_assistant,
+                    answer_class=(
+                        prepared.optimization.answer_class
+                        if prepared.optimization else "normal"
+                    ),
+                )
+
+        _run_post_turn_operation(
+            request_id=prepared.request_id,
+            operation="write_turn_memory",
+            callback=write_memory,
+        )
+
+    cache_eligible = bool(
+        response.provider == "openai"
+        and assistant_snapshot.status == "complete"
+        and turn_cache_eligible
+        and _env_bool("AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED", True)
+    )
+    response.raw["cache_eligible"] = cache_eligible
+    response.raw["cache_scope"] = "global" if cache_eligible else "disabled"
+    if cache_eligible:
+        def record_global_answer(post_session: Session) -> None:
+            from ..global_qa_cache import record_backend_openai_answer
+
+            record_backend_openai_answer(
+                post_session,
+                prepared.user_id,
+                prepared.ai_request.message,
+                response.text,
+                response.model,
+                request_id=prepared.request_id,
+            )
+
+        _run_post_turn_operation(
+            request_id=prepared.request_id,
+            operation="record_backend_openai_answer",
+            callback=record_global_answer,
+        )
+
+    logger.info(
+        "web_turn_optimized",
+        extra={
+            "event": "web_turn_optimized",
+            **{
+                key: optimization_metrics.get(key)
+                for key in (
+                    "optimization_route", "answer_class", "context_turns_sent",
+                    "context_chars_sent", "profile_chars_sent", "attachment_chars_sent",
+                    "cache_hit", "cache_hit_source", "estimated_prompt_tokens",
+                    "max_output_tokens", "provider_attempts", "provider_calls_with_usage",
+                    "fallback_attempted", "reserved_micros", "charged_micros",
+                    "cached_input_tokens", "cached_input_ratio", "cache_write_tokens",
+                    "primary_model_candidate",
+                    "selected_model", "selected_model_reason",
+                    "system_prompt_estimated_tokens", "user_message_estimated_tokens",
+                    "same_thread_estimated_tokens", "memory_estimated_tokens",
+                    "profile_estimated_tokens", "attachment_estimated_tokens",
+                    "total_estimated_prompt_tokens", "usage_source", "finish_reason",
+                    "truncated", "completion_status", "cache_scope",
+                    "cache_scope_reason",
+                    "same_thread_context_mode", "same_thread_context_reason",
+                    "same_thread_context_confidence", "same_thread_context_turns_sent",
+                    "same_thread_context_chars_sent",
+                )
+            },
+        },
+    )
+    return CompletedWebTurn(
+        prepared.thread_id, assistant_snapshot, wallet, response
+    )

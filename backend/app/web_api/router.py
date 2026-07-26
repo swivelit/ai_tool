@@ -3008,6 +3008,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                     response.raw.get("provenance")
                     if _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED") else []
                 ),
+                "memory_updated": bool(response.raw.get("memory_updated")),
             })
         except asyncio.CancelledError:
             cancellation.cancel()

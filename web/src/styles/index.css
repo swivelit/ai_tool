@@ -120,11 +120,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .code-block pre { margin: 0; padding: 16px; overflow: auto }
 .code-block code { display: block; min-width: max-content; padding: 0; overflow: visible; font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre }
 .cursor { display: inline-block; width: 7px; height: 16px; margin-left: 2px; vertical-align: text-bottom; background: var(--text); animation: blink .85s infinite }
-.answer-actions { display: flex; min-height: 30px; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
+.answer-actions { display: flex; min-height: 30px; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
 .answer-actions > button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
 .answer-actions > button:hover { background: var(--surface) }
 .answer-actions > button.selected { background: var(--surface); color: var(--text) }
 .answer-actions > .continue-response { display: inline-flex; width: auto; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line) }
+.answer-actions > .regenerate-answer { display: inline-flex; width: auto; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); white-space: nowrap }
 .provenance-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px }
 .provenance-chips span { padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--subtle); font-size: 11px }
 .message.search-highlight { animation: search-highlight 2.8s ease-out }

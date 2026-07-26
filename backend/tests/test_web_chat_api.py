@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.ai.types import AIProviderResponse, AIRequest
 from app.ai.providers.base import GenerationCancelled
 from app.billing.pricing import calculate_topup, price_usage
@@ -17,6 +19,11 @@ from sqlmodel import select
 from app.ai import orchestrator
 from tests.conftest import auth_headers, create_test_user
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, get_upload_store, utc_iso
+from app.web_api.chat_service import (
+    CompletedWebMessage,
+    execute_web_turn,
+    prepare_web_turn,
+)
 
 
 def test_thread_ownership_for_read_rename_delete(client):
@@ -117,6 +124,30 @@ def _sse_events(response, event_name: str) -> list[dict]:
         for index, line in enumerate(lines[:-1])
         if line == f"event: {event_name}" and lines[index + 1].startswith("data: ")
     ]
+
+
+def _completed_provider_response(self, request, route, on_delta):
+    text = "FIFO processes the earliest queued item first."
+    on_delta(text)
+    return AIProviderResponse(
+        text=text,
+        provider="openai",
+        model=route.model,
+        route=route.route,
+        reason=route.reason,
+        language="en",
+        intent=route.intent,
+        input_tokens=24,
+        output_tokens=12,
+        raw={
+            "usage_actual": True,
+            "provider_attempts": 1,
+            "provider_calls_with_usage": 1,
+            "finish_reason": "stop",
+            "truncated": False,
+            "completion_status": "complete",
+        },
+    )
 
 
 def test_saved_profile_language_is_authoritative_and_voice_metadata_is_serialized(client, monkeypatch):
@@ -592,3 +623,206 @@ def test_attachment_only_message_and_idempotent_replay_do_not_double_charge(clie
         assert len(charges) == 1
         assert user_message.content == "Attached: budget.pdf"
         assert thread is not None and thread.title == "budget.pdf"
+
+
+def test_post_turn_cache_record_failure_cannot_break_committed_sse(
+    client, monkeypatch,
+):
+    user = create_test_user("post-cache-failure", "post-cache-failure@example.com")
+    _fund(int(user.id))
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        _completed_provider_response,
+    )
+    recorder_calls = {"count": 0}
+
+    def fail_record(*_args, **_kwargs):
+        recorder_calls["count"] += 1
+        raise RuntimeError("cache recorder unavailable")
+
+    monkeypatch.setattr(
+        "app.global_qa_cache.record_backend_openai_answer",
+        fail_record,
+    )
+    request_id = "74000000-0000-4000-8000-000000000001"
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("post-cache-failure", "post-cache-failure@example.com"),
+        json={"request_id": request_id, "message": "Explain FIFO queue ordering"},
+    )
+    assert response.status_code == 200
+    assert _sse_events(response, "usage")
+    assert _sse_events(response, "wallet")
+    assert _sse_events(response, "done")
+    assert not _sse_events(response, "error")
+    assert "generation_failed" not in response.text
+    with SessionLocal() as session:
+        assistant = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).one()
+        charge = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).one()
+    assert assistant.status == "complete"
+    assert charge.status == "settled"
+    assert recorder_calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("flag_name", "enqueue_name"),
+    [
+        (
+            "WEB_POST_TURN_DISTILLATION_ENABLED",
+            "enqueue_post_turn_distillation",
+        ),
+        (
+            "WEB_MEMORY_FACT_RANKING_ENABLED",
+            "enqueue_memory_embedding_backfill",
+        ),
+    ],
+)
+def test_post_turn_enqueue_failure_leaves_answer_and_single_charge(
+    client, monkeypatch, flag_name, enqueue_name,
+):
+    suffix = "distill" if "distillation" in enqueue_name else "embedding"
+    user = create_test_user(
+        f"post-enqueue-{suffix}", f"post-enqueue-{suffix}@example.com"
+    )
+    _fund(int(user.id))
+    monkeypatch.setenv(flag_name, "true")
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        _completed_provider_response,
+    )
+    calls = {"count": 0}
+
+    def fail_enqueue(*_args, **_kwargs):
+        calls["count"] += 1
+        raise RuntimeError("post-turn queue unavailable")
+
+    monkeypatch.setattr(
+        f"app.web_api.chat_service.{enqueue_name}",
+        fail_enqueue,
+    )
+    request_id = (
+        "74000000-0000-4000-8000-000000000002"
+        if suffix == "distill"
+        else "74000000-0000-4000-8000-000000000004"
+    )
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers(f"post-enqueue-{suffix}", f"post-enqueue-{suffix}@example.com"),
+        json={"request_id": request_id, "message": "Explain FIFO queue ordering"},
+    )
+    assert response.status_code == 200
+    assert _sse_events(response, "done")
+    assert not _sse_events(response, "error")
+    with SessionLocal() as session:
+        assistants = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).all()
+        charges = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).all()
+    assert len(assistants) == 1 and assistants[0].status == "complete"
+    assert len(charges) == 1 and charges[0].status == "settled"
+    assert calls["count"] == 1
+
+
+def test_idempotent_replay_returns_transport_snapshot_and_one_charge(monkeypatch):
+    user = create_test_user("snapshot-replay", "snapshot-replay@example.com")
+    _fund(int(user.id))
+    request_id = "74000000-0000-4000-8000-000000000003"
+    first = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain FIFO queue ordering",
+        request_id=request_id,
+        thread_id=None,
+        reply_language="en",
+    )
+    completed = execute_web_turn(
+        first,
+        providers={
+            "openai": type(
+                "Provider",
+                (),
+                {"stream_complete": _completed_provider_response},
+            )()
+        },
+        on_delta=lambda _value: None,
+    )
+    replay = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain FIFO queue ordering",
+        request_id=request_id,
+        thread_id=completed.thread_id,
+        reply_language="en",
+    )
+    replayed = execute_web_turn(replay, on_delta=lambda _value: None)
+    assert isinstance(completed.message, CompletedWebMessage)
+    assert isinstance(replayed.message, CompletedWebMessage)
+    assert not isinstance(replayed.message, WebChatMessage)
+    assert replayed.message.id == completed.message.id
+    with SessionLocal() as session:
+        assert len(
+            session.exec(
+                select(UsageCharge).where(UsageCharge.request_id == request_id)
+            ).all()
+        ) == 1
+
+
+def test_json_time_brand_and_topup_routes_make_zero_provider_calls(
+    client, monkeypatch,
+):
+    create_test_user("deterministic-routing", "deterministic-routing@example.com")
+    monkeypatch.setenv("WEB_DETERMINISTIC_TOOLS_ENABLED", "true")
+    monkeypatch.setenv("WEB_RESPONSE_PROVENANCE_ENABLED", "true")
+    calls = {"count": 0}
+
+    def unexpected_provider(*_args, **_kwargs):
+        calls["count"] += 1
+        raise AssertionError("deterministic route called a chat provider")
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        unexpected_provider,
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.sarvam_provider.SarvamProvider.stream_complete",
+        unexpected_provider,
+    )
+    cases = [
+        (
+            "Validate this JSON: {\"name\":\"Swico\",\"active\":true}",
+            "Valid JSON:",
+        ),
+        ("What time is it?", "Asia/Kolkata"),
+        ("Who created Swico?", "CEO Jeyanth"),
+        ("What can Swico do?", "Swico supports"),
+        ("Who is your creator?", "CEO Jeyanth"),
+        ("Recharge panna eppadi?", "Add credits"),
+        ("How do I recharge my Swico balance?", "Add credits"),
+    ]
+    headers = auth_headers(
+        "deterministic-routing", "deterministic-routing@example.com"
+    )
+    for index, (message, expected) in enumerate(cases, start=1):
+        response = client.post(
+            "/api/web/chat/stream",
+            headers=headers,
+            json={
+                "request_id": f"76000000-0000-4000-8000-{index:012d}",
+                "message": message,
+            },
+        )
+        assert response.status_code == 200
+        assert expected in _stream_text(response)
+        assert "backend_tool" in response.text
+        assert not _sse_events(response, "error")
+    assert calls["count"] == 0

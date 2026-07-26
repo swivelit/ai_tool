@@ -34,3 +34,30 @@ shared by deterministic answers and existing backend-tool web adapters.
 All flags belong directly on the existing `ai_tool` Render service. Do not put
 them in the shared environment group, static site, PostgreSQL, Valkey, or
 billing cron services, and never mirror backend settings through `VITE_*`.
+
+## Temporary production rollback
+
+For a conservative rollback, set these values directly on the existing
+`ai_tool` service:
+
+```dotenv
+AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED=false
+GLOBAL_QA_SEMANTIC_ENABLED=false
+WEB_POST_TURN_DISTILLATION_ENABLED=false
+WEB_CROSS_THREAD_MEMORY_ENABLED=false
+WEB_MEMORY_FACT_RANKING_ENABLED=false
+WEB_MESSAGE_EDIT_ENABLED=false
+```
+
+Do not add these values to `swico-web`, any `VITE_*` variable, the
+`swico-backend-production` environment group, PostgreSQL, Valkey, or Razorpay
+cron jobs. Safely re-enable the groups in this order, verifying each group
+before continuing:
+
+1. Message editing and regeneration.
+2. Memory ranking and post-turn distillation.
+3. Semantic cache and global cache recording.
+
+Keep `WEB_MEMORY_MAX_ITEMS=2`,
+`WEB_MEMORY_LLM_SUMMARIZATION_ENABLED=false`, and
+`WEB_PROMPT_CACHE_ENABLED=false` throughout the rollback and re-enable.
