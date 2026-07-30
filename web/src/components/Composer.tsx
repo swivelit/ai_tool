@@ -75,6 +75,7 @@ export function Composer({
   inlineThreshold?: number; maxCharacters?: number; longInputMode?: LongInputMode;
   setLongInputMode?: (mode: LongInputMode) => void;
 }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const plusRef = useRef<HTMLButtonElement>(null)
@@ -166,7 +167,45 @@ export function Composer({
         : recorder.state.status === 'transcribing' ? 'Transcribing recording…'
           : uploadBusy ? 'Uploading attachment…' : '')
 
-  return <div className="composer-wrap">
+  useEffect(() => {
+    const element = wrapRef.current
+    const host = element?.closest<HTMLElement>('.chat-main')
+    if (!element || !host || typeof ResizeObserver === 'undefined') return
+    let lastHeight = -1
+    let lastScrollbarReserve = -1
+    const conversation = host.querySelector<HTMLElement>('.conversation')
+    const update = () => {
+      const height = Math.max(0, Math.round(element.getBoundingClientRect().height))
+      if (height !== lastHeight) {
+        lastHeight = height
+        host.style.setProperty('--composer-reserved-height', `${height}px`)
+      }
+      const scrollbarReserve = conversation
+        ? Math.max(
+          0,
+          Math.round((conversation.offsetWidth - conversation.clientWidth) / 2),
+        )
+        : 0
+      if (scrollbarReserve !== lastScrollbarReserve) {
+        lastScrollbarReserve = scrollbarReserve
+        host.style.setProperty(
+          '--chat-scrollbar-inline-reserve',
+          `${scrollbarReserve}px`,
+        )
+      }
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    if (conversation) observer.observe(conversation)
+    return () => {
+      observer.disconnect()
+      host.style.removeProperty('--composer-reserved-height')
+      host.style.removeProperty('--chat-scrollbar-inline-reserve')
+    }
+  }, [])
+
+  return <div className="composer-wrap" ref={wrapRef}>
     <div className={`composer-shell has-character-count ${dragging ? 'dragging' : ''}`}
       onDragEnter={event => { event.preventDefault(); if (attachmentsEnabled) setDragging(true) }}
       onDragOver={event => event.preventDefault()} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false) }} onDrop={drop}>

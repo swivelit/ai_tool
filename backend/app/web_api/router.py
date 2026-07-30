@@ -84,6 +84,10 @@ from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
     PromptBudgetExceeded, execute_web_turn, prepare_web_turn,
 )
+from .continuation import (
+    metadata_dict as continuation_metadata_dict,
+    sanitize_render_prefix,
+)
 from .document_extraction import (
     DocumentValidationError, SUPPORTED_EXTENSIONS, chunk_virtual_text, extract_document, max_file_bytes,
     sanitize_filename, validate_content_signature, validate_extension_and_mime,
@@ -365,14 +369,16 @@ def _serialize_message(
         metadata = json.loads(row.metadata_json or "{}")
     except (TypeError, ValueError):
         metadata = {}
-    input_mode = metadata.get("input_mode") if isinstance(metadata, dict) else None
+    if not isinstance(metadata, dict):
+        metadata = {}
+    input_mode = metadata.get("input_mode")
     input_mode = input_mode if input_mode in {"text", "voice", "dictation", "realtime_voice"} else "text"
     if input_mode == "voice":
         input_mode = "dictation"
     voice_turn_id = metadata.get("voice_turn_id") if input_mode != "text" else None
-    reply_language = metadata.get("reply_language") if isinstance(metadata, dict) else None
+    reply_language = metadata.get("reply_language")
     reply_language = reply_language if reply_language in {"en", "ta"} else None
-    raw_attachments = metadata.get("attachments") if isinstance(metadata, dict) else []
+    raw_attachments = metadata.get("attachments")
     status_cache = attachment_cache if attachment_cache is not None else {}
     for value in raw_attachments if isinstance(raw_attachments, list) else []:
         if not isinstance(value, dict):
@@ -410,6 +416,12 @@ def _serialize_message(
             "warning_codes": [str(item)[:80] for item in value.get("warning_codes", [])[:5]]
             if isinstance(value.get("warning_codes"), list) else [],
         })
+    try:
+        continuation_segment_index = int(
+            metadata.get("continuation_segment_index") or 0
+        )
+    except (TypeError, ValueError):
+        continuation_segment_index = 0
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
         "request_id": row.request_id, "tier": tier,
@@ -422,7 +434,28 @@ def _serialize_message(
         "finish_reason": str(metadata.get("finish_reason") or "unknown"),
         "truncated": bool(metadata.get("truncated")),
         "completion_status": str(metadata.get("completion_status") or "unknown"),
-        "can_continue": bool(metadata.get("truncated")) and row.role == "assistant" and row.status == "complete",
+        "can_continue": (
+            bool(metadata.get("truncated"))
+            and row.role == "assistant"
+            and row.status == "complete"
+            and not bool(metadata.get("continuation_consumed"))
+            and not metadata.get("continued_by_message_id")
+        ),
+        "is_continuation_control": bool(
+            metadata.get("is_continuation_control")
+        ),
+        "continuation_render_prefix": sanitize_render_prefix(
+            metadata.get("continuation_render_prefix")
+        ),
+        "continuation_parent_message_id": (
+            str(metadata.get("continuation_parent_message_id"))
+            if metadata.get("continuation_parent_message_id") else None
+        ),
+        "continuation_root_message_id": (
+            str(metadata.get("continuation_root_message_id"))
+            if metadata.get("continuation_root_message_id") else None
+        ),
+        "continuation_segment_index": continuation_segment_index,
         "replaces_message_id": row.replaces_message_id,
         "revision_number": row.revision_number,
         "feedback_rating": (
@@ -2061,8 +2094,24 @@ def list_messages(
         WebChatMessage.superseded_at.is_(None),
     ).order_by(WebChatMessage.created_at.asc()).offset(offset).limit(limit)).all()
     attachment_cache: dict[str, tuple[str, int | None]] = {}
+    public_rows = []
+    for row in rows:
+        try:
+            row_metadata = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError):
+            row_metadata = {}
+        if (
+            row.role == "user"
+            and isinstance(row_metadata, dict)
+            and row_metadata.get("is_continuation_control")
+        ):
+            continue
+        public_rows.append(row)
     return {
-        "items": [_serialize_message(row, attachment_cache) for row in rows],
+        "items": [
+            _serialize_message(row, attachment_cache)
+            for row in public_rows
+        ],
         "limit": limit,
         "offset": offset,
     }
@@ -2113,6 +2162,10 @@ def search_web_content(
                 JOIN web_chat_thread t ON t.id = m.thread_id
                 WHERE m.user_id = :user_id AND m.superseded_at IS NULL
                   AND m.status = 'complete' AND t.archived_at IS NULL
+                  AND (
+                      COALESCE(m.metadata_json, '{}')::jsonb
+                      ->> 'is_continuation_control'
+                  ) IS DISTINCT FROM 'true'
                   AND to_tsvector('simple', m.content) @@ websearch_to_tsquery('simple', :query)
                 UNION ALL
                 SELECT s.thread_id, NULL AS message_id, s.summary_text AS content,
@@ -2215,6 +2268,10 @@ def search_web_content(
             )
         ]
         for row in messages:
+            if continuation_metadata_dict(row).get(
+                "is_continuation_control"
+            ):
+                continue
             results.append(
                 {
                     "thread_id": row.thread_id,
@@ -3005,7 +3062,21 @@ async def chat_stream(
 
         task.add_done_callback(unregister)
         try:
-            yield _sse("thread", {"thread_id": prepared.thread_id})
+            yield _sse("thread", {
+                "thread_id": prepared.thread_id,
+                "continuation_render_prefix": (
+                    prepared.continuation_render_prefix
+                ),
+                "continuation_parent_message_id": (
+                    prepared.continuation_parent_message_id
+                ),
+                "continuation_root_message_id": (
+                    prepared.continuation_root_message_id
+                ),
+                "continuation_segment_index": (
+                    prepared.continuation_segment_index
+                ),
+            })
             yield _sse("status", {"phase": "routing"})
             if prepared.reserved_micros:
                 yield _sse("status", {"phase": "reserved", "reserved_micros": prepared.reserved_micros})
@@ -3062,6 +3133,22 @@ async def chat_stream(
                 "finish_reason": str(response.raw.get("finish_reason") or "unknown"),
                 "truncated": bool(response.raw.get("truncated")),
                 "can_continue": bool(response.raw.get("truncated")) and completed.message.status == "complete",
+                "continuation_render_prefix": (
+                    prepared.continuation_render_prefix
+                ),
+                "continuation_parent_message_id": (
+                    prepared.continuation_parent_message_id
+                ),
+                "continuation_root_message_id": (
+                    prepared.continuation_root_message_id
+                ),
+                "continuation_segment_index": (
+                    prepared.continuation_segment_index
+                ),
+                "parent_can_continue": (
+                    False
+                    if prepared.continuation_parent_message_id else None
+                ),
                 "completion_status": str(response.raw.get("completion_status") or "unknown"),
                 "provenance": (
                     response.raw.get("provenance")

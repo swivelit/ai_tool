@@ -240,6 +240,62 @@ it('shows Continue for provider or local structural truncation only', () => {
   expect(screen.queryByRole('button', { name:'Continue response' })).not.toBeInTheDocument()
 })
 
+it('renders inherited HTML continuation as safe code and does not double-prefix', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable:true, value:{ writeText },
+  })
+  const raw = '  <meta name="theme-color" content="#6757ff">\n  <style>:root { color: red; }</style>\n```'
+  const { container, rerender } = render(<Conversation messages={[message('continued', {
+    content:raw,
+    continuation_render_prefix:'```html\n',
+  })]} retry={vi.fn()} suggest={vi.fn()} />)
+  const code = container.querySelector('.code-block code')
+  expect(code?.textContent).toContain('<meta name="theme-color"')
+  expect(container.querySelector('meta')).not.toBeInTheDocument()
+  expect(container.querySelector('style')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name:'Copy code' }))
+  await act(async () => undefined)
+  expect(writeText).toHaveBeenCalledWith(raw.replace(/\n```$/, ''))
+  fireEvent.click(screen.getByRole('button', { name:'Open response editor' }))
+  fireEvent.click(screen.getByRole('button', { name:'Edit' }))
+  expect(screen.getByLabelText('Response Markdown source')).toHaveValue(`\`\`\`html\n${raw}`)
+
+  fireEvent.click(screen.getByRole('button', { name:'Close response editor' }))
+  rerender(<Conversation messages={[message('continued', {
+    content:'```html\n<div>already fenced</div>\n```',
+    continuation_render_prefix:'```html\n',
+  })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(container.querySelectorAll('.code-block')).toHaveLength(1)
+  expect(container.querySelector('.code-block code')?.textContent).toBe('<div>already fenced</div>')
+})
+
+it('hides continuation controls and manages parent/child Continue buttons', () => {
+  const parent = message('parent', {
+    truncated:true, can_continue:true,
+  })
+  const control = message('control', {
+    role:'user', content:'Continue response', is_continuation_control:true,
+  })
+  const child = message('child', {
+    truncated:true, can_continue:true,
+    continuation_parent_message_id:'parent',
+  })
+  const { rerender } = render(<Conversation
+    messages={[parent, control]}
+    continuingMessageId="parent"
+    retry={vi.fn()} suggest={vi.fn()}
+  />)
+  expect(screen.queryByText('Continue response', { selector:'.user-bubble' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Continue response' })).toBeDisabled()
+
+  rerender(<Conversation messages={[
+    { ...parent, can_continue:false }, child,
+  ]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getAllByRole('button', { name:'Continue response' })).toHaveLength(1)
+  expect(screen.getByRole('button', { name:'Continue response' })).toBeEnabled()
+})
+
 it('edits only the latest active user message with accessible save and cancel controls', () => {
   const editMessage = vi.fn()
   const userMessage = { ...message('user-latest'), role:'user' as const, content:'Original question' }

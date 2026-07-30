@@ -42,6 +42,11 @@ export type Message = {
   input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
   finish_reason?: string; truncated?: boolean; can_continue?: boolean;
   completion_status?: string;
+  is_continuation_control?: boolean;
+  continuation_render_prefix?: string;
+  continuation_parent_message_id?: string | null;
+  continuation_root_message_id?: string | null;
+  continuation_segment_index?: number;
   replaces_message_id?: string | null; revision_number?: number;
   feedback_rating?: 'up' | 'down' | null;
   provenance?: ResponseProvenance[];

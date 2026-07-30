@@ -7,6 +7,8 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import python from 'highlight.js/lib/languages/python'
 import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
+import css from 'highlight.js/lib/languages/css'
 import 'highlight.js/styles/github-dark-dimmed.css'
 import { codeNodeText } from './codeNodeText'
 
@@ -17,6 +19,9 @@ hljs.registerLanguage('json', json)
 hljs.registerLanguage('python', python)
 hljs.registerLanguage('typescript', typescript)
 hljs.registerLanguage('ts', typescript)
+hljs.registerLanguage('html', xml)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('css', css)
 hljs.registerAliases(['sh', 'shell'], { languageName: 'bash' })
 hljs.registerAliases('py', { languageName: 'python' })
 

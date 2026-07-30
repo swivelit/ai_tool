@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
@@ -34,6 +35,43 @@ it('auto-resizes for multiline and resets after clearing', () => {
   Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 28 })
   rerender(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />)
   expect(textarea.style.height).toBe('28px')
+})
+
+it('measures composer height, updates the shared CSS variable, and cleans up in StrictMode', () => {
+  const callbacks: Array<() => void> = []
+  const disconnect = vi.fn()
+  const observe = vi.fn()
+  const OriginalResizeObserver = globalThis.ResizeObserver
+  class TestResizeObserver {
+    constructor(callback: () => void) { callbacks.push(callback) }
+    observe = observe
+    disconnect = disconnect
+    unobserve = vi.fn()
+  }
+  globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver
+  const { container, unmount } = render(<StrictMode><div className="chat-main">
+    <div className="conversation" />
+    <Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />
+  </div></StrictMode>)
+  const wrap = container.querySelector('.composer-wrap') as HTMLElement
+  const conversation = container.querySelector('.conversation') as HTMLElement
+  Object.defineProperties(conversation, {
+    offsetWidth:{ configurable:true, value:730 },
+    clientWidth:{ configurable:true, value:700 },
+  })
+  vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue({
+    width:700, height:237.4, top:0, right:700, bottom:237.4, left:0,
+    x:0, y:0, toJSON:() => ({}),
+  })
+  callbacks.at(-1)?.()
+  const main = container.querySelector('.chat-main') as HTMLElement
+  expect(main.style.getPropertyValue('--composer-reserved-height')).toBe('237px')
+  expect(main.style.getPropertyValue('--chat-scrollbar-inline-reserve')).toBe('15px')
+  unmount()
+  expect(disconnect).toHaveBeenCalled()
+  expect(main.style.getPropertyValue('--composer-reserved-height')).toBe('')
+  expect(main.style.getPropertyValue('--chat-scrollbar-inline-reserve')).toBe('')
+  globalThis.ResizeObserver = OriginalResizeObserver
 })
 
 it('selects and drops documents through the attachment control', async () => {

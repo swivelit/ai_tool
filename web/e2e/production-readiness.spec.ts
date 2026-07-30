@@ -26,6 +26,7 @@ type MockState = {
   profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: 'en' | 'ta'; email: string; email_editable: false }
   payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; updated_at: string; paid_at: string | null; refunded_at: string | null; payment_received: boolean; credit_applied: boolean; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
   threads: Array<{ id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }>
+  messages: Array<Record<string, unknown>>
   voiceScenario: 'normal' | 'autoplay' | 'pcm' | 'media_fail'
 }
 
@@ -44,6 +45,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     profile: { name: 'E2E User', place: 'Chennai', timezone: 'Asia/Kolkata', assistant_name: 'Elli', reply_language: 'en', email: 'e2e@example.test', email_editable: false },
     payments: [],
     threads: [{ id: 'thread-1', title: 'Tamil planning', archived_at: null, created_at: now, updated_at: now }],
+    messages: [],
     voiceScenario:'normal',
     ...initial,
   }
@@ -146,7 +148,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       const query = (url.searchParams.get('q') || '').toLowerCase()
       return json(route, { items: state.threads.filter(item => item.title.toLowerCase().includes(query)), has_more: false })
     }
-    if (path === '/api/web/threads/thread-1/messages') return json(route, { items: [] })
+    if (path === '/api/web/threads/thread-1/messages') return json(route, { items:state.messages })
     if (path === '/api/web/threads/voice-thread/messages') return json(route, { items:[
       { id:'voice-user-1', thread_id:'voice-thread', role:'user', content:'I need help planning', request_id:'voice-request-1', tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0, usage_source:null, charge_micros:0, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
       { id:'voice-assistant-1', thread_id:'voice-thread', role:'assistant', content:'Let us make a clear plan.', request_id:'voice-request-1', tier:'lite', tier_label:'Swico Lite', input_tokens:8, output_tokens:7, usage_source:'actual', charge_micros:10, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
@@ -423,6 +425,109 @@ test('rapid Markdown streaming stays pinned, yields to manual scrolling, and com
   await expect(page.locator('#composer-character-count')).toBeVisible()
 
   await testInfo.attach('streaming-render-diagnostic', { body:await page.screenshot(), contentType:'image/png' })
+})
+
+test('conversation, composer, code overflow, and dynamic bottom reserve share one responsive column', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'One deterministic viewport matrix is sufficient')
+  const longCode = `const terminalBoundary = "${'x'.repeat(180)}";`
+  const answer = [
+    ...Array.from({ length:40 }, (_, index) => `Section ${index + 1}\n\nThis paragraph verifies the reachable response layout at every supported width.`),
+    `\`\`\`javascript\n${longCode}\n\`\`\``,
+  ].join('\n\n')
+  await installBackend(page, {
+    wallet:5_000_000,
+    messages:[
+      {
+        id:'layout-user', thread_id:'thread-1', role:'user', content:'Build the layout example.',
+        request_id:'layout-request', tier:null, tier_label:'Swico', input_tokens:0,
+        output_tokens:0, usage_source:null, charge_micros:0, status:'complete',
+        created_at:now, attachments:[], input_mode:'text', voice_turn_id:null,
+        reply_language:'en',
+      },
+      {
+        id:'layout-assistant', thread_id:'thread-1', role:'assistant', content:answer,
+        request_id:'layout-request', tier:'lite', tier_label:'Swico Lite',
+        input_tokens:10, output_tokens:600, usage_source:'actual', charge_micros:100,
+        status:'complete', created_at:now, attachments:[], input_mode:'text',
+        voice_turn_id:null, reply_language:'en', truncated:false, can_continue:false,
+      },
+    ],
+  })
+  await signIn(page)
+  await page.getByText('Tamil planning').click()
+  await expect(page.locator('.code-block code')).toContainText('terminalBoundary')
+  await page.getByLabel('Message Swico').fill(
+    'Line one\nLine two\nLine three\nLine four\nLine five\nLine six',
+  )
+
+  const verifyGeometry = async (label: string) => {
+    await page.locator('.conversation').evaluate(element => {
+      element.scrollTop = element.scrollHeight
+      element.dispatchEvent(new Event('scroll'))
+    })
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+    const geometry = await page.evaluate(() => {
+      const rectangle = (selector: string) => {
+        const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect()
+        return { left:rect.left, right:rect.right, top:rect.top, bottom:rect.bottom, width:rect.width }
+      }
+      const conversation = rectangle('.conversation-content')
+      const composer = rectangle('.composer-shell')
+      const composerWrap = rectangle('.composer-wrap')
+      const lastMessage = rectangle('.message:last-child')
+      const pre = document.querySelector<HTMLElement>('.code-block pre')!
+      const main = document.querySelector<HTMLElement>('.chat-main')!
+      return {
+        conversation,
+        composer,
+        composerWrap,
+        lastMessage,
+        centerDifference:Math.abs(
+          (conversation.left + conversation.right) / 2
+          - (composer.left + composer.right) / 2,
+        ),
+        leftDifference:Math.abs(conversation.left - composer.left),
+        rightDifference:Math.abs(conversation.right - composer.right),
+        documentOverflow:document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        codeOverflow:pre.scrollWidth - pre.clientWidth,
+        reservedHeight:parseFloat(getComputedStyle(main).getPropertyValue('--composer-reserved-height')),
+      }
+    })
+    expect(geometry.centerDifference, `${label}: centers`).toBeLessThanOrEqual(1)
+    expect(geometry.leftDifference, `${label}: left edges`).toBeLessThanOrEqual(1)
+    expect(geometry.rightDifference, `${label}: right edges`).toBeLessThanOrEqual(1)
+    expect(geometry.lastMessage.bottom, `${label}: final message`).toBeLessThanOrEqual(geometry.composerWrap.top + 1)
+    expect(geometry.documentOverflow, `${label}: document overflow`).toBeLessThanOrEqual(1)
+    expect(geometry.codeOverflow, `${label}: local code overflow`).toBeGreaterThan(0)
+    expect(geometry.reservedHeight, `${label}: measured composer`).toBeGreaterThan(100)
+
+    await page.locator('.conversation').evaluate(element => {
+      element.scrollTop = 0
+      element.dispatchEvent(new Event('scroll'))
+    })
+    const scrollButton = page.getByRole('button', { name:'Scroll to bottom' })
+    await expect(scrollButton).toBeVisible()
+    const button = await scrollButton.boundingBox()
+    expect(button, `${label}: scroll button`).not.toBeNull()
+    const buttonCenter = button!.x + button!.width / 2
+    const columnCenter = (
+      geometry.conversation.left + geometry.conversation.right
+    ) / 2
+    expect(Math.abs(buttonCenter - columnCenter), `${label}: scroll button center`).toBeLessThanOrEqual(1)
+    expect(button!.y + button!.height, `${label}: scroll button above composer`).toBeLessThanOrEqual(geometry.composerWrap.top)
+  }
+
+  for (const width of [1440, 1024, 900, 800, 768, 390]) {
+    await page.setViewportSize({ width, height:844 })
+    await verifyGeometry(`${width}px`)
+    if (width > 900) {
+      await page.getByRole('button', { name:'Collapse sidebar' }).click()
+      await page.waitForTimeout(250)
+      await verifyGeometry(`${width}px collapsed`)
+      await page.getByRole('button', { name:'Expand sidebar' }).click()
+      await page.waitForTimeout(250)
+    }
+  }
 })
 
 test('order failure is safe and primary views have no critical accessibility violations', async ({ page }, testInfo) => {

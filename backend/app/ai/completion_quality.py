@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 
 
@@ -17,6 +18,48 @@ _SECTION_HEADING = re.compile(
 _UNFINISHED_LIST_MARKER = re.compile(
     r"^[ \t]*(?:[-+*]|\d+[.)])[ \t]*$"
 )
+
+
+@dataclass(frozen=True)
+class MarkdownFenceState:
+    is_open: bool
+    fence_character: str = ""
+    fence_length: int = 0
+    language: str = ""
+    opening_position: int = -1
+    is_closed: bool = True
+
+
+def markdown_fence_state(text: str) -> MarkdownFenceState:
+    """Return the terminal fenced-code state without interpreting inline code."""
+
+    value = str(text or "")
+    active: MarkdownFenceState | None = None
+    position = 0
+    for line_with_end in value.splitlines(keepends=True):
+        line = line_with_end.rstrip("\r\n")
+        match = _FENCE_LINE.match(line)
+        if match:
+            fence = match.group("fence")
+            suffix = match.group("suffix").strip()
+            if active is None:
+                language = suffix.split(maxsplit=1)[0] if suffix else ""
+                active = MarkdownFenceState(
+                    is_open=True,
+                    fence_character=fence[0],
+                    fence_length=len(fence),
+                    language=language,
+                    opening_position=position,
+                    is_closed=False,
+                )
+            elif (
+                fence[0] == active.fence_character
+                and len(fence) >= active.fence_length
+                and not suffix
+            ):
+                active = None
+        position += len(line_with_end)
+    return active or MarkdownFenceState(is_open=False)
 
 
 def incomplete_markdown_reason(text: str, answer_class: object) -> str:

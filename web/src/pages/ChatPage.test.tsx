@@ -66,6 +66,74 @@ const uploaded = {
   status:'ready' as const, warnings:[],
 }
 
+it('continues without an optimistic control bubble and consumes the parent button', async () => {
+  const thread = {
+    id:'continue-thread', title:'Long answer', archived:false,
+    created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+  }
+  const parent = {
+    id:'parent-answer', thread_id:thread.id, role:'assistant' as const,
+    content:'```html\n<main>', request_id:'root-request', tier:'lite' as const,
+    tier_label:'Swico Lite', input_tokens:10, output_tokens:10,
+    usage_source:'actual' as const, charge_micros:1, status:'complete',
+    created_at:new Date().toISOString(), input_mode:'text' as const,
+    voice_turn_id:null, reply_language:'en' as const,
+    truncated:true, can_continue:true,
+  }
+  const child = {
+    ...parent, id:'child-answer', request_id:'child-request',
+    content:'</main>\n```', truncated:false, can_continue:false,
+    continuation_render_prefix:'```html\n',
+    continuation_parent_message_id:parent.id,
+  }
+  let messageLoads = 0
+  vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[thread], has_more:false } as never
+    if (path.includes('/messages')) {
+      messageLoads += 1
+      return { items:messageLoads === 1 ? [parent] : [{ ...parent, can_continue:false }, child] } as never
+    }
+    return {} as never
+  })
+  let finish!: () => void
+  let emit!: (event: { event:string; data:unknown }) => void
+  vi.mocked(streamChat).mockReset().mockImplementation(async (_user, _payload, onEvent) => {
+    emit = onEvent
+    await new Promise<void>(resolve => { finish = resolve })
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByText('Long answer'))
+  await userEvent.click(await screen.findByRole('button', { name:'Continue response' }))
+
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({
+    continue_message_id:'parent-answer',
+    message:'Continue response',
+  })
+  expect(screen.queryByText('Continue response', { selector:'.user-bubble' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Continue response' })).toBeDisabled()
+
+  await act(async () => {
+    emit({ event:'thread', data:{
+      thread_id:thread.id,
+      continuation_render_prefix:'```html\n',
+      continuation_parent_message_id:parent.id,
+    } })
+    emit({ event:'delta', data:{ text:'</main>\n```' } })
+    emit({ event:'done', data:{
+      message_id:'child-answer', truncated:false, can_continue:false,
+      continuation_parent_message_id:parent.id, parent_can_continue:false,
+    } })
+    finish()
+  })
+  await waitFor(() => expect(screen.queryByRole('button', { name:'Continue response' })).not.toBeInTheDocument())
+  await waitFor(() => expect(
+    Array.from(document.querySelectorAll('.code-block code')).some(
+      element => element.textContent?.includes('</main>'),
+    ),
+  ).toBe(true))
+})
+
 it('keeps the authoritative SSE thread for follow-ups, supports selection, and clears it for New chat', async () => {
   const existingThread = {
     id:'thread-existing', title:'Existing topic', archived:false,

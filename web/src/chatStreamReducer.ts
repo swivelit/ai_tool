@@ -35,7 +35,14 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
   const data = record(action.event.data)
   switch (action.event.event) {
     case 'thread':
-      return { ...state, assistant: state.assistant ? { ...state.assistant, thread_id: String(data.thread_id ?? '') } : null }
+      return { ...state, assistant: state.assistant ? {
+        ...state.assistant,
+        thread_id: String(data.thread_id ?? ''),
+        continuation_render_prefix: String(data.continuation_render_prefix ?? ''),
+        continuation_parent_message_id: data.continuation_parent_message_id ? String(data.continuation_parent_message_id) : null,
+        continuation_root_message_id: data.continuation_root_message_id ? String(data.continuation_root_message_id) : null,
+        continuation_segment_index: Number(data.continuation_segment_index ?? 0),
+      } : null }
     case 'status':
       return { ...state, phase: String(data.phase ?? '') }
     case 'delta':
@@ -69,6 +76,12 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
           finish_reason: String(data.finish_reason ?? 'unknown'),
           truncated: Boolean(data.truncated), can_continue: Boolean(data.can_continue),
           completion_status: String(data.completion_status ?? 'unknown'),
+          continuation_render_prefix: String(data.continuation_render_prefix ?? state.assistant.continuation_render_prefix ?? ''),
+          continuation_parent_message_id: data.continuation_parent_message_id
+            ? String(data.continuation_parent_message_id) : state.assistant.continuation_parent_message_id,
+          continuation_root_message_id: data.continuation_root_message_id
+            ? String(data.continuation_root_message_id) : state.assistant.continuation_root_message_id,
+          continuation_segment_index: Number(data.continuation_segment_index ?? state.assistant.continuation_segment_index ?? 0),
           provenance: Array.isArray(data.provenance)
             ? data.provenance.map(String).filter(value => [
               'memory', 'document', 'cached_answer', 'semantic_cache', 'backend_tool', 'web_search',

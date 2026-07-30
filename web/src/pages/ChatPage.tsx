@@ -26,6 +26,7 @@ export function ChatPage() {
   const [threads, setThreads] = useState<Thread[]>([]); const [hasMore, setHasMore] = useState(false)
   const [active, setActive] = useState<string | null>(null); const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState(''); const [streaming, setStreaming] = useState(false)
+  const [continuingMessageId, setContinuingMessageId] = useState<string | null>(null)
   const [longInputMode, setLongInputMode] = useState<LongInputMode>('analyze')
   const [draftVoiceTurnId, setDraftVoiceTurnId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
@@ -261,7 +262,7 @@ export function ChatPage() {
       ? messages.find(item => item.role === 'user' && item.request_id === regenerateTarget.request_id) : undefined
     const revisionTarget = editTarget ?? regenerateUser
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
-    if (!existingUser && !revisionTarget) {
+    if (!existingUser && !revisionTarget && !requestOptions?.continueMessageId) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: bootstrap.user.reply_language === 'ta' ? 'ta' : 'en' }
       setMessages(value => [...value, optimistic])
@@ -300,6 +301,13 @@ export function ChatPage() {
           && Boolean((event.data as Record<string, unknown>).memory_updated)) {
           window.dispatchEvent(new Event('swico:memory-updated'))
         }
+        if (event.event === 'done' && requestOptions?.continueMessageId) {
+          setMessages(value => value.map(item => (
+            item.id === requestOptions.continueMessageId
+              ? { ...item, can_continue:false }
+              : item
+          )))
+        }
         // Dictation is an input convenience only. Manual speaker playback remains
         // available from completed messages, but is never auto-generated here.
       }, abort.signal, () => {
@@ -318,6 +326,9 @@ export function ChatPage() {
       setDraftVoiceTurnId(null)
       await loadThreads(true)
       if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
+      if (requestOptions?.continueMessageId && threadId) {
+        await loadMessages(threadId)
+      }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
@@ -333,7 +344,10 @@ export function ChatPage() {
         if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
       if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
-    } finally { setStreaming(false); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
+      if (requestOptions?.continueMessageId && threadId) {
+        await loadMessages(threadId)
+      }
+    } finally { setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
   }
 
   const stop = () => {
@@ -357,7 +371,12 @@ export function ChatPage() {
     })
   }
   const continueResponse = (message: Message) => {
-    if (streaming || !message.thread_id || !message.truncated) return
+    if (
+      streaming || offline
+      || attachments.some(item => item.status === 'uploading')
+      || !message.thread_id || !message.truncated
+    ) return
+    setContinuingMessageId(message.id)
     void send('Continue response', message.thread_id, undefined, [], {
       inputMode: 'text', voiceTurnId: null,
     }, { continueMessageId: message.id })
@@ -489,7 +508,7 @@ export function ChatPage() {
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}

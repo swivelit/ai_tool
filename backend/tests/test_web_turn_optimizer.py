@@ -12,6 +12,7 @@ from app.ai.prompts import (
 )
 from app.ai.providers.openai_provider import OpenAIProvider, _local_degradation_reason
 from app.ai.providers.base import GenerationCancelled
+from app.ai.completion_quality import markdown_fence_state
 from app.ai.types import AIProviderResponse, AIRequest, AIRoute
 from app.billing.pricing import estimate_tokens
 from app.billing.errors import PaymentValidationError
@@ -23,6 +24,10 @@ from app.profile_context import build_profile_prompt_context
 from app.time_utils import utc_now
 from app.web_api.attachment_context import select_attachment_context
 from app.web_api.chat_service import _context, execute_web_turn, prepare_web_turn
+from app.web_api.continuation import (
+    build_continuation_packet, resolve_continuation_chain, safe_render_prefix,
+    sanitize_render_prefix,
+)
 from app.web_api.turn_optimizer import (
     classify_answer_class, optimize_web_turn, select_context_turns,
 )
@@ -258,9 +263,10 @@ def test_adaptive_history_excludes_superseded_and_mismatched_pairs(monkeypatch):
     assert "Mismatched assistant" not in serialized
 
 
-def test_continue_response_keeps_only_bounded_truncated_tail(monkeypatch):
-    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
-    monkeypatch.setenv("WEB_CONTEXT_MAX_CHARS", "900")
+def test_continue_response_uses_dedicated_exact_packet_when_context_is_off(monkeypatch):
+    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "off")
+    monkeypatch.setenv("WEB_CONTEXT_MAX_TURNS", "0")
+    monkeypatch.setenv("WEB_CONTEXT_MAX_CHARS", "0")
     monkeypatch.setattr("app.web_api.chat_service.create_usage_reservation", lambda *args, **kwargs: None)
     user = create_test_user("continuity-continue", "continuity-continue@example.com")
     with SessionLocal() as session:
@@ -270,11 +276,17 @@ def test_continue_response_keeps_only_bounded_truncated_tail(monkeypatch):
         request_id = "truncated-original"
         session.add(WebChatMessage(
             thread_id=thread.id, user_id=int(user.id), role="user",
-            content="Give me a long roadmap", request_id=request_id, status="complete",
+            content="Build a page.\n1. Keep exact HTML.\n2. Include CSS.",
+            request_id=request_id, status="complete",
         ))
+        exact_tail = (
+            '  <meta name="theme-color" content="#6757ff">\n'
+            "  <style>\n"
+            "    :root { --accent: #6757ff; }\n"
+        )
         assistant = WebChatMessage(
             thread_id=thread.id, user_id=int(user.id), role="assistant",
-            content="completed start " + "remaining " * 200,
+            content="## Step 1\n\n```html\n" + ("<p>old</p>\n" * 900) + exact_tail,
             request_id=request_id, status="complete",
             metadata_json=json.dumps({"truncated": True}),
         )
@@ -290,10 +302,97 @@ def test_continue_response_keeps_only_bounded_truncated_tail(monkeypatch):
     )
     assert prepared.coordinator_decision is not None
     assert prepared.coordinator_decision.continuity.reason == "continue_response"
-    assert len(prepared.ai_request.context_turns) == 1
-    assert prepared.coordinator_decision.same_thread.characters <= 900
-    roles = [message["role"] for message in prepared.provider_messages or []]
-    assert roles[-3:] == ["user", "assistant", "user"]
+    assert prepared.ai_request.context_turns == []
+    packet = str(prepared.ai_request.metadata["continuation_packet"])
+    assert "Build a page." in packet
+    assert "1. Keep exact HTML." in packet
+    assert exact_tail in packet
+    assert packet.index(exact_tail) < packet.index("MARKDOWN FENCE STATE")
+    assert prepared.continuation_render_prefix == "```html\n"
+    assert (prepared.provider_messages or [])[-1]["content"] == packet
+
+
+@pytest.mark.parametrize(
+    ("markdown", "is_open", "language"),
+    [
+        ("```html\n<div>", True, "html"),
+        ("```python\n  print('x')", True, "python"),
+        ("~~~sql\nselect 1;\n~~~", False, ""),
+        ("```css\nbody{}\n```", False, ""),
+    ],
+)
+def test_markdown_fence_state(markdown, is_open, language):
+    state = markdown_fence_state(markdown)
+    assert state.is_open is is_open
+    assert state.language == language
+    if is_open:
+        assert state.fence_character in {"`", "~"}
+        assert state.fence_length >= 3
+        assert state.opening_position == 0
+        assert state.is_closed is False
+        assert safe_render_prefix(state).startswith(state.fence_character * 3)
+    else:
+        assert safe_render_prefix(state) == ""
+
+
+def test_continuation_render_prefix_rejects_arbitrary_metadata():
+    assert sanitize_render_prefix("```html\n") == "```html\n"
+    assert sanitize_render_prefix("```html onclick=alert(1)\n") == ""
+    assert sanitize_render_prefix("<script>") == ""
+
+
+def test_multi_hop_and_historical_continuation_resolve_original_request():
+    user = create_test_user("continuation-chain", "continuation-chain@example.com")
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Chain")
+        session.add(thread); session.flush()
+        root_request = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Original request\n1. Preserve requirements",
+            request_id="root-request", status="complete",
+        )
+        root = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="## Step 1\nDone", request_id="root-request",
+            status="complete", metadata_json=json.dumps({"truncated": True}),
+        )
+        session.add(root_request); session.add(root); session.flush()
+        legacy_control = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Continue response", request_id="child-request",
+            status="complete",
+            metadata_json=json.dumps({"continue_message_id": root.id}),
+        )
+        child = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content=(
+                "## Step 2\n```python\n"
+                + ("  completed_value = 0\n" * 300)
+                + "  value = 1"
+            ),
+            request_id="child-request", status="complete",
+            metadata_json=json.dumps({"truncated": True}),
+        )
+        session.add(legacy_control); session.add(child); session.commit()
+
+        chain = resolve_continuation_chain(
+            session, user_id=int(user.id), thread_id=thread.id,
+            continue_message_id=child.id,
+        )
+        packet = build_continuation_packet(chain)
+        reduced = build_continuation_packet(
+            chain, max_characters=2_000, tail_characters=1_200
+        )
+
+    assert chain.root_user.content.startswith("Original request")
+    assert [segment.id for segment in chain.segments] == [root.id, child.id]
+    assert packet.render_prefix == "```python\n"
+    assert "  value = 1" in packet.text
+    exact_boundary = chain.target.content[-1_000:]
+    assert exact_boundary in reduced.text
+    assert reduced.text.index(
+        "[Earlier response text omitted before this exact tail]"
+    ) < reduced.text.index(exact_boundary)
 
 
 def test_realtime_voice_uses_the_same_adaptive_thread_continuity(monkeypatch):

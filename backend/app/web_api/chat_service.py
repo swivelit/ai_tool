@@ -44,7 +44,13 @@ from .conversation_continuity import (
 from .upload_store import UploadStoreUnavailable, get_upload_store
 from .usage_service import selected_swico_tier
 from .turn_optimizer import (
-    WebTurnOptimization, optimizer_enabled, select_context_turns, with_prompt_estimate,
+    WebTurnOptimization, optimizer_enabled, output_ceiling, select_context_turns,
+    with_prompt_estimate,
+)
+from .continuation import (
+    ContinuationChain, ContinuationResolutionError, build_continuation_packet,
+    metadata_dict as continuation_metadata_dict,
+    resolve_continuation_chain, write_metadata as write_continuation_metadata,
 )
 from .request_coordinator import WebRequestCoordinator, WebRequestDecision
 from .deterministic_answers import try_deterministic_answer
@@ -148,6 +154,10 @@ class PreparedWebTurn:
     replaces_assistant_message_id: str | None = None
     replacement_revision_number: int = 1
     regeneration_cache_row_id: int | None = None
+    continuation_parent_message_id: str | None = None
+    continuation_root_message_id: str | None = None
+    continuation_segment_index: int = 0
+    continuation_render_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,6 +180,24 @@ def _owned_thread(session: Session, thread_id: str, user_id: int) -> WebChatThre
     if thread is None:
         raise LookupError("Thread not found")
     return thread
+
+
+def _release_continuation_claim(
+    session: Session, prepared: PreparedWebTurn
+) -> None:
+    parent_id = prepared.continuation_parent_message_id
+    if not parent_id:
+        return
+    parent = session.get(WebChatMessage, parent_id)
+    if parent is None or parent.user_id != prepared.user_id:
+        return
+    metadata = continuation_metadata_dict(parent)
+    if str(metadata.get("continuation_request_id") or "") != prepared.request_id:
+        return
+    metadata["continuation_consumed"] = False
+    metadata.pop("continuation_request_id", None)
+    write_continuation_metadata(parent, metadata)
+    session.add(parent)
 
 
 def _context(
@@ -289,6 +317,11 @@ def _context(
     pending: WebChatMessage | None = None
     for row in reversed(rows):
         if row.role == "user":
+            if continuation_metadata_dict(row).get(
+                "is_continuation_control"
+            ):
+                pending = None
+                continue
             pending = row
         elif row.role == "assistant" and pending is not None:
             if pending.request_id and row.request_id and pending.request_id != row.request_id:
@@ -792,27 +825,29 @@ def prepare_web_turn(
                 session.delete(summary)
 
         continuation_row: WebChatMessage | None = None
+        continuation_chain: ContinuationChain | None = None
+        continuation_packet = None
         if continue_message_id:
-            continuation_row = session.exec(select(WebChatMessage).where(
-                WebChatMessage.id == continue_message_id,
-                WebChatMessage.thread_id == thread.id,
-                WebChatMessage.user_id == user_id,
-                WebChatMessage.role == "assistant",
-                WebChatMessage.status == "complete",
-                WebChatMessage.superseded_at.is_(None),
-            )).first()
-            if continuation_row is None:
-                raise AttachmentRequestError(
-                    "continuation_not_found", "The response to continue is no longer available.", 404
-                )
             try:
-                continuation_metadata = json.loads(continuation_row.metadata_json or "{}")
-            except (TypeError, ValueError):
-                continuation_metadata = {}
-            if not bool(continuation_metadata.get("truncated")):
-                raise AttachmentRequestError(
-                    "continuation_not_allowed", "Only a truncated response can be continued.", 409
+                continuation_chain = resolve_continuation_chain(
+                    session,
+                    user_id=user_id,
+                    thread_id=thread.id,
+                    continue_message_id=continue_message_id,
                 )
+            except ContinuationResolutionError as exc:
+                raise AttachmentRequestError(
+                    exc.code, exc.message, exc.status_code
+                ) from exc
+            continuation_row = continuation_chain.target
+            continuation_packet = build_continuation_packet(continuation_chain)
+            claimed_metadata = continuation_metadata_dict(continuation_row)
+            claimed_metadata.update({
+                "continuation_consumed": True,
+                "continuation_request_id": request_id,
+            })
+            write_continuation_metadata(continuation_row, claimed_metadata)
+            session.add(continuation_row)
 
         uploads = _load_attachments(user_id, attachment_ids or [])
         visible_message = message.strip()
@@ -840,6 +875,15 @@ def prepare_web_turn(
                 "continue_message_id": continue_message_id,
                 "regenerate_message_id": regenerate_message_id,
             }
+            if continuation_chain is not None:
+                message_metadata.update({
+                    "is_continuation_control": True,
+                    "continuation_parent_message_id": continuation_chain.target.id,
+                    "continuation_root_message_id": continuation_chain.root_assistant_id,
+                    "continuation_segment_index": continuation_chain.segment_index,
+                    "continuation_request_id": request_id,
+                    "continuation_consumed": False,
+                })
             session.add(WebChatMessage(
                 thread_id=thread.id, user_id=user_id, role="user", content=visible_content,
                 request_id=request_id, status="pending",
@@ -893,13 +937,7 @@ def prepare_web_turn(
                     for key in ("topic", "brand_subintent", "brand_profile_version")
                     if continuation_safe.get(key)
                 }
-            tail_limit = min(
-                1_200, max(200, int(os.getenv("WEB_CONTINUE_TAIL_MAX_CHARS", "900")))
-            )
-            all_context = [{
-                "user": "Previous truncated response",
-                "assistant": continuation_row.content[-tail_limit:],
-            }]
+            all_context = []
         elif newly_created_thread:
             all_context = []
         else:
@@ -908,9 +946,9 @@ def prepare_web_turn(
                 current_message=model_message,
             )
 
-        if continuation_row is not None and context_mode != "off":
+        if continuation_row is not None:
             continuity = SameThreadContinuityDecision(
-                mode=context_mode,
+                mode="explicit_continuation",
                 use_context=True,
                 reason="continue_response",
                 confidence=1.0,
@@ -943,10 +981,15 @@ def prepare_web_turn(
             and continuity.reason in {"referential_language", "elliptical_followup"}
         )
         needs_memory = bool(
-            needs_cross_thread_memory(model_message) or natural_cross_thread_followup
+            continuation_row is None
+            and (
+                needs_cross_thread_memory(model_message)
+                or natural_cross_thread_followup
+            )
         )
         if (
-            _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
+            continuation_row is None
+            and _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False)
             and memory_enabled(session, user_id)
         ):
             needs_memory = True
@@ -955,18 +998,62 @@ def prepare_web_turn(
             has_attachments=bool(uploads),
             previous_topic=previous_safe_metadata.get("topic"),
         )
+        if continuation_chain is not None:
+            parent_answer_class = str(
+                continuation_metadata_dict(continuation_chain.target).get(
+                    "answer_class"
+                )
+                or "long_form"
+            )
+            if parent_answer_class not in {
+                "simple", "normal", "detailed", "long_form"
+            }:
+                parent_answer_class = "long_form"
+            continuation_metrics = {
+                **preliminary.metrics,
+                "optimization_route": "explicit_continuation",
+                "answer_class": parent_answer_class,
+                "cache_scope": "disabled",
+                "cache_scope_reason": "continuation_control",
+            }
+            preliminary = replace(
+                preliminary,
+                optimization_route="explicit_continuation",
+                answer_class=parent_answer_class,
+                max_output_tokens=output_ceiling(parent_answer_class),
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason="continuation_control",
+                metrics=continuation_metrics,
+                local_intent="",
+            )
         base_metadata = {
             "client_surface": "web", "billing_required": True, "cloud_only": True,
             "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
             "user_tier": "paid", "swico_tier": swico_tier,
             "attachment_count": len(uploads),
-            "thread_title_seed": visible_message or (uploads[0].name if uploads else "New chat"),
+            "thread_title_seed": (
+                continuation_chain.root_user.content
+                if continuation_chain is not None
+                else visible_message or (uploads[0].name if uploads else "New chat")
+            ),
             "max_provider_attempts": _max_provider_attempts(),
             "prompt_cache_enabled": _env_bool("WEB_PROMPT_CACHE_ENABLED", False),
             "prompt_cache_version": os.getenv("WEB_PROMPT_CACHE_VERSION", "v1"),
             "cache_scope": preliminary.cache_scope,
             "cache_scope_reason": preliminary.cache_scope_reason,
         }
+        if continuation_packet is not None and continuation_chain is not None:
+            base_metadata.update({
+                "is_continuation_control": True,
+                "continuation_packet": continuation_packet.text,
+                "continuation_render_prefix": continuation_packet.render_prefix,
+                "continuation_parent_message_id": continuation_chain.target.id,
+                "continuation_root_message_id": continuation_chain.root_assistant_id,
+                "continuation_segment_index": continuation_chain.segment_index,
+                "cache_scope": "disabled",
+                "cache_scope_reason": "continuation_control",
+            })
 
         if explicit_memory_write_requested(model_message):
             memory_updated = False
@@ -1099,7 +1186,10 @@ def prepare_web_turn(
                 regeneration_cache_row_id=regeneration_cache_row_id,
             )
 
-        if _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False):
+        if (
+            continuation_row is None
+            and _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False)
+        ):
             deterministic = try_deterministic_answer(
                 session,
                 user_id=user_id,
@@ -1156,7 +1246,13 @@ def prepare_web_turn(
         # Existing local routes remain ahead of profile/context selection,
         # cache/provider work, and therefore cannot create a reservation. The
         # bounded owner-scoped candidate read above is reused if a provider is needed.
-        if preliminary.local_intent == "swico_brand" or (enabled and preliminary.local_intent):
+        if (
+            continuation_row is None
+            and (
+                preliminary.local_intent == "swico_brand"
+                or (enabled and preliminary.local_intent)
+            )
+        ):
             brand_metadata = (
                 {
                     "topic": preliminary.brand_topic,
@@ -1211,6 +1307,7 @@ def prepare_web_turn(
             and not needs_memory
             and not continuity.use_context
             and regenerate_target is None
+            and continuation_row is None
         ):
             cached = _cache_response(user_id, model_message, reply_language)
             if cached is not None:
@@ -1252,12 +1349,15 @@ def prepare_web_turn(
                     regeneration_cache_row_id=regeneration_cache_row_id,
                 )
 
-        profile_context = build_profile_prompt_context(session, user_id)
+        profile_context = (
+            {} if continuation_row is not None
+            else build_profile_prompt_context(session, user_id)
+        )
         memory_selection = retrieve_memory(
             session, user_id=user_id, message=model_message,
             current_thread_id=thread.id,
             allow_natural_followup=natural_cross_thread_followup,
-        ) if needs_memory else None
+        ) if needs_memory and continuation_row is None else None
         memory_context = memory_selection.prompt_context if memory_selection else ""
         try:
             attachment_context = select_attachment_context(uploads, visible_message)
@@ -1279,6 +1379,23 @@ def prepare_web_turn(
                 session=session,
             )
             optimization = coordinator_decision.optimization
+            if continuation_chain is not None:
+                optimization = replace(
+                    optimization,
+                    optimization_route="explicit_continuation",
+                    answer_class=preliminary.answer_class,
+                    max_output_tokens=preliminary.max_output_tokens,
+                    cache_eligible=False,
+                    cache_scope="disabled",
+                    cache_scope_reason="continuation_control",
+                    metrics={
+                        **optimization.metrics,
+                        "optimization_route": "explicit_continuation",
+                        "answer_class": preliminary.answer_class,
+                        "cache_scope": "disabled",
+                        "cache_scope_reason": "continuation_control",
+                    },
+                )
             context_turns = optimization.selected_context_turns
             profile_prompt = optimization.compact_profile_prompt
             attachment_context = optimization.attachment_prompt_context
@@ -1322,6 +1439,15 @@ def prepare_web_turn(
             "cache_scope": optimization.cache_scope,
             "cache_scope_reason": optimization.cache_scope_reason,
         }
+        if continuation_packet is not None and continuation_chain is not None:
+            metadata.update({
+                "is_continuation_control": True,
+                "continuation_packet": continuation_packet.text,
+                "continuation_render_prefix": continuation_packet.render_prefix,
+                "continuation_parent_message_id": continuation_chain.target.id,
+                "continuation_root_message_id": continuation_chain.root_assistant_id,
+                "continuation_segment_index": continuation_chain.segment_index,
+            })
         ai_request = AIRequest(
             user_id=user_id, message=model_message, reply_language=reply_language,
             channel="text", request_id=request_id, metadata=metadata,
@@ -1515,6 +1641,19 @@ def prepare_web_turn(
                 if regenerate_target is not None else 1
             ),
             regeneration_cache_row_id=regeneration_cache_row_id,
+            continuation_parent_message_id=(
+                continuation_chain.target.id if continuation_chain else None
+            ),
+            continuation_root_message_id=(
+                continuation_chain.root_assistant_id
+                if continuation_chain else None
+            ),
+            continuation_segment_index=(
+                continuation_chain.segment_index if continuation_chain else 0
+            ),
+            continuation_render_prefix=(
+                continuation_packet.render_prefix if continuation_packet else ""
+            ),
         )
 
 
@@ -1668,6 +1807,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 if user_message:
                     user_message.status = "retryable"
                     session.add(user_message)
+                _release_continuation_claim(session, prepared)
                 session.commit()
             raise
     except BaseException:
@@ -1684,6 +1824,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             if user_message:
                 user_message.status = "retryable"
                 session.add(user_message)
+            _release_continuation_claim(session, prepared)
             session.commit()
         raise
 
@@ -1852,6 +1993,22 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 "regenerated_cache_row_id": prepared.regeneration_cache_row_id,
                 "provenance": provenance,
                 "memory_updated": bool(response.raw.get("memory_updated")),
+                **({
+                    "continuation_parent_message_id": (
+                        prepared.continuation_parent_message_id
+                    ),
+                    "continuation_root_message_id": (
+                        prepared.continuation_root_message_id
+                    ),
+                    "continuation_segment_index": (
+                        prepared.continuation_segment_index
+                    ),
+                    "continuation_request_id": prepared.request_id,
+                    "continuation_render_prefix": (
+                        prepared.continuation_render_prefix
+                    ),
+                    "continuation_consumed": False,
+                } if prepared.continuation_parent_message_id else {}),
                 **optimization_metrics,
             }, sort_keys=True, separators=(",", ":")),
         )
@@ -1859,6 +2016,27 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         # UsageCharge references this message. An explicit flush guarantees the
         # FK target exists before settlement updates the charge on every SQLAlchemy dialect.
         session.flush([assistant])
+        if prepared.continuation_parent_message_id:
+            if cancelled:
+                _release_continuation_claim(session, prepared)
+            else:
+                continuation_parent = session.get(
+                    WebChatMessage,
+                    prepared.continuation_parent_message_id,
+                )
+                if continuation_parent is not None:
+                    parent_metadata = continuation_metadata_dict(
+                        continuation_parent
+                    )
+                    parent_metadata.update({
+                        "continuation_consumed": True,
+                        "continuation_request_id": prepared.request_id,
+                        "continued_by_message_id": assistant.id,
+                    })
+                    write_continuation_metadata(
+                        continuation_parent, parent_metadata
+                    )
+                    session.add(continuation_parent)
         user_message.status = "complete" if not cancelled else "cancelled"
         session.add(user_message)
         if prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
@@ -1913,7 +2091,14 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         )
 
     response_is_truncated = bool(response.raw.get("truncated"))
-    if assistant_snapshot.status == "complete" and not response_is_truncated:
+    is_continuation_control = bool(
+        prepared.ai_request.metadata.get("is_continuation_control")
+    )
+    if (
+        assistant_snapshot.status == "complete"
+        and not response_is_truncated
+        and not is_continuation_control
+    ):
         if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
             _run_post_turn_operation(
                 request_id=prepared.request_id,
@@ -1963,6 +2148,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         response.provider == "openai"
         and assistant_snapshot.status == "complete"
         and not response_is_truncated
+        and not is_continuation_control
         and turn_cache_eligible
         and _env_bool("AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED", True)
     )

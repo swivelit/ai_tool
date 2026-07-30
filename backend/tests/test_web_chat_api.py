@@ -24,7 +24,7 @@ from app.ai import orchestrator
 from tests.conftest import auth_headers, create_test_user
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, get_upload_store, utc_iso
 from app.web_api.chat_service import (
-    CompletedWebMessage,
+    AttachmentRequestError, CompletedWebMessage,
     execute_web_turn,
     prepare_web_turn,
 )
@@ -630,6 +630,305 @@ def test_web_stream_emits_configured_heartbeat(client, monkeypatch):
     assert response.status_code == 200
     assert ": keep-alive\n\n" in response.text
     assert _sse_events(response, "done")
+
+
+def test_continuation_is_separate_billable_segment_and_consumes_parent_once(
+    client, monkeypatch
+):
+    user = create_test_user("continue-chain-api", "continue-chain-api@example.com")
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Continuation")
+        session.add(thread); session.flush()
+        original = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Build an HTML page.\n1. Preserve indentation.",
+            request_id="continue-root-request", status="complete",
+        )
+        parent = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="```html\n  <main>",
+            request_id="continue-root-request", status="complete",
+            metadata_json=json.dumps({
+                "truncated": True,
+                "completion_status": "incomplete",
+                "answer_class": "long_form",
+            }),
+        )
+        session.add(original); session.add(parent); session.commit()
+        thread_id, parent_id = thread.id, parent.id
+
+    calls = {"count": 0}
+
+    def complete_continuation(self, request, route, on_delta):
+        calls["count"] += 1
+        text = '  <section>Safe</section>\n'
+        on_delta(text)
+        return AIProviderResponse(
+            text=text, provider="openai", model=route.model,
+            route=route.route, reason=route.reason, language="en",
+            intent=route.intent, input_tokens=80, output_tokens=20,
+            raw={
+                "usage_actual": True, "provider_attempts": 1,
+                "provider_calls_with_usage": 1, "finish_reason": "stop",
+                "truncated": True, "completion_status": "incomplete",
+                "incomplete_reason": "unmatched_code_fence",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        complete_continuation,
+    )
+    monkeypatch.setenv("WEB_MEMORY_FACT_RANKING_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.web_api.chat_service.memory_enabled",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service.retrieve_memory",
+        lambda *_args, **_kwargs: pytest.fail(
+            "continuation controls must not retrieve cross-thread memory"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *_args, **_kwargs: pytest.fail(
+            "continuation controls must not read the global answer cache"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service._run_post_turn_operation",
+        lambda **_kwargs: pytest.fail(
+            "continuation controls must not run post-turn work"
+        ),
+    )
+    headers = auth_headers("continue-chain-api", "continue-chain-api@example.com")
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": "fa883e19-ddbb-492b-a921-d851cabf189a",
+            "thread_id": thread_id,
+            "message": "Continue response",
+            "continue_message_id": parent_id,
+        },
+    )
+
+    assert response.status_code == 200
+    done = _sse_events(response, "done")[0]
+    assert done["continuation_parent_message_id"] == parent_id
+    assert done["parent_can_continue"] is False
+    assert done["continuation_render_prefix"] == "```html\n"
+    assert done["can_continue"] is True
+    assert calls["count"] == 1
+
+    listed = client.get(
+        f"/api/web/threads/{thread_id}/messages", headers=headers
+    ).json()["items"]
+    assert all(item["content"] != "Continue response" for item in listed)
+    assistants = [item for item in listed if item["role"] == "assistant"]
+    assert len(assistants) == 2
+    assert assistants[0]["can_continue"] is False
+    assert assistants[1]["can_continue"] is True
+    assert assistants[1]["continuation_render_prefix"] == "```html\n"
+
+    duplicate = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": "bb03ca68-7951-46fc-8f5f-e71f1a678513",
+            "thread_id": thread_id,
+            "message": "Continue response",
+            "continue_message_id": parent_id,
+        },
+    )
+    assert duplicate.status_code == 409
+    assert calls["count"] == 1
+    with SessionLocal() as session:
+        parent = session.get(WebChatMessage, parent_id)
+        parent_metadata = json.loads(parent.metadata_json)
+        assert parent_metadata["continuation_consumed"] is True
+        assert parent_metadata["continued_by_message_id"] == assistants[1]["id"]
+        controls = session.exec(select(WebChatMessage).where(
+            WebChatMessage.thread_id == thread_id,
+            WebChatMessage.role == "user",
+        )).all()
+        assert any(
+            json.loads(row.metadata_json).get("is_continuation_control")
+            for row in controls
+        )
+
+
+def test_failed_continuation_releases_parent_claim_for_retry(client, monkeypatch):
+    user = create_test_user("continue-retry", "continue-retry@example.com")
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Retry continuation")
+        session.add(thread); session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Write Python", request_id="retry-root", status="complete",
+        ))
+        parent = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="```python\nvalue =", request_id="retry-root",
+            status="complete", metadata_json=json.dumps({"truncated": True}),
+        )
+        session.add(parent); session.commit()
+        thread_id, parent_id = thread.id, parent.id
+
+    calls = {"count": 0}
+
+    def fail_once(self, request, route, on_delta):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("provider failed")
+        on_delta(" 1\n```")
+        return AIProviderResponse(
+            text=" 1\n```", provider="openai", model=route.model,
+            route=route.route, reason=route.reason, language="en",
+            intent=route.intent, input_tokens=20, output_tokens=3,
+            raw={"usage_actual": True, "provider_attempts": 1,
+                 "provider_calls_with_usage": 1, "finish_reason": "stop",
+                 "truncated": False, "completion_status": "complete"},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        fail_once,
+    )
+    headers = auth_headers("continue-retry", "continue-retry@example.com")
+    first = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "2882f8d6-f0f8-43cf-bd26-a56dc94affef",
+        "thread_id": thread_id, "message": "Continue response",
+        "continue_message_id": parent_id,
+    })
+    assert "generation_failed" in first.text
+    with SessionLocal() as session:
+        metadata = json.loads(session.get(WebChatMessage, parent_id).metadata_json)
+        assert metadata["continuation_consumed"] is False
+
+    second = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "0bd0d9b6-c8b5-4578-8202-3cfdf36e577f",
+        "thread_id": thread_id, "message": "Continue response",
+        "continue_message_id": parent_id,
+    })
+    assert _sse_events(second, "done")
+    assert calls["count"] == 2
+
+
+def test_cancelled_continuation_releases_parent_claim_and_reservation():
+    user = create_test_user(
+        "continue-cancelled", "continue-cancelled@example.com"
+    )
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Cancelled continuation")
+        session.add(thread); session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Build a shell script", request_id="cancel-root",
+            status="complete",
+        ))
+        parent = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="```bash\necho", request_id="cancel-root",
+            status="complete", metadata_json=json.dumps({"truncated": True}),
+        )
+        session.add(parent); session.commit()
+        thread_id, parent_id = thread.id, parent.id
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Continue response",
+        request_id="733ef3f4-667c-481c-be38-d4d65fe508ee",
+        thread_id=thread_id, reply_language="en",
+        continue_message_id=parent_id,
+    )
+
+    class Provider:
+        def stream_complete(self, _request, _route, _on_delta):
+            raise GenerationCancelled()
+
+    with pytest.raises(GenerationCancelled):
+        execute_web_turn(
+            prepared, providers={"openai": Provider()},
+            on_delta=lambda _value: None,
+        )
+    with SessionLocal() as session:
+        parent = session.get(WebChatMessage, parent_id)
+        parent_metadata = json.loads(parent.metadata_json)
+        assert parent_metadata["continuation_consumed"] is False
+        control = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id
+            == "733ef3f4-667c-481c-be38-d4d65fe508ee",
+            WebChatMessage.role == "user",
+        )).one()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id
+            == "733ef3f4-667c-481c-be38-d4d65fe508ee",
+        )).one()
+        assert control.status == "retryable"
+        assert charge.status == "released"
+
+
+def test_active_continuation_claim_prevents_duplicate_billing_and_provider_call():
+    user = create_test_user(
+        "continue-active-claim", "continue-active-claim@example.com"
+    )
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Active continuation")
+        session.add(thread); session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user",
+            content="Build a SQL example", request_id="active-root",
+            status="complete",
+        ))
+        parent = WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="```sql\nSELECT", request_id="active-root",
+            status="complete", metadata_json=json.dumps({"truncated": True}),
+        )
+        session.add(parent); session.commit()
+        thread_id, parent_id = thread.id, parent.id
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Continue response",
+        request_id="78e631d6-d122-4644-a454-c251b54bdde4",
+        thread_id=thread_id, reply_language="en",
+        continue_message_id=parent_id,
+    )
+    with pytest.raises(AttachmentRequestError) as caught:
+        prepare_web_turn(
+            user_id=int(user.id), message="Continue response",
+            request_id="d36d3762-5067-44a1-9bfa-13c3fdb0aad7",
+            thread_id=thread_id, reply_language="en",
+            continue_message_id=parent_id,
+        )
+    assert caught.value.code == "continuation_already_claimed"
+
+    calls = {"count": 0}
+
+    class Provider:
+        def stream_complete(self, request, route, on_delta):
+            calls["count"] += 1
+            return _completed_provider_response(self, request, route, on_delta)
+
+    execute_web_turn(
+        prepared, providers={"openai": Provider()},
+        on_delta=lambda _value: None,
+    )
+    assert calls["count"] == 1
+    with SessionLocal() as session:
+        charges = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id.in_([
+                "78e631d6-d122-4644-a454-c251b54bdde4",
+                "d36d3762-5067-44a1-9bfa-13c3fdb0aad7",
+            ])
+        )).all()
+        assert len(charges) == 1
+        assert charges[0].status == "settled"
 
 
 def test_closed_sse_generator_observes_worker_exception_and_cleans_active_request(

@@ -4,12 +4,14 @@ import type { Message, MessageAttachment, VoiceReplyState } from '../types'
 import { messageRenderKey } from '../messageRenderKey'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ResponseToolbar } from './ResponseToolbar'
+import { continuationMarkdown } from '../continuationMarkdown'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
+export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
   messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
+  continuingMessageId?: string | null;
   regenerateResponse?: (message: Message) => void;
   editMessage?: (message: Message, content: string) => void; editingAvailable?: boolean; editingDisabled?: boolean;
   voiceStates?: Record<string, VoiceReplyState>; playVoice?: (messageId: string) => void;
@@ -118,7 +120,8 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
       <div className="conversation-content" ref={contentRef}>
         {!messages.length && <EmptyState suggest={suggest} />}
-        {messages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse}
+        {messages.filter(message => !message.is_continuation_control).map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse}
+          continuationActive={message.id === continuingMessageId}
           canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
           regenerationAvailable={editingAvailable}
           editMessage={editMessage} editingDisabled={editingDisabled}
@@ -139,9 +142,10 @@ function EmptyState({ suggest }: { suggest: (text: string) => void }) {
   </div>
 }
 
-function MessageView({ message, retry, continueResponse, regenerateResponse, canEdit, regenerationAvailable, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
+function MessageView({ message, retry, continueResponse, continuationActive, regenerateResponse, canEdit, regenerationAvailable, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
   message: Message; retry: (message: Message) => void; voiceState?: VoiceReplyState;
   continueResponse: (message: Message) => void;
+  continuationActive: boolean;
   regenerateResponse: (message: Message) => void;
   canEdit: boolean; regenerationAvailable: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean;
   playVoice: (messageId: string) => void; pauseVoice: (messageId: string) => void;
@@ -172,12 +176,15 @@ function MessageView({ message, retry, continueResponse, regenerateResponse, can
       {canEdit && message.status === 'complete' && <button className="edit-message" type="button" aria-label="Edit message" title="Edit and regenerate" disabled={editingDisabled} onClick={() => { setEditValue(message.content); setEditing(true) }}><Pencil size={14} /> Edit</button>}</>}
     {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
   </article>
-  const displayedContent = workingCopy ?? message.content
+  const originalDisplayContent = continuationMarkdown(
+    message.content, message.continuation_render_prefix,
+  )
+  const displayedContent = workingCopy ?? originalDisplayContent
   return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''} ${highlighted ? 'search-highlight' : ''}`}
     data-message-id={message.id} data-request-id={message.request_id ?? undefined}><div className="message-body">
     {message.status === 'complete' && displayedContent && <ResponseToolbar
       content={displayedContent}
-      original={message.content}
+      original={originalDisplayContent}
       hasLocalEdit={workingCopy !== null}
       onApply={setWorkingCopy}
       onReset={() => setWorkingCopy(null)}
@@ -195,7 +202,7 @@ function MessageView({ message, retry, continueResponse, regenerateResponse, can
       {voiceState?.status === 'error' && <span className="voice-reply-error" role="status">{voiceState.error}{voiceState.canRetry !== false && <button aria-label="Retry voice reply" onClick={() => message.voice_turn_id && retryVoice(message.id, message.voice_turn_id)}><RefreshCw size={15} /> Retry</button>}{voiceState.insufficientCredits && <button onClick={addCredits}>Add credits</button>}</span>}
       {message.status === 'retryable' && <button aria-label="Retry answer" title="Retry answer" onClick={() => retry(message)}><RefreshCw size={16} /></button>}
       {regenerationAvailable && message.status === 'complete' && <button className="regenerate-answer" aria-label="Regenerate answer" title="Regenerate answer" disabled={editingDisabled} onClick={() => regenerateResponse(message)}><RotateCcw size={16} /> Regenerate</button>}
-      {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" onClick={() => continueResponse(message)}><RefreshCw size={16} /> Continue response</button>}
+      {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" disabled={continuationActive} onClick={() => continueResponse(message)}><RefreshCw size={16} /> {continuationActive ? 'Continuing…' : 'Continue response'}</button>}
       {(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
         <span>{message.tier_label || 'Swico'}</span>
         <span>Input {message.input_tokens.toLocaleString()} · Output {message.output_tokens.toLocaleString()} · Total {(message.input_tokens + message.output_tokens).toLocaleString()} tokens</span>
