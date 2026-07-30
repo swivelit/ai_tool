@@ -72,6 +72,66 @@ it('offers regeneration only for a completed assistant answer', () => {
   expect(regenerate).toHaveBeenCalledWith(completed)
 })
 
+it('shows top response tools only after non-empty assistant completion', () => {
+  const { rerender } = render(<Conversation
+    messages={[message('streaming-tools', {
+      status: 'streaming',
+      content: 'Partial answer',
+    })]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+  />)
+  expect(screen.queryByRole('toolbar', { name: 'Response tools' })).not.toBeInTheDocument()
+
+  rerender(<Conversation
+    messages={[message('completed-tools', { content: 'Complete answer' })]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+  />)
+  expect(screen.getByRole('toolbar', { name: 'Response tools' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Edit response' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Copy response' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Download response' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Open response editor' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Copy answer' })).not.toBeInTheDocument()
+
+  rerender(<Conversation
+    messages={[message('empty-tools', { content: '' })]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+  />)
+  expect(screen.queryByRole('toolbar', { name: 'Response tools' })).not.toBeInTheDocument()
+})
+
+it('keeps assistant edits local and uses the working copy for toolbar copy', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+  render(<Conversation
+    messages={[message('local-edit', { content: 'Original response' })]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+  />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Edit response' }))
+  fireEvent.change(screen.getByLabelText('Response Markdown source'), {
+    target: { value: 'Locally edited response' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Close response editor' }))
+
+  expect(screen.getByText('Locally edited response')).toBeInTheDocument()
+  expect(screen.queryByText('Original response')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Copy response' }))
+  await act(async () => undefined)
+  expect(writeText).toHaveBeenCalledWith('Locally edited response')
+  expect(document.body.textContent).not.toMatch(
+    /openai|gpt-|sarvam|internal model/i,
+  )
+})
+
 it('coalesces a burst of streaming deltas into one immediate animation-frame scroll', () => {
   const frames = controlledAnimationFrames()
   const stream = message('stream-burst', { request_id:'burst', content:'a', status:'streaming' })
@@ -166,10 +226,11 @@ it('labels historical messages without a tier simply as Swico', () => {
   expect(screen.getByText('Swico')).toBeInTheDocument()
 })
 
-it('shows Continue only for provider-confirmed truncated answers', () => {
+it('shows Continue for provider or local structural truncation only', () => {
   const continueResponse = vi.fn()
   const { rerender } = render(<Conversation messages={[{
-    ...message('long'), truncated:true, can_continue:true, finish_reason:'length',
+    ...message('long'), truncated:true, can_continue:true,
+    finish_reason:'local_incomplete', completion_status:'incomplete',
   }]} retry={vi.fn()} suggest={vi.fn()} continueResponse={continueResponse} />)
   fireEvent.click(screen.getByRole('button', { name:'Continue response' }))
   expect(continueResponse).toHaveBeenCalledWith(expect.objectContaining({ id:'long' }))

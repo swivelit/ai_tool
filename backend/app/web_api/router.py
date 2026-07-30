@@ -2144,7 +2144,11 @@ def search_web_content(
                 LIMIT :limit
                 """
             ),
-            {"query": query, "user_id": int(user.id), "limit": limit},
+            params={
+                "query": query,
+                "user_id": int(user.id),
+                "limit": limit,
+            },
         ).all()
         for row in rows:
             value = getattr(row, "_mapping", row)

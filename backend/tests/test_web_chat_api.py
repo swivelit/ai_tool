@@ -743,6 +743,125 @@ def test_post_turn_cache_record_failure_cannot_break_committed_sse(
     assert recorder_calls["count"] == 1
 
 
+def test_structurally_truncated_answer_is_saved_billed_and_not_post_processed(
+    client, monkeypatch,
+):
+    user = create_test_user(
+        "local-truncation", "local-truncation@example.com"
+    )
+    _fund(int(user.id))
+    monkeypatch.setenv("WEB_POST_TURN_DISTILLATION_ENABLED", "true")
+    monkeypatch.setenv("WEB_MEMORY_FACT_RANKING_ENABLED", "true")
+    provider_calls = {"count": 0}
+    post_turn_calls = {
+        "cache": 0,
+        "memory": 0,
+        "distillation": 0,
+        "embedding": 0,
+    }
+    partial = (
+        "### Cell 3 — Create and use the local SQLite database\n\n"
+        "```python"
+    )
+
+    def truncated_stream(self, request, route, on_delta):
+        provider_calls["count"] += 1
+        on_delta(partial)
+        return AIProviderResponse(
+            text=partial,
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=90,
+            output_tokens=240,
+            raw={
+                "usage_actual": True,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 1,
+                "finish_reason": "local_incomplete",
+                "provider_finish_reason": "stop",
+                "truncated": True,
+                "completion_status": "incomplete",
+                "incomplete_reason": "empty_final_code_block",
+            },
+        )
+
+    def counted(name):
+        def callback(*_args, **_kwargs):
+            post_turn_calls[name] += 1
+        return callback
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        truncated_stream,
+    )
+    monkeypatch.setattr(
+        "app.global_qa_cache.record_backend_openai_answer",
+        counted("cache"),
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service.write_turn_memory",
+        counted("memory"),
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service.enqueue_post_turn_distillation",
+        counted("distillation"),
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service.enqueue_memory_embedding_backfill",
+        counted("embedding"),
+    )
+    request_id = "74000000-0000-4000-8000-000000000005"
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers(
+            "local-truncation", "local-truncation@example.com"
+        ),
+        json={
+            "request_id": request_id,
+            "message": "Give me a complete SQLite implementation tutorial",
+        },
+    )
+
+    assert response.status_code == 200
+    done = _sse_events(response, "done")
+    assert done and done[0]["truncated"] is True
+    assert done[0]["can_continue"] is True
+    assert provider_calls["count"] == 1
+    assert post_turn_calls == {
+        "cache": 0,
+        "memory": 0,
+        "distillation": 0,
+        "embedding": 0,
+    }
+    with SessionLocal() as session:
+        assistants = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).all()
+        charges = session.exec(
+            select(UsageCharge).where(
+                UsageCharge.request_id == request_id
+            )
+        ).all()
+        assert len(assistants) == 1
+        assert assistants[0].status == "complete"
+        assert assistants[0].content == partial
+        metadata = json.loads(assistants[0].metadata_json)
+        assert metadata["truncated"] is True
+        assert metadata["completion_status"] == "incomplete"
+        assert metadata["cache_eligible"] is False
+        assert metadata["cache_scope_reason"] == "truncated_response"
+        assert len(charges) == 1
+        assert charges[0].status == "settled"
+        assert charges[0].output_tokens == 240
+
+
 @pytest.mark.parametrize(
     ("flag_name", "enqueue_name"),
     [

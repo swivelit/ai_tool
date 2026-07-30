@@ -1,8 +1,30 @@
+import { Fragment } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import hljs from 'highlight.js/lib/core'
 import { vi } from 'vitest'
+import { codeNodeText } from './codeNodeText'
 import { MarkdownMessage } from './MarkdownMessage'
+
+it('converts only safe code text nodes without commas or undefined values', () => {
+  expect(codeNodeText(undefined)).toBe('')
+  expect(codeNodeText(null)).toBe('')
+  expect(codeNodeText(false)).toBe('')
+  expect(codeNodeText(['one', 2, null, undefined, true, ['three']])).toBe('one2three')
+  expect(codeNodeText(<Fragment><span>ignored</span>{['a', 'b']}</Fragment>)).toBe('ab')
+})
+
+it('renders streaming and completed empty fenced blocks without undefined', () => {
+  const { container, rerender } = render(
+    <MarkdownMessage streaming>{'```python\n'}</MarkdownMessage>,
+  )
+  expect(container.querySelector('.code-block code')?.textContent).toBe('')
+  expect(container.textContent).not.toContain('undefined')
+
+  rerender(<MarkdownMessage>{'```python\n```'}</MarkdownMessage>)
+  expect(container.querySelector('.code-block code')?.textContent).toBe('')
+  expect(container.textContent).not.toContain('undefined')
+})
 
 it('keeps streaming fenced code as React-owned plain text without DOM-mutating highlighting', () => {
   const highlightElement = vi.spyOn(hljs, 'highlightElement')

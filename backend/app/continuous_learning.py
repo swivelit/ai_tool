@@ -550,7 +550,7 @@ def _store_memory(
                 VALUES (:user_id, :summary, :facts, :embedding)
                 """
             ),
-            {
+            params={
                 "user_id": int(user_id) if user_id is not None else None,
                 "summary": summary,
                 "facts": facts,
@@ -579,7 +579,7 @@ def retrieve_memory(user_query: str, user_id: Optional[int] = None) -> Optional[
                 LIMIT :row_limit
                 """
             ),
-            {
+            params={
                 "user_id": int(user_id) if user_id is not None else None,
                 "row_limit": max(1, MAX_MEMORY_ROWS_TO_SCAN),
             },

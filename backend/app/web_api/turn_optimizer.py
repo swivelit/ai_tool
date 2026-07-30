@@ -319,7 +319,7 @@ def _keyword_relevance(
                         "SELECT ts_rank_cd(to_tsvector('simple', :content), "
                         "websearch_to_tsquery('simple', :query))"
                     ),
-                    {"content": content, "query": query},
+                    params={"content": content, "query": query},
                 ).one()
             score = float(getattr(value, "_mapping", {}).get("ts_rank_cd", value) or 0.0)
             return max(0.0, min(1.0, score))

@@ -42,9 +42,9 @@ projects:
               - key: WEB_DETAILED_MAX_OUTPUT_TOKENS
                 value: "1800"
               - key: WEB_LONG_FORM_MAX_OUTPUT_TOKENS
-                value: "2400"
+                value: "6000"
               - key: OPENAI_MAX_OUTPUT_TOKENS_HARD
-                value: "2400"
+                value: "6000"
               - key: OPENAI_REASONING_EFFORT_SIMPLE
                 value: none
               - key: OPENAI_REASONING_EFFORT_NORMAL

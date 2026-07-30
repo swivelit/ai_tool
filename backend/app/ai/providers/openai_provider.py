@@ -14,6 +14,7 @@ from ...openai_tracked import (
     enforce_openai_budget, get_tracked_chat_completion_metadata,
     tracked_openai_generation,
 )
+from ..completion_quality import incomplete_markdown_reason
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
 from ..openai_catalog import get_model_spec
 from ..openai_reasoning import (
@@ -133,6 +134,39 @@ class OpenAIProvider(AIProvider):
         input_tokens = int(metadata.get("actual_input_tokens") or metadata.get("estimated_input_tokens") or router.estimate_tokens(canonical_prompt))
         output_tokens = int(metadata.get("actual_output_tokens") or metadata.get("estimated_output_tokens") or router.estimate_tokens(text))
         estimated_cost = float(metadata.get("actual_cost_usd") if metadata.get("actual_cost_usd") is not None else metadata.get("estimated_cost_usd") or router.estimate_cost(route.model or "", input_tokens, output_tokens))
+        local_incomplete_reason = (
+            incomplete_markdown_reason(text, answer_class)
+            if not completion_metadata["truncated"] else ""
+        )
+        if local_incomplete_reason:
+            provider_finish_reason = str(
+                completion_metadata["finish_reason"]
+            )
+            provider_completion_status = str(
+                completion_metadata["completion_status"]
+            )
+            completion_metadata.update({
+                "provider_finish_reason": provider_finish_reason,
+                "provider_completion_status": provider_completion_status,
+                "finish_reason": "local_incomplete",
+                "truncated": True,
+                "completion_status": "incomplete",
+                "incomplete_reason": local_incomplete_reason,
+            })
+            logger.warning(
+                "openai_local_structural_incomplete",
+                extra={
+                    "event": "openai_local_structural_incomplete",
+                    "request_id": request.request_id,
+                    "answer_class": str(answer_class or ""),
+                    "provider_completion_status": provider_completion_status,
+                    "provider_finish_reason": provider_finish_reason,
+                    "local_incomplete_reason": local_incomplete_reason,
+                    "visible_output_characters": len(text),
+                    "output_tokens": output_tokens,
+                    "max_output_tokens": route.max_output_tokens,
+                },
+            )
         raw = {
             "reply_language": request.reply_language or route.language,
             "input_language": route.metadata.get("input_language") or request.metadata.get("input_language") or "",
@@ -457,6 +491,36 @@ class OpenAIProvider(AIProvider):
                             ),
                         },
                     )
+                provider_finish_reason = finish_reason
+                provider_completion_status = completion_status
+                local_incomplete_reason = (
+                    incomplete_markdown_reason(text, answer_class)
+                    if not terminal_completion_metadata["truncated"] else ""
+                )
+                if local_incomplete_reason:
+                    finish_reason = "local_incomplete"
+                    completion_status = "incomplete"
+                    incomplete_reason = local_incomplete_reason
+                    terminal_completion_metadata.update({
+                        "finish_reason": finish_reason,
+                        "truncated": True,
+                        "completion_status": completion_status,
+                        "incomplete_reason": incomplete_reason,
+                    })
+                    logger.warning(
+                        "openai_local_structural_incomplete",
+                        extra={
+                            "event": "openai_local_structural_incomplete",
+                            "request_id": request.request_id,
+                            "answer_class": str(answer_class or ""),
+                            "provider_completion_status": provider_completion_status,
+                            "provider_finish_reason": provider_finish_reason,
+                            "local_incomplete_reason": local_incomplete_reason,
+                            "visible_output_characters": len(text),
+                            "output_tokens": reported_output_tokens,
+                            "max_output_tokens": route.max_output_tokens,
+                        },
+                    )
                 router = OpenAIModelRouter()
                 input_tokens = input_tokens or int(request.metadata.get("estimated_prompt_tokens") or router.estimate_tokens(canonical_prompt))
                 output_tokens = output_tokens or router.estimate_tokens(text)
@@ -541,6 +605,7 @@ class OpenAIProvider(AIProvider):
                     and provider_attempts < max_attempts
                     and index + 1 < len(candidates)
                     and not provider_usage_received
+                    and not local_incomplete_reason
                 ):
                     accumulated_input_tokens += input_tokens
                     accumulated_output_tokens += output_tokens
@@ -608,9 +673,20 @@ class OpenAIProvider(AIProvider):
                             else route.metadata.get("selected_model_reason") or "configured_primary"
                         ),
                         "finish_reason": finish_reason,
-                        "truncated": finish_reason == "length",
+                        "truncated": (
+                            finish_reason == "length"
+                            or bool(local_incomplete_reason)
+                        ),
                         "completion_status": completion_status,
                         "incomplete_reason": incomplete_reason,
+                        "provider_finish_reason": (
+                            provider_finish_reason
+                            if local_incomplete_reason else None
+                        ),
+                        "provider_completion_status": (
+                            provider_completion_status
+                            if local_incomplete_reason else None
+                        ),
                         "reasoning_tokens": reasoning_tokens,
                         "reasoning_effort": reasoning_effort,
                         "degradation_reason": degradation_reason,

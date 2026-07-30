@@ -8,6 +8,7 @@ import json from 'highlight.js/lib/languages/json'
 import python from 'highlight.js/lib/languages/python'
 import typescript from 'highlight.js/lib/languages/typescript'
 import 'highlight.js/styles/github-dark-dimmed.css'
+import { codeNodeText } from './codeNodeText'
 
 hljs.registerLanguage('bash', bash)
 hljs.registerLanguage('javascript', javascript)
@@ -23,7 +24,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ children, streami
   const components = useMemo(() => ({
     a: (props: React.ComponentPropsWithoutRef<'a'>) => <a {...props} target="_blank" rel="noreferrer" />,
     code: ({ className, children: codeChildren, ...props }: React.ComponentPropsWithoutRef<'code'>) => {
-      const value = String(codeChildren).replace(/\n$/, '')
+      const rawValue = codeNodeText(codeChildren)
+      const value = rawValue.endsWith('\n')
+        ? rawValue.slice(0, -1)
+        : rawValue
       const block = Boolean(className) || value.includes('\n')
       return block ? <CodeBlock className={className} streaming={streaming}>{value}</CodeBlock> : <code {...props}>{codeChildren}</code>
     },

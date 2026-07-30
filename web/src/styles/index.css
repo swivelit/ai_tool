@@ -114,6 +114,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .message-body table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse }
 .message-body th, .message-body td { padding: 8px 10px; border: 1px solid var(--line); text-align: left }
 .message-body code:not(pre code) { padding: 2px 5px; border-radius: 5px; background: var(--surface); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace }
+.response-toolbar { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding-bottom: 7px; border-bottom: 1px solid var(--line); color: var(--muted) }
+.response-toolbar > div { display: flex; align-items: center; gap: 2px }
+.response-copy-status { margin-right: 3px; color: var(--muted); font-size: 11px }
+.response-toolbar button { display: inline-grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
+.response-toolbar button:hover { background: var(--surface); color: var(--text) }
+.response-toolbar button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px }
+.response-toolbar > .response-toolbar-edit { display: inline-flex; width: auto; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); color: var(--text); font-size: 12px }
+.response-editor-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 24px; overscroll-behavior: contain; background: rgb(0 0 0 / 58%); backdrop-filter: blur(4px) }
+.response-editor { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; width: min(960px, 100%); height: min(820px, calc(100dvh - 48px)); overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); box-shadow: var(--shadow); color: var(--text) }
+.response-editor > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line) }
+.response-editor h2 { margin: 0; font-size: 17px }
+.response-editor header p { margin: 3px 0 0; color: var(--muted); font-size: 11px }
+.response-editor header button { display: grid; width: 34px; height: 34px; flex: none; place-items: center; padding: 0 }
+.response-editor > nav { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line) }
+.response-editor > nav button { border-color: transparent; background: transparent }
+.response-editor > nav button[aria-pressed="true"] { border-color: var(--line); background: var(--surface); color: var(--text) }
+.response-editor > main { min-height: 0; overflow: hidden }
+.response-editor textarea { width: 100%; height: 100%; min-height: 320px; resize: none; padding: 20px; border: 0; outline: 0; background: var(--bg); color: var(--text); font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; tab-size: 2 }
+.response-editor textarea:focus-visible { box-shadow: inset 0 0 0 2px var(--focus) }
+.response-editor-preview { height: 100%; overflow: auto; padding: 20px; overflow-wrap: anywhere }
+.response-editor > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-top: 1px solid var(--line); background: var(--surface) }
+.response-editor-secondary, .response-editor-primary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px }
+.response-editor button { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer }
+.response-editor button:hover { background: var(--hover) }
+.response-editor button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px }
+.response-editor button:disabled { cursor: default; opacity: .45 }
 .code-block { margin: 18px 0; overflow: hidden; border: 1px solid #444; border-radius: 10px; background: #171717; color: #ececec }
 .code-head { display: flex; justify-content: space-between; padding: 8px 12px; background: #2a2a2a; color: #c5c5c5; font: 11px ui-monospace, monospace }
 .code-head button { border: 0; background: transparent; color: inherit; cursor: pointer }
@@ -449,6 +475,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .prompts button { min-height: 46px; text-align: center }
   .user-bubble { max-width: 88%; font-size: 14px }
   .message-body { font-size: 14px }
+  .response-toolbar { margin-bottom: 9px }
+  .response-editor-backdrop { padding: 0 }
+  .response-editor { width: 100%; height: 100dvh; border: 0; border-radius: 0 }
+  .response-editor > header { padding: 14px }
+  .response-editor > footer { align-items: stretch; flex-direction: column }
+  .response-editor-secondary, .response-editor-primary { width: 100% }
+  .response-editor-secondary { overflow-x: auto; flex-wrap: nowrap }
+  .response-editor-primary { justify-content: flex-end }
+  .response-editor textarea, .response-editor-preview { padding: 14px }
   .composer-wrap { padding: 24px 9px 8px }
   .composer { padding-inline: 8px }
   .composer-shell.has-character-count .composer { padding-bottom: 32px }

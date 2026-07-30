@@ -179,6 +179,22 @@ _SAFE_EXTRA_KEYS = {
     "billing_exempt",
     "outcome_code",
     "safe_duration_ms",
+    "answer_class",
+    "reasoning_effort",
+    "terminal_event_type",
+    "completion_status",
+    "provider_completion_status",
+    "incomplete_reason",
+    "local_incomplete_reason",
+    "finish_reason",
+    "provider_finish_reason",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "max_output_tokens",
+    "visible_output_characters",
+    "provider_usage_received",
+    "internal_model",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
@@ -230,9 +246,13 @@ class JsonFormatter(logging.Formatter):
 
 class RequestContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = get_request_id()
-        record.route = _route_ctx.get("")
-        record.user_id = _user_ctx.get("")
+        record.request_id = (
+            getattr(record, "request_id", None) or get_request_id()
+        )
+        record.route = getattr(record, "route", None) or _route_ctx.get("")
+        record.user_id = (
+            getattr(record, "user_id", None) or _user_ctx.get("")
+        )
         return True
 
 

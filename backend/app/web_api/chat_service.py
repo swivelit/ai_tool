@@ -235,7 +235,7 @@ def _context(
                         LIMIT :limit
                         """
                     ),
-                    {
+                    params={
                         "user_id": user_id,
                         "thread_id": thread_id,
                         "query": current_message,
@@ -1781,9 +1781,11 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 prepared.ai_request.metadata.get("profile_prompt_context") or ""
             ).strip()
         )
+        response_is_truncated = bool(response.raw.get("truncated"))
         turn_cache_eligible = bool(
             prepared.optimization is not None
             and prepared.optimization.cache_eligible
+            and not response_is_truncated
             and not used_memory
             and not used_profile
             and not prepared.ai_request.metadata.get("explicit_memory_write")
@@ -1791,6 +1793,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         cache_scope_reason = (
             "public_standalone"
             if turn_cache_eligible else
+            "truncated_response" if response_is_truncated else
             "used_memory" if used_memory else
             "used_profile" if used_profile else
             "explicit_memory_write"
@@ -1909,7 +1912,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             credit_bucket=prepared.billing_credit_bucket,
         )
 
-    if assistant_snapshot.status == "complete":
+    response_is_truncated = bool(response.raw.get("truncated"))
+    if assistant_snapshot.status == "complete" and not response_is_truncated:
         if _env_bool("WEB_MEMORY_FACT_RANKING_ENABLED", False):
             _run_post_turn_operation(
                 request_id=prepared.request_id,
@@ -1958,6 +1962,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
     cache_eligible = bool(
         response.provider == "openai"
         and assistant_snapshot.status == "complete"
+        and not response_is_truncated
         and turn_cache_eligible
         and _env_bool("AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED", True)
     )

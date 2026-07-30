@@ -155,7 +155,7 @@ class VectorStore:
                     updated_at = EXCLUDED.updated_at
                 """
             ),
-            {
+            params={
                 "user_id": user_id,
                 "source_type": source_type,
                 "source_id": source_id,
@@ -241,7 +241,7 @@ class VectorStore:
                 LIMIT :limit
                 """
             ),
-            params,
+            params=params,
         ).all()
 
         results: List[Dict[str, Any]] = []

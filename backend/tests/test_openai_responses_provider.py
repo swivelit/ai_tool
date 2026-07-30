@@ -1,10 +1,12 @@
 import logging
+import json
 
 import pytest
 
 from app.ai.model_health import (
     clear_model_health, is_model_temporarily_unavailable,
 )
+from app.ai.completion_quality import incomplete_markdown_reason
 from app.ai.openai_reasoning import (
     OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
 )
@@ -14,6 +16,7 @@ from app.ai.types import AIRequest, AIRoute
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
 from app.openai_tracked import get_tracked_chat_completion_metadata, tracked_openai_generation
+from app.observability import JsonFormatter
 from sqlmodel import select
 
 
@@ -171,6 +174,135 @@ def test_responses_stream_maps_incomplete_max_output_to_truncation():
     assert response.raw["truncated"] is True
     assert response.raw["completion_status"] == "incomplete"
     assert response.text == "partial answer"
+
+
+@pytest.mark.parametrize(
+    ("text", "answer_class", "reason"),
+    [
+        ("### Cell 3 — Database\n\n```python\n", "long_form", "empty_final_code_block"),
+        ("### Cell 3 — Database\n\n```python\n```", "long_form", "empty_final_code_block"),
+        ("```python\nprint('partial')", "detailed", "unmatched_code_fence"),
+        ("## Step 4 — Deploy", "long_form", "dangling_section_heading"),
+        ("Plan:\n\n-", "detailed", "unfinished_list_marker"),
+        ("Use `inline code` in prose.", "long_form", ""),
+        ("Step 4 is complete and the service is ready.", "long_form", ""),
+        ("```python\nprint('done')\n```", "long_form", ""),
+        ("A normal short answer.", "simple", ""),
+    ],
+)
+def test_structural_completion_quality_is_conservative(
+    text, answer_class, reason
+):
+    assert incomplete_markdown_reason(text, answer_class) == reason
+
+
+def test_completed_stream_with_unfinished_fence_is_locally_truncated_once(
+    monkeypatch,
+):
+    text = (
+        "### Cell 3 — Create and use the local SQLite database\n\n"
+        "```python\n"
+    )
+    client = _Client()
+    client.responses = _Recorder([_terminal_event(_final(text=text))])
+    output = []
+    request = _request("long_form")
+    request.metadata["max_provider_attempts"] = 2
+    monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
+
+    response = OpenAIProvider(client).stream_complete(
+        request,
+        _route(["gpt-5.4-mini", "gpt-5.4-nano"]),
+        output.append,
+    )
+
+    assert len(client.responses.calls) == 1
+    assert output == [text.strip()]
+    assert response.text == text.strip()
+    assert response.raw["truncated"] is True
+    assert response.raw["completion_status"] == "incomplete"
+    assert response.raw["finish_reason"] == "local_incomplete"
+    assert response.raw["incomplete_reason"] == "empty_final_code_block"
+    assert response.raw["provider_finish_reason"] == "stop"
+    assert response.raw["provider_completion_status"] == "complete"
+
+
+def test_completed_balanced_markdown_stream_remains_complete():
+    text = "### Cell 3\n\n```python\nprint('done')\n```"
+    client = _Client()
+    client.responses = _Recorder([_terminal_event(_final(text=text))])
+
+    response = OpenAIProvider(client).stream_complete(
+        _request("long_form"), _route(), lambda _delta: None
+    )
+
+    assert response.raw["truncated"] is False
+    assert response.raw["completion_status"] == "complete"
+    assert response.raw["finish_reason"] == "stop"
+    assert response.raw["incomplete_reason"] == ""
+
+
+def test_non_streaming_completed_unfinished_heading_is_locally_truncated():
+    client = _Client()
+    client.responses = _Recorder(
+        _final(text="## Section 7 — Production deployment")
+    )
+
+    response = OpenAIProvider(client).complete(
+        _request("long_form"), _route()
+    )
+
+    assert response.raw["truncated"] is True
+    assert response.raw["completion_status"] == "incomplete"
+    assert response.raw["incomplete_reason"] == "dangling_section_heading"
+    assert response.raw["provider_finish_reason"] == "stop"
+
+
+def test_local_structural_log_contains_metadata_but_not_content(caplog):
+    prompt = "private prompt sk-local-structural"
+    answer = "private visible answer\n\n```python"
+    client = _Client()
+    client.responses = _Recorder([_terminal_event(_final(text=answer))])
+    caplog.set_level(logging.INFO)
+
+    OpenAIProvider(client).stream_complete(
+        _request("long_form", message=prompt),
+        _route(),
+        lambda _delta: None,
+    )
+
+    records = [
+        record.__dict__
+        for record in caplog.records
+        if getattr(record, "event", "")
+        == "openai_local_structural_incomplete"
+    ]
+    assert len(records) == 1
+    assert records[0]["local_incomplete_reason"] == (
+        "empty_final_code_block"
+    )
+    assert records[0]["provider_completion_status"] == "complete"
+    assert prompt not in str(records)
+    assert answer not in str(records)
+    assert "sk-local-structural" not in str(records)
+    rendered = json.loads(JsonFormatter().format(next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", "")
+        == "openai_local_structural_incomplete"
+    )))
+    assert rendered["answer_class"] == "long_form"
+    assert rendered["request_id"] == "responses-policy"
+    assert rendered["provider_completion_status"] == "complete"
+    assert rendered["provider_finish_reason"] == "stop"
+    assert rendered["local_incomplete_reason"] == (
+        "empty_final_code_block"
+    )
+    assert rendered["visible_output_characters"] == len(answer)
+    assert rendered["output_tokens"] == 8
+    assert rendered["max_output_tokens"] == 40
+    assert prompt not in json.dumps(rendered)
+    assert answer not in json.dumps(rendered)
 
 
 def test_web_reasoning_policy_defaults(monkeypatch):

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, ThumbsDown, ThumbsUp, Volume2, X } from 'lucide-react'
+import { Check, ChevronDown, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, ThumbsDown, ThumbsUp, Volume2, X } from 'lucide-react'
 import type { Message, MessageAttachment, VoiceReplyState } from '../types'
 import { messageRenderKey } from '../messageRenderKey'
 import { MarkdownMessage } from './MarkdownMessage'
+import { ResponseToolbar } from './ResponseToolbar'
 
 const BOTTOM_THRESHOLD_PX = 120
 
@@ -148,11 +149,12 @@ function MessageView({ message, retry, continueResponse, regenerateResponse, can
   feedbackEnabled: boolean; submitFeedback: (message: Message, rating: 'up' | 'down') => Promise<void>;
   highlighted: boolean;
 }) {
-  const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(message.content)
   const [feedback, setFeedback] = useState(message.feedback_rating ?? null)
+  const [workingCopy, setWorkingCopy] = useState<string | null>(null)
   useEffect(() => { setFeedback(message.feedback_rating ?? null) }, [message.feedback_rating])
+  useEffect(() => { setWorkingCopy(null) }, [message.content])
   const rate = (rating: 'up' | 'down') => {
     const previous = feedback
     setFeedback(rating)
@@ -170,13 +172,20 @@ function MessageView({ message, retry, continueResponse, regenerateResponse, can
       {canEdit && message.status === 'complete' && <button className="edit-message" type="button" aria-label="Edit message" title="Edit and regenerate" disabled={editingDisabled} onClick={() => { setEditValue(message.content); setEditing(true) }}><Pencil size={14} /> Edit</button>}</>}
     {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
   </article>
+  const displayedContent = workingCopy ?? message.content
   return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''} ${highlighted ? 'search-highlight' : ''}`}
     data-message-id={message.id} data-request-id={message.request_id ?? undefined}><div className="message-body">
-    {message.content ? <MarkdownMessage streaming={message.status === 'streaming'}>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
+    {message.status === 'complete' && displayedContent && <ResponseToolbar
+      content={displayedContent}
+      original={message.content}
+      hasLocalEdit={workingCopy !== null}
+      onApply={setWorkingCopy}
+      onReset={() => setWorkingCopy(null)}
+    />}
+    {displayedContent ? <MarkdownMessage streaming={message.status === 'streaming'}>{displayedContent}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
     {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
     {message.status !== 'streaming' && <div className="answer-actions">
-      <button aria-label="Copy answer" title="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) })}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       {feedbackEnabled && message.status === 'complete' && <><button className={feedback === 'up' ? 'selected' : ''} aria-label="Good answer" title="Good answer" aria-pressed={feedback === 'up'} onClick={() => rate('up')}><ThumbsUp size={15} /></button>
         <button className={feedback === 'down' ? 'selected' : ''} aria-label="Bad answer" title="Bad answer" aria-pressed={feedback === 'down'} onClick={() => rate('down')}><ThumbsDown size={15} /></button></>}
       {voiceState?.status === 'generating' && <span className="voice-reply-status" role="status"><Volume2 size={16} aria-hidden="true" /> Generating voice reply…</span>}
