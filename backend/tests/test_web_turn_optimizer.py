@@ -624,7 +624,9 @@ def test_normal_success_one_attempt_and_zero_usage_failure_can_fail_over():
     assert len(calls) == 2
 
 
-def test_confidence_ladder_uses_local_truncation_and_combines_usage(monkeypatch):
+def test_partial_truncation_with_usage_does_not_make_second_paid_call(
+    monkeypatch,
+):
     monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
     monkeypatch.setattr(
         "app.ai.providers.openai_provider.is_model_temporarily_unavailable",
@@ -637,23 +639,11 @@ def test_confidence_ladder_uses_local_truncation_and_combines_usage(monkeypatch)
             cached_tokens=2, cache_write_tokens=1,
         ),
     )
-    second_usage = SimpleNamespace(
-        prompt_tokens=20, completion_tokens=5,
-        prompt_tokens_details=SimpleNamespace(
-            cached_tokens=4, cache_write_tokens=2,
-        ),
-    )
-
     def create(**kwargs):
         calls.append(kwargs)
-        if len(calls) == 1:
-            return _Stream([
-                _chunk("cut off", finish_reason="length"),
-                _chunk(usage=first_usage),
-            ])
         return _Stream([
-            _chunk("A complete normal answer.", finish_reason="stop"),
-            _chunk(usage=second_usage),
+            _chunk("cut off", finish_reason="length"),
+            _chunk(usage=first_usage),
         ])
 
     request = _stream_request()
@@ -664,13 +654,16 @@ def test_confidence_ladder_uses_local_truncation_and_combines_usage(monkeypatch)
     response = provider.stream_complete(
         request, _attempt_route(), lambda _value: None
     )
-    assert len(calls) == 2
-    assert response.text == "A complete normal answer."
-    assert response.input_tokens == 30 and response.output_tokens == 8
-    assert response.raw["cached_input_tokens"] == 6
-    assert response.raw["cache_write_tokens"] == 3
-    assert response.raw["provider_attempts"] == 2
-    assert response.raw["provider_calls_with_usage"] == 2
+    assert len(calls) == 1
+    assert response.text == "cut off"
+    assert response.input_tokens == 10 and response.output_tokens == 3
+    assert response.raw["cached_input_tokens"] == 2
+    assert response.raw["cache_write_tokens"] == 1
+    assert response.raw["provider_attempts"] == 1
+    assert response.raw["provider_calls_with_usage"] == 1
+    assert response.raw["finish_reason"] == "length"
+    assert response.raw["truncated"] is True
+    assert response.raw["completion_status"] == "incomplete"
 
 
 def test_confidence_ladder_does_not_escalate_complete_simple_answer(monkeypatch):

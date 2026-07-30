@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Callable, Optional
@@ -14,11 +15,20 @@ from ...openai_tracked import (
     tracked_openai_generation,
 )
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
+from ..openai_catalog import get_model_spec
+from ..openai_reasoning import (
+    OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
+)
 from ..prompts import (
     build_provider_messages, serialize_provider_messages, stable_prompt_cache_key,
 )
 from ..types import AIProviderResponse, AIRequest, AIRoute
-from .base import AIProvider, GenerationCancellation, GenerationCancelled
+from .base import (
+    AIProvider, GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(AIProvider):
@@ -50,6 +60,10 @@ class OpenAIProvider(AIProvider):
                 candidate["endpoint"] = route.provider_endpoint_candidates[index]
             candidates.append(candidate)
         messages = build_provider_messages(request, route, provider="openai")
+        answer_class = (
+            request.metadata.get("answer_class")
+            or route.metadata.get("answer_class")
+        )
         response = tracked_openai_generation(
             self._client_or_create(),
             task=task,
@@ -66,9 +80,55 @@ class OpenAIProvider(AIProvider):
             max_provider_attempts=min(2, int(request.metadata.get("max_provider_attempts") or 2)),
             estimated_input_tokens=int(request.metadata.get("estimated_prompt_tokens") or 0) or None,
             prompt_cache_key=stable_prompt_cache_key(request, route),
+            answer_class=answer_class,
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
+        completion_metadata = _completion_metadata(response)
+        usage = _value(response, "usage", None)
+        provider_usage_received = usage is not None
+        reasoning_tokens = int(metadata.get("reasoning_tokens") or 0)
+        if (
+            not text
+            and completion_metadata["completion_status"] == "incomplete"
+            and completion_metadata["incomplete_reason"] == "max_output_tokens"
+        ):
+            diagnostics = _terminal_diagnostics(
+                request=request,
+                model=str(metadata.get("model_used") or route.model or ""),
+                endpoint=str(metadata.get("endpoint") or "responses"),
+                answer_class=answer_class,
+                reasoning_effort=metadata.get("reasoning_effort"),
+                max_output_tokens=int(
+                    metadata.get("estimated_output_tokens")
+                    or route.max_output_tokens
+                ),
+                terminal_event_type="non_streaming_response",
+                completion_metadata=completion_metadata,
+                input_tokens=int(metadata.get("actual_input_tokens") or 0),
+                output_tokens=int(metadata.get("actual_output_tokens") or 0),
+                reasoning_tokens=reasoning_tokens,
+                visible_characters=0,
+                provider_usage_received=provider_usage_received,
+            )
+            logger.warning(
+                "openai_generation_no_visible_output",
+                extra={"event": "openai_generation_no_visible_output", **diagnostics},
+            )
+            raise GenerationIncomplete(
+                completion_status=str(completion_metadata["completion_status"]),
+                incomplete_reason=str(completion_metadata["incomplete_reason"]),
+                finish_reason=str(completion_metadata["finish_reason"]),
+                input_tokens=int(metadata.get("actual_input_tokens") or 0),
+                output_tokens=int(metadata.get("actual_output_tokens") or 0),
+                reasoning_tokens=reasoning_tokens,
+                visible_characters=0,
+                max_output_tokens=int(
+                    metadata.get("estimated_output_tokens")
+                    or route.max_output_tokens
+                ),
+                provider_usage_received=provider_usage_received,
+            )
         canonical_prompt = str(request.metadata.get("serialized_provider_prompt") or serialize_provider_messages(messages))
         input_tokens = int(metadata.get("actual_input_tokens") or metadata.get("estimated_input_tokens") or router.estimate_tokens(canonical_prompt))
         output_tokens = int(metadata.get("actual_output_tokens") or metadata.get("estimated_output_tokens") or router.estimate_tokens(text))
@@ -107,7 +167,9 @@ class OpenAIProvider(AIProvider):
             "provider_attempts": int(metadata.get("provider_attempts") or len(metadata.get("attempted_models") or []) or 1),
             "provider_calls_with_usage": int(metadata.get("provider_calls_with_usage") or (1 if metadata.get("actual_input_tokens") is not None or metadata.get("actual_output_tokens") is not None else 0)),
             "actual_cost_usd": metadata.get("actual_cost_usd"),
-            **_completion_metadata(response),
+            "reasoning_tokens": reasoning_tokens,
+            "reasoning_effort": metadata.get("reasoning_effort"),
+            **completion_metadata,
         }
         return AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",
@@ -167,10 +229,13 @@ class OpenAIProvider(AIProvider):
             provider_attempts += 1
             text_parts: list[str] = []
             input_tokens = output_tokens = cached_tokens = cache_write_tokens = 0
+            reasoning_tokens = 0
             provider_usage_received = False
             finish_reason = "unknown"
             completion_status = "unknown"
             incomplete_reason = ""
+            terminal_event_type = ""
+            final_response: Any | None = None
             provider_refusal = False
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
@@ -221,12 +286,26 @@ class OpenAIProvider(AIProvider):
                 if endpoint == "responses":
                     if not hasattr(client, "responses"):
                         raise RuntimeError("Responses API is unavailable in the configured client")
+                    answer_class = (
+                        request.metadata.get("answer_class")
+                        or route.metadata.get("answer_class")
+                    )
+                    model_spec = get_model_spec(model)
+                    reasoning_effort = (
+                        openai_web_reasoning_effort(answer_class)
+                        if model_spec.supports_reasoning_effort
+                        else None
+                    )
                     response_kwargs: dict[str, Any] = {
                         "model": model,
                         "input": messages,
                         "max_output_tokens": route.max_output_tokens,
                         "stream": True,
                     }
+                    if reasoning_effort is not None:
+                        response_kwargs["reasoning"] = {
+                            "effort": reasoning_effort
+                        }
                     prompt_cache_key = stable_prompt_cache_key(request, route)
                     if prompt_cache_key:
                         response_kwargs["prompt_cache_key"] = prompt_cache_key
@@ -250,22 +329,57 @@ class OpenAIProvider(AIProvider):
                         if event_type == "response.created" and response is not None:
                             completion_status = str(getattr(response, "status", "") or "in_progress")
                         if event_type in {"response.completed", "response.incomplete", "response.failed"}:
+                            final_response = response
+                            terminal_event_type = event_type
                             final_metadata = _completion_metadata(response)
                             finish_reason = str(final_metadata["finish_reason"])
                             completion_status = str(final_metadata["completion_status"])
                             incomplete_reason = str(final_metadata.get("incomplete_reason") or "")
-                        usage = getattr(response, "usage", None)
+                            if completion_status == "unknown":
+                                completion_status = {
+                                    "response.completed": "complete",
+                                    "response.incomplete": "incomplete",
+                                    "response.failed": "failed",
+                                }[event_type]
+                        usage = _value(response, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
-                            input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-                            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-                            details = getattr(usage, "input_tokens_details", None)
-                            cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                            input_tokens = int(
+                                _value(usage, "input_tokens", 0) or 0
+                            )
+                            output_tokens = int(
+                                _value(usage, "output_tokens", 0) or 0
+                            )
+                            details = _value(
+                                usage, "input_tokens_details", None
+                            )
+                            cached_tokens = int(
+                                _value(details, "cached_tokens", 0) or 0
+                            )
                             cache_write_tokens = int(
-                                getattr(details, "cache_write_tokens", 0)
-                                or getattr(details, "cache_creation_input_tokens", 0) or 0
+                                _value(details, "cache_write_tokens", 0)
+                                or _value(
+                                    details,
+                                    "cache_creation_input_tokens",
+                                    0,
+                                )
+                                or 0
+                            )
+                            output_details = _value(
+                                usage, "output_tokens_details", None
+                            )
+                            reasoning_tokens = int(
+                                _value(
+                                    output_details, "reasoning_tokens", 0
+                                )
+                                or 0
                             )
                 else:
+                    answer_class = (
+                        request.metadata.get("answer_class")
+                        or route.metadata.get("answer_class")
+                    )
+                    reasoning_effort = None
                     chat_kwargs: dict[str, Any] = {
                         "model": model,
                         "messages": messages,
@@ -306,7 +420,43 @@ class OpenAIProvider(AIProvider):
                                 getattr(details, "cache_write_tokens", 0)
                                 or getattr(details, "cache_creation_input_tokens", 0) or 0
                             )
+                if not text_parts and final_response is not None:
+                    recovered_text = _extract_response_text(final_response)
+                    if recovered_text:
+                        text_parts.append(recovered_text)
+                        if not confidence_ladder:
+                            on_delta(recovered_text)
                 text = "".join(text_parts).strip()
+                terminal_completion_metadata = {
+                    "finish_reason": finish_reason,
+                    "truncated": finish_reason == "length",
+                    "completion_status": completion_status,
+                    "incomplete_reason": incomplete_reason,
+                }
+                reported_input_tokens = input_tokens
+                reported_output_tokens = output_tokens
+                if endpoint == "responses" and terminal_event_type:
+                    logger.info(
+                        "openai_stream_terminal",
+                        extra={
+                            "event": "openai_stream_terminal",
+                            **_terminal_diagnostics(
+                                request=request,
+                                model=model,
+                                endpoint=endpoint,
+                                answer_class=answer_class,
+                                reasoning_effort=reasoning_effort,
+                                max_output_tokens=route.max_output_tokens,
+                                terminal_event_type=terminal_event_type,
+                                completion_metadata=terminal_completion_metadata,
+                                input_tokens=reported_input_tokens,
+                                output_tokens=reported_output_tokens,
+                                reasoning_tokens=reasoning_tokens,
+                                visible_characters=len(text),
+                                provider_usage_received=provider_usage_received,
+                            ),
+                        },
+                    )
                 router = OpenAIModelRouter()
                 input_tokens = input_tokens or int(request.metadata.get("estimated_prompt_tokens") or router.estimate_tokens(canonical_prompt))
                 output_tokens = output_tokens or router.estimate_tokens(text)
@@ -334,6 +484,44 @@ class OpenAIProvider(AIProvider):
                 else:
                     with SessionLocal() as created_usage_session:
                         record_openai_usage(created_usage_session, **record_kwargs)
+                if (
+                    not text
+                    and completion_status == "incomplete"
+                    and incomplete_reason == "max_output_tokens"
+                ):
+                    diagnostics = _terminal_diagnostics(
+                        request=request,
+                        model=model,
+                        endpoint=endpoint,
+                        answer_class=answer_class,
+                        reasoning_effort=reasoning_effort,
+                        max_output_tokens=route.max_output_tokens,
+                        terminal_event_type=terminal_event_type,
+                        completion_metadata=terminal_completion_metadata,
+                        input_tokens=reported_input_tokens,
+                        output_tokens=reported_output_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        visible_characters=0,
+                        provider_usage_received=provider_usage_received,
+                    )
+                    logger.warning(
+                        "openai_generation_no_visible_output",
+                        extra={
+                            "event": "openai_generation_no_visible_output",
+                            **diagnostics,
+                        },
+                    )
+                    raise GenerationIncomplete(
+                        completion_status=completion_status,
+                        incomplete_reason=incomplete_reason,
+                        finish_reason=finish_reason,
+                        input_tokens=reported_input_tokens,
+                        output_tokens=reported_output_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        visible_characters=0,
+                        max_output_tokens=route.max_output_tokens,
+                        provider_usage_received=provider_usage_received,
+                    )
                 degradation_reason = _local_degradation_reason(
                     text,
                     answer_class=str(
@@ -352,6 +540,7 @@ class OpenAIProvider(AIProvider):
                     and degraded
                     and provider_attempts < max_attempts
                     and index + 1 < len(candidates)
+                    and not provider_usage_received
                 ):
                     accumulated_input_tokens += input_tokens
                     accumulated_output_tokens += output_tokens
@@ -364,6 +553,27 @@ class OpenAIProvider(AIProvider):
                     )
                     continue
                 if not text:
+                    logger.warning(
+                        "openai_generation_no_visible_output",
+                        extra={
+                            "event": "openai_generation_no_visible_output",
+                            **_terminal_diagnostics(
+                                request=request,
+                                model=model,
+                                endpoint=endpoint,
+                                answer_class=answer_class,
+                                reasoning_effort=reasoning_effort,
+                                max_output_tokens=route.max_output_tokens,
+                                terminal_event_type=terminal_event_type,
+                                completion_metadata=terminal_completion_metadata,
+                                input_tokens=reported_input_tokens,
+                                output_tokens=reported_output_tokens,
+                                reasoning_tokens=reasoning_tokens,
+                                visible_characters=0,
+                                provider_usage_received=provider_usage_received,
+                            ),
+                        },
+                    )
                     raise RuntimeError("Empty streamed response")
                 if confidence_ladder:
                     on_delta(text)
@@ -401,6 +611,8 @@ class OpenAIProvider(AIProvider):
                         "truncated": finish_reason == "length",
                         "completion_status": completion_status,
                         "incomplete_reason": incomplete_reason,
+                        "reasoning_tokens": reasoning_tokens,
+                        "reasoning_effort": reasoning_effort,
                         "degradation_reason": degradation_reason,
                         "tier_escalated": accumulated_input_tokens > 0,
                         "actual_cost_usd": (
@@ -411,6 +623,10 @@ class OpenAIProvider(AIProvider):
                     },
                 )
             except GenerationCancelled:
+                raise
+            except GenerationIncomplete:
+                raise
+            except OpenAIReasoningEffortConfigurationError:
                 raise
             except Exception as exc:
                 last_error = exc
@@ -423,7 +639,7 @@ class OpenAIProvider(AIProvider):
         raise HTTPException(
             status_code=503,
             detail="The selected Swico mode is temporarily unavailable.",
-        ) from last_error
+        ) from None
 
 
 def _local_degradation_reason(
@@ -489,6 +705,8 @@ def _local_degradation_reason(
 
 def _extract_response_text(response: Any) -> str:
     output_text = getattr(response, "output_text", None)
+    if output_text is None and isinstance(response, dict):
+        output_text = response.get("output_text")
     if output_text:
         return str(output_text).strip()
     output = getattr(response, "output", None)
@@ -558,6 +776,51 @@ def _completion_metadata(response: Any) -> dict[str, Any]:
         "truncated": finish_reason == "length",
         "completion_status": completion_status,
         "incomplete_reason": incomplete_reason,
+    }
+
+
+def _terminal_diagnostics(
+    *,
+    request: AIRequest,
+    model: str,
+    endpoint: str,
+    answer_class: Any,
+    reasoning_effort: Any,
+    max_output_tokens: int,
+    terminal_event_type: str,
+    completion_metadata: dict[str, Any],
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    visible_characters: int,
+    provider_usage_received: bool,
+) -> dict[str, Any]:
+    """Build the allowlisted, content-free provider diagnostic payload."""
+
+    return {
+        "request_id": request.request_id,
+        "internal_model": str(model or ""),
+        "endpoint": str(endpoint or ""),
+        "answer_class": str(answer_class or ""),
+        "reasoning_effort": (
+            str(reasoning_effort) if reasoning_effort is not None else None
+        ),
+        "max_output_tokens": max(0, int(max_output_tokens or 0)),
+        "terminal_event_type": str(terminal_event_type or ""),
+        "completion_status": str(
+            completion_metadata.get("completion_status") or "unknown"
+        ),
+        "incomplete_reason": str(
+            completion_metadata.get("incomplete_reason") or ""
+        ),
+        "finish_reason": str(
+            completion_metadata.get("finish_reason") or "unknown"
+        ),
+        "input_tokens": max(0, int(input_tokens or 0)),
+        "output_tokens": max(0, int(output_tokens or 0)),
+        "reasoning_tokens": max(0, int(reasoning_tokens or 0)),
+        "visible_output_characters": max(0, int(visible_characters or 0)),
+        "provider_usage_received": bool(provider_usage_received),
     }
 
 

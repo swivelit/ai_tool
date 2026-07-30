@@ -36,13 +36,17 @@ it('ends the authenticated Voice session with DELETE', async () => {
   expect(fetchMock.mock.calls[0][1]?.method).toBe('DELETE')
 })
 
-it('treats an event:error as a failed stream even when HTTP status is 200', async () => {
-  const body = 'event: error\ndata: {"code":"provider_failed","message":"Try again"}\n\n'
+it('propagates generation_incomplete from an HTTP 200 SSE stream', async () => {
+  const message = 'Swico reached its response limit before it could start the answer. Please retry.'
+  const body = `event: error\ndata: {"code":"generation_incomplete","message":"${message}"}\n\n`
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
   const user = { getIdToken: vi.fn().mockResolvedValue('token') }
   const seen = vi.fn()
-  await expect(streamChat(user as never, { request_id:'r', message:'hello', input_mode:'text' }, seen, new AbortController().signal)).rejects.toBeInstanceOf(SSEStreamError)
-  expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'provider_failed', message:'Try again' } })
+  await expect(streamChat(user as never, { request_id:'r', message:'hello', input_mode:'text' }, seen, new AbortController().signal)).rejects.toMatchObject({
+    code: 'generation_incomplete',
+    message,
+  } satisfies Partial<SSEStreamError>)
+  expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'generation_incomplete', message } })
 })
 
 it('preserves a structured FastAPI error message', async () => {

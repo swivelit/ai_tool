@@ -43,7 +43,9 @@ from ..billing.topups import (
     custom_topup_enabled, topup_bounds, topup_packages, validate_topup_amount,
 )
 from ..billing.usage_limits import validated_timezone
-from ..ai.providers.base import GenerationCancellation, GenerationCancelled
+from ..ai.providers.base import (
+    GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+)
 from ..ai.budget import enforce_provider_budget
 from ..ai.providers.sarvam_provider import (
     SarvamProvider, estimate_audio_duration_details,
@@ -3032,6 +3034,18 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
+            })
+        except GenerationIncomplete:
+            logger.warning(
+                "web_chat_generation_incomplete",
+                extra={"request_id": prepared.request_id},
+            )
+            yield _sse("error", {
+                "code": "generation_incomplete",
+                "message": (
+                    "Swico reached its response limit before it could start "
+                    "the answer. Please retry."
+                ),
             })
         except Exception:
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})

@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from .ai.model_health import is_model_temporarily_unavailable, mark_model_unavailable
 from .ai.openai_catalog import OpenAIModelSpec, get_model_spec
+from .ai.openai_reasoning import openai_web_reasoning_effort
 from .openai_model_router import (
     ModelSelection,
     OpenAIModelRouter,
@@ -155,6 +156,8 @@ def _usage_int(usage: Any, *names: str) -> Optional[int]:
 
 def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dict[str, Any]:
     usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
     if usage is None:
         return {}
     input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
@@ -166,10 +169,17 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
     )
     if details is None and isinstance(usage, dict):
         details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    output_details = getattr(usage, "output_tokens_details", None)
+    if output_details is None and isinstance(usage, dict):
+        output_details = usage.get("output_tokens_details")
     cached_input_tokens = _usage_int(details, "cached_tokens") if details is not None else None
     cache_write_tokens = (
         _usage_int(details, "cache_write_tokens", "cache_creation_input_tokens")
         if details is not None else None
+    )
+    reasoning_tokens = (
+        _usage_int(output_details, "reasoning_tokens")
+        if output_details is not None else None
     )
     if output_tokens is None and input_tokens is not None and total_tokens is not None:
         output_tokens = max(0, total_tokens - input_tokens)
@@ -182,6 +192,8 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
         metadata["cached_input_tokens"] = cached_input_tokens
     if cache_write_tokens is not None:
         metadata["cache_write_tokens"] = cache_write_tokens
+    if reasoning_tokens is not None:
+        metadata["reasoning_tokens"] = reasoning_tokens
     if input_tokens is not None or output_tokens is not None:
         metadata["actual_cost_usd"] = router.estimate_cost(
             model, input_tokens or 0, output_tokens or 0,
@@ -339,6 +351,8 @@ def _candidate_from_any(value: Any, router: OpenAIModelRouter, prompt_text: str,
 
 def _response_output_text(response: Any) -> str:
     output_text = getattr(response, "output_text", None)
+    if output_text is None and isinstance(response, dict):
+        output_text = response.get("output_text")
     if output_text:
         return str(output_text).strip()
     output = getattr(response, "output", None)
@@ -484,6 +498,8 @@ def tracked_openai_generation(
             attempted_models.append(selection.model)
             try:
                 if endpoint == "responses":
+                    answer_class = extra.get("answer_class")
+                    reasoning_effort = openai_web_reasoning_effort(answer_class)
                     request_kwargs: dict[str, Any] = {
                         "model": selection.model,
                         "input": _build_responses_input(messages, input_text),
@@ -491,8 +507,15 @@ def tracked_openai_generation(
                         "max_output_tokens": output_tokens,
                         "store": False,
                     }
-                    if spec.supports_reasoning_effort and selection.tier in {"reasoning", "hard_reasoning"}:
-                        request_kwargs["reasoning"] = {"effort": "low"}
+                    if spec.supports_reasoning_effort:
+                        if reasoning_effort is not None:
+                            request_kwargs["reasoning"] = {
+                                "effort": reasoning_effort
+                            }
+                        elif selection.tier in {"reasoning", "hard_reasoning"}:
+                            # Preserve the pre-existing policy for callers that
+                            # do not provide a website answer classification.
+                            request_kwargs["reasoning"] = {"effort": "low"}
                     if temperature is not None and spec.supports_temperature:
                         request_kwargs["temperature"] = temperature
                     if extra.get("prompt_cache_key"):
@@ -531,7 +554,6 @@ def tracked_openai_generation(
                         "status_code": status_code,
                         "error_type": error_type,
                         "error_code": error_code,
-                        "error_message_sanitized": error_message,
                         "model": selection.model,
                         "endpoint": endpoint,
                         "request_id": request_id,
@@ -585,6 +607,12 @@ def tracked_openai_generation(
                 "estimated_input_tokens": input_tokens,
                 "estimated_output_tokens": output_tokens,
                 "estimated_cost_usd": estimated_cost,
+                "reasoning_effort": (
+                    reasoning_effort
+                    if endpoint == "responses"
+                    and spec.supports_reasoning_effort
+                    else None
+                ),
                 **actual_metadata,
             }
             record_openai_usage(

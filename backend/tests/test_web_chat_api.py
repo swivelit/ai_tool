@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.ai.types import AIProviderResponse, AIRequest
-from app.ai.providers.base import GenerationCancelled
+from app.ai.providers.base import GenerationCancelled, GenerationIncomplete
 from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
@@ -441,6 +441,78 @@ def test_provider_failure_releases_complete_reservation(client, monkeypatch):
         charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
         assert charge.status == "released"
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def test_generation_incomplete_is_retryable_and_releases_reservation(
+    client, monkeypatch
+):
+    user = create_test_user()
+    _fund(int(user.id))
+    calls = {"count": 0}
+
+    def incomplete(*_args, **_kwargs):
+        calls["count"] += 1
+        raise GenerationIncomplete(
+            completion_status="incomplete",
+            incomplete_reason="max_output_tokens",
+            finish_reason="length",
+            input_tokens=100,
+            output_tokens=320,
+            reasoning_tokens=320,
+            visible_characters=0,
+            max_output_tokens=320,
+            provider_usage_received=True,
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        incomplete,
+    )
+    request_id = "0d0aa607-1d4a-47b3-b045-a411ca60e9f3"
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("test-uid"),
+        json={
+            "request_id": request_id,
+            "message": "Give me a complete database indexing roadmap",
+        },
+    )
+
+    assert response.status_code == 200
+    errors = _sse_events(response, "error")
+    assert errors == [{
+        "code": "generation_incomplete",
+        "message": (
+            "Swico reached its response limit before it could start the "
+            "answer. Please retry."
+        ),
+    }]
+    assert calls["count"] == 1
+    with SessionLocal() as session:
+        charge = session.exec(
+            select(UsageCharge).where(
+                UsageCharge.request_id == request_id
+            )
+        ).one()
+        user_message = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "user",
+            )
+        ).one()
+        assistant = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).first()
+        assert charge.status == "released"
+        assert charge.debited_micros == 0
+        assert user_message.status == "retryable"
+        assert assistant is None
+        assert get_wallet_summary(session, int(user.id))[
+            "reserved_micros"
+        ] == 0
 
 
 def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):

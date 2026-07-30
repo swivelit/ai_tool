@@ -53,3 +53,35 @@ class GenerationCancelled(RuntimeError):
     def __init__(self, response: AIProviderResponse | None = None) -> None:
         super().__init__("Generation cancelled")
         self.response = response
+
+
+class GenerationIncomplete(RuntimeError):
+    """Raised when a provider spent the output budget before producing text."""
+
+    def __init__(
+        self,
+        *,
+        completion_status: str,
+        incomplete_reason: str,
+        finish_reason: str,
+        input_tokens: int,
+        output_tokens: int,
+        reasoning_tokens: int,
+        visible_characters: int,
+        max_output_tokens: int,
+        provider_usage_received: bool,
+    ) -> None:
+        super().__init__(
+            "Generation incomplete: the response limit was reached before visible output."
+        )
+        self.metadata = {
+            "completion_status": str(completion_status or "unknown"),
+            "incomplete_reason": str(incomplete_reason or ""),
+            "finish_reason": str(finish_reason or "unknown"),
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
+            "reasoning_tokens": max(0, int(reasoning_tokens or 0)),
+            "visible_character_count": max(0, int(visible_characters or 0)),
+            "max_output_tokens": max(0, int(max_output_tokens or 0)),
+            "provider_usage_received": bool(provider_usage_received),
+        }

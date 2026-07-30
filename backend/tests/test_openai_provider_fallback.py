@@ -124,9 +124,14 @@ def test_gpt5_mini_400_falls_back_to_gpt41_mini():
 
 
 def test_all_openai_candidates_fail_with_sanitized_metadata(caplog):
+    provider_body = "private provider error body"
     client = _Client(
-        responses_outcomes=[_OpenAI400("bad request sk-test-secret")],
-        chat_outcomes=[_OpenAI400("second bad request sk-test-secret")],
+        responses_outcomes=[
+            _OpenAI400(f"{provider_body} sk-test-secret")
+        ],
+        chat_outcomes=[
+            _OpenAI400(f"second {provider_body} sk-test-secret")
+        ],
     )
     caplog.set_level(logging.WARNING)
 
@@ -143,6 +148,13 @@ def test_all_openai_candidates_fail_with_sanitized_metadata(caplog):
     assert metadata["selected_model_reason"] == "primary_model_endpoint_error"
     assert "sk-test-secret" not in str(metadata)
     assert "sk-test-secret" not in caplog.text
+    provider_log_records = [
+        record.__dict__
+        for record in caplog.records
+        if getattr(record, "event", "") == "openai_provider_error"
+    ]
+    assert provider_log_records
+    assert provider_body not in str(provider_log_records)
 
 
 def test_model_health_skips_recently_failed_model():
