@@ -20,8 +20,36 @@ describe('chatStreamReducer', () => {
     let state = chatStreamReducer(emptyStreamState, { type: 'start', requestId: 'r1', threadId: 't1', tier:'standard', tierLabel:'Swico' })
     const id = state.assistant?.id
     state = chatStreamReducer(state, { type: 'event', event: { event: 'error', data: { code: 'provider_failed', message: 'Try again' } } })
-    expect(state.error).toEqual({ code: 'provider_failed', message: 'Try again' })
+    expect(state.error).toEqual({
+      code: 'provider_failed',
+      message: 'Try again',
+      retryable: false,
+      retry_at: null,
+    })
     expect(state.assistant?.status).toBe('retryable'); expect(state.assistant?.id).toBe(id)
+  })
+  it('retains capacity retry metadata without treating it as interruption', () => {
+    let state = chatStreamReducer(emptyStreamState, {
+      type:'start', requestId:'capacity', threadId:'t1',
+      tier:'standard', tierLabel:'Swico',
+    })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'error', data:{
+      code:'service_budget_reached',
+      message:'Swico has reached today’s service capacity.',
+      retryable:true,
+      retry_at:'2099-08-01T00:00:00+00:00',
+    } } })
+    expect(state.error).toEqual({
+      code:'service_budget_reached',
+      message:'Swico has reached today’s service capacity.',
+      retryable:true,
+      retry_at:'2099-08-01T00:00:00+00:00',
+    })
+    expect(state.assistant).toMatchObject({
+      status:'retryable',
+      failure_code:'service_budget_reached',
+      retry_at:'2099-08-01T00:00:00+00:00',
+    })
   })
   it('preserves partial text and makes an interrupted stream retryable', () => {
     let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'r-partial', threadId:'t1', tier:'standard', tierLabel:'Swico' })

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -15,9 +16,13 @@ from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
 from app.models import (
-    PaymentOrder, UsageCharge, WalletLedger, WebChatMessage, WebChatThread,
-    WebUsagePreferences,
+    OpenAIUsageLog, PaymentOrder, UsageCharge, WalletLedger, WebChatMessage,
+    WebChatThread, WebUsagePreferences,
     UserProfile,
+)
+from app.openai_tracked import (
+    OpenAIBudgetExceededError,
+    OpenAIBudgetSnapshot,
 )
 from sqlmodel import select
 from app.ai import orchestrator
@@ -517,6 +522,161 @@ def test_generation_incomplete_is_retryable_and_releases_reservation(
         assert get_wallet_summary(session, int(user.id))[
             "reserved_micros"
         ] == 0
+
+
+def test_service_budget_reached_releases_wallet_and_retry_clears_metadata(
+    client, monkeypatch, caplog,
+):
+    user = create_test_user("capacity-user", "capacity-user@example.com")
+    _fund(int(user.id))
+    snapshot = OpenAIBudgetSnapshot(
+        daily_budget_usd=5,
+        today_spend_usd=5,
+        estimated_next_call_usd=0.092085,
+        guarded_estimated_next_call_usd=0.09668925,
+        remaining_before_call_usd=0,
+        projected_total_usd=5.09668925,
+        safety_margin_ratio=0.05,
+        reset_at="2099-08-01T00:00:00+00:00",
+    )
+    provider_entries = {"count": 0}
+
+    def blocked(*_args, **_kwargs):
+        provider_entries["count"] += 1
+        raise OpenAIBudgetExceededError(snapshot)
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        blocked,
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service._run_post_turn_operation",
+        lambda **_kwargs: pytest.fail(
+            "budget-blocked turns must not run post-turn work"
+        ),
+    )
+    request_id = "9da88957-837a-4af4-b82c-2ba502c2804b"
+    headers = auth_headers("capacity-user", "capacity-user@example.com")
+
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/api/web/chat/stream",
+            headers=headers,
+            json={
+                "request_id": request_id,
+                "message": "private-capacity-prompt-marker",
+            },
+        )
+
+    assert response.status_code == 200
+    assert _sse_events(response, "error") == [{
+        "code": "service_budget_reached",
+        "message": "Swico has reached today’s service capacity.",
+        "retryable": True,
+        "retry_at": snapshot.reset_at,
+    }]
+    wallet_events = _sse_events(response, "wallet")
+    assert wallet_events[-1]["reserved_micros"] == 0
+    thread_id = _sse_events(response, "thread")[0]["thread_id"]
+    listed = client.get(
+        f"/api/web/threads/{thread_id}/messages",
+        headers=headers,
+    ).json()["items"]
+    public_user = next(
+        item for item in listed if item["role"] == "user"
+    )
+    assert public_user["failure_code"] == "service_budget_reached"
+    assert public_user["retry_at"] == snapshot.reset_at
+    assert provider_entries["count"] == 1
+    terminal = [
+        record for record in caplog.records
+        if record.getMessage() == "web_chat_stream_terminal"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0].levelno == logging.WARNING
+    assert terminal[0].outcome == "capacity_limited"
+    assert terminal[0].provider_attempts == 0
+    assert terminal[0].visible_character_count == 0
+    assert terminal[0].retry_at == snapshot.reset_at
+    assert terminal[0].exc_info is None
+    assert "private-capacity-prompt-marker" not in " ".join(
+        record.getMessage() for record in caplog.records
+    )
+    error_payload = json.dumps(
+        _sse_events(response, "error"), ensure_ascii=False
+    ).lower()
+    assert "openai" not in error_payload
+    assert "gpt" not in error_payload
+    assert "sarvam" not in error_payload
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "user",
+        )).one()
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).first()
+        releases = session.exec(select(WalletLedger).where(
+            WalletLedger.reference_type == "usage_charge",
+            WalletLedger.reference_id == charge.id,
+            WalletLedger.entry_type == "reservation_release",
+        )).all()
+        assert charge.status == "released"
+        assert charge.debited_micros == 0
+        assert len(releases) == 1
+        assert user_message.status == "retryable"
+        failure_metadata = json.loads(user_message.metadata_json)
+        assert failure_metadata["failure_code"] == "service_budget_reached"
+        assert failure_metadata["retry_at"] == snapshot.reset_at
+        assert assistant is None
+        assert session.exec(select(OpenAIUsageLog)).all() == []
+        assert get_wallet_summary(
+            session, int(user.id)
+        )["reserved_micros"] == 0
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        _completed_provider_response,
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service._run_post_turn_operation",
+        lambda **_kwargs: None,
+    )
+    retry = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": request_id,
+            "message": "private-capacity-prompt-marker",
+        },
+    )
+    assert retry.status_code == 200
+    assert _sse_events(retry, "done")
+    assert not _sse_events(retry, "error")
+    with SessionLocal() as session:
+        user_rows = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "user",
+        )).all()
+        assistant_rows = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).all()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        metadata = json.loads(user_rows[0].metadata_json)
+        assert len(user_rows) == 1
+        assert len(assistant_rows) == 1
+        assert user_rows[0].status == "complete"
+        assert "failure_code" not in metadata
+        assert "retry_at" not in metadata
+        assert charge.status == "settled"
 
 
 def test_partial_transport_interruption_is_retryable_without_post_turn_work(

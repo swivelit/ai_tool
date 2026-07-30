@@ -7,6 +7,8 @@ import hashlib
 import json
 import threading
 import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from sqlmodel import Session
@@ -24,10 +26,32 @@ from .openai_model_router import (
 logger = logging.getLogger(__name__)
 
 
-class OpenAIBudgetExceededError(RuntimeError):
-    """Raised before an OpenAI call when the configured daily budget is spent."""
+@dataclass(frozen=True)
+class OpenAIBudgetSnapshot:
+    """Safe, immutable admission-budget state for one proposed provider call."""
 
+    daily_budget_usd: float
+    today_spend_usd: float
+    estimated_next_call_usd: float
+    guarded_estimated_next_call_usd: float
+    remaining_before_call_usd: float
+    projected_total_usd: float
+    safety_margin_ratio: float
+    reset_at: str
+
+    def metadata(self) -> dict[str, float | str]:
+        return asdict(self)
+
+
+class OpenAIBudgetExceededError(RuntimeError):
+    """Expected capacity rejection raised before any provider request starts."""
+
+    code = "service_budget_reached"
     status_code = 503
+
+    def __init__(self, snapshot: OpenAIBudgetSnapshot) -> None:
+        super().__init__("Configured daily service budget reached.")
+        self.metadata = snapshot.metadata()
 
 
 class OpenAIProviderUnavailableError(RuntimeError):
@@ -78,6 +102,40 @@ def _budget_safety_margin_ratio() -> float:
         return 0.05
 
 
+def openai_budget_snapshot(
+    usage_session: Session,
+    *,
+    estimated_next_call_usd: float,
+    now: datetime | None = None,
+) -> OpenAIBudgetSnapshot:
+    """Return the authoritative UTC-day budget snapshot for admission checks."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    reset_at = datetime.combine(
+        current.date() + timedelta(days=1),
+        datetime_time.min,
+        tzinfo=timezone.utc,
+    ).isoformat()
+    budget = _budget_usd()
+    today_spend = max(0.0, float(get_today_estimated_openai_spend(usage_session)))
+    estimated = max(0.0, float(estimated_next_call_usd))
+    safety_margin_ratio = _budget_safety_margin_ratio()
+    guarded_estimate = estimated * (1.0 + safety_margin_ratio)
+    return OpenAIBudgetSnapshot(
+        daily_budget_usd=budget,
+        today_spend_usd=today_spend,
+        estimated_next_call_usd=estimated,
+        guarded_estimated_next_call_usd=guarded_estimate,
+        remaining_before_call_usd=max(0.0, budget - today_spend),
+        projected_total_usd=today_spend + guarded_estimate,
+        safety_margin_ratio=safety_margin_ratio,
+        reset_at=reset_at,
+    )
+
+
 def _session_context(session: Optional[Session]):
     if session is not None:
         return None, session
@@ -98,26 +156,37 @@ def _check_budget_or_raise(
     budget = _budget_usd()
     if budget <= 0:
         return
-    today_spend = get_today_estimated_openai_spend(usage_session)
-    guarded_estimated_cost = estimated_cost * (1.0 + _budget_safety_margin_ratio())
-    if today_spend + guarded_estimated_cost > budget:
+    snapshot = openai_budget_snapshot(
+        usage_session,
+        estimated_next_call_usd=estimated_cost,
+    )
+    if snapshot.projected_total_usd > snapshot.daily_budget_usd:
         logger.warning(
             "openai_budget_exceeded",
             extra={
                 "event": "openai_budget_exceeded",
                 "route": route,
-                "model_used": model_used,
                 "model_tier": model_tier,
-                "estimated_cost_usd": round(estimated_cost, 8),
-                "guarded_estimated_cost_usd": round(guarded_estimated_cost, 8),
-                "today_estimated_spend_usd": round(today_spend, 8),
-                "daily_budget_usd": budget,
-                "today_spend": round(today_spend, 8),
-                "estimated_cost": round(estimated_cost, 8),
-                "budget": budget,
+                "estimated_cost_usd": round(
+                    snapshot.estimated_next_call_usd, 8
+                ),
+                "guarded_estimated_cost_usd": round(
+                    snapshot.guarded_estimated_next_call_usd, 8
+                ),
+                "today_estimated_spend_usd": round(
+                    snapshot.today_spend_usd, 8
+                ),
+                "daily_budget_usd": snapshot.daily_budget_usd,
+                "remaining_budget_usd": round(
+                    snapshot.remaining_before_call_usd, 8
+                ),
+                "projected_total_usd": round(
+                    snapshot.projected_total_usd, 8
+                ),
+                "reset_at": snapshot.reset_at,
             },
         )
-        raise OpenAIBudgetExceededError("OpenAI daily budget exceeded; cache-only response unavailable.")
+        raise OpenAIBudgetExceededError(snapshot)
 
 
 def enforce_openai_budget(
@@ -959,6 +1028,32 @@ def cached_text_embedding(
             model=model,
         )
         vector = embedding_vector(response)
+    except OpenAIBudgetExceededError as exc:
+        logger.warning(
+            "cached_text_embedding_skipped_budget",
+            extra={
+                "event": "cached_text_embedding_skipped_budget",
+                "route": route,
+                "estimated_cost_usd": exc.metadata[
+                    "estimated_next_call_usd"
+                ],
+                "guarded_estimated_cost_usd": exc.metadata[
+                    "guarded_estimated_next_call_usd"
+                ],
+                "today_estimated_spend_usd": exc.metadata[
+                    "today_spend_usd"
+                ],
+                "daily_budget_usd": exc.metadata["daily_budget_usd"],
+                "remaining_budget_usd": exc.metadata[
+                    "remaining_before_call_usd"
+                ],
+                "projected_total_usd": exc.metadata[
+                    "projected_total_usd"
+                ],
+                "reset_at": exc.metadata["reset_at"],
+            },
+        )
+        return []
     except Exception:
         logger.exception("cached text embedding failed", extra={"route": route})
         return []

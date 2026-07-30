@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
+
+import pytest
 from sqlmodel import select
 
 import app.openai_model_router as model_router_module
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
 from app.openai_model_router import OpenAIModelRouter, get_today_estimated_openai_spend, record_openai_usage
-from app.openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion, tracked_embedding
+from app.openai_tracked import (
+    OpenAIBudgetExceededError,
+    OpenAIBudgetSnapshot,
+    cached_text_embedding,
+    get_tracked_chat_completion_metadata,
+    openai_budget_snapshot,
+    tracked_chat_completion,
+    tracked_embedding,
+)
 
 
 MODEL_ENV_VARS = (
@@ -342,6 +354,34 @@ def test_daily_budget_blocks_tracked_openai_call(monkeypatch):
         assert client.completions.calls == []
 
 
+def test_budget_snapshot_is_authoritative_and_resets_at_next_utc_midnight(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "10")
+    monkeypatch.setenv("OPENAI_BUDGET_SAFETY_MARGIN_RATIO", "0.10")
+    monkeypatch.setattr(
+        "app.openai_tracked.get_today_estimated_openai_spend",
+        lambda _session: 3.25,
+    )
+    now = datetime(2026, 7, 31, 18, 45, tzinfo=timezone.utc)
+
+    with SessionLocal() as session:
+        snapshot = openai_budget_snapshot(
+            session,
+            estimated_next_call_usd=2.0,
+            now=now,
+        )
+
+    assert snapshot.daily_budget_usd == 10
+    assert snapshot.today_spend_usd == 3.25
+    assert snapshot.estimated_next_call_usd == 2
+    assert snapshot.guarded_estimated_next_call_usd == pytest.approx(2.2)
+    assert snapshot.remaining_before_call_usd == 6.75
+    assert snapshot.projected_total_usd == pytest.approx(5.45)
+    assert snapshot.safety_margin_ratio == 0.10
+    assert snapshot.reset_at == "2026-08-01T00:00:00+00:00"
+
+
 def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget")
     monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.000001")
@@ -358,12 +398,44 @@ def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
                 messages=[{"role": "user", "content": "What is a compiler?"}],
             )
             raised = False
-        except OpenAIBudgetExceededError:
+        except OpenAIBudgetExceededError as exc:
             raised = True
+            assert exc.code == "service_budget_reached"
+            assert exc.status_code == 503
+            assert set(exc.metadata) == {
+                "daily_budget_usd",
+                "today_spend_usd",
+                "estimated_next_call_usd",
+                "guarded_estimated_next_call_usd",
+                "remaining_before_call_usd",
+                "projected_total_usd",
+                "safety_margin_ratio",
+                "reset_at",
+            }
+            assert "openai" not in str(exc).lower()
+            assert "cheap-budget" not in str(exc)
 
         assert raised is True
         assert client.completions.calls == []
         assert session.exec(select(OpenAIUsageLog)).all() == []
+
+
+def test_zero_daily_budget_disables_internal_guard(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget-disabled")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0")
+    client = _FakeClient()
+
+    with SessionLocal() as session:
+        tracked_chat_completion(
+            client,
+            session=session,
+            user_id=123,
+            task="normal_qa",
+            route="guard_disabled",
+            messages=[{"role": "user", "content": "Explain a compiler."}],
+        )
+
+    assert len(client.completions.calls) == 1
 
 
 def test_daily_budget_safety_margin_blocks_near_limit_call(monkeypatch):
@@ -454,6 +526,73 @@ def test_tracked_embedding_writes_usage_and_respects_budget(monkeypatch):
 
         assert raised is True
         assert blocked_client.embeddings.calls == []
+
+
+def test_cached_text_embedding_budget_exhaustion_fails_open_without_traceback(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    snapshot = OpenAIBudgetSnapshot(
+        daily_budget_usd=5,
+        today_spend_usd=5,
+        estimated_next_call_usd=0.0000036,
+        guarded_estimated_next_call_usd=0.00000378,
+        remaining_before_call_usd=0,
+        projected_total_usd=5.00000378,
+        safety_margin_ratio=0.05,
+        reset_at="2026-08-01T00:00:00+00:00",
+    )
+    monkeypatch.setattr(
+        "app.openai_tracked.tracked_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OpenAIBudgetExceededError(snapshot)
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        vector = cached_text_embedding(
+            "unique optional memory embedding budget test",
+            route="web_memory_query",
+        )
+
+    assert vector == []
+    records = [
+        record for record in caplog.records
+        if record.getMessage() == "cached_text_embedding_skipped_budget"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert not [
+        record for record in caplog.records
+        if record.levelno >= logging.ERROR
+    ]
+
+
+def test_cached_text_embedding_unexpected_failure_remains_exception_logged(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "app.openai_tracked.tracked_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("unexpected embedding failure")
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        vector = cached_text_embedding(
+            "unique unexpected embedding failure test",
+            route="web_memory_query",
+        )
+
+    assert vector == []
+    records = [
+        record for record in caplog.records
+        if record.getMessage() == "cached text embedding failed"
+    ]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
 
 
 def test_tracked_embedding_reuses_duplicate_request_text(monkeypatch):

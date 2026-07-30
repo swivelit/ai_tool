@@ -35,7 +35,12 @@ export class ApiNetworkError extends Error {
 }
 
 export class SSEStreamError extends Error {
-  constructor(public code: string, message: string) { super(message) }
+  constructor(
+    public code: string,
+    message: string,
+    public retryable = false,
+    public retry_at: string | null = null,
+  ) { super(message) }
 }
 
 export async function publicApiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -89,7 +94,12 @@ export async function streamChat(
     if (event.event === 'error') {
       terminalEventReceived = true
       const data = typeof event.data === 'object' && event.data ? event.data as Record<string, unknown> : {}
-      streamError = new SSEStreamError(String(data.code ?? 'generation_failed'), String(data.message ?? 'Generation failed.'))
+      streamError = new SSEStreamError(
+        String(data.code ?? 'generation_failed'),
+        String(data.message ?? 'Generation failed.'),
+        data.retryable === true,
+        typeof data.retry_at === 'string' ? data.retry_at : null,
+      )
     }
   }, signal)
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')

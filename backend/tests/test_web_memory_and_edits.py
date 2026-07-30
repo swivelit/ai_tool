@@ -185,6 +185,63 @@ def test_edit_latest_message_creates_revision_and_preserves_settled_charge(monke
         assert "complete backend roadmap" in summary.summary_text.lower()
 
 
+def test_hidden_continuation_control_does_not_hide_latest_visible_edit(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_MESSAGE_EDIT_ENABLED", "true")
+    user = create_test_user(
+        "edit-after-control", "edit-after-control@example.com"
+    )
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Continuation")
+        session.add(thread)
+        session.flush()
+        visible = WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="user",
+            content="Build a small API",
+            request_id="visible-edit-target",
+            status="complete",
+        )
+        session.add(visible)
+        session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="user",
+            content="Continue response",
+            request_id="hidden-control",
+            status="complete",
+            metadata_json=json.dumps({
+                "is_continuation_control": True,
+            }),
+        ))
+        session.commit()
+        thread_id = thread.id
+        visible_id = visible.id
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Build a small FastAPI service",
+        request_id="visible-edit-revision",
+        thread_id=thread_id,
+        reply_language="en",
+        edit_message_id=visible_id,
+    )
+
+    assert prepared.request_id == "visible-edit-revision"
+    with SessionLocal() as session:
+        original = session.get(WebChatMessage, visible_id)
+        replacement = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == "visible-edit-revision",
+            WebChatMessage.role == "user",
+        )).one()
+        assert original is not None and original.superseded_at is not None
+        assert replacement.replaces_message_id == visible_id
+
+
 def test_edit_rejects_cross_user_target(monkeypatch):
     monkeypatch.setenv("WEB_MESSAGE_EDIT_ENABLED", "true")
     owner = create_test_user("edit-owner", "edit-owner@example.com")

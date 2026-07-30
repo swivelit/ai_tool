@@ -145,7 +145,8 @@ def test_internal_account_keeps_rate_limit_safety_and_provider_budget(
         "request_id": "30000000-0000-4000-8000-000000000005",
         "message": "Explain database indexing in depth",
     })
-    assert "generation_failed" in budget.text
+    assert "service_budget_reached" in budget.text
+    assert "Swico has reached today’s service capacity." in budget.text
     with SessionLocal() as session:
         charge = session.exec(select(UsageCharge).where(
             UsageCharge.request_id == "30000000-0000-4000-8000-000000000005"

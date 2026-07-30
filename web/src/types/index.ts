@@ -42,6 +42,8 @@ export type Message = {
   input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
   finish_reason?: string; truncated?: boolean; can_continue?: boolean;
   completion_status?: string;
+  failure_code?: string | null;
+  retry_at?: string | null;
   is_continuation_control?: boolean;
   continuation_render_prefix?: string;
   continuation_parent_message_id?: string | null;

@@ -4,7 +4,12 @@ export type StreamState = {
   assistant: Message | null
   phase: string
   wallet: Wallet | null
-  error: { code: string; message: string } | null
+  error: {
+    code: string
+    message: string
+    retryable: boolean
+    retry_at: string | null
+  } | null
   done: boolean
 }
 
@@ -89,12 +94,27 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
             : [],
         } : null,
       }
-    case 'error':
+    case 'error': {
+      const code = String(data.code ?? 'generation_failed')
+      const retryAt = typeof data.retry_at === 'string'
+        ? data.retry_at
+        : null
       return {
         ...state, done: true, phase: 'error',
-        error: { code: String(data.code ?? 'generation_failed'), message: String(data.message ?? 'Generation failed.') },
-        assistant: state.assistant ? { ...state.assistant, status: 'retryable' } : null,
+        error: {
+          code,
+          message: String(data.message ?? 'Generation failed.'),
+          retryable: data.retryable === true,
+          retry_at: retryAt,
+        },
+        assistant: state.assistant ? {
+          ...state.assistant,
+          status: 'retryable',
+          failure_code: code,
+          retry_at: retryAt,
+        } : null,
       }
+    }
     default:
       return state
   }

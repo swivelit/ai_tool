@@ -1,8 +1,27 @@
 import { ApiError, SSEStreamError } from './api/client'
 
+export function serviceCapacityMessage(
+  message: string,
+  retryAt: string | null,
+): string {
+  if (!retryAt) return message
+  const timestamp = Date.parse(retryAt)
+  if (!Number.isFinite(timestamp)) return message
+  const time = new Date(timestamp).toLocaleTimeString(
+    undefined,
+    { hour:'numeric', minute:'2-digit' },
+  )
+  return `${message} Try again after ${time}.`
+}
+
 export function chatErrorMessage(error: unknown, offline: boolean): string {
   if (offline) return 'You’re offline. Reconnect and try again.'
-  if (error instanceof SSEStreamError) return error.message || 'Swico could not finish this response. Retry when you’re ready.'
+  if (error instanceof SSEStreamError) {
+    const message = error.message || 'Swico could not finish this response. Retry when you’re ready.'
+    return error.code === 'service_budget_reached'
+      ? serviceCapacityMessage(message, error.retry_at)
+      : message
+  }
   if (error instanceof ApiError) {
     const safePayload = error.body && typeof error.body === 'object' && 'error' in error.body
       ? (error.body as { error?: { code?: string; message?: string } }).error : undefined

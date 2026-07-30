@@ -308,6 +308,124 @@ it('edits only the latest active user message with accessible save and cancel co
   expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ id:'user-latest' }), 'Revised question')
 })
 
+it('copies every visible prompt exactly and edits only the latest visible prompt', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  const fetchSpy = vi.spyOn(globalThis, 'fetch')
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable:true, value:{ writeText },
+  })
+  const older = message('older-prompt', {
+    role:'user',
+    content:'First line\n  indented second line',
+  })
+  const hiddenControl = message('hidden-control', {
+    role:'user',
+    content:'Continue response',
+    is_continuation_control:true,
+  })
+  const latest = message('latest-prompt', {
+    role:'user',
+    content:'Latest prompt',
+  })
+  render(<Conversation
+    messages={[older, hiddenControl, latest]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+    editingAvailable
+  />)
+
+  const copyButtons = screen.getAllByRole('button', { name:'Copy prompt' })
+  expect(copyButtons).toHaveLength(2)
+  fireEvent.click(copyButtons[0])
+  await act(async () => undefined)
+  expect(writeText).toHaveBeenCalledWith(
+    'First line\n  indented second line'
+  )
+  expect(fetchSpy).not.toHaveBeenCalled()
+  expect(screen.getAllByRole('button', { name:'Edit message' })).toHaveLength(1)
+  expect(screen.queryByText('Continue response')).not.toBeInTheDocument()
+  expect(screen.getAllByRole('toolbar', { name:'Prompt actions' })).toHaveLength(2)
+  fetchSpy.mockRestore()
+})
+
+it('keeps Copy enabled while generation disables Edit and honors the edit feature flag', () => {
+  const prompt = message('active-prompt', {
+    role:'user',
+    content:'Question',
+  })
+  const { rerender } = render(<Conversation
+    messages={[prompt]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+    editingAvailable
+    editingDisabled
+  />)
+  expect(screen.getByRole('button', { name:'Copy prompt' })).toBeEnabled()
+  expect(screen.getByRole('button', { name:'Edit message' })).toBeDisabled()
+
+  rerender(<Conversation
+    messages={[prompt]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+    editingAvailable={false}
+  />)
+  expect(screen.getByRole('button', { name:'Copy prompt' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name:'Edit message' })).not.toBeInTheDocument()
+})
+
+it('announces clipboard rejection and cleans its feedback timer in StrictMode', async () => {
+  vi.useFakeTimers()
+  const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout')
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable:true,
+    value:{ writeText:vi.fn().mockRejectedValue(new Error('denied')) },
+  })
+  const prompt = message('copy-failure', {
+    role:'user',
+    content:'Prompt text',
+  })
+  const { unmount } = render(<StrictMode><Conversation
+    messages={[prompt]}
+    retry={vi.fn()}
+    suggest={vi.fn()}
+  /></StrictMode>)
+
+  fireEvent.click(screen.getByRole('button', { name:'Copy prompt' }))
+  await act(async () => undefined)
+  expect(screen.getByRole('button', { name:'Copy failed' })).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('Copy failed')
+  unmount()
+  expect(clearTimeoutSpy).toHaveBeenCalled()
+  clearTimeoutSpy.mockRestore()
+  vi.useRealTimers()
+})
+
+it('enables a capacity retry when retry_at passes without a reload', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-07-31T10:00:00Z'))
+  const retry = vi.fn()
+  const prompt = message('capacity-prompt', {
+    role:'user',
+    content:'Try this',
+    status:'retryable',
+    failure_code:'service_budget_reached',
+    retry_at:'2026-07-31T10:00:01Z',
+  })
+  render(<Conversation
+    messages={[prompt]}
+    retry={retry}
+    suggest={vi.fn()}
+  />)
+
+  const retryButton = screen.getByRole('button', { name:'Retry' })
+  expect(retryButton).toBeDisabled()
+  act(() => vi.advanceTimersByTime(1000))
+  expect(retryButton).toBeEnabled()
+  fireEvent.click(retryButton)
+  expect(retry).toHaveBeenCalledWith(prompt)
+  vi.useRealTimers()
+})
+
 it('renders user attachment cards and marks expired metadata without an open action', () => {
   const userMessage: Message = {
     ...message('attachment'), role:'user', content:'Attached: report.pdf', attachments:[{

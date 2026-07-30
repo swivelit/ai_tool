@@ -16,7 +16,11 @@ from app.ai.providers.openai_provider import OpenAIProvider
 from app.ai.types import AIRequest, AIRoute
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
-from app.openai_tracked import get_tracked_chat_completion_metadata, tracked_openai_generation
+from app.openai_tracked import (
+    OpenAIBudgetExceededError,
+    get_tracked_chat_completion_metadata,
+    tracked_openai_generation,
+)
 from app.observability import JsonFormatter
 from sqlmodel import select
 
@@ -175,6 +179,28 @@ def test_responses_stream_maps_incomplete_max_output_to_truncation():
     assert response.raw["truncated"] is True
     assert response.raw["completion_status"] == "incomplete"
     assert response.text == "partial answer"
+
+
+def test_stream_budget_rejection_makes_zero_provider_calls(monkeypatch):
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.000000000001")
+    client = _Client()
+
+    with pytest.raises(OpenAIBudgetExceededError):
+        OpenAIProvider(client).stream_complete(
+            _request("normal"),
+            _route(),
+            lambda _delta: pytest.fail(
+                "budget rejection must not emit output"
+            ),
+        )
+
+    assert client.responses.calls == []
+    assert client.completions.calls == []
+    assert not is_model_temporarily_unavailable(
+        "openai", "gpt-5.4-mini", "responses"
+    )
+    with SessionLocal() as session:
+        assert session.exec(select(OpenAIUsageLog)).all() == []
 
 
 @pytest.mark.parametrize(

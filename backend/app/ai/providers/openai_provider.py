@@ -270,7 +270,6 @@ class OpenAIProvider(AIProvider):
                 continue
             if provider_attempts >= max_attempts:
                 break
-            provider_attempts += 1
             text_parts: list[str] = []
             input_tokens = output_tokens = cached_tokens = cache_write_tokens = 0
             reasoning_tokens = 0
@@ -296,6 +295,8 @@ class OpenAIProvider(AIProvider):
                 model_tier=str(route.metadata.get("model_tier") or "web"),
                 estimated_cost_usd=estimated_budget_cost,
             )
+            # Admission rejection happens before an attempted provider call.
+            provider_attempts += 1
 
             def partial_response(*, interrupted: bool = False) -> AIProviderResponse | None:
                 text = "".join(text_parts).strip()

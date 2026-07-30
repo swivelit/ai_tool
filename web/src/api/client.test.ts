@@ -49,6 +49,26 @@ it('propagates generation_incomplete from an HTTP 200 SSE stream', async () => {
   expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'generation_incomplete', message } })
 })
 
+it('retains safe capacity metadata from an HTTP 200 SSE error', async () => {
+  const retryAt = '2099-08-01T00:00:00+00:00'
+  const body = `event: error\ndata: {"code":"service_budget_reached","message":"Swico has reached today’s service capacity.","retryable":true,"retry_at":"${retryAt}"}\n\n`
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(body, { status:200 }),
+  )
+  const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+
+  await expect(streamChat(
+    user as never,
+    { request_id:'capacity', message:'hello', input_mode:'text' },
+    vi.fn(),
+    new AbortController().signal,
+  )).rejects.toMatchObject({
+    code:'service_budget_reached',
+    retryable:true,
+    retry_at:retryAt,
+  } satisfies Partial<SSEStreamError>)
+})
+
 describe('streamChat terminal events', () => {
   afterEach(() => vi.restoreAllMocks())
 

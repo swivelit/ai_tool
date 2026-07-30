@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { ApiError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadVirtualText } from '../api/client'
+import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
@@ -367,6 +367,54 @@ it('opens billing when the API reports insufficient credit', async () => {
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(await screen.findByRole('dialog', { name:'Add credits' })).toBeInTheDocument()
+})
+
+it('applies the released wallet and delays Retry for service capacity', async () => {
+  mockApi()
+  const retryAt = '2099-08-01T00:00:00+00:00'
+  vi.mocked(streamChat).mockImplementation(async (
+    _user, _payload, onEvent,
+  ) => {
+    onEvent({ event:'wallet', data:{
+      ...bootstrap.wallet,
+      reserved_micros:0,
+      available_micros:5_000_000,
+      version:2,
+      token_estimate:{
+        tier:'lite',
+        tier_label:'Swico Lite',
+        pricing_as_of:'2026-07-17T00:00:00Z',
+        estimated_blended_tokens:1234,
+        range_min_tokens:1000,
+        range_max_tokens:1500,
+        explanation:'Safe wallet refresh marker.',
+      },
+    } })
+    onEvent({ event:'error', data:{
+      code:'service_budget_reached',
+      message:'Swico has reached today’s service capacity.',
+      retryable:true,
+      retry_at:retryAt,
+    } })
+    throw new SSEStreamError(
+      'service_budget_reached',
+      'Swico has reached today’s service capacity.',
+      true,
+      retryAt,
+    )
+  })
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Keep my prompt visible')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    /service capacity.*Try again after/i
+  )
+  expect(screen.getByText('Keep my prompt visible')).toBeInTheDocument()
+  expect(screen.getByText('≈ 1.2K tokens')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Retry answer' })).toBeDisabled()
+  expect(screen.queryByRole('dialog', { name:/Add credits/i })).not.toBeInTheDocument()
 })
 
 it('shows stop generation and sends a cooperative cancellation request', async () => {

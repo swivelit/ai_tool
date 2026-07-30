@@ -11,6 +11,7 @@ import re
 import tempfile
 import threading
 import time
+from datetime import datetime
 from decimal import Decimal, ROUND_CEILING
 from uuid import UUID, uuid4
 from typing import Any
@@ -79,6 +80,7 @@ from ..models import (
     WebMessageFeedback, WebUsagePreferences,
 )
 from ..observability import APP_RELEASE, get_request_id
+from ..openai_tracked import OpenAIBudgetExceededError
 from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
@@ -422,6 +424,22 @@ def _serialize_message(
         )
     except (TypeError, ValueError):
         continuation_segment_index = 0
+    failure_code = (
+        OpenAIBudgetExceededError.code
+        if metadata.get("failure_code") == OpenAIBudgetExceededError.code
+        else None
+    )
+    retry_at: str | None = None
+    if failure_code:
+        candidate_retry_at = str(metadata.get("retry_at") or "").strip()
+        try:
+            parsed_retry_at = datetime.fromisoformat(
+                candidate_retry_at.replace("Z", "+00:00")
+            )
+            if parsed_retry_at.tzinfo is not None:
+                retry_at = candidate_retry_at
+        except ValueError:
+            pass
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
         "request_id": row.request_id, "tier": tier,
@@ -456,6 +474,8 @@ def _serialize_message(
             if metadata.get("continuation_root_message_id") else None
         ),
         "continuation_segment_index": continuation_segment_index,
+        "failure_code": failure_code,
+        "retry_at": retry_at,
         "replaces_message_id": row.replaces_message_id,
         "revision_number": row.revision_number,
         "feedback_rating": (
@@ -3031,6 +3051,7 @@ async def chat_stream(
         outcome = "cancelled"
         terminal_exception_class: str | None = None
         terminal_provider_attempts = 0
+        terminal_retry_at: str | None = None
         ownership = {"observed": False, "generator_closed": False}
 
         def delta(value: str) -> None:
@@ -3189,6 +3210,28 @@ async def chat_stream(
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
             })
+        except OpenAIBudgetExceededError as exc:
+            outcome = "capacity_limited"
+            terminal_exception_class = type(exc).__name__
+            terminal_provider_attempts = 0
+            terminal_retry_at = str(exc.metadata["reset_at"])
+            with SessionLocal() as session:
+                yield _sse(
+                    "wallet",
+                    get_wallet_summary(
+                        session,
+                        user_id,
+                        swico_tier=prepared.swico_tier,
+                        billing_exempt=prepared.billing_exempt,
+                        credit_bucket=prepared.billing_credit_bucket,
+                    ),
+                )
+            yield _sse("error", {
+                "code": OpenAIBudgetExceededError.code,
+                "message": "Swico has reached today’s service capacity.",
+                "retryable": True,
+                "retry_at": terminal_retry_at,
+            })
         except GenerationIncomplete as exc:
             outcome = "incomplete"
             terminal_exception_class = type(exc).__name__
@@ -3253,7 +3296,10 @@ async def chat_stream(
                             "exception_class": type(abandoned_error).__name__,
                         },
                     )
-            logger.info(
+            terminal_logger = (
+                logger.warning if outcome == "capacity_limited" else logger.info
+            )
+            terminal_logger(
                 "web_chat_stream_terminal",
                 extra={
                     "event": "web_chat_stream_terminal",
@@ -3265,6 +3311,7 @@ async def chat_stream(
                     "visible_character_count": visible_character_count,
                     "exception_class": terminal_exception_class,
                     "provider_attempts": terminal_provider_attempts,
+                    "retry_at": terminal_retry_at,
                 },
             )
 

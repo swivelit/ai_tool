@@ -162,9 +162,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .content-search-results button:hover { background: var(--hover) }
 .content-search-results button span { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical }
 .content-search-results button small { color: var(--subtle); font-size: 10px }
-.edit-message { display: inline-flex; align-items: center; gap: 5px; margin: 5px 8px 0 0; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer }
-.edit-message:hover { background: var(--surface) }
-.edit-message:disabled { opacity: .45; cursor: default }
+.user-message-actions { display: flex; min-height: 30px; max-width: 100%; align-items: center; justify-content: flex-end; gap: 2px; margin-top: 4px; color: var(--muted) }
+.user-message-actions button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; padding: 4px 7px; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: 11px; cursor: pointer }
+.user-message-actions button:hover { background: var(--surface); color: var(--text) }
+.user-message-actions button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px }
+.user-message-actions button:disabled { opacity: .45; cursor: default }
+.prompt-copy-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap }
 .message-editor { display: grid; width: min(560px, 88%); gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface) }
 .message-editor label { font-size: 12px; font-weight: 650 }
 .message-editor textarea { min-height: 96px; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5 }
@@ -181,6 +184,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px }
 .thinking span { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: pulse 1.2s infinite }
 .retry { display: flex; align-items: center; gap: 5px; margin: 5px 8px 0 0; padding: 6px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--danger); font-size: 12px; cursor: pointer }
+.retry:disabled { opacity: .45; cursor: default }
 .scroll-bottom { position: absolute; z-index: 5; left: 50%; bottom: calc(var(--composer-reserved-height) + 10px); display: grid; width: 34px; height: 34px; place-items: center; transform: translateX(-50%); border: 1px solid var(--line); border-radius: 50%; background: var(--bg); box-shadow: 0 4px 14px rgb(0 0 0 / 12%); cursor: pointer }
 .composer-wrap { position: absolute; z-index: 6; bottom: 0; inset-inline: 0; padding: 28px calc(var(--chat-inline-gap) + var(--chat-scrollbar-inline-reserve)) 10px; background: linear-gradient(transparent, var(--bg) 35%) }
 .composer-shell { position: relative; width: min(var(--chat-column-max), 100%); max-width: 100%; min-width: 0; margin: 0 auto; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 24px; background: var(--composer); box-shadow: 0 2px 10px rgb(0 0 0 / 8%) }

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } 
 import { X } from 'lucide-react'
 import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SearchResult, SwicoTier, Thread, Wallet, Wallets } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument, uploadVirtualText } from '../api/client'
-import { chatErrorMessage } from '../chatErrors'
+import { chatErrorMessage, serviceCapacityMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
 import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
@@ -194,7 +194,16 @@ export function ChatPage() {
   }, [streamState.assistant])
   useEffect(() => {
     if (streamState.wallet) setBootstrap(value => value ? { ...value, wallet: streamState.wallet! } : value)
-    if (streamState.error) setError(streamState.error.message)
+    if (streamState.error) {
+      setError(
+        streamState.error.code === 'service_budget_reached'
+          ? serviceCapacityMessage(
+            streamState.error.message,
+            streamState.error.retry_at,
+          )
+          : streamState.error.message
+      )
+    }
   }, [streamState.wallet, streamState.error])
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
@@ -364,6 +373,14 @@ export function ChatPage() {
   const retry = (message: Message) => {
     const original = message.role === 'user' ? message : messages.find(item => item.role === 'user' && item.request_id === message.request_id)
     if (!original || !original.request_id || message.status !== 'retryable') return
+    const retryAt = message.retry_at ?? original.retry_at
+    if (retryAt) {
+      const retryAtMilliseconds = Date.parse(retryAt)
+      if (
+        Number.isFinite(retryAtMilliseconds)
+        && retryAtMilliseconds > Date.now()
+      ) return
+    }
     const summary = `Attached: ${(original.attachments ?? []).map(item => item.name).join(', ')}`
     const retryText = original.attachments?.length && original.content === summary ? '' : original.content
     void send(retryText, original.thread_id || active, original.request_id, original.attachments, {

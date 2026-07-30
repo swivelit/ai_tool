@@ -33,6 +33,7 @@ from ..models import (
     UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
     WebMemoryFact,
 )
+from ..openai_tracked import OpenAIBudgetExceededError
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
@@ -88,6 +89,42 @@ class EditRequestError(RuntimeError):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+def _message_metadata(row: WebChatMessage) -> dict[str, Any]:
+    try:
+        value = json.loads(row.metadata_json or "{}")
+    except (TypeError, ValueError):
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+
+def _set_capacity_failure_metadata(
+    row: WebChatMessage,
+    *,
+    retry_at: str,
+) -> None:
+    metadata = _message_metadata(row)
+    metadata.update({
+        "failure_code": OpenAIBudgetExceededError.code,
+        "retry_at": retry_at,
+    })
+    row.metadata_json = json.dumps(
+        metadata, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _clear_capacity_failure_metadata(row: WebChatMessage) -> None:
+    metadata = _message_metadata(row)
+    changed = False
+    for key in ("failure_code", "retry_at"):
+        if key in metadata:
+            metadata.pop(key, None)
+            changed = True
+    if changed:
+        row.metadata_json = json.dumps(
+            metadata, sort_keys=True, separators=(",", ":")
+        )
 
 
 class PromptBudgetExceeded(RuntimeError):
@@ -672,12 +709,18 @@ def prepare_web_turn(
                 raise EditRequestError(
                     "edit_conflict", "Wait for the active response to finish before editing.", 409
                 )
-            latest_user = session.exec(select(WebChatMessage).where(
+            latest_users = session.exec(select(WebChatMessage).where(
                 WebChatMessage.thread_id == thread.id,
                 WebChatMessage.user_id == user_id,
                 WebChatMessage.role == "user",
                 WebChatMessage.superseded_at.is_(None),
-            ).order_by(WebChatMessage.created_at.desc()).limit(1)).first()
+            ).order_by(WebChatMessage.created_at.desc())).all()
+            latest_user = next((
+                row for row in latest_users
+                if not continuation_metadata_dict(row).get(
+                    "is_continuation_control"
+                )
+            ), None)
             if latest_user is None or latest_user.id != any_target.id:
                 raise EditRequestError(
                     "stale_edit", "Only the latest active user message can be edited.", 409
@@ -1810,6 +1853,35 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 _release_continuation_claim(session, prepared)
                 session.commit()
             raise
+    except OpenAIBudgetExceededError as exc:
+        with SessionLocal() as session:
+            if prepared.billing_exempt:
+                release_billing_exempt_usage(
+                    session,
+                    prepared.request_id,
+                    reason="service_budget_reached",
+                )
+            else:
+                release_usage_reservation(
+                    session,
+                    prepared.request_id,
+                    reason="service_budget_reached",
+                )
+            user_message = session.exec(select(WebChatMessage).where(
+                WebChatMessage.user_id == prepared.user_id,
+                WebChatMessage.request_id == prepared.request_id,
+                WebChatMessage.role == "user",
+            )).first()
+            if user_message:
+                user_message.status = "retryable"
+                _set_capacity_failure_metadata(
+                    user_message,
+                    retry_at=str(exc.metadata["reset_at"]),
+                )
+                session.add(user_message)
+            _release_continuation_claim(session, prepared)
+            session.commit()
+        raise
     except BaseException:
         with SessionLocal() as session:
             if prepared.billing_exempt:
@@ -2038,6 +2110,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                     )
                     session.add(continuation_parent)
         user_message.status = "complete" if not cancelled else "cancelled"
+        if not cancelled:
+            _clear_capacity_failure_metadata(user_message)
         session.add(user_message)
         if prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
             settle_billing_exempt_usage(
