@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.ai.types import AIProviderResponse, AIRequest
-from app.ai.providers.base import GenerationCancelled, GenerationIncomplete
+from app.ai.providers.base import (
+    GenerationCancelled, GenerationIncomplete, ProviderStreamInterrupted,
+)
 from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
@@ -513,6 +517,198 @@ def test_generation_incomplete_is_retryable_and_releases_reservation(
         assert get_wallet_summary(session, int(user.id))[
             "reserved_micros"
         ] == 0
+
+
+def test_partial_transport_interruption_is_retryable_without_post_turn_work(
+    client, monkeypatch
+):
+    user = create_test_user("stream-interrupted", "stream-interrupted@example.com")
+    _fund(int(user.id))
+    calls = {"count": 0}
+
+    def interrupted(self, request, route, on_delta):
+        calls["count"] += 1
+        on_delta("Partial visible answer")
+        partial = AIProviderResponse(
+            text="Partial visible answer",
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=40,
+            output_tokens=5,
+            raw={
+                "usage_actual": False,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 0,
+                "interrupted": True,
+            },
+        )
+        raise ProviderStreamInterrupted(
+            response=partial,
+            provider_attempts=1,
+            visible_output_emitted=True,
+            provider_usage_received=False,
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        interrupted,
+    )
+    monkeypatch.setattr(
+        "app.web_api.chat_service._run_post_turn_operation",
+        lambda **_kwargs: pytest.fail(
+            "interrupted turns must not run post-turn work"
+        ),
+    )
+    request_id = "7da88957-837a-4af4-b82c-2ba502c2804a"
+
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("stream-interrupted", "stream-interrupted@example.com"),
+        json={
+            "request_id": request_id,
+            "message": "Explain database indexes",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _stream_text(response) == "Partial visible answer"
+    assert _sse_events(response, "error") == [{
+        "code": "stream_interrupted",
+        "message": "The connection ended before Swico finished. Retry.",
+    }]
+    assert calls["count"] == 1
+    with SessionLocal() as session:
+        charge = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).one()
+        user_message = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "user",
+            )
+        ).one()
+        assistant = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).first()
+        assert charge.status == "released"
+        assert user_message.status == "retryable"
+        assert assistant is None
+    from app.web_api.router import _active_generations
+    assert request_id not in _active_generations
+
+
+def test_web_stream_emits_configured_heartbeat(client, monkeypatch):
+    user = create_test_user("heartbeat-user", "heartbeat-user@example.com")
+    _fund(int(user.id))
+    monkeypatch.setenv("WEB_SSE_HEARTBEAT_SECONDS", "0.01")
+
+    def delayed(self, request, route, on_delta):
+        time.sleep(0.04)
+        return _completed_provider_response(self, request, route, on_delta)
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        delayed,
+    )
+
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("heartbeat-user", "heartbeat-user@example.com"),
+        json={
+            "request_id": "16627251-8bf0-4ac8-8818-2d9db65bfda1",
+            "message": "Explain database indexes",
+        },
+    )
+
+    assert response.status_code == 200
+    assert ": keep-alive\n\n" in response.text
+    assert _sse_events(response, "done")
+
+
+def test_closed_sse_generator_observes_worker_exception_and_cleans_active_request(
+    monkeypatch,
+):
+    from fastapi import Request
+
+    from app.auth import AuthUser
+    from app.web_api.router import _active_generations, chat_stream
+    from app.web_api.schemas import WebChatRequest
+
+    user = create_test_user("closed-stream", "closed-stream@example.com")
+    _fund(int(user.id))
+    request_id = "7319ef7a-1883-4d4b-9862-fabb6fa78cc8"
+
+    def delayed_failure(*_args, **_kwargs):
+        time.sleep(0.04)
+        raise RuntimeError("worker failed after generator close")
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        delayed_failure,
+    )
+    unhandled = []
+
+    async def exercise() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(
+            lambda _loop, context: unhandled.append(context)
+        )
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        incoming = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/web/chat/stream",
+                "headers": [],
+            },
+            receive=receive,
+        )
+        response = await chat_stream(
+            WebChatRequest(
+                request_id=request_id,
+                message="Explain database indexes",
+            ),
+            incoming,
+            AuthUser(
+                firebase_uid="closed-stream",
+                email="closed-stream@example.com",
+                email_verified=True,
+            ),
+        )
+        iterator = response.body_iterator
+        await anext(iterator)
+        await iterator.aclose()
+        await asyncio.sleep(0.1)
+
+    asyncio.run(exercise())
+
+    assert request_id not in _active_generations
+    assert not any(
+        context.get("message") == "Task exception was never retrieved"
+        for context in unhandled
+    )
+    with SessionLocal() as session:
+        charge = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).one()
+        user_message = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "user",
+            )
+        ).one()
+        assert charge.status == "released"
+        assert user_message.status == "retryable"
 
 
 def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):

@@ -14,6 +14,11 @@ describe('SSEParser', () => {
     const parser = new SSEParser()
     expect(parser.push(': ping\nevent: status\ndata: working\n\n')).toEqual([{ event: 'status', data: 'working' }])
   })
+  it('ignores heartbeat comment frames', () => {
+    const parser = new SSEParser()
+    expect(parser.push(': keep-alive\n\n')).toEqual([])
+    expect(parser.finish()).toEqual([])
+  })
 })
 
 it('aborts stream consumption', async () => {

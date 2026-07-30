@@ -45,6 +45,7 @@ from ..billing.topups import (
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import (
     GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+    ProviderStreamInterrupted,
 )
 from ..ai.budget import enforce_provider_budget
 from ..ai.providers.sarvam_provider import (
@@ -2881,7 +2882,11 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 
 @router.post("/chat/stream")
-async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_current_user)):
+async def chat_stream(
+    payload: WebChatRequest,
+    request: Request,
+    auth: AuthUser = Depends(get_current_user),
+):
     inline_limit = 16_000
     if _env_enabled("WEB_LONG_INPUT_ENABLED"):
         inline_limit = _bounded_int_env(
@@ -2956,38 +2961,86 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
-    with _active_generations_lock:
-        _active_generations[prepared.request_id] = (user_id, cancellation)
 
     async def events():
         queue: asyncio.Queue[str] = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        started_at = time.monotonic()
+        heartbeat_seconds = _bounded_float_env(
+            "WEB_SSE_HEARTBEAT_SECONDS", 10.0, 0.01, 300.0
+        )
+        last_event_at = loop.time()
+        visible_character_count = 0
+        outcome = "cancelled"
+        terminal_exception_class: str | None = None
+        terminal_provider_attempts = 0
+        ownership = {"observed": False, "generator_closed": False}
 
         def delta(value: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, value)
 
+        with _active_generations_lock:
+            _active_generations[prepared.request_id] = (user_id, cancellation)
         task = asyncio.create_task(asyncio.to_thread(execute_web_turn, prepared, on_delta=delta))
 
-        def unregister(_task: asyncio.Task[Any]) -> None:
+        def unregister(done_task: asyncio.Task[Any]) -> None:
             with _active_generations_lock:
                 _active_generations.pop(prepared.request_id, None)
+            if not ownership["generator_closed"] or ownership["observed"]:
+                return
+            ownership["observed"] = True
+            try:
+                abandoned_error = done_task.exception()
+            except asyncio.CancelledError:
+                abandoned_error = None
+            if abandoned_error is not None:
+                logger.error(
+                    "web_chat_abandoned_worker_failed",
+                    extra={
+                        "event": "web_chat_abandoned_worker_failed",
+                        "request_id": prepared.request_id,
+                        "exception_class": type(abandoned_error).__name__,
+                    },
+                )
 
         task.add_done_callback(unregister)
-        yield _sse("thread", {"thread_id": prepared.thread_id})
-        yield _sse("status", {"phase": "routing"})
-        if prepared.reserved_micros:
-            yield _sse("status", {"phase": "reserved", "reserved_micros": prepared.reserved_micros})
         try:
+            yield _sse("thread", {"thread_id": prepared.thread_id})
+            yield _sse("status", {"phase": "routing"})
+            if prepared.reserved_micros:
+                yield _sse("status", {"phase": "reserved", "reserved_micros": prepared.reserved_micros})
             while not task.done():
                 try:
-                    chunk = await asyncio.wait_for(queue.get(), timeout=0.15)
+                    remaining = max(
+                        0.01,
+                        min(0.15, heartbeat_seconds - (loop.time() - last_event_at)),
+                    )
+                    chunk = await asyncio.wait_for(queue.get(), timeout=remaining)
+                    visible_character_count += len(chunk)
                     yield _sse("delta", {"text": chunk})
+                    last_event_at = loop.time()
                 except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        outcome = "client_disconnected"
+                        cancellation.cancel()
+                        return
+                    if loop.time() - last_event_at >= heartbeat_seconds:
+                        yield ": keep-alive\n\n"
+                        last_event_at = loop.time()
                     continue
             while not queue.empty():
-                yield _sse("delta", {"text": queue.get_nowait()})
-            completed = await task
+                chunk = queue.get_nowait()
+                visible_character_count += len(chunk)
+                yield _sse("delta", {"text": chunk})
+                last_event_at = loop.time()
+            try:
+                completed = await task
+            finally:
+                ownership["observed"] = True
             response = completed.response
+            terminal_provider_attempts = int(
+                response.raw.get("provider_attempts") or 0
+            )
             yield _sse("usage", {
                 "tier": completed.message.swico_tier,
                 "tier_label": (
@@ -3016,12 +3069,22 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 ),
                 "memory_updated": bool(response.raw.get("memory_updated")),
             })
+            outcome = "done"
         except asyncio.CancelledError:
+            outcome = "client_disconnected"
+            terminal_exception_class = "CancelledError"
             cancellation.cancel()
             # The cooperative worker owns settlement. Some provider consumption
             # may already have occurred before cancellation reaches the provider.
             raise
-        except GenerationCancelled:
+        except GeneratorExit:
+            outcome = "client_disconnected"
+            terminal_exception_class = "GeneratorExit"
+            cancellation.cancel()
+            raise
+        except GenerationCancelled as exc:
+            outcome = "cancelled"
+            terminal_exception_class = type(exc).__name__
             with SessionLocal() as session:
                 yield _sse(
                     "wallet",
@@ -3039,7 +3102,9 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
             })
-        except GenerationIncomplete:
+        except GenerationIncomplete as exc:
+            outcome = "incomplete"
+            terminal_exception_class = type(exc).__name__
             logger.warning(
                 "web_chat_generation_incomplete",
                 extra={"request_id": prepared.request_id},
@@ -3051,9 +3116,70 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                     "the answer. Please retry."
                 ),
             })
-        except Exception:
+        except ProviderStreamInterrupted as exc:
+            outcome = "error"
+            terminal_exception_class = type(exc).__name__
+            terminal_provider_attempts = int(
+                exc.metadata.get("provider_attempts") or 0
+            )
+            logger.warning(
+                "web_chat_stream_interrupted",
+                extra={
+                    "event": "web_chat_stream_interrupted",
+                    "request_id": prepared.request_id,
+                    "exception_class": type(exc).__name__,
+                    "provider_attempts": terminal_provider_attempts,
+                    "visible_character_count": visible_character_count,
+                },
+            )
+            yield _sse("error", {
+                "code": "stream_interrupted",
+                "message": (
+                    "The connection ended before Swico finished. Retry."
+                ),
+            })
+        except Exception as exc:
+            outcome = "error"
+            terminal_exception_class = type(exc).__name__
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
             yield _sse("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry."})
+        finally:
+            ownership["generator_closed"] = True
+            with _active_generations_lock:
+                _active_generations.pop(prepared.request_id, None)
+            if task.done() and not ownership["observed"]:
+                ownership["observed"] = True
+                try:
+                    abandoned_error = task.exception()
+                except asyncio.CancelledError:
+                    abandoned_error = None
+                if abandoned_error is not None:
+                    terminal_exception_class = (
+                        terminal_exception_class
+                        or type(abandoned_error).__name__
+                    )
+                    logger.error(
+                        "web_chat_abandoned_worker_failed",
+                        extra={
+                            "event": "web_chat_abandoned_worker_failed",
+                            "request_id": prepared.request_id,
+                            "exception_class": type(abandoned_error).__name__,
+                        },
+                    )
+            logger.info(
+                "web_chat_stream_terminal",
+                extra={
+                    "event": "web_chat_stream_terminal",
+                    "request_id": prepared.request_id,
+                    "outcome": outcome,
+                    "duration_ms": int(
+                        (time.monotonic() - started_at) * 1000
+                    ),
+                    "visible_character_count": visible_character_count,
+                    "exception_class": terminal_exception_class,
+                    "provider_attempts": terminal_provider_attempts,
+                },
+            )
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

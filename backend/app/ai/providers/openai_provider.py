@@ -6,7 +6,9 @@ import os
 import re
 from typing import Any, Callable, Optional
 
+import httpx
 from fastapi import HTTPException
+from openai import APIConnectionError, APITimeoutError
 
 from ...database import SessionLocal
 from ...openai_model_router import OpenAIModelRouter, record_openai_usage
@@ -26,6 +28,7 @@ from ..prompts import (
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import (
     AIProvider, GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+    ProviderStreamInterrupted,
 )
 
 
@@ -247,9 +250,16 @@ class OpenAIProvider(AIProvider):
         accumulated_cost = 0.0
         accumulated_usage_calls = 0
         accumulated_usage_actual = False
-        confidence_ladder = os.getenv(
-            "WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "false"
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        live_web_stream = (
+            str(request.metadata.get("client_surface") or "").strip().lower()
+            == "web"
+        )
+        confidence_ladder = (
+            not live_web_stream
+            and os.getenv(
+                "WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+        )
         max_attempts = min(2, max(1, int(request.metadata.get("max_provider_attempts") or 2)))
         for index, model in enumerate(candidates):
             endpoint = str(
@@ -271,6 +281,10 @@ class OpenAIProvider(AIProvider):
             terminal_event_type = ""
             final_response: Any | None = None
             provider_refusal = False
+            visible_output_emitted = False
+            valid_terminal_event_received = False
+            trailing_transport_recovered = [False]
+            stream: Any | None = None
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
@@ -283,7 +297,7 @@ class OpenAIProvider(AIProvider):
                 estimated_cost_usd=estimated_budget_cost,
             )
 
-            def partial_response() -> AIProviderResponse | None:
+            def partial_response(*, interrupted: bool = False) -> AIProviderResponse | None:
                 text = "".join(text_parts).strip()
                 if not text and not provider_usage_received:
                     return None
@@ -302,12 +316,18 @@ class OpenAIProvider(AIProvider):
                         "cached_input_tokens": cached_tokens,
                         "cache_write_tokens": cache_write_tokens,
                         "endpoint": endpoint,
-                        "cancelled": True,
+                        "cancelled": not interrupted,
+                        "interrupted": interrupted,
                         "provider_attempts": provider_attempts,
                         "provider_calls_with_usage": 1 if provider_usage_received else 0,
-                        "finish_reason": "cancelled",
+                        "finish_reason": (
+                            finish_reason if interrupted else "cancelled"
+                        ),
                         "truncated": False,
-                        "completion_status": "cancelled",
+                        "completion_status": (
+                            "incomplete" if interrupted else "cancelled"
+                        ),
+                        "terminal_event_type": terminal_event_type,
                     },
                 )
 
@@ -348,7 +368,19 @@ class OpenAIProvider(AIProvider):
                     )
                     if cancellation:
                         cancellation.bind_stream(stream)
-                    for event in stream:
+                    for event in _terminal_aware_stream(
+                        stream,
+                        can_recover=lambda: (
+                            valid_terminal_event_received
+                            and terminal_event_type == "response.completed"
+                            and completion_status == "complete"
+                            and bool(
+                                text_parts
+                                or _extract_response_text(final_response)
+                            )
+                        ),
+                        recovered=trailing_transport_recovered,
+                    ):
                         check_cancelled()
                         event_type = str(getattr(event, "type", "") or "")
                         if event_type in {"response.output_text.delta", "response.refusal.delta"}:
@@ -359,6 +391,7 @@ class OpenAIProvider(AIProvider):
                                 text_parts.append(delta)
                                 if not confidence_ladder:
                                     on_delta(delta)
+                                    visible_output_emitted = True
                         response = getattr(event, "response", None)
                         if event_type == "response.created" and response is not None:
                             completion_status = str(getattr(response, "status", "") or "in_progress")
@@ -375,6 +408,10 @@ class OpenAIProvider(AIProvider):
                                     "response.incomplete": "incomplete",
                                     "response.failed": "failed",
                                 }[event_type]
+                            valid_terminal_event_received = bool(
+                                event_type == "response.completed"
+                                and completion_status == "complete"
+                            )
                         usage = _value(response, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
@@ -428,7 +465,15 @@ class OpenAIProvider(AIProvider):
                     stream = client.chat.completions.create(**chat_kwargs)
                     if cancellation:
                         cancellation.bind_stream(stream)
-                    for chunk in stream:
+                    for chunk in _terminal_aware_stream(
+                        stream,
+                        can_recover=lambda: (
+                            valid_terminal_event_received
+                            and completion_status == "complete"
+                            and bool(text_parts)
+                        ),
+                        recovered=trailing_transport_recovered,
+                    ):
                         check_cancelled()
                         choices = getattr(chunk, "choices", None) or []
                         if choices:
@@ -436,6 +481,12 @@ class OpenAIProvider(AIProvider):
                             if observed_finish:
                                 finish_reason = _normalize_finish_reason(observed_finish)
                                 completion_status = "incomplete" if finish_reason == "length" else "complete"
+                                terminal_event_type = (
+                                    "chat.completion.terminal"
+                                )
+                                valid_terminal_event_received = bool(
+                                    completion_status == "complete"
+                                )
                             delta = str(
                                 getattr(getattr(choices[0], "delta", None), "content", "") or ""
                             )
@@ -443,6 +494,7 @@ class OpenAIProvider(AIProvider):
                                 text_parts.append(delta)
                                 if not confidence_ladder:
                                     on_delta(delta)
+                                    visible_output_emitted = True
                         usage = getattr(chunk, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
@@ -460,7 +512,22 @@ class OpenAIProvider(AIProvider):
                         text_parts.append(recovered_text)
                         if not confidence_ladder:
                             on_delta(recovered_text)
+                            visible_output_emitted = True
                 text = "".join(text_parts).strip()
+                if trailing_transport_recovered[0]:
+                    logger.warning(
+                        "openai_stream_trailing_transport_recovered",
+                        extra={
+                            "event": "openai_stream_trailing_transport_recovered",
+                            "request_id": request.request_id,
+                            "terminal_event_type": terminal_event_type,
+                            "completion_status": completion_status,
+                            "finish_reason": finish_reason,
+                            "visible_output_characters": len(text),
+                            "provider_usage_received": provider_usage_received,
+                            "provider_attempts": provider_attempts,
+                        },
+                    )
                 terminal_completion_metadata = {
                     "finish_reason": finish_reason,
                     "truncated": finish_reason == "length",
@@ -490,6 +557,30 @@ class OpenAIProvider(AIProvider):
                                 provider_usage_received=provider_usage_received,
                             ),
                         },
+                    )
+                if terminal_event_type == "response.failed":
+                    failed_response = partial_response(interrupted=True)
+                    if provider_usage_received:
+                        _record_interrupted_usage(
+                            request=request,
+                            route=route,
+                            model=model,
+                            budget_input=budget_input,
+                            budget_output=budget_output,
+                            estimated_budget_cost=estimated_budget_cost,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cached_tokens=cached_tokens,
+                            cache_write_tokens=cache_write_tokens,
+                        )
+                    raise ProviderStreamInterrupted(
+                        response=failed_response,
+                        provider_attempts=provider_attempts,
+                        visible_output_emitted=visible_output_emitted,
+                        provider_usage_received=provider_usage_received,
+                        terminal_event_type=terminal_event_type,
+                        completion_status=completion_status,
+                        finish_reason=finish_reason,
                     )
                 provider_finish_reason = finish_reason
                 provider_completion_status = completion_status
@@ -642,6 +733,7 @@ class OpenAIProvider(AIProvider):
                     raise RuntimeError("Empty streamed response")
                 if confidence_ladder:
                     on_delta(text)
+                    visible_output_emitted = True
                 return AIProviderResponse(
                     text=text, provider="openai", model=model, route=route.route,
                     reason=route.reason, language=route.language, intent=route.intent,
@@ -706,12 +798,70 @@ class OpenAIProvider(AIProvider):
                 raise
             except Exception as exc:
                 last_error = exc
+                if _is_transient_stream_error(exc):
+                    if visible_output_emitted or provider_usage_received:
+                        interrupted_response = partial_response(interrupted=True)
+                        if provider_usage_received:
+                            _record_interrupted_usage(
+                                request=request,
+                                route=route,
+                                model=model,
+                                budget_input=budget_input,
+                                budget_output=budget_output,
+                                estimated_budget_cost=estimated_budget_cost,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cached_tokens=cached_tokens,
+                                cache_write_tokens=cache_write_tokens,
+                            )
+                        logger.warning(
+                            "openai_stream_interrupted",
+                            extra={
+                                "event": "openai_stream_interrupted",
+                                "request_id": request.request_id,
+                                "terminal_event_type": terminal_event_type,
+                                "completion_status": completion_status,
+                                "finish_reason": finish_reason,
+                                "visible_output_characters": len(
+                                    interrupted_response.text
+                                    if interrupted_response else ""
+                                ),
+                                "provider_usage_received": provider_usage_received,
+                                "provider_attempts": provider_attempts,
+                                "exception_class": type(exc).__name__,
+                            },
+                        )
+                        raise ProviderStreamInterrupted(
+                            response=interrupted_response,
+                            provider_attempts=provider_attempts,
+                            visible_output_emitted=visible_output_emitted,
+                            provider_usage_received=provider_usage_received,
+                            terminal_event_type=terminal_event_type,
+                            completion_status=completion_status,
+                            finish_reason=finish_reason,
+                        ) from exc
+                    mark_model_unavailable(
+                        "openai", model, endpoint, exc.__class__.__name__,
+                        ttl_seconds=60,
+                    )
+                    continue
+                if (
+                    not text_parts
+                    and not provider_usage_received
+                    and _is_empty_stream_failure(exc)
+                ):
+                    mark_model_unavailable(
+                        "openai", model, endpoint, exc.__class__.__name__,
+                        ttl_seconds=60,
+                    )
+                    continue
                 if text_parts or provider_usage_received or _exception_reported_output_or_usage(exc):
                     raise
-                mark_model_unavailable(
-                    "openai", model, endpoint, exc.__class__.__name__, ttl_seconds=60
-                )
-                continue
+                raise
+            finally:
+                if cancellation is not None and stream is not None:
+                    cancellation.unbind_stream(stream)
+                _close_stream_quietly(stream)
         raise HTTPException(
             status_code=503,
             detail="The selected Swico mode is temporarily unavailable.",
@@ -910,3 +1060,114 @@ def _exception_reported_output_or_usage(exc: Exception) -> bool:
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
     return usage is not None
+
+
+def _is_transient_stream_error(exc: BaseException) -> bool:
+    return isinstance(
+        exc,
+        (
+            httpx.RemoteProtocolError,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            APIConnectionError,
+            APITimeoutError,
+        ),
+    )
+
+
+def _is_empty_stream_failure(exc: BaseException) -> bool:
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc).strip().lower()
+    return message == "empty streamed response" or message in {
+        "connect failed",
+        "connection failed",
+        "endpoint connection failed",
+    }
+
+
+def _terminal_aware_stream(
+    stream: Any,
+    *,
+    can_recover: Callable[[], bool],
+    recovered: list[bool],
+):
+    """Ignore only a trailing transient failure after a valid terminal event."""
+
+    iterator = iter(stream)
+    while True:
+        try:
+            yield next(iterator)
+        except StopIteration:
+            return
+        except Exception as exc:
+            if _is_transient_stream_error(exc) and can_recover():
+                recovered[0] = True
+                return
+            raise
+
+
+def _close_stream_quietly(stream: Any | None) -> None:
+    close = getattr(stream, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            # Iteration owns transport error classification. Cleanup must not
+            # hide the original provider or cancellation exception.
+            pass
+
+
+def _record_interrupted_usage(
+    *,
+    request: AIRequest,
+    route: AIRoute,
+    model: str,
+    budget_input: int,
+    budget_output: int,
+    estimated_budget_cost: float,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    cache_write_tokens: int,
+) -> None:
+    """Keep provider cost auditing without turning an interruption into a turn."""
+
+    router = OpenAIModelRouter()
+    actual_cost = router.estimate_cost(
+        model,
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        cache_write_tokens,
+    )
+    kwargs = {
+        "user_id": request.user_id,
+        "request_id": request.request_id,
+        "route": route.route,
+        "model_used": model,
+        "model_tier": str(route.metadata.get("model_tier") or "web"),
+        "reason": route.reason,
+        "estimated_input_tokens": budget_input,
+        "estimated_output_tokens": budget_output,
+        "estimated_cost_usd": estimated_budget_cost,
+        "actual_input_tokens": input_tokens,
+        "actual_output_tokens": output_tokens,
+        "actual_cost_usd": actual_cost,
+    }
+    try:
+        usage_session = request.metadata.get("session")
+        if usage_session is not None:
+            record_openai_usage(usage_session, **kwargs)
+        else:
+            with SessionLocal() as created_usage_session:
+                record_openai_usage(created_usage_session, **kwargs)
+    except Exception:
+        logger.exception(
+            "openai_interrupted_usage_record_failed",
+            extra={
+                "event": "openai_interrupted_usage_record_failed",
+                "request_id": request.request_id,
+                "provider_usage_received": True,
+            },
+        )

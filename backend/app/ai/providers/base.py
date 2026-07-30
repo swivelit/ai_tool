@@ -31,6 +31,11 @@ class GenerationCancellation:
         if self.cancelled:
             self._close_stream(stream)
 
+    def unbind_stream(self, stream: Any) -> None:
+        with self._lock:
+            if self._stream is stream:
+                self._stream = None
+
     def cancel(self) -> None:
         self._event.set()
         with self._lock:
@@ -84,4 +89,31 @@ class GenerationIncomplete(RuntimeError):
             "visible_character_count": max(0, int(visible_characters or 0)),
             "max_output_tokens": max(0, int(max_output_tokens or 0)),
             "provider_usage_received": bool(provider_usage_received),
+        }
+
+
+class ProviderStreamInterrupted(RuntimeError):
+    """A retryable transport interruption, optionally after visible output."""
+
+    def __init__(
+        self,
+        *,
+        response: AIProviderResponse | None,
+        provider_attempts: int,
+        visible_output_emitted: bool,
+        provider_usage_received: bool,
+        terminal_event_type: str = "",
+        completion_status: str = "unknown",
+        finish_reason: str = "unknown",
+    ) -> None:
+        super().__init__("Provider stream interrupted")
+        self.response = response
+        self.metadata = {
+            "provider_attempts": max(0, int(provider_attempts or 0)),
+            "visible_output_emitted": bool(visible_output_emitted),
+            "visible_character_count": len(response.text) if response else 0,
+            "provider_usage_received": bool(provider_usage_received),
+            "terminal_event_type": str(terminal_event_type or ""),
+            "completion_status": str(completion_status or "unknown"),
+            "finish_reason": str(finish_reason or "unknown"),
         }

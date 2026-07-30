@@ -82,14 +82,24 @@ export async function streamChat(
   }
   onAccepted?.()
   let streamError: SSEStreamError | null = null
+  let terminalEventReceived = false
   await consumeSSE(response, event => {
     onEvent(event)
+    if (event.event === 'done') terminalEventReceived = true
     if (event.event === 'error') {
+      terminalEventReceived = true
       const data = typeof event.data === 'object' && event.data ? event.data as Record<string, unknown> : {}
       streamError = new SSEStreamError(String(data.code ?? 'generation_failed'), String(data.message ?? 'Generation failed.'))
     }
   }, signal)
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   if (streamError) throw streamError
+  if (!terminalEventReceived) {
+    const code = 'stream_interrupted'
+    const message = 'The connection ended before Swico finished. Retry.'
+    onEvent({ event: 'error', data: { code, message } })
+    throw new SSEStreamError(code, message)
+  }
 }
 
 export async function uploadDocument(

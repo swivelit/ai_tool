@@ -3,6 +3,24 @@ from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest
 
 
+COLAB_CHATBOT_PROMPT = """Create a simple chatbot that runs in Google Colab.
+
+Give me the code cell by cell in the correct order.
+
+Requirements:
+
+1. Do not use any external API or API key.
+2. Use a small open-source language model that runs locally in Colab.
+3. One cell must install the required libraries.
+4. One cell must download and load the model.
+5. One cell must create an SQLite database to store user and chatbot messages.
+6. One cell must contain the chatbot response logic.
+7. One cell must create a simple Gradio chat interface.
+8. The chatbot must remember previous messages from the database.
+9. The complete code must run from top to bottom without missing variables or functions.
+10. Keep the code simple and suitable for a beginner."""
+
+
 def test_backend_tool_intents_route_to_backend_tool():
     assert classify_intent("Create a reminder tomorrow morning").route == "backend_tool"
     assert classify_intent("What is my routine today?").route == "backend_tool"
@@ -13,6 +31,25 @@ def test_backend_tool_intents_route_to_backend_tool():
 def test_coding_and_complex_reasoning_are_rules_first():
     assert classify_intent("Debug this React Native architecture").intent == "coding"
     assert classify_intent("Give me a multi-step migration plan").intent == "complex_reasoning"
+
+
+def test_technical_remember_requirement_is_a_coding_request():
+    decision = classify_intent(COLAB_CHATBOT_PROMPT)
+
+    assert decision.intent == "coding"
+    assert decision.route == "coding"
+    assert decision.reason == "coding_build_request"
+
+
+def test_direct_remember_this_stays_a_note_command():
+    for message in (
+        "remember this: call the client tomorrow",
+        "remember buy milk",
+    ):
+        decision = classify_intent(message)
+
+        assert decision.intent == "note"
+        assert decision.route == "backend_tool"
 
 
 def test_live_data_is_not_general_chat():

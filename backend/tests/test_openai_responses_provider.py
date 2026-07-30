@@ -1,6 +1,7 @@
 import logging
 import json
 
+import httpx
 import pytest
 
 from app.ai.model_health import (
@@ -10,7 +11,7 @@ from app.ai.completion_quality import incomplete_markdown_reason
 from app.ai.openai_reasoning import (
     OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
 )
-from app.ai.providers.base import GenerationIncomplete
+from app.ai.providers.base import GenerationIncomplete, ProviderStreamInterrupted
 from app.ai.providers.openai_provider import OpenAIProvider
 from app.ai.types import AIRequest, AIRoute
 from app.database import SessionLocal
@@ -446,6 +447,66 @@ def test_terminal_output_text_does_not_duplicate_streamed_deltas():
 
     assert response.text == "streamed answer"
     assert output == ["streamed answer"]
+
+
+def test_responses_completed_terminal_survives_trailing_protocol_error():
+    final = _final(text="captured answer")
+
+    def events():
+        yield _terminal_event(final)
+        raise httpx.RemoteProtocolError("incomplete chunked read")
+
+    client = _Client()
+    client.responses = _Recorder(events())
+    output = []
+
+    response = OpenAIProvider(client).stream_complete(
+        _request(), _route(), output.append
+    )
+
+    assert response.text == "captured answer"
+    assert output == ["captured answer"]
+    assert len(client.responses.calls) == 1
+
+
+def test_responses_protocol_error_after_delta_does_not_retry_or_duplicate():
+    delta = type(
+        "Event",
+        (),
+        {
+            "type": "response.output_text.delta",
+            "delta": "partial",
+            "response": None,
+        },
+    )()
+
+    def events():
+        yield delta
+        raise httpx.RemoteProtocolError("incomplete chunked read")
+
+    client = _Client()
+    client.responses = _SequenceRecorder([
+        events(),
+        [_terminal_event(_final(text="must not run"))],
+    ])
+    request = _request()
+    request.metadata.update({
+        "client_surface": "web",
+        "max_provider_attempts": 2,
+    })
+    output = []
+
+    with pytest.raises(ProviderStreamInterrupted) as excinfo:
+        OpenAIProvider(client).stream_complete(
+            request,
+            _route(["gpt-5.4-mini", "gpt-5.4-nano"]),
+            output.append,
+        )
+
+    assert output == ["partial"]
+    assert len(client.responses.calls) == 1
+    assert excinfo.value.response is not None
+    assert excinfo.value.response.text == "partial"
 
 
 def test_no_visible_output_at_limit_raises_incomplete_without_fallback():

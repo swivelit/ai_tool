@@ -71,6 +71,17 @@ _QUESTION_OR_SUBJECT_RE = re.compile(
     re.I,
 )
 
+_HIGH_CONFIDENCE_CODING_ACTION_RE = re.compile(
+    r"\b(?:create|implement|debug|write|generate|provide|build)\b",
+    re.IGNORECASE,
+)
+_TECHNICAL_CODING_MARKER_RE = re.compile(
+    r"\b(?:code|coding|python|sql|sqlite|gradio|react(?:\s+native)?|fastapi|"
+    r"function|class|api|model|library|database|colab|installation|"
+    r"implementation)\b",
+    re.IGNORECASE,
+)
+
 
 _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -111,7 +122,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("creative_tool", re.compile(r"\b(create|make|edit|generate|clean up|cleanup)\b.*\b(poster|image|photo|video|audio|song|voice edit|thumbnail|recording)\b|\b(poster|image|photo|video|audio)\b.*\b(edit|editing|generate|cleanup|clean up)\b", re.I)),
     ("document", re.compile(r"\b(pdf|docx|word|word document|document|xlsx|excel|sheet|pptx|ppt|powerpoint|slides?|csv)\b.*\b(?:ஆக்கி|aakki|akki|make|create|generate|save|வை|pannu|பண்ணு)\b|\b(?:ஆக்கி|aakki|akki|make|create|generate)\b.*\b(pdf|docx|word|document|xlsx|excel|sheet|pptx|ppt|powerpoint|slides?)\b|\b(pdf|docx|xlsx|pptx|ppt|excel|powerpoint|word)\b", re.I)),
     ("reminder", re.compile(r"\b(remind|reminder|alarm|appointment|calendar)\b|நினைவூட்ட|நினைவு|remind\s*(?:பண்ணு|pannu|panna)|reminder\s*(?:save|வை|pannu)|நாளைக்கு.*remind|(?:tomorrow|naalaikku|nalai|நாளைக்கு|நாளை).*\breminder\b", re.I)),
-    ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|\b(?:save|remember)\s+(?!me\b).{3,}\b|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
+    ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|^\s*remember\s+(?!me\b).{3,}|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
     ("task", re.compile(r"\b(?:add|create|save|set)\s+(?:a\s+)?(?:task|todo|to-do)\b|\b(?:task|todo|to-do)\b.*\b(?:add|save|வை|pannu|பண்ணு)\b|\b(task|todo|to-do|follow up|follow-up)\b|பணி", re.I)),
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
@@ -221,6 +232,15 @@ def _classify_intent_text(
     contextual = classify_contextual_followup(text)
     if contextual is not None:
         return contextual
+    if (
+        _HIGH_CONFIDENCE_CODING_ACTION_RE.search(text)
+        and _TECHNICAL_CODING_MARKER_RE.search(text)
+    ):
+        return IntentDecision(
+            intent="coding",
+            route="coding",
+            reason="coding_build_request",
+        )
     for intent, pattern in _PATTERNS:
         if pattern.search(text):
             if intent == "greeting":

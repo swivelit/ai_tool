@@ -31,6 +31,23 @@ from tests.conftest import auth_headers, create_test_user
 from tests.test_web_chat_api import _fund
 
 
+COLAB_CHATBOT_PROMPT = """Create a simple chatbot that runs in Google Colab.
+
+Give me the code cell by cell in the correct order.
+
+Requirements:
+1. Do not use any external API or API key.
+2. Use a small open-source language model that runs locally in Colab.
+3. One cell must install the required libraries.
+4. One cell must download and load the model.
+5. One cell must create an SQLite database to store user and chatbot messages.
+6. One cell must contain the chatbot response logic.
+7. One cell must create a simple Gradio chat interface.
+8. The chatbot must remember previous messages from the database.
+9. The complete code must run from top to bottom without missing variables or functions.
+10. Keep the code simple and suitable for a beginner."""
+
+
 def _route(intent: str = "general", model: str = "gpt-5.4-mini") -> AIRoute:
     return AIRoute(
         "openai", model, f"openai_{intent}", "test", "en", intent, 320,
@@ -43,6 +60,14 @@ def _history(count: int = 6, width: int = 80) -> list[dict[str, str]]:
         {"user": f"question {index} " + "u" * width, "assistant": f"answer {index} " + "a" * width}
         for index in range(count)
     ]
+
+
+def test_colab_chatbot_build_request_uses_provider_not_unsupported_tool():
+    optimized = optimize_web_turn(COLAB_CHATBOT_PROMPT)
+
+    assert optimized.optimization_route == "provider_standalone"
+    assert optimized.answer_class == "long_form"
+    assert optimized.optimization_route != "unsupported_web_capability"
 
 
 def _seed_thread(user_id: int, turns: list[tuple[str, str]]) -> str:
@@ -688,7 +713,7 @@ def test_confidence_ladder_does_not_escalate_complete_simple_answer(monkeypatch)
     assert response.raw["provider_attempts"] == 1
 
 
-def test_incomplete_long_form_escalates_once_and_stops_at_two(monkeypatch):
+def test_visible_long_form_disables_quality_escalation_for_live_web(monkeypatch):
     monkeypatch.setenv("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", "true")
     calls = []
 
@@ -706,11 +731,13 @@ def test_incomplete_long_form_escalates_once_and_stops_at_two(monkeypatch):
     provider = OpenAIProvider(SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
     ))
+    output = []
     response = provider.stream_complete(
-        request, _attempt_route(), lambda _value: None
+        request, _attempt_route(), output.append
     )
-    assert len(calls) == 2
-    assert response.raw["provider_attempts"] == 2
+    assert len(calls) == 1
+    assert output == ["Still too short for the requested long form."]
+    assert response.raw["provider_attempts"] == 1
     assert response.raw["degradation_reason"] == "implausibly_short_long_form"
 
 

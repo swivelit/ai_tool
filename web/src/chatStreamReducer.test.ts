@@ -23,6 +23,20 @@ describe('chatStreamReducer', () => {
     expect(state.error).toEqual({ code: 'provider_failed', message: 'Try again' })
     expect(state.assistant?.status).toBe('retryable'); expect(state.assistant?.id).toBe(id)
   })
+  it('preserves partial text and makes an interrupted stream retryable', () => {
+    let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'r-partial', threadId:'t1', tier:'standard', tierLabel:'Swico' })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'delta', data:{ text:'Partial answer' } } })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'error', data:{
+      code:'stream_interrupted',
+      message:'The connection ended before Swico finished. Retry.',
+    } } })
+    expect(state.assistant).toMatchObject({
+      content:'Partial answer',
+      status:'retryable',
+    })
+    expect(state.done).toBe(true)
+    expect(state.phase).toBe('error')
+  })
   it('records truncation and enables explicit continuation only from done metadata', () => {
     let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'long', threadId:'t1', tier:'lite', tierLabel:'Swico Lite' })
     state = chatStreamReducer(state, { type:'event', event:{ event:'done', data:{

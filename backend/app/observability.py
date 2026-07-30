@@ -195,6 +195,9 @@ _SAFE_EXTRA_KEYS = {
     "visible_output_characters",
     "provider_usage_received",
     "internal_model",
+    "outcome",
+    "provider_attempts",
+    "visible_character_count",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")

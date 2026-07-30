@@ -49,6 +49,88 @@ it('propagates generation_incomplete from an HTTP 200 SSE stream', async () => {
   expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'generation_incomplete', message } })
 })
 
+describe('streamChat terminal events', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('accepts EOF after a done event', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      'event: delta\ndata: {"text":"Done"}\n\nevent: done\ndata: {}\n\n',
+      { status:200 },
+    ))
+    const seen = vi.fn()
+    const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+
+    await expect(streamChat(
+      user as never,
+      { request_id:'done', message:'hello', input_mode:'text' },
+      seen,
+      new AbortController().signal,
+    )).resolves.toBeUndefined()
+    expect(seen).toHaveBeenLastCalledWith({ event:'done', data:{} })
+  })
+
+  it('dispatches one synthetic retryable error before throwing on premature EOF', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      'event: delta\ndata: {"text":"Partial"}\n\n',
+      { status:200 },
+    ))
+    const seen = vi.fn()
+    const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+    const expected = {
+      event:'error',
+      data:{
+        code:'stream_interrupted',
+        message:'The connection ended before Swico finished. Retry.',
+      },
+    }
+
+    await expect(streamChat(
+      user as never,
+      { request_id:'early-eof', message:'hello', input_mode:'text' },
+      seen,
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code:'stream_interrupted',
+      message:'The connection ended before Swico finished. Retry.',
+    } satisfies Partial<SSEStreamError>)
+    expect(seen).toHaveBeenCalledWith(expected)
+    expect(seen.mock.calls.filter(([event]) => event.event === 'error')).toHaveLength(1)
+  })
+
+  it('does not synthesize a second error after an explicit backend error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      'event: error\ndata: {"code":"generation_failed","message":"Retry."}\n\n',
+      { status:200 },
+    ))
+    const seen = vi.fn()
+    const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+
+    await expect(streamChat(
+      user as never,
+      { request_id:'backend-error', message:'hello', input_mode:'text' },
+      seen,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code:'generation_failed', message:'Retry.' })
+    expect(seen.mock.calls.filter(([event]) => event.event === 'error')).toHaveLength(1)
+  })
+
+  it('keeps an intentional abort distinct from premature EOF', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status:200 }))
+    const abort = new AbortController()
+    const seen = vi.fn()
+    const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+
+    await expect(streamChat(
+      user as never,
+      { request_id:'stopped', message:'hello', input_mode:'text' },
+      seen,
+      abort.signal,
+      () => abort.abort(),
+    )).rejects.toMatchObject({ name:'AbortError' })
+    expect(seen).not.toHaveBeenCalled()
+  })
+})
+
 it('preserves a structured FastAPI error message', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
     detail: { code: 'otp_cooldown', message: 'Please wait 42 seconds before requesting another code.' },
