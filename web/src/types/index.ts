@@ -143,6 +143,8 @@ export type Bootstrap = {
     web_repository_upload?: boolean; web_repository_chat?: boolean;
     web_repository_validation?: boolean;
     web_knowledge_library?: boolean;
+    web_triag_hybrid?: boolean;
+    web_answer_guard?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;

@@ -157,6 +157,8 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
         ({"CORS_ALLOW_ORIGINS": "https://swico-web.onrender.com/"}, "CORS_ALLOW_ORIGINS"),
         ({"CORS_ALLOW_ORIGINS": "*"}, "CORS_ALLOW_ORIGINS"),
         ({"GLOBAL_QA_REAL_EMBEDDINGS_ENABLED": "true", "GLOBAL_QA_EMBEDDING_PROVIDER": "qwen"}, "local embedding"),
+        ({"WEB_ROLLOUT_TRIAG_MODE": "sometimes"}, "WEB_ROLLOUT_TRIAG_MODE"),
+        ({"WEB_ROLLOUT_KNOWLEDGE_PERCENT": "101"}, "WEB_ROLLOUT_KNOWLEDGE_PERCENT"),
     ],
 )
 def test_dangerous_production_combinations_are_rejected(updates: dict[str, str], expected: str) -> None:

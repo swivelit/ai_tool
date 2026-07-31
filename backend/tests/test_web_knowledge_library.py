@@ -24,6 +24,7 @@ def knowledge_enabled(monkeypatch):
     monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setenv("WEB_ROLLOUT_KNOWLEDGE_MODE", "all_eligible")
 
 
 def _upload(owner_user_id: int, upload_id: str, *, text: str = "private source body") -> EphemeralUpload:

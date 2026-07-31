@@ -145,10 +145,30 @@ website settings UI uses temporary upload display metadata already in memory,
 requires “Save to my Knowledge Library”, and writes no repository text or
 knowledge identifiers to browser storage.
 
-## Phase 6 rollout boundary
+## Phase 6A server-authoritative rollout
 
-Phase 6 is readiness, not activation. All Phase 0–5 production flags remain
-false until migration, owner-isolation, privacy, billing, cancellation, cache,
-quality and rollback gates pass in staging. No website request uses
-`AgentRuntime`, no production validator points to staging, and no persistent
-knowledge enters the global answer cache.
+`backend/app/web_ai/rollout.py` defines the immutable rollout policy and one
+immutable request decision for four independently controlled features:
+TRIAG/hybrid chat, the Knowledge Library, repository chat, and Answer Guard
+with verified streaming. Each control has exactly four modes: `disabled`,
+`internal_accounts`, `percentage`, and `all_eligible`.
+
+Internal membership reuses the existing verified
+`SWICO_INTERNAL_TEST_EMAILS` path: the Firebase token email must be verified
+and must exactly match the owned database account before it is compared with
+the configured cohort. Percentage assignment is a stable SHA-256 bucket over
+owner user ID, feature key, and rollout policy version. Raw email never enters
+the rollout policy, decision, logs, or metadata.
+
+Global Phase 0–5 flags remain hard kill switches. The authenticated router
+resolves the policy once, creates request-scoped effective settings, and
+passes that frozen pair through preparation, execution, streaming, cache
+eligibility, and content-free telemetry. A controlled live path does not use
+the global answer cache. Bootstrap and Knowledge Library/repository endpoints
+apply the same resolver. Disabled users keep the existing website fallback.
+
+Phase 6A is controlled readiness, not activation. All production rollout modes
+and Phase 0–5 global flags remain disabled until owner-isolation, privacy,
+billing, cancellation, cache, quality, and rollback gates pass in staging. No
+website request uses `AgentRuntime`, no production validator points to
+staging, and no persistent knowledge enters the global answer cache.

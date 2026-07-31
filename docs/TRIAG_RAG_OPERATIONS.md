@@ -14,6 +14,13 @@ Invalid configuration reports variable names only and never includes values.
 Because TRIAG-RAG is optional, its configuration error is visible in
 debug runtime services but does not redirect traffic to another runtime.
 
+Phase 6A separately validates the rollout policy as the optional
+`web_rollout` runtime service. Allowed modes are `disabled`,
+`internal_accounts`, `percentage`, and `all_eligible`; all default disabled.
+Percentages are bounded to `0..100`, and the policy version is a bounded
+`v<number>` identifier. Production validation rejects malformed values by
+variable name without echoing the value.
+
 ## Shadow invariants
 
 For the same request, compare the existing operational telemetry before and
@@ -135,3 +142,29 @@ the idempotent ingest job is queued.
 
 Rollback is flag-only: disable hierarchy, triplets, then persistent knowledge,
 or set `WEB_TRIAG_ENABLED=false`. Keep additive tables and fix forward.
+
+## Phase 6A rollout operations
+
+For a cohort audit, inspect only the content-free rollout records attached to
+the owner-scoped request metadata. Every record contains exactly feature key,
+cohort, policy version, and enabled/disabled decision. Never export the
+surrounding message metadata or join it to email, message, memory, document, or
+repository content.
+
+The authenticated request resolves one immutable decision. Bootstrap and each
+gated endpoint resolve through the same policy; a chat request carries its
+decision through preparation, execution, streaming, and telemetry even if
+service configuration changes while it is running. Any live controlled
+feature disables global answer-cache lookup/write for that turn. An excluded
+user keeps the existing fallback and cache policy.
+
+Use `internal_accounts` only with verified, owned accounts in
+`SWICO_INTERNAL_TEST_EMAILS`. An unverified or mismatched request email is not
+internal. Percentage cohorts are stable until either the owner ID, feature key,
+or `WEB_ROLLOUT_POLICY_VERSION` changes.
+
+To stop one rollout, set its mode to `disabled` and restart the API. To apply
+the hard kill switch, also turn off its existing global Phase 0–5 flag. The
+Knowledge Library cancellation button calls the existing owner-scoped cancel
+endpoint for pending/indexing documents; the UI displays status only and never
+an internal job ID.

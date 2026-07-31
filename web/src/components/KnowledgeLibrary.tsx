@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth'
 import {
   ApiError,
   approveKnowledgeDocument,
+  cancelKnowledgeJob,
   deleteKnowledgeDocument,
   listKnowledgeDocuments,
   reindexKnowledgeDocument,
@@ -111,6 +112,24 @@ export function KnowledgeLibrary({
     }
   }
 
+  const cancelIndexing = async (document: KnowledgeDocument) => {
+    setBusy(document.id)
+    setNotice('')
+    try {
+      await cancelKnowledgeJob(user, document.id)
+      setDocuments(value => value.map(item => (
+        item.id === document.id
+          ? { ...item, status: 'failed' as const }
+          : item
+      )))
+      setNotice('Indexing cancelled.')
+    } catch (error) {
+      setNotice(safeKnowledgeError(error))
+    } finally {
+      setBusy('')
+    }
+  }
+
   return <section className="knowledge-library" aria-labelledby="knowledge-library-title">
     <h3 id="knowledge-library-title">Knowledge Library</h3>
     <p>Saved documents remain in your Knowledge Library until you remove them.</p>
@@ -158,6 +177,13 @@ export function KnowledgeLibrary({
             <small>{statusLabel[document.status]} · {document.chunk_count.toLocaleString()} sections</small>
           </span>
           <div>
+            {(document.status === 'pending' || document.status === 'indexing') && <button
+              type="button"
+              disabled={busy !== ''}
+              onClick={() => void cancelIndexing(document)}
+            >
+              Cancel indexing
+            </button>}
             <button
               type="button"
               disabled={

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, vi } from 'vitest'
 import {
   approveKnowledgeDocument,
+  cancelKnowledgeJob,
   deleteKnowledgeDocument,
   listKnowledgeDocuments,
   reindexKnowledgeDocument,
@@ -15,6 +16,7 @@ vi.mock('../api/client', async importOriginal => {
   return {
     ...actual,
     approveKnowledgeDocument: vi.fn(),
+    cancelKnowledgeJob: vi.fn(),
     deleteKnowledgeDocument: vi.fn(),
     listKnowledgeDocuments: vi.fn(),
     reindexKnowledgeDocument: vi.fn(),
@@ -47,6 +49,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(listKnowledgeDocuments).mockResolvedValue([])
   vi.mocked(deleteKnowledgeDocument).mockResolvedValue()
+  vi.mocked(cancelKnowledgeJob).mockResolvedValue({
+    status: 'cancelled',
+    updated_at: '2026-07-31T00:00:00Z',
+  })
 })
 
 it('requires explicit approval before saving a temporary upload', async () => {
@@ -112,4 +118,22 @@ it('keeps raw document data out of the UI when a request fails', async () => {
     'The Knowledge Library request could not be completed. Try again.',
   )).toBeInTheDocument()
   expect(screen.queryByText(/private-source-text|SECRET_TOKEN/)).not.toBeInTheDocument()
+})
+
+it('cancels pending indexing without exposing an internal job identifier', async () => {
+  vi.mocked(listKnowledgeDocuments).mockResolvedValue([
+    { ...readyDocument, status: 'indexing' },
+  ])
+  render(<KnowledgeLibrary user={user} uploads={[]} />)
+
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Cancel indexing' }),
+  )
+  await waitFor(() => expect(cancelKnowledgeJob).toHaveBeenCalledWith(
+    user,
+    readyDocument.id,
+  ))
+  expect(await screen.findByText('Failed · 3 sections')).toBeInTheDocument()
+  expect(screen.getByText('Indexing cancelled.')).toBeInTheDocument()
+  expect(screen.queryByText(/job-/i)).not.toBeInTheDocument()
 })

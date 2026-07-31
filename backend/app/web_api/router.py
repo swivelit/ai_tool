@@ -87,6 +87,14 @@ from ..web_ai.code_quality.validation_client import (
     RepositoryValidationClient, ValidationClientSettings,
 )
 from ..web_ai.settings import TriagSettings
+from ..web_ai.rollout import (
+    RolloutConfigurationError,
+    RolloutGlobalFlags,
+    WebRolloutDecision,
+    WebRolloutPolicy,
+    effective_triag_settings,
+    resolve_rollout_decision,
+)
 from ..web_ai.knowledge_jobs import enqueue_knowledge_job, cancel_knowledge_job
 from ..web_ai.retrieval.attachment import safe_locator, upload_content_hash
 from ..web_ai.retrieval.persistent_knowledge import (
@@ -183,6 +191,25 @@ def _backend_release() -> str:
             return value[:12]
     release = str(APP_RELEASE or "").strip()
     return release[:12] if release and release != "dev" else "dev"
+
+
+def _web_rollout(
+    auth: AuthUser, user, *, settings: TriagSettings | None = None
+) -> tuple[WebRolloutDecision, TriagSettings]:
+    global_settings = settings or TriagSettings.from_environ()
+    try:
+        policy = WebRolloutPolicy.from_environ()
+    except RolloutConfigurationError:
+        # Production startup validation reports variable names. Requests fail
+        # closed without logging values if an optional rollout is malformed.
+        policy = WebRolloutPolicy.from_environ({})
+    decision = resolve_rollout_decision(
+        policy,
+        owner_user_id=int(user.id),
+        internal_account=is_internal_test_user(auth, user),
+        global_flags=RolloutGlobalFlags.from_settings(global_settings),
+    )
+    return decision, effective_triag_settings(global_settings, decision)
 
 
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -620,7 +647,7 @@ def bootstrap(
     billing_exempt = is_internal_test_user(auth, user)
     swico_tier = selected_swico_tier(session, int(user.id))
     uploads = _uploads_public_config()
-    triag_settings = TriagSettings.from_environ()
+    rollout, triag_settings = _web_rollout(auth, user)
     validation_capability = "static_only"
     if triag_settings.code_validation_runtime_enabled:
         validation_capability = RepositoryValidationClient(
@@ -661,8 +688,10 @@ def bootstrap(
                 triag_settings.code_validation_runtime_enabled
             ),
             "web_knowledge_library": (
-                triag_settings.persistent_knowledge_runtime_enabled
+                rollout.knowledge_library.enabled
             ),
+            "web_triag_hybrid": rollout.triag_hybrid.enabled,
+            "web_answer_guard": rollout.answer_guard.enabled,
         },
         "backend_release": _backend_release(),
         "voice_protocol_version": VOICE_PROTOCOL_VERSION,
@@ -2556,7 +2585,8 @@ def approve_knowledge_document(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         store = get_upload_store()
@@ -2696,7 +2726,8 @@ def list_knowledge_documents(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     documents = list_owned_knowledge_documents(
         session, owner_user_id=int(user.id)
@@ -2722,7 +2753,8 @@ def get_knowledge_document_status(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         document = owned_knowledge_document(
@@ -2753,7 +2785,8 @@ def delete_knowledge_document(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         delete_owned_knowledge_document(
@@ -2779,7 +2812,8 @@ def reindex_knowledge_document(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         job = reindex_owned_knowledge_document(
@@ -2823,7 +2857,8 @@ def get_knowledge_job_status(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         document = owned_knowledge_document(
@@ -2854,7 +2889,8 @@ def cancel_knowledge_document_job(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.knowledge_library.enabled:
         return _knowledge_library_unavailable()
     try:
         document = owned_knowledge_document(
@@ -2961,7 +2997,7 @@ async def upload_repository_snapshot(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    settings = TriagSettings.from_environ()
+    _rollout, settings = _web_rollout(auth, user)
     if not settings.repository_upload_enabled:
         await file.close()
         return _temporary_error(
@@ -3033,6 +3069,13 @@ def delete_repository_snapshot(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    rollout, _settings = _web_rollout(auth, user)
+    if not rollout.repository_chat.enabled:
+        return _temporary_error(
+            503,
+            "repository_upload_disabled",
+            "Temporary repository uploads are unavailable.",
+        )
     row = session.exec(select(WebCodeRepository).where(
         WebCodeRepository.owner_user_id == int(user.id),
         WebCodeRepository.repository_id == str(repository_id),
@@ -3537,6 +3580,7 @@ async def chat_stream(
         user_id = int(user.id)
         resolved_reply_language = _resolved_reply_language(user)
         billing_exempt = is_internal_test_user(auth, user)
+        rollout_decision, request_triag_settings = _web_rollout(auth, user)
         _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
         rate_session.commit()
     try:
@@ -3558,6 +3602,8 @@ async def chat_stream(
                 if payload.regenerate_message_id else None
             ),
             billing_credit_bucket="chat",
+            rollout_decision=rollout_decision,
+            triag_settings=request_triag_settings,
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {

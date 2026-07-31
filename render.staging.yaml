@@ -31,6 +31,24 @@ projects:
                 value: "true"
               - key: WEB_TRIAG_POLICY_VERSION
                 value: v1
+              - key: WEB_ROLLOUT_POLICY_VERSION
+                value: v1
+              - key: WEB_ROLLOUT_TRIAG_MODE
+                value: disabled
+              - key: WEB_ROLLOUT_TRIAG_PERCENT
+                value: "0"
+              - key: WEB_ROLLOUT_KNOWLEDGE_MODE
+                value: disabled
+              - key: WEB_ROLLOUT_KNOWLEDGE_PERCENT
+                value: "0"
+              - key: WEB_ROLLOUT_REPOSITORY_MODE
+                value: disabled
+              - key: WEB_ROLLOUT_REPOSITORY_PERCENT
+                value: "0"
+              - key: WEB_ROLLOUT_ANSWER_GUARD_MODE
+                value: disabled
+              - key: WEB_ROLLOUT_ANSWER_GUARD_PERCENT
+                value: "0"
               - key: WEB_RAG_HYBRID_ENABLED
                 value: "false"
               - key: WEB_RAG_DENSE_ENABLED

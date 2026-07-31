@@ -60,6 +60,7 @@ from ..web_ai.retrieval.persistent_knowledge import (
     owner_active_knowledge_tokens,
 )
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
+from ..web_ai.rollout import WebRolloutDecision
 from ..web_ai.streaming_policy import select_streaming_policy
 from ..web_ai.tier_policy import tier_policy_for
 from ..web_ai.token_allocator import DynamicTokenAllocator
@@ -308,6 +309,8 @@ class PreparedWebTurn:
     repository_snapshot: EphemeralRepositorySnapshot | None = None
     repository_contract: RepositoryContract | None = None
     repository_validation: RepositoryValidationResult | None = None
+    rollout_decision: WebRolloutDecision | None = None
+    triag_settings: TriagSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -321,6 +324,26 @@ class CompletedWebTurn:
 def deterministic_title(message: str) -> str:
     one_line = " ".join(str(message).split()).strip()
     return (one_line[:57].rstrip() + "…") if len(one_line) > 58 else (one_line or "New chat")
+
+
+def _rollout_cache_policy(
+    optimization: WebTurnOptimization,
+    rollout_decision: WebRolloutDecision | None,
+) -> WebTurnOptimization:
+    if rollout_decision is None or not rollout_decision.any_enabled:
+        return optimization
+    return replace(
+        optimization,
+        cache_eligible=False,
+        cache_scope="disabled",
+        cache_scope_reason="rollout_controlled_path",
+        metrics={
+            **optimization.metrics,
+            "cache_eligible": False,
+            "cache_scope": "disabled",
+            "cache_scope_reason": "rollout_controlled_path",
+        },
+    )
 
 
 def _owned_thread(session: Session, thread_id: str, user_id: int) -> WebChatThread:
@@ -749,7 +772,15 @@ def prepare_web_turn(
     regenerate_message_id: str | None = None,
     repository_id: str | None = None,
     billing_credit_bucket: Literal["chat", "voice"] = "chat",
+    rollout_decision: WebRolloutDecision | None = None,
+    triag_settings: TriagSettings | None = None,
 ) -> PreparedWebTurn:
+    request_triag_settings = triag_settings
+    if request_triag_settings is None:
+        try:
+            request_triag_settings = TriagSettings.from_environ()
+        except TriagConfigurationError:
+            request_triag_settings = TriagSettings()
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
@@ -791,6 +822,8 @@ def prepare_web_turn(
                 billing_exempt=billing_exempt,
                 existing_response_id=existing_assistant.id,
                 billing_credit_bucket=stored_bucket,
+                rollout_decision=rollout_decision,
+                triag_settings=request_triag_settings,
             )
 
         existing_user_message = session.exec(select(WebChatMessage).where(
@@ -1051,7 +1084,7 @@ def prepare_web_turn(
         repository_index: RepositoryIndex | None = None
         repository_pack: EvidencePack | None = None
         repository_contract: RepositoryContract | None = None
-        repository_settings = TriagSettings.from_environ()
+        repository_settings = request_triag_settings
         if repository_id:
             if not repository_settings.repository_chat_runtime_enabled:
                 raise AttachmentRequestError(
@@ -1121,6 +1154,8 @@ def prepare_web_turn(
                 message_metadata["repository"] = (
                     repository_snapshot.safe_metadata()
                 )
+            if rollout_decision is not None:
+                message_metadata.update(rollout_decision.safe_metadata)
             if continuation_chain is not None:
                 message_metadata.update({
                     "is_continuation_control": True,
@@ -1240,18 +1275,17 @@ def prepare_web_turn(
         ):
             needs_memory = True
         persistent_knowledge_tokens = 0
-        try:
-            knowledge_settings = TriagSettings.from_environ()
-            if knowledge_settings.persistent_knowledge_runtime_enabled:
-                persistent_knowledge_tokens = owner_active_knowledge_tokens(
-                    session, user_id
-                )
-        except Exception:
-            persistent_knowledge_tokens = 0
+        if request_triag_settings.persistent_knowledge_runtime_enabled:
+            persistent_knowledge_tokens = owner_active_knowledge_tokens(
+                session, user_id
+            )
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads) or repository_snapshot is not None,
             previous_topic=previous_safe_metadata.get("topic"),
+        )
+        preliminary = _rollout_cache_policy(
+            preliminary, rollout_decision
         )
         if persistent_knowledge_tokens > 0:
             preliminary = replace(
@@ -1322,6 +1356,8 @@ def prepare_web_turn(
             "cache_scope": preliminary.cache_scope,
             "cache_scope_reason": preliminary.cache_scope_reason,
         }
+        if rollout_decision is not None:
+            base_metadata.update(rollout_decision.safe_metadata)
         if continuation_packet is not None and continuation_chain is not None:
             base_metadata.update({
                 "is_continuation_control": True,
@@ -1336,69 +1372,65 @@ def prepare_web_turn(
 
         execution_plan: ExecutionPlan | None = None
         triag_shadow_metadata: dict[str, object] | None = None
-        triag_settings: TriagSettings | None = None
-        try:
-            triag_settings = TriagSettings.from_environ()
-        except TriagConfigurationError:
-            # Startup validation reports variable names. A malformed optional
-            # shadow configuration must never alter the live turn.
-            logger.warning(
-                "web_triag_shadow_configuration_invalid",
-                extra={"request_id": request_id},
-            )
-        else:
-            if triag_settings.enabled:
-                attachment_metadata = attachment_metadata_from_uploads(uploads)
-                history_text = "\n".join(
-                    value
-                    for turn in all_context
-                    for value in (
-                        str(turn.get("user") or ""),
-                        str(turn.get("assistant") or ""),
-                    )
-                    if value
-                )[:96_000]
-                document_text = "\n".join(
-                    str(chunk.text or "")
-                    for upload in uploads
-                    for chunk in upload.chunks
-                    if str(chunk.text or "").strip()
-                )[:96_000]
-                execution_plan = build_execution_plan(
-                    TriageInput(
-                        message=model_message,
-                        selected_tier=swico_tier,
-                        reply_language=reply_language,
-                        continuity=continuity,
-                        attachment_metadata=attachment_metadata,
-                        needs_cross_thread_memory=needs_memory,
-                        profile_available=False,
-                        history_available_tokens=(
-                            estimate_tokens(history_text) if history_text else 0
-                        ),
-                        document_available_tokens=(
-                            estimate_tokens(document_text) if document_text else 0
-                        ),
-                        previous_topic=previous_safe_metadata.get("topic"),
-                        repository_available=repository_snapshot is not None,
-                        persistent_knowledge_available_tokens=(
-                            persistent_knowledge_tokens
-                        ),
-                    ),
-                    settings=triag_settings,
+        active_triag_settings = request_triag_settings
+        if active_triag_settings.enabled:
+            attachment_metadata = attachment_metadata_from_uploads(uploads)
+            history_text = "\n".join(
+                value
+                for turn in all_context
+                for value in (
+                    str(turn.get("user") or ""),
+                    str(turn.get("assistant") or ""),
                 )
-                if triag_settings.shadow_planning_enabled:
-                    triag_shadow_metadata = shadow_metadata(
+                if value
+            )[:96_000]
+            document_text = "\n".join(
+                str(chunk.text or "")
+                for upload in uploads
+                for chunk in upload.chunks
+                if str(chunk.text or "").strip()
+            )[:96_000]
+            execution_plan = build_execution_plan(
+                TriageInput(
+                    message=model_message,
+                    selected_tier=swico_tier,
+                    reply_language=reply_language,
+                    continuity=continuity,
+                    attachment_metadata=attachment_metadata,
+                    needs_cross_thread_memory=needs_memory,
+                    profile_available=False,
+                    history_available_tokens=(
+                        estimate_tokens(history_text) if history_text else 0
+                    ),
+                    document_available_tokens=(
+                        estimate_tokens(document_text) if document_text else 0
+                    ),
+                    previous_topic=previous_safe_metadata.get("topic"),
+                    repository_available=repository_snapshot is not None,
+                    persistent_knowledge_available_tokens=(
+                        persistent_knowledge_tokens
+                    ),
+                ),
+                settings=active_triag_settings,
+            )
+            if active_triag_settings.shadow_planning_enabled:
+                triag_shadow_metadata = {
+                    **shadow_metadata(
                         execution_plan, attachment_metadata
-                    )
-                    persist_shadow_plan(
-                        session,
-                        user_id=user_id,
-                        thread_id=thread.id,
-                        request_id=request_id,
-                        plan=execution_plan,
-                        metadata=triag_shadow_metadata,
-                    )
+                    ),
+                    **(
+                        rollout_decision.safe_metadata
+                        if rollout_decision is not None else {}
+                    ),
+                }
+                persist_shadow_plan(
+                    session,
+                    user_id=user_id,
+                    thread_id=thread.id,
+                    request_id=request_id,
+                    plan=execution_plan,
+                    metadata=triag_shadow_metadata,
+                )
 
         if explicit_memory_write_requested(model_message):
             memory_updated = False
@@ -1521,6 +1553,8 @@ def prepare_web_turn(
                 precomputed_response=response,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
+                rollout_decision=rollout_decision,
+                triag_settings=request_triag_settings,
                 replaces_assistant_message_id=(
                     regenerate_target.id if regenerate_target is not None else None
                 ),
@@ -1587,6 +1621,8 @@ def prepare_web_turn(
                     precomputed_response=deterministic,
                     continuity_decision=continuity,
                     billing_credit_bucket=authoritative_bucket,
+                    rollout_decision=rollout_decision,
+                    triag_settings=request_triag_settings,
                     replaces_assistant_message_id=(
                         regenerate_target.id if regenerate_target is not None else None
                     ),
@@ -1654,6 +1690,8 @@ def prepare_web_turn(
                 billing_exempt=billing_exempt, optimization=preliminary,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
+                rollout_decision=rollout_decision,
+                triag_settings=request_triag_settings,
                 replaces_assistant_message_id=(
                     regenerate_target.id if regenerate_target is not None else None
                 ),
@@ -1711,6 +1749,8 @@ def prepare_web_turn(
                     precomputed_response=cached,
                     continuity_decision=continuity,
                     billing_credit_bucket=authoritative_bucket,
+                    rollout_decision=rollout_decision,
+                    triag_settings=request_triag_settings,
                     replaces_assistant_message_id=(
                         regenerate_target.id if regenerate_target is not None else None
                     ),
@@ -1863,6 +1903,18 @@ def prepare_web_turn(
                 },
             )
 
+        optimization = _rollout_cache_policy(
+            optimization, rollout_decision
+        )
+        if coordinator_decision is not None and not optimization.cache_eligible:
+            coordinator_decision = replace(
+                coordinator_decision,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason=optimization.cache_scope_reason,
+                optimization=optimization,
+            )
+
         metadata = {
             **base_metadata,
             "profile_context": profile_context,
@@ -1902,6 +1954,8 @@ def prepare_web_turn(
                 coordinator_decision=coordinator_decision,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
+                rollout_decision=rollout_decision,
+                triag_settings=request_triag_settings,
                 replaces_assistant_message_id=(
                     regenerate_target.id if regenerate_target is not None else None
                 ),
@@ -1944,6 +1998,17 @@ def prepare_web_turn(
             optimization = coordinator_decision.optimization
         else:
             optimization = with_prompt_estimate(optimization, serialized_prompt)
+        optimization = _rollout_cache_policy(
+            optimization, rollout_decision
+        )
+        if coordinator_decision is not None and not optimization.cache_eligible:
+            coordinator_decision = replace(
+                coordinator_decision,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason=optimization.cache_scope_reason,
+                optimization=optimization,
+            )
         input_tokens = optimization.estimated_prompt_tokens
 
         # Reorder healthy candidates within the effective tier. The optional
@@ -2069,8 +2134,7 @@ def prepare_web_turn(
         embedding_reserved_micros = 0
         embedding_accounted = False
         if (
-            triag_settings is not None
-            and triag_settings.dense_runtime_enabled
+            active_triag_settings.dense_runtime_enabled
             and execution_plan is not None
             and "embedding" in execution_plan.planned_usage_stages
             and uploads
@@ -2084,7 +2148,7 @@ def prepare_web_turn(
             )
             embedding_reserve = reserve_price(
                 "openai",
-                triag_settings.embedding_model,
+                active_triag_settings.embedding_model,
                 embedding_tokens,
                 0,
             )
@@ -2110,7 +2174,7 @@ def prepare_web_turn(
                         user_id=user_id,
                         thread_id=thread.id,
                         provider="openai",
-                        model=triag_settings.embedding_model,
+                        model=active_triag_settings.embedding_model,
                         pricing_snapshot_json=snapshot_json(
                             embedding_reserve.snapshot
                         ),
@@ -2125,7 +2189,7 @@ def prepare_web_turn(
                         user_id=user_id,
                         thread_id=thread.id,
                         provider="openai",
-                        model=triag_settings.embedding_model,
+                        model=active_triag_settings.embedding_model,
                         reserved_micros=embedding_reserve.micros,
                         pricing_snapshot_json=snapshot_json(
                             embedding_reserve.snapshot
@@ -2166,6 +2230,8 @@ def prepare_web_turn(
             coordinator_decision=coordinator_decision,
             continuity_decision=continuity,
             billing_credit_bucket=authoritative_bucket,
+            rollout_decision=rollout_decision,
+            triag_settings=request_triag_settings,
             replaces_assistant_message_id=(
                 regenerate_target.id if regenerate_target is not None else None
             ),
@@ -2432,10 +2498,12 @@ def _execute_phase2_retrieval(
     *,
     providers: dict[str, Any],
 ) -> None:
-    try:
-        settings = TriagSettings.from_environ()
-    except TriagConfigurationError:
-        return
+    settings = prepared.triag_settings
+    if settings is None:
+        try:
+            settings = TriagSettings.from_environ()
+        except TriagConfigurationError:
+            return
     if (
         not settings.hybrid_runtime_enabled
         or prepared.execution_plan is None
@@ -2900,10 +2968,12 @@ def execute_web_turn(
         )
 
     provider_map = providers or {}
-    try:
-        phase3_settings = TriagSettings.from_environ()
-    except TriagConfigurationError:
-        phase3_settings = TriagSettings()
+    phase3_settings = prepared.triag_settings
+    if phase3_settings is None:
+        try:
+            phase3_settings = TriagSettings.from_environ()
+        except TriagConfigurationError:
+            phase3_settings = TriagSettings()
     guard_enabled = phase3_settings.answer_guard_runtime_enabled
     if on_status and guard_enabled:
         on_status("understanding_request")

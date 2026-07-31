@@ -270,7 +270,9 @@ def test_dedicated_repository_api_is_owner_scoped_and_persists_no_source(
         "WEB_REPOSITORY_UPLOAD_ENABLED": "true",
         "WEB_RAG_REPOSITORY_INDEX_ENABLED": "true",
         "WEB_ANSWER_GUARD_ENABLED": "true",
-        "WEB_VERIFIED_STREAMING_ENABLED": "true",
+            "WEB_VERIFIED_STREAMING_ENABLED": "true",
+            "WEB_ROLLOUT_REPOSITORY_MODE": "all_eligible",
+            "WEB_ROLLOUT_ANSWER_GUARD_MODE": "all_eligible",
     }.items():
         monkeypatch.setenv(name, value)
     owner = create_test_user("repo-owner", "repo-owner@example.com")
@@ -414,7 +416,9 @@ def test_authenticated_bootstrap_exposes_only_safe_repository_capabilities(
         "WEB_VERIFIED_STREAMING_ENABLED": "true",
         "WEB_PRO_CODE_VALIDATION_ENABLED": "false",
         "WEB_REPOSITORY_TTL_SECONDS": "3600",
-        "WEB_REPOSITORY_MAX_ARCHIVE_BYTES": "26214400",
+            "WEB_REPOSITORY_MAX_ARCHIVE_BYTES": "26214400",
+            "WEB_ROLLOUT_REPOSITORY_MODE": "all_eligible",
+            "WEB_ROLLOUT_ANSWER_GUARD_MODE": "all_eligible",
     }.items():
         monkeypatch.setenv(name, value)
     create_test_user("repo-bootstrap", "repo-bootstrap@example.com")

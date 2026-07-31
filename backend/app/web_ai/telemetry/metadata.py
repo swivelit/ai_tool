@@ -79,6 +79,11 @@ _ALLOWED_KEYS = frozenset(
         "micro_inr_cost",
         "input_token_count",
         "output_token_count",
+        "rollout_decisions",
+        "rollout_feature_key",
+        "rollout_cohort",
+        "rollout_policy_version",
+        "rollout_enabled",
     }
 )
 _ENUM_VALUES: dict[str, frozenset[str]] = {
@@ -150,6 +155,17 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
     ),
     "check_status": frozenset(
         {"passed", "failed", "warning", "skipped", "error"}
+    ),
+    "rollout_feature_key": frozenset(
+        {
+            "triag_hybrid",
+            "knowledge_library",
+            "repository_chat",
+            "answer_guard",
+        }
+    ),
+    "rollout_cohort": frozenset(
+        {"disabled", "internal_accounts", "percentage", "all_eligible"}
     ),
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
@@ -234,6 +250,11 @@ def _validate_semantic_value(key: str, value: object) -> None:
             r"v[1-9][0-9]{0,3}", value
         ):
             raise UnsafeMetadataError("policy_version is invalid")
+    if key == "rollout_policy_version":
+        if not isinstance(value, str) or not re.fullmatch(
+            r"v[1-9][0-9]{0,3}", value
+        ):
+            raise UnsafeMetadataError("rollout_policy_version is invalid")
     allowed = _ENUM_VALUES.get(key)
     if allowed is not None and value not in allowed:
         raise UnsafeMetadataError(f"{key} contains a non-contract value")

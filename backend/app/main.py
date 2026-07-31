@@ -137,6 +137,10 @@ from .audio_transcription import transcribe_audio_file
 from .ai.types import AIProviderResponse, AIRequest
 from .ai.usage import record_ai_usage_event
 from .web_ai.settings import TriagConfigurationError, TriagSettings
+from .web_ai.rollout import (
+    RolloutConfigurationError,
+    WebRolloutPolicy,
+)
 
 
 bootstrap_observability()
@@ -1041,6 +1045,23 @@ def startup_runtime_services() -> None:
             required=False,
             detail=str(triag_status["status"]),
             metadata=triag_status,
+        )
+
+    try:
+        WebRolloutPolicy.from_environ()
+    except RolloutConfigurationError as exc:
+        _record_runtime_service(
+            "web_rollout",
+            ok=False,
+            required=False,
+            detail="; ".join(exc.errors),
+        )
+    else:
+        _record_runtime_service(
+            "web_rollout",
+            ok=True,
+            required=False,
+            detail="validated",
         )
 
     if not _is_openai_configured():

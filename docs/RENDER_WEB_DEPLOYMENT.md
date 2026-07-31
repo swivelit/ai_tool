@@ -4,9 +4,9 @@ Do not create a Blueprint for the existing production resources. They were creat
 
 ## New isolated staging project — beginner setup
 
-`render.staging.yaml` is only for four new resources:
-`swico-api-staging`, `swico-web-staging`, `swico-postgres-staging`, and
-`swico-upload-cache-staging`. It puts
+`render.staging.yaml` is only for five new resources:
+`swico-api-staging`, `swico-web-staging`, `swico-postgres-staging`,
+`swico-upload-cache-staging`, and `swico-code-validator-staging`. It puts
 the API and database in the same region, wires `DATABASE_URL` only through the
 staging `fromDatabase` reference, and defines no environment group. Never
 attach a production environment group or copy a production credential.
@@ -16,7 +16,7 @@ attach a production environment group or copy a production credential.
    it.
 2. Open **Blueprints → New Blueprint Instance**, connect this repository and
    branch, select **Use a custom Blueprint path**, and enter
-   `render.staging.yaml`. Review that the plan contains only the four staging
+   `render.staging.yaml`. Review that the plan contains only the five staging
    resource names before applying it.
 3. In the initial Blueprint form, provide every `sync:false` value. On the API,
    set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; provide a
@@ -89,6 +89,9 @@ API service. Do not add them to a shared environment group, the static site,
 the Valkey service, or billing cron jobs. Phase 4 adds only the staging private
 validator declared in `render.staging.yaml`; do not create a production
 validator.
+Phase 6A adds no Render resource and no `VITE_*` value. Add its nine
+backend-only rollout variables directly to the API service. Keep every mode
+`disabled` and every percentage `0` until a separately approved staged gate.
 The single Alembic head `f2a7c9e4b1d6` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
@@ -100,6 +103,15 @@ WEB_TURN_OPTIMIZER_ENABLED=true
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_ROLLOUT_POLICY_VERSION=v1
+WEB_ROLLOUT_TRIAG_MODE=disabled
+WEB_ROLLOUT_TRIAG_PERCENT=0
+WEB_ROLLOUT_KNOWLEDGE_MODE=disabled
+WEB_ROLLOUT_KNOWLEDGE_PERCENT=0
+WEB_ROLLOUT_REPOSITORY_MODE=disabled
+WEB_ROLLOUT_REPOSITORY_PERCENT=0
+WEB_ROLLOUT_ANSWER_GUARD_MODE=disabled
+WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false

@@ -8,6 +8,15 @@ Configure these only on the backend API service:
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_ROLLOUT_POLICY_VERSION=v1
+WEB_ROLLOUT_TRIAG_MODE=disabled
+WEB_ROLLOUT_TRIAG_PERCENT=0
+WEB_ROLLOUT_KNOWLEDGE_MODE=disabled
+WEB_ROLLOUT_KNOWLEDGE_PERCENT=0
+WEB_ROLLOUT_REPOSITORY_MODE=disabled
+WEB_ROLLOUT_REPOSITORY_PERCENT=0
+WEB_ROLLOUT_ANSWER_GUARD_MODE=disabled
+WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
@@ -24,6 +33,12 @@ WEB_ANSWER_GUARD_REPAIR_ENABLED=false
 Do not add them to the static site, any `VITE_*` configuration, PostgreSQL,
 Valkey, a shared environment group, or billing jobs. Disabled is a healthy
 optional state.
+
+The only allowed rollout modes are `disabled`, `internal_accounts`,
+`percentage`, and `all_eligible`; percentages are integers from `0` through
+`100`. Increment `WEB_ROLLOUT_POLICY_VERSION` only for an intentional cohort
+reshuffle. The stable percentage input is owner user ID, feature key, and that
+version. A rollout mode never overrides a false global feature flag.
 
 ## Phase 2 deployment
 
@@ -105,3 +120,22 @@ Production retains all flags as `false` until approval. Production
 `WEB_CODE_VALIDATOR_URL` must be blank unless a separately isolated production
 validator is deliberately provisioned; it must never reference the staging
 validator.
+
+## Phase 6A cohort gates
+
+Deploy Phase 6A with all four rollout modes set to `disabled`. For the first
+approved staging exercise:
+
+1. Enable only the required Phase 0–5 global kill switches.
+2. Set the corresponding rollout to `internal_accounts` and configure only
+   verified accounts through the existing `SWICO_INTERNAL_TEST_EMAILS`.
+3. Verify bootstrap, endpoint authorization, the frozen chat decision,
+   content-free telemetry, cache suppression, cancellation, billing, and
+   rollback for that cohort.
+4. If percentage rollout is approved, set one bounded percentage without
+   changing the policy version during the observation period.
+5. Advance separately to `all_eligible` only after feature-specific gates pass.
+
+Roll back immediately by setting the affected rollout mode to `disabled`;
+the global feature flag is the second, harder kill switch. No database
+downgrade, static-site variable, new service, or route change is needed.
