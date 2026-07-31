@@ -8,6 +8,7 @@ Configure these only on the backend API service:
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_TRIAG_RELEASE_STATE=controlled
 WEB_ROLLOUT_POLICY_VERSION=v1
 WEB_ROLLOUT_TRIAG_MODE=disabled
 WEB_ROLLOUT_TRIAG_PERCENT=0
@@ -198,13 +199,92 @@ the authenticated report endpoint. A Render Shell operator can run:
 
 ```text
 cd backend
-.venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
+python scripts/triag_rollout_report.py --window-hours 24 --pretty
 ```
 
-Review every feature/cohort/execution/tier group separately. The bounded
-execution value is only `fallback`, `shadow`, or `live`; it contains no
+Review every feature/cohort/execution/release-state/tier group separately. The
+bounded execution value is only `fallback`, `shadow`, or `live`, and release
+state is only `controlled` or `general_availability`; neither contains
 identity, content, provider/model value, or secret. A report is evidence for a
 human rollout decision, never an activation mechanism. `pass` does not change
 environment variables; `warning`, `fail` and `insufficient_sample` block
 automatic interpretation. Keep production report access disabled until the
 admin authorization and operational access review pass.
+
+## Direct production general availability
+
+This is a direct all-eligible release, not another percentage stage. The new
+release switch defaults to `controlled`; controlled live cohorts retain the
+Phase 6 blanket global-cache suppression. Set
+`WEB_TRIAG_RELEASE_STATE=general_availability` only in the same reviewed
+production change that makes every enabled TRIAG feature `all_eligible` and
+keeps every percentage at `0`:
+
+```dotenv
+WEB_TRIAG_ENABLED=true
+WEB_TRIAG_SHADOW_MODE=false
+WEB_TRIAG_RELEASE_STATE=general_availability
+WEB_RAG_HYBRID_ENABLED=true
+WEB_ROLLOUT_TRIAG_MODE=all_eligible
+WEB_ROLLOUT_TRIAG_PERCENT=0
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=true
+WEB_ROLLOUT_KNOWLEDGE_MODE=all_eligible
+WEB_ROLLOUT_KNOWLEDGE_PERCENT=0
+WEB_REPOSITORY_UPLOAD_ENABLED=true
+WEB_RAG_REPOSITORY_INDEX_ENABLED=true
+WEB_ROLLOUT_REPOSITORY_MODE=all_eligible
+WEB_ROLLOUT_REPOSITORY_PERCENT=0
+WEB_ANSWER_GUARD_ENABLED=true
+WEB_VERIFIED_STREAMING_ENABLED=true
+WEB_ROLLOUT_ANSWER_GUARD_MODE=all_eligible
+WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
+WEB_TRIAG_ROLLOUT_REPORT_ENABLED=true
+WEB_KNOWLEDGE_WORKER_ENABLED=true
+```
+
+Dense retrieval, evaluator, hierarchy, triplet, model-verifier, repair and
+code-validation flags may be true only if their existing acceptance gates have
+passed. A globally disabled optional feature must keep its rollout mode
+`disabled`; the release check rejects internal/percentage modes and non-zero
+percentages.
+
+Before the API change, create the production private validator and background
+worker in the API/database region. Use these exact commands:
+
+```text
+# Private service
+uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10001
+
+# Background worker
+cd backend && python -m app.knowledge_worker
+```
+
+The validator's only secret is its generated `CODE_VALIDATOR_AUTH_TOKEN`; set
+`CODE_VALIDATOR_ISOLATION_PROOF=static-only`,
+`CODE_VALIDATOR_NETWORK_ISOLATED=false`, timeout `90`, and maximum output
+`65536`. Link the same token to the API and use the private URL on port `10001`.
+This configuration truthfully reports `static_only`, never executable checks.
+The worker's only secrets are the private `DATABASE_URL` and provider key; it
+also needs the bounded worker, embedding, price, FX, budget, markup and reserve
+settings already shown in `render.staging.yaml`. It must not receive Firebase,
+Razorpay, SMTP, download-token, validator-token or Valkey secrets.
+
+Deployment order is: create both services disabled; prove validator
+reachability/capability; migrate to the single head; enable the worker and API
+job-claim separation together; apply the all-eligible API values; run the
+content-free release check; then verify health, reporting, billing,
+cancellation, cache promotion and SSE. The Shell commands are:
+
+```text
+cd backend
+python scripts/triag_release_check.py --pretty
+python scripts/triag_rollout_report.py --window-hours 24 --pretty
+```
+
+Any non-zero release-check exit blocks release. Roll back without a database
+downgrade by setting `WEB_TRIAG_RELEASE_STATE=controlled`, all four rollout
+modes to `disabled`, `WEB_TRIAG_ENABLED=false`, and
+`WEB_KNOWLEDGE_WORKER_ENABLED=false`; then disable knowledge, repository,
+Answer Guard, dense/hierarchy/triplet and code-validation flags. Keep the
+validator private and stop the worker after the API no longer claims or creates
+knowledge work.

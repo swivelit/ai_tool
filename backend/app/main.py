@@ -139,6 +139,8 @@ from .ai.usage import record_ai_usage_event
 from .web_ai.settings import TriagConfigurationError, TriagSettings
 from .web_ai.rollout import (
     RolloutConfigurationError,
+    TriagReleaseConfigurationError,
+    TriagReleaseState,
     WebRolloutPolicy,
 )
 from .web_ai.rollout_metrics import (
@@ -1078,6 +1080,23 @@ def startup_runtime_services() -> None:
             ok=True,
             required=False,
             detail="validated",
+        )
+
+    try:
+        triag_release_state = TriagReleaseState.from_environ()
+    except TriagReleaseConfigurationError as exc:
+        _record_runtime_service(
+            "web_triag_release",
+            ok=False,
+            required=False,
+            detail=str(exc),
+        )
+    else:
+        _record_runtime_service(
+            "web_triag_release",
+            ok=True,
+            required=False,
+            detail=triag_release_state.value,
         )
 
     try:

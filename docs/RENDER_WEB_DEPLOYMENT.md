@@ -94,9 +94,9 @@ token breakdown telemetry as shown below.
 The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
 `swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
-the Valkey service, or billing cron jobs. Phase 4 adds only the staging private
-validator declared in `render.staging.yaml`; do not create a production
-validator.
+the Valkey service, or billing cron jobs. Phase 4 initially adds only the
+staging private validator declared in `render.staging.yaml`; the direct-GA
+procedure below is the authorization path for a production private validator.
 Phase 6A adds no Render resource and no `VITE_*` value. Add its nine
 backend-only rollout variables directly to the API service. Keep every mode
 `disabled` and every percentage `0` until a separately approved staged gate.
@@ -130,10 +130,126 @@ Rollback the cohort first with `WEB_ROLLOUT_TRIAG_MODE=disabled`; use
 `WEB_TRIAG_ENABLED=false` as the hard kill. No Render service, migration,
 static-site variable, provider call, frontend feature or route change belongs
 to this sequence.
-The dedicated knowledge-indexing patch adds only the private staging worker
-declared in `render.staging.yaml`. It does not add a production worker or a
-public variable. Keep its API and worker flags false until the staging billing,
-claim-isolation, cancellation, and restart gates pass.
+
+## Direct production all-eligible general availability
+
+This release goes directly to all eligible production accounts; do not create
+another percentage stage. First create two same-region private resources in
+the production Render project, without attaching a shared environment group.
+
+Create a **Private Service** for the validator:
+
+```text
+Build Command: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+Start Command: uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10001
+```
+
+Give it only a generated `CODE_VALIDATOR_AUTH_TOKEN` plus:
+
+```dotenv
+CODE_VALIDATOR_ISOLATION_PROOF=static-only
+CODE_VALIDATOR_NETWORK_ISOLATED=false
+CODE_VALIDATOR_TIMEOUT_SECONDS=90
+CODE_VALIDATOR_MAX_OUTPUT_BYTES=65536
+```
+
+On the API, link that generated token as
+`WEB_CODE_VALIDATOR_AUTH_TOKEN`, set
+`WEB_CODE_VALIDATOR_URL=http://<production-private-validator-name>:10001`, and
+set `WEB_CODE_VALIDATOR_TIMEOUT_SECONDS=90`. Do not attach database, Firebase,
+provider, Razorpay, SMTP, Valkey or download-token secrets. With the values
+above the capability is intentionally `static_only`; it cannot claim executable
+verification.
+
+Create a **Background Worker**:
+
+```text
+Build Command: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+Start Command: cd backend && python -m app.knowledge_worker
+```
+
+Its only secrets are the production database's private `DATABASE_URL` and the
+provider key. Copy the non-secret worker, embedding, provider-budget, embedding
+price, FX, markup and reservation bounds from the reviewed staging worker.
+Never give it Firebase, Razorpay, SMTP, download-token, validator-token, Valkey
+or public-site variables. Create it with
+`WEB_KNOWLEDGE_WORKER_ENABLED=false`.
+
+After both services are healthy, run the existing API pre-deploy migration and
+apply one reviewed API environment change:
+
+```dotenv
+WEB_TRIAG_ENABLED=true
+WEB_TRIAG_SHADOW_MODE=false
+WEB_TRIAG_RELEASE_STATE=general_availability
+WEB_RAG_HYBRID_ENABLED=true
+WEB_ROLLOUT_TRIAG_MODE=all_eligible
+WEB_ROLLOUT_TRIAG_PERCENT=0
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=true
+WEB_ROLLOUT_KNOWLEDGE_MODE=all_eligible
+WEB_ROLLOUT_KNOWLEDGE_PERCENT=0
+WEB_REPOSITORY_UPLOAD_ENABLED=true
+WEB_RAG_REPOSITORY_INDEX_ENABLED=true
+WEB_ROLLOUT_REPOSITORY_MODE=all_eligible
+WEB_ROLLOUT_REPOSITORY_PERCENT=0
+WEB_ANSWER_GUARD_ENABLED=true
+WEB_VERIFIED_STREAMING_ENABLED=true
+WEB_ROLLOUT_ANSWER_GUARD_MODE=all_eligible
+WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
+WEB_TRIAG_ROLLOUT_REPORT_ENABLED=true
+WEB_KNOWLEDGE_WORKER_ENABLED=true
+```
+
+Keep all four percentages `0`. Any optional global feature left false must keep
+its rollout mode `disabled`; do not use `internal_accounts` or `percentage` in
+the direct-GA configuration. Enable the worker flag on the worker and API in
+the same reviewed change so only the dedicated worker claims knowledge jobs.
+
+From the deployed Render Shell, run exactly:
+
+```text
+cd backend
+python scripts/triag_release_check.py --pretty
+python scripts/triag_rollout_report.py --window-hours 24 --pretty
+```
+
+Do not release if the first command exits non-zero. Then verify health,
+authenticated bootstrap, public cache candidate-to-approved promotion, private
+cache exclusion, exact settlement, cancellation, edit/regenerate/continue,
+temporary TTL and SSE.
+
+Rollback values are:
+
+```dotenv
+WEB_TRIAG_RELEASE_STATE=controlled
+WEB_ROLLOUT_TRIAG_MODE=disabled
+WEB_ROLLOUT_KNOWLEDGE_MODE=disabled
+WEB_ROLLOUT_REPOSITORY_MODE=disabled
+WEB_ROLLOUT_ANSWER_GUARD_MODE=disabled
+WEB_TRIAG_ENABLED=false
+WEB_KNOWLEDGE_WORKER_ENABLED=false
+WEB_RAG_HYBRID_ENABLED=false
+WEB_RAG_DENSE_ENABLED=false
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
+WEB_RAG_TRIPLET_ENABLED=false
+WEB_RAG_HIERARCHY_ENABLED=false
+WEB_REPOSITORY_UPLOAD_ENABLED=false
+WEB_RAG_REPOSITORY_INDEX_ENABLED=false
+WEB_PRO_CODE_VALIDATION_ENABLED=false
+WEB_ANSWER_GUARD_ENABLED=false
+WEB_VERIFIED_STREAMING_ENABLED=false
+WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
+WEB_ANSWER_GUARD_REPAIR_ENABLED=false
+```
+
+Apply the API rollback before stopping the worker. Keep the additive database
+head and private validator; do not downgrade the database or expose either
+private service publicly.
+The dedicated knowledge-indexing patch initially adds only the private staging
+worker declared in `render.staging.yaml`. Keep production API and worker flags
+false until the staging billing, claim-isolation, cancellation, and restart
+gates pass; the direct-GA procedure below then covers the separately created
+production worker. Neither service adds a public variable.
 The single Alembic head `f2a7c9e4b1d6` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
@@ -145,6 +261,7 @@ WEB_TURN_OPTIMIZER_ENABLED=true
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_TRIAG_RELEASE_STATE=controlled
 WEB_ROLLOUT_POLICY_VERSION=v1
 WEB_ROLLOUT_TRIAG_MODE=disabled
 WEB_ROLLOUT_TRIAG_PERCENT=0
@@ -379,17 +496,18 @@ environment group. The validator receives only its dedicated token and
 non-secret limits. The knowledge worker receives only the staging database,
 provider key, embedding pricing/budget settings, and knowledge-worker flags;
 it receives no Firebase, Razorpay webhook, SMTP, download-token, validator, or
-Valkey secret. Do not create or enable a production validator or knowledge
-worker. No new database, Valkey, Cron Job, disk, object storage, or stored-audio
-facility is required. The staging Blueprint declares six resources total: API,
+Valkey secret. Create production counterparts only through the direct-GA
+procedure above, with the same secret isolation and port `10001`; no new
+database, Valkey, Cron Job, disk, object storage, or stored-audio facility is
+required. The staging Blueprint declares six resources total: API,
 private Valkey, private validator, private knowledge worker, static website,
 and PostgreSQL. Phase 5.1 remains API/UI only and adds no public `VITE_*`
 value. Keep
 `WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false` in production until the explicit
 approval, owner-marker, deletion, re-index and cancellation staging gates pass.
-Keep `WEB_KNOWLEDGE_WORKER_ENABLED=false` in production until a separately
-approved production worker exists. Production flags remain disabled until the
-staged rollout gates pass.
+Keep `WEB_KNOWLEDGE_WORKER_ENABLED=false` until the production worker exists,
+is healthy and is enabled together with API claim separation. Defaults remain
+disabled/controlled until the direct-GA change is explicitly approved.
 
 ## Production temporary uploads and voice — exact dashboard steps
 

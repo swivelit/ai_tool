@@ -15,12 +15,20 @@ from app.web_ai.rollout import (
     RolloutExecution,
     RolloutGlobalFlags,
     RolloutMode,
+    TriagReleaseConfigurationError,
+    TriagReleaseState,
     WebRolloutPolicy,
     effective_triag_settings,
     resolve_rollout_decision,
 )
 from app.web_ai.settings import TriagSettings
-from app.web_api.chat_service import execute_web_turn, prepare_web_turn
+from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
+from app.web_api.chat_service import (
+    _global_cache_admission,
+    execute_web_turn,
+    prepare_web_turn,
+)
+from app.web_api.turn_optimizer import WebTurnOptimization
 
 from conftest import auth_headers, create_test_user
 from tests.test_web_chat_api import _fund
@@ -340,8 +348,10 @@ def test_disabled_user_keeps_existing_fallback_and_safe_telemetry():
     assert set(decision.safe_metadata) == {
         "rollout_decisions",
         "rollout_execution",
+        "rollout_release_state",
     }
     assert decision.safe_metadata["rollout_execution"] == "fallback"
+    assert decision.safe_metadata["rollout_release_state"] == "controlled"
     for record in decision.safe_metadata["rollout_decisions"]:
         assert set(record) == {
             "rollout_feature_key",
@@ -600,3 +610,198 @@ def test_live_rollout_still_suppresses_global_cache():
     assert prepared.optimization.cache_eligible is False
     assert prepared.optimization.cache_scope == "disabled"
     assert prepared.optimization.cache_scope_reason == "rollout_controlled_path"
+
+
+def test_general_availability_public_standalone_remains_cache_eligible():
+    global_settings = TriagSettings.from_environ(_global_env())
+    decision = resolve_rollout_decision(
+        _policy("all_eligible"),
+        owner_user_id=93,
+        internal_account=False,
+        global_flags=RolloutGlobalFlags.from_settings(global_settings),
+        release_state=TriagReleaseState.GENERAL_AVAILABILITY,
+    )
+    user = create_test_user("ga-cache", "ga-cache@example.com")
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain B-tree indexes.",
+        request_id="96000000-0000-0000-0000-000000000007",
+        thread_id=None,
+        reply_language="en",
+        billing_exempt=True,
+        rollout_decision=decision,
+        triag_settings=effective_triag_settings(global_settings, decision),
+    )
+    assert decision.execution == RolloutExecution.LIVE
+    assert decision.release_state == TriagReleaseState.GENERAL_AVAILABILITY
+    assert prepared.optimization is not None
+    assert prepared.optimization.cache_eligible is True
+    assert prepared.optimization.cache_scope == "global"
+    assert prepared.optimization.cache_scope_reason == "public_standalone"
+
+
+@pytest.mark.parametrize(
+    ("context", "updates", "expected_reason"),
+    [
+        (
+            "temporary_document",
+            {"used_temporary_documents": True},
+            "temporary_document_context",
+        ),
+        ("repository", {"used_repository": True}, "repository_context"),
+        ("memory", {"used_memory": True}, "used_memory"),
+        ("profile", {"used_profile": True}, "used_profile"),
+        (
+            "persistent_knowledge",
+            {"used_persistent_knowledge": True},
+            "private_knowledge_context",
+        ),
+        (
+            "private_sources",
+            {"used_private_sources": True},
+            "used_private_sources",
+        ),
+    ],
+)
+def test_general_availability_private_context_never_enters_global_cache(
+    context: str,
+    updates: dict[str, bool],
+    expected_reason: str,
+):
+    values = {
+        "cancelled": False,
+        "truncated": False,
+        "continuation_control": False,
+        "used_memory": False,
+        "used_profile": False,
+        "used_temporary_documents": False,
+        "used_persistent_knowledge": False,
+        "used_repository": False,
+        "used_private_sources": False,
+        "explicit_memory_write": False,
+        "answer_quality": None,
+    }
+    values.update(updates)
+    eligible, reason = _global_cache_admission(
+        WebTurnOptimization(
+            optimization_route="provider_standalone",
+            is_contextual_followup=False,
+            cache_eligible=True,
+            cache_scope="global",
+            cache_scope_reason="public_standalone",
+        ),
+        **values,
+    )
+    assert context
+    assert eligible is False
+    assert reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("case", "quality", "cancelled", "truncated", "expected_reason"),
+    [
+        (
+            "unverified",
+            AnswerQualityResult(
+                "unverified", (QualityCheck("structural", "failed"),)
+            ),
+            False,
+            False,
+            "unverified_answer",
+        ),
+        (
+            "insufficient",
+            AnswerQualityResult("insufficient_evidence", ()),
+            False,
+            False,
+            "insufficient_evidence",
+        ),
+        (
+            "failed_repair",
+            AnswerQualityResult(
+                "unverified",
+                (QualityCheck("task_completeness", "failed"),),
+                repair_attempted=True,
+            ),
+            False,
+            False,
+            "failed_repair",
+        ),
+        (
+            "invalid_citation",
+            AnswerQualityResult(
+                "unverified",
+                (QualityCheck("citation_validity", "failed"),),
+            ),
+            False,
+            False,
+            "invalid_citation",
+        ),
+        ("cancelled", None, True, False, "cancelled_response"),
+        ("truncated", None, False, True, "truncated_response"),
+    ],
+)
+def test_rejected_results_never_enter_global_cache(
+    case: str,
+    quality: AnswerQualityResult | None,
+    cancelled: bool,
+    truncated: bool,
+    expected_reason: str,
+):
+    eligible, reason = _global_cache_admission(
+        WebTurnOptimization(
+            optimization_route="provider_standalone",
+            is_contextual_followup=False,
+            cache_eligible=True,
+            cache_scope="global",
+            cache_scope_reason="public_standalone",
+        ),
+        cancelled=cancelled,
+        truncated=truncated,
+        continuation_control=False,
+        used_memory=False,
+        used_profile=False,
+        used_temporary_documents=False,
+        used_persistent_knowledge=False,
+        used_repository=False,
+        used_private_sources=False,
+        explicit_memory_write=False,
+        answer_quality=quality,
+    )
+    assert case
+    assert eligible is False
+    assert reason == expected_reason
+
+
+def test_release_state_configuration_and_telemetry_are_safe():
+    assert (
+        TriagReleaseState.from_environ({})
+        == TriagReleaseState.CONTROLLED
+    )
+    secret = "unsafe-release-state-SECRET"
+    with pytest.raises(TriagReleaseConfigurationError) as caught:
+        TriagReleaseState.from_environ({"WEB_TRIAG_RELEASE_STATE": secret})
+    assert "WEB_TRIAG_RELEASE_STATE" in str(caught.value)
+    assert secret not in str(caught.value)
+
+    settings = TriagSettings.from_environ(_global_env())
+    decision = resolve_rollout_decision(
+        _policy("all_eligible"),
+        owner_user_id=94,
+        internal_account=False,
+        global_flags=RolloutGlobalFlags.from_settings(settings),
+        release_state=TriagReleaseState.GENERAL_AVAILABILITY,
+    )
+    encoded = json.dumps(decision.safe_metadata, sort_keys=True)
+    assert decision.safe_metadata["rollout_release_state"] == (
+        "general_availability"
+    )
+    for forbidden in (
+        "@example.com",
+        "firebase",
+        "provider",
+        "model",
+        "message",
+        "SECRET",
+    ):
+        assert forbidden not in encoded

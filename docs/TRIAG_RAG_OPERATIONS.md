@@ -21,6 +21,10 @@ Percentages are bounded to `0..100`, and the policy version is a bounded
 `v<number>` identifier. Production validation rejects malformed values by
 variable name without echoing the value.
 
+`WEB_TRIAG_RELEASE_STATE` is independently validated as `controlled` or
+`general_availability` and defaults to `controlled`. Invalid values report the
+variable name only and the request path fails closed to controlled behavior.
+
 ## Shadow invariants
 
 For the same request, compare the existing operational telemetry before and
@@ -192,9 +196,10 @@ or set `WEB_TRIAG_ENABLED=false`. Keep additive tables and fix forward.
 For a cohort audit, inspect only the content-free rollout records attached to
 the owner-scoped request metadata. Every feature record contains exactly
 feature key, cohort, policy version, and enabled/disabled decision. The sibling
-`rollout_execution` enum is exactly `fallback`, `shadow`, or `live`. Never
-export the surrounding message metadata or join it to email, message, memory,
-document, or repository content.
+`rollout_execution` enum is exactly `fallback`, `shadow`, or `live`; the
+`rollout_release_state` enum is exactly `controlled` or
+`general_availability`. Never export the surrounding message metadata or join
+it to email, message, memory, document, or repository content.
 
 The authenticated request resolves one immutable decision. Bootstrap and each
 gated endpoint resolve through the same policy; a chat request carries its
@@ -255,12 +260,13 @@ For Render Shell:
 
 ```text
 cd backend
-.venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
+python scripts/triag_rollout_report.py --window-hours 24 --pretty
 ```
 
 The endpoint and CLI call the same aggregator. Groups include the bounded
-`fallback`/`shadow`/`live` execution enum and otherwise contain bounded
-timestamps, enums, counts, rates, token/cost totals and latency percentiles.
+`fallback`/`shadow`/`live` execution enum and controlled/general-availability
+release state, and otherwise contain bounded timestamps, enums, counts, rates,
+token/cost totals and latency percentiles.
 It contains no request/user identifiers, emails, content, filenames, source
 excerpts, commands, provider/model names or raw failure details. The billing
 gate flags unsettled final reservations, non-exempt debit/cost differences,
@@ -274,3 +280,75 @@ warn above 5% and fail above 15%. Privacy, owner-isolation and settlement
 mismatches fail immediately. Missing bounded samples report
 `insufficient_sample`. Operators must still review the report and change
 Render settings manually; reporting never activates or disables a cohort.
+
+## Direct production general-availability operations
+
+Do not use a percentage step for this release. In `controlled`, every live
+rollout decision continues to suppress global answer-cache lookup and write.
+In `general_availability`, only that blanket suppression is removed and the
+existing deterministic policy resumes: public standalone answers may become
+candidates and only the existing candidate-to-approved promotion process can
+make them globally readable.
+
+The final cache admission remains fail closed. It rejects turns using memory,
+profile, temporary documents, persistent knowledge, repository evidence,
+private sources, continuation control or explicit memory writes. It also
+rejects cancelled or truncated responses, insufficient or unverified answers,
+failed repairs and invalid citations. General availability does not bypass any
+of those checks.
+
+Create the private validator as a same-region Render Private Service with:
+
+```text
+Build: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+Start: uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10001
+```
+
+Its minimum environment is a generated `CODE_VALIDATOR_AUTH_TOKEN`,
+`CODE_VALIDATOR_ISOLATION_PROOF=static-only`,
+`CODE_VALIDATOR_NETWORK_ISOLATED=false`,
+`CODE_VALIDATOR_TIMEOUT_SECONDS=90`, and
+`CODE_VALIDATOR_MAX_OUTPUT_BYTES=65536`. The API uses the linked token,
+`WEB_CODE_VALIDATOR_URL=http://<private-service-name>:10001`, and timeout `90`.
+No database, Firebase, provider, payment, SMTP, Valkey or download secret
+belongs on the validator. Static-only is a truthful limitation: executable
+validation remains disabled until every isolation proof is positively met.
+
+Create the same-region Render Background Worker with:
+
+```text
+Build: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+Start: cd backend && python -m app.knowledge_worker
+```
+
+Its only secrets are the private production `DATABASE_URL` and provider key.
+Copy only the bounded knowledge worker, embedding model/dimensions, provider
+budget, embedding price, FX, markup and reservation settings from the reviewed
+staging worker. Never add Firebase, Razorpay, SMTP, download-token, validator
+or Valkey secrets. Create it with `WEB_KNOWLEDGE_WORKER_ENABLED=false`; after it
+is healthy, enable that flag on the worker and API together so job ownership is
+unambiguous.
+
+Run after the single-head migration and before declaring production ready:
+
+```text
+cd backend
+python scripts/triag_release_check.py --pretty
+python scripts/triag_rollout_report.py --window-hours 24 --pretty
+```
+
+The release check emits only bounded configuration states, counts and
+capabilities. It validates production configuration, TRIAG/release/rollout
+state, report configuration, one matching Alembic head/current, database and
+required tables, validator isolation, and knowledge-job counts. A non-zero exit
+is a release blocker. Do not paste raw database, validator or provider errors
+into release artifacts.
+
+Direct-GA order is: provision both private services disabled; validate the
+validator; migrate; enable worker ownership; apply GA/all-eligible API values
+with every percent `0`; run both commands; verify `/api/web/health`, cache
+candidate promotion, exact settlement, cancellation and SSE. Roll back in this
+order: set all rollout modes `disabled`, set
+`WEB_TRIAG_RELEASE_STATE=controlled`, set `WEB_TRIAG_ENABLED=false`, disable
+worker ownership and all knowledge/repository/Answer Guard/dense derived flags,
+then stop the worker. Do not downgrade the database.

@@ -11,6 +11,8 @@ from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_n
 from .web_ai.settings import TriagConfigurationError, TriagSettings
 from .web_ai.rollout import (
     RolloutConfigurationError,
+    TriagReleaseConfigurationError,
+    TriagReleaseState,
     WebRolloutPolicy,
 )
 from .web_ai.rollout_metrics import (
@@ -106,6 +108,12 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         WebRolloutPolicy.from_environ(env)
     except RolloutConfigurationError as exc:
         errors.extend(exc.errors)
+    try:
+        TriagReleaseState.from_environ(env)
+    except TriagReleaseConfigurationError:
+        errors.append(
+            "WEB_TRIAG_RELEASE_STATE must be controlled or general_availability"
+        )
     try:
         RolloutReportSettings.from_environ(env)
     except RolloutReportConfigurationError as exc:

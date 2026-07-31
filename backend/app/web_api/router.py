@@ -96,6 +96,8 @@ from ..web_ai.settings import TriagSettings
 from ..web_ai.rollout import (
     RolloutConfigurationError,
     RolloutGlobalFlags,
+    TriagReleaseConfigurationError,
+    TriagReleaseState,
     WebRolloutDecision,
     WebRolloutPolicy,
     effective_triag_settings,
@@ -214,11 +216,18 @@ def _web_rollout(
         # Production startup validation reports variable names. Requests fail
         # closed without logging values if an optional rollout is malformed.
         policy = WebRolloutPolicy.from_environ({})
+    try:
+        release_state = TriagReleaseState.from_environ()
+    except TriagReleaseConfigurationError:
+        # Startup exposes only the variable name. Requests retain the safe
+        # controlled cache policy when configuration is malformed.
+        release_state = TriagReleaseState.CONTROLLED
     decision = resolve_rollout_decision(
         policy,
         owner_user_id=int(user.id),
         internal_account=is_internal_test_user(auth, user),
         global_flags=RolloutGlobalFlags.from_settings(global_settings),
+        release_state=release_state,
     )
     return decision, effective_triag_settings(global_settings, decision)
 

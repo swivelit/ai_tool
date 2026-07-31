@@ -31,6 +31,8 @@ projects:
                 value: "true"
               - key: WEB_TRIAG_POLICY_VERSION
                 value: v1
+              - key: WEB_TRIAG_RELEASE_STATE
+                value: controlled
               - key: WEB_ROLLOUT_POLICY_VERSION
                 value: v1
               - key: WEB_ROLLOUT_TRIAG_MODE
@@ -135,7 +137,7 @@ projects:
               - key: WEB_PRO_CODE_VALIDATION_ENABLED
                 value: "false"
               - key: WEB_CODE_VALIDATOR_URL
-                value: http://swico-code-validator-staging:10000
+                value: http://swico-code-validator-staging:10001
               - key: WEB_CODE_VALIDATOR_AUTH_TOKEN
                 fromService:
                   type: pserv
@@ -321,7 +323,7 @@ projects:
             region: singapore
             plan: starter
             buildCommand: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
-            startCommand: uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10000
+            startCommand: uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10001
             envVars:
               - key: CODE_VALIDATOR_AUTH_TOKEN
                 generateValue: true

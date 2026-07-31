@@ -85,6 +85,7 @@ _ALLOWED_KEYS = frozenset(
         "rollout_policy_version",
         "rollout_enabled",
         "rollout_execution",
+        "rollout_release_state",
     }
 )
 _ENUM_VALUES: dict[str, frozenset[str]] = {
@@ -169,6 +170,9 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
         {"disabled", "internal_accounts", "percentage", "all_eligible"}
     ),
     "rollout_execution": frozenset({"fallback", "shadow", "live"}),
+    "rollout_release_state": frozenset(
+        {"controlled", "general_availability"}
+    ),
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_sources": frozenset(

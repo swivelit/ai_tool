@@ -60,7 +60,11 @@ from ..web_ai.retrieval.persistent_knowledge import (
     owner_active_knowledge_tokens,
 )
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
-from ..web_ai.rollout import RolloutExecution, WebRolloutDecision
+from ..web_ai.rollout import (
+    RolloutExecution,
+    TriagReleaseState,
+    WebRolloutDecision,
+)
 from ..web_ai.streaming_policy import select_streaming_policy
 from ..web_ai.tier_policy import tier_policy_for
 from ..web_ai.token_allocator import DynamicTokenAllocator
@@ -333,6 +337,8 @@ def _rollout_cache_policy(
     if (
         rollout_decision is None
         or rollout_decision.execution != RolloutExecution.LIVE
+        or rollout_decision.release_state
+        == TriagReleaseState.GENERAL_AVAILABILITY
     ):
         return optimization
     return replace(
@@ -347,6 +353,62 @@ def _rollout_cache_policy(
             "cache_scope_reason": "rollout_controlled_path",
         },
     )
+
+
+def _global_cache_admission(
+    optimization: WebTurnOptimization | None,
+    *,
+    cancelled: bool,
+    truncated: bool,
+    continuation_control: bool,
+    used_memory: bool,
+    used_profile: bool,
+    used_temporary_documents: bool,
+    used_persistent_knowledge: bool,
+    used_repository: bool,
+    used_private_sources: bool,
+    explicit_memory_write: bool,
+    answer_quality: AnswerQualityResult | None,
+) -> tuple[bool, str]:
+    """Apply final, content-free cache admission after generation."""
+
+    invalid_citation = bool(
+        answer_quality
+        and any(
+            check.check_type == "citation_validity"
+            and check.status in {"failed", "error"}
+            for check in answer_quality.checks
+        )
+    )
+    failed_repair = bool(
+        answer_quality
+        and answer_quality.repair_attempted
+        and not answer_quality.passed
+    )
+    reason = (
+        "cancelled_response" if cancelled else
+        "truncated_response" if truncated else
+        "continuation_control" if continuation_control else
+        "used_memory" if used_memory else
+        "used_profile" if used_profile else
+        "temporary_document_context" if used_temporary_documents else
+        "private_knowledge_context" if used_persistent_knowledge else
+        "repository_context" if used_repository else
+        "used_private_sources" if used_private_sources else
+        "explicit_memory_write" if explicit_memory_write else
+        "invalid_citation" if invalid_citation else
+        "failed_repair" if failed_repair else
+        "insufficient_evidence"
+        if answer_quality and answer_quality.status == "insufficient_evidence" else
+        "unverified_answer"
+        if answer_quality and answer_quality.status == "unverified" else
+        "answer_quality_not_approved"
+        if answer_quality and not answer_quality.passed else
+        "public_standalone"
+        if optimization is not None and optimization.cache_eligible else
+        "turn_not_cache_eligible"
+    )
+    return reason == "public_standalone", reason
 
 
 def _owned_thread(session: Session, thread_id: str, user_id: int) -> WebChatThread:
@@ -3760,25 +3822,38 @@ def execute_web_turn(
             ).strip()
         )
         response_is_truncated = bool(response.raw.get("truncated"))
-        turn_cache_eligible = bool(
-            prepared.optimization is not None
-            and prepared.optimization.cache_eligible
-            and not response_is_truncated
-            and not used_memory
-            and not used_profile
-            and not safe_sources
-            and not prepared.ai_request.metadata.get("explicit_memory_write")
+        planned_sources = set(
+            prepared.execution_plan.retrieval_sources
+            if prepared.execution_plan is not None else ()
         )
-        cache_scope_reason = (
-            "public_standalone"
-            if turn_cache_eligible else
-            "truncated_response" if response_is_truncated else
-            "used_memory" if used_memory else
-            "used_profile" if used_profile else
-            "used_private_sources" if safe_sources else
-            "explicit_memory_write"
-            if prepared.ai_request.metadata.get("explicit_memory_write") else
-            "turn_not_cache_eligible"
+        turn_cache_eligible, cache_scope_reason = _global_cache_admission(
+            prepared.optimization,
+            cancelled=cancelled,
+            truncated=response_is_truncated,
+            continuation_control=bool(
+                prepared.ai_request.metadata.get("is_continuation_control")
+            ),
+            used_memory=used_memory,
+            used_profile=used_profile,
+            used_temporary_documents=bool(prepared.retrieval_uploads),
+            used_persistent_knowledge=(
+                "knowledge" in planned_sources
+                or (
+                    prepared.optimization is not None
+                    and prepared.optimization.cache_scope_reason
+                    == "private_knowledge_context"
+                )
+            ),
+            used_repository=bool(
+                prepared.repository_snapshot is not None
+                or prepared.repository_contract is not None
+                or "repository" in planned_sources
+            ),
+            used_private_sources=bool(safe_sources),
+            explicit_memory_write=bool(
+                prepared.ai_request.metadata.get("explicit_memory_write")
+            ),
+            answer_quality=prepared.answer_quality,
         )
         optimization_metrics.update({
             "cache_eligible": turn_cache_eligible,

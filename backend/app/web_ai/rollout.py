@@ -28,6 +28,16 @@ class RolloutConfigurationError(RuntimeError):
         super().__init__("Invalid web rollout configuration: " + "; ".join(errors))
 
 
+class TriagReleaseConfigurationError(RuntimeError):
+    """Release-state failure containing the variable name, never its value."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Invalid TRIAG release configuration: "
+            "WEB_TRIAG_RELEASE_STATE must be controlled or general_availability"
+        )
+
+
 class RolloutMode(str, Enum):
     DISABLED = "disabled"
     INTERNAL_ACCOUNTS = "internal_accounts"
@@ -39,6 +49,24 @@ class RolloutExecution(str, Enum):
     FALLBACK = "fallback"
     SHADOW = "shadow"
     LIVE = "live"
+
+
+class TriagReleaseState(str, Enum):
+    CONTROLLED = "controlled"
+    GENERAL_AVAILABILITY = "general_availability"
+
+    @classmethod
+    def from_environ(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> "TriagReleaseState":
+        env = os.environ if environ is None else environ
+        raw = str(
+            env.get("WEB_TRIAG_RELEASE_STATE", cls.CONTROLLED.value) or ""
+        ).strip()
+        try:
+            return cls(raw)
+        except ValueError as exc:
+            raise TriagReleaseConfigurationError() from exc
 
 
 @dataclass(frozen=True)
@@ -189,6 +217,7 @@ class WebRolloutDecision:
     repository_chat: FeatureRolloutDecision
     answer_guard: FeatureRolloutDecision
     execution: RolloutExecution = RolloutExecution.FALLBACK
+    release_state: TriagReleaseState = TriagReleaseState.CONTROLLED
 
     @property
     def features(self) -> tuple[FeatureRolloutDecision, ...]:
@@ -207,6 +236,7 @@ class WebRolloutDecision:
     def safe_metadata(self) -> dict[str, object]:
         return sanitize_metadata({
             "rollout_execution": self.execution.value,
+            "rollout_release_state": self.release_state.value,
             "rollout_decisions": [
                 item.safe_metadata for item in self.features
             ]
@@ -233,6 +263,7 @@ def resolve_rollout_decision(
     owner_user_id: int,
     internal_account: bool,
     global_flags: RolloutGlobalFlags,
+    release_state: TriagReleaseState = TriagReleaseState.CONTROLLED,
 ) -> WebRolloutDecision:
     if int(owner_user_id) <= 0:
         raise ValueError("owner_user_id must be positive")
@@ -283,6 +314,7 @@ def resolve_rollout_decision(
         repository_chat=decisions["repository_chat"],
         answer_guard=decisions["answer_guard"],
         execution=execution,
+        release_state=release_state,
     )
 
 

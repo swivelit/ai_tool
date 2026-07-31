@@ -47,6 +47,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_TRIAG_ENABLED": "false",
         "WEB_TRIAG_SHADOW_MODE": "true",
         "WEB_TRIAG_POLICY_VERSION": "v1",
+        "WEB_TRIAG_RELEASE_STATE": "controlled",
         "WEB_ROLLOUT_POLICY_VERSION": "v1",
         "WEB_ROLLOUT_TRIAG_MODE": "disabled",
         "WEB_ROLLOUT_TRIAG_PERCENT": "0",
@@ -97,7 +98,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE": "3",
         "WEB_RAG_REPOSITORY_INDEX_ENABLED": "false",
         "WEB_PRO_CODE_VALIDATION_ENABLED": "false",
-        "WEB_CODE_VALIDATOR_URL": "http://swico-code-validator-staging:10000",
+        "WEB_CODE_VALIDATOR_URL": "http://swico-code-validator-staging:10001",
         "WEB_CODE_VALIDATOR_TIMEOUT_SECONDS": "90",
         "WEB_SAME_THREAD_CONTEXT_MODE": "adaptive",
         "WEB_SWICO_BRAND_GUARD_ENABLED": "true",
@@ -219,6 +220,10 @@ def test_staging_blueprint_cannot_reference_production_resources_or_groups():
     validator = services["swico-code-validator-staging"]
     assert validator["type"] == "pserv"
     assert validator["region"] == api["region"]
+    assert validator["startCommand"] == (
+        "uvicorn app.code_validator.main:app --app-dir backend "
+        "--host 0.0.0.0 --port 10001"
+    )
     validator_vars = env_vars(validator)
     assert validator_vars == {
         "CODE_VALIDATOR_AUTH_TOKEN": {

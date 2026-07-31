@@ -34,6 +34,7 @@ def _rollout_metadata(
     cohort: str = "percentage",
     enabled: bool = True,
     execution: str = "live",
+    release_state: str = "controlled",
     unsafe: bool = False,
 ) -> str:
     records = [
@@ -53,6 +54,7 @@ def _rollout_metadata(
     ]
     return json.dumps({
         "rollout_execution": execution,
+        "rollout_release_state": release_state,
         "rollout_decisions": records,
         "attachments": [{"name": "private-customer-plan.pdf"}],
     })
@@ -68,6 +70,7 @@ def _insert_request(
     cohort: str = "percentage",
     enabled: bool = True,
     execution: str = "live",
+    release_state: str = "controlled",
     tier: str = "standard",
     user_status: str = "complete",
     assistant_status: str = "complete",
@@ -100,6 +103,7 @@ def _insert_request(
                 cohort=cohort,
                 enabled=enabled,
                 execution=execution,
+                release_state=release_state,
                 unsafe=unsafe_rollout,
             ),
             created_at=created_at,
@@ -255,6 +259,7 @@ def test_policy_cohort_tier_groups_are_separate_and_sorted():
             item["feature_key"],
             item["rollout_cohort"],
             item["rollout_execution"],
+            item["rollout_release_state"],
             item["swico_tier"],
         )
         for item in report["groups"]
@@ -265,7 +270,8 @@ def test_policy_cohort_tier_groups_are_separate_and_sorted():
         "internal_accounts", "percentage"
     }
     assert {item[3] for item in keys} == {"live"}
-    assert {item[4] for item in keys} == {"lite", "pro"}
+    assert {item[4] for item in keys} == {"controlled"}
+    assert {item[5] for item in keys} == {"lite", "pro"}
 
 
 def test_shadow_and_live_execution_are_content_free_separate_groups():
@@ -283,6 +289,7 @@ def test_shadow_and_live_execution_are_content_free_separate_groups():
         request_id="report-live-execution",
         created_at=NOW - timedelta(hours=1),
         execution="live",
+        release_state="general_availability",
         cache_suppressed=True,
     )
     with SessionLocal() as session:
@@ -306,6 +313,8 @@ def test_shadow_and_live_execution_are_content_free_separate_groups():
     )
     assert shadow["metrics"]["cache_suppression_count"] == 0
     assert live["metrics"]["cache_suppression_count"] == 1
+    assert shadow["rollout_release_state"] == "controlled"
+    assert live["rollout_release_state"] == "general_availability"
     rendered = json.dumps(report, sort_keys=True)
     for forbidden in (
         "shadow-report@example.com",

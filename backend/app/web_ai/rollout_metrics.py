@@ -36,6 +36,7 @@ _COHORTS = frozenset({
     "all_eligible",
 })
 _EXECUTIONS = frozenset({"fallback", "shadow", "live"})
+_RELEASE_STATES = frozenset({"controlled", "general_availability"})
 _TIERS = frozenset({"lite", "standard", "pro"})
 _RETRIEVAL_STATUSES = frozenset({
     "sufficient",
@@ -152,6 +153,7 @@ class RolloutGroupKey:
     feature_key: str
     cohort: str
     execution: str
+    release_state: str
     swico_tier: str
 
 
@@ -201,11 +203,11 @@ def _percentile(values: Sequence[int], percentile: float) -> int:
 
 def _rollout_records(
     raw_metadata: str | None,
-) -> tuple[list[tuple[str, str, str, bool]], str, int]:
+) -> tuple[list[tuple[str, str, str, bool]], str, str, int]:
     metadata = _safe_json(raw_metadata)
     raw_records = metadata.get("rollout_decisions")
     if not isinstance(raw_records, list):
-        return [], "fallback", 0
+        return [], "fallback", "controlled", 0
     records: list[tuple[str, str, str, bool]] = []
     violations = 0
     for value in raw_records[:8]:
@@ -244,7 +246,17 @@ def _rollout_records(
         )
         if raw_execution is not None:
             violations += 1
-    return records, execution, violations
+    raw_release_state = metadata.get("rollout_release_state")
+    if (
+        isinstance(raw_release_state, str)
+        and raw_release_state in _RELEASE_STATES
+    ):
+        release_state = raw_release_state
+    else:
+        release_state = "controlled"
+        if raw_release_state is not None:
+            violations += 1
+    return records, execution, release_state, violations
 
 
 def _gate(
@@ -448,13 +460,19 @@ def build_rollout_report(
     request_ids: set[str] = set()
     for user_id, request_id, metadata_json, status, created_at in user_rows:
         request_key = (int(user_id), str(request_id))
-        records, execution, privacy_violations = _rollout_records(metadata_json)
+        (
+            records,
+            execution,
+            release_state,
+            privacy_violations,
+        ) = _rollout_records(metadata_json)
         if not records:
             continue
         request_ids.add(str(request_id))
         request_facts[request_key] = {
             "records": records,
             "execution": execution,
+            "release_state": release_state,
             "privacy_violations": privacy_violations,
             "user_status": str(status or ""),
             "user_created_at": created_at,
@@ -688,6 +706,7 @@ def build_rollout_report(
                     feature,
                     cohort,
                     str(fact["execution"]),
+                    str(fact["release_state"]),
                     str(fact["tier"]),
                 )
             ].append(group_fact)
@@ -903,6 +922,7 @@ def build_rollout_report(
             "feature_key": key.feature_key,
             "rollout_cohort": key.cohort,
             "rollout_execution": key.execution,
+            "rollout_release_state": key.release_state,
             "swico_tier": key.swico_tier,
             "metrics": metrics,
             "acceptance": {
