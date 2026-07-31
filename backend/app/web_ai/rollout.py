@@ -128,6 +128,10 @@ class WebRolloutPolicy:
                     f"{percentage_name} is outside supported bounds"
                 )
                 percentage = 0
+            if mode != RolloutMode.PERCENTAGE and percentage != 0:
+                errors.append(
+                    f"{percentage_name} must be 0 unless {mode_name} is percentage"
+                )
             return FeatureRolloutPolicy(key, mode, percentage)
 
         triag = feature(

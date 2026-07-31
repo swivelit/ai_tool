@@ -212,6 +212,22 @@ def test_rollout_configuration_validation_never_echoes_values():
     assert secret_value not in rendered
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["disabled", "internal_accounts", "all_eligible"],
+)
+def test_only_percentage_mode_accepts_nonzero_percentage(mode: str):
+    with pytest.raises(RolloutConfigurationError) as caught:
+        _policy(mode, percentage=25)
+    rendered = str(caught.value)
+    assert "WEB_ROLLOUT_TRIAG_PERCENT" in rendered
+    assert "WEB_ROLLOUT_TRIAG_MODE" in rendered
+    assert "25" not in rendered
+
+    percentage = _policy("percentage", percentage=25)
+    assert all(item.percentage == 25 for item in percentage.features)
+
+
 def test_bootstrap_and_knowledge_endpoint_share_one_cohort(
     client, monkeypatch
 ):

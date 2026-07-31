@@ -31,6 +31,19 @@ class ThreadPatch(BaseModel):
         return cleaned
 
 
+class TriagRequestAuditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_ids: list[UUID] = Field(min_length=1, max_length=12)
+
+    @field_validator("request_ids")
+    @classmethod
+    def unique_request_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("request_ids must be unique")
+        return value
+
+
 class WebChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

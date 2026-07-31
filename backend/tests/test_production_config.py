@@ -163,6 +163,13 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
             "WEB_TRIAG_RELEASE_STATE",
         ),
         ({"WEB_ROLLOUT_KNOWLEDGE_PERCENT": "101"}, "WEB_ROLLOUT_KNOWLEDGE_PERCENT"),
+        (
+            {
+                "WEB_ROLLOUT_KNOWLEDGE_MODE": "all_eligible",
+                "WEB_ROLLOUT_KNOWLEDGE_PERCENT": "100",
+            },
+            "WEB_ROLLOUT_KNOWLEDGE_PERCENT",
+        ),
         ({"WEB_TRIAG_ROLLOUT_REPORT_ENABLED": "sometimes"}, "WEB_TRIAG_ROLLOUT_REPORT_ENABLED"),
         ({"WEB_TRIAG_ROLLOUT_REPORT_MAX_WINDOW_HOURS": "0"}, "WEB_TRIAG_ROLLOUT_REPORT_MAX_WINDOW_HOURS"),
         (

@@ -68,6 +68,12 @@ _JOB_STATUSES = (
     "other",
 )
 _COUNT_MAX = 1_000_000_000
+_ROLLOUT_REASON_CODES = frozenset({
+    "invalid_configuration",
+    "triag_settings_invalid",
+    "mode_mismatch",
+    "percentage_must_be_zero",
+})
 
 
 def _check(
@@ -272,6 +278,11 @@ def build_release_report(
         pass
     mode_counts = {mode.value: 0 for mode in RolloutMode}
     rollout_ready = False
+    rollout_reason_code: str | None = None
+    if rollout is None:
+        rollout_reason_code = "invalid_configuration"
+    elif triag_settings is None:
+        rollout_reason_code = "triag_settings_invalid"
     if rollout is not None and triag_settings is not None:
         flags = RolloutGlobalFlags.from_settings(triag_settings)
         rollout_ready = True
@@ -282,12 +293,26 @@ def build_release_report(
                 if flags.enabled(feature.feature_key)
                 else RolloutMode.DISABLED
             )
-            if feature.mode != expected or feature.percentage != 0:
+            if feature.mode != expected:
                 rollout_ready = False
+                rollout_reason_code = rollout_reason_code or "mode_mismatch"
+            if feature.percentage != 0:
+                rollout_ready = False
+                rollout_reason_code = (
+                    rollout_reason_code or "percentage_must_be_zero"
+                )
+    if rollout_ready:
+        rollout_reason_code = None
+    elif rollout_reason_code not in _ROLLOUT_REASON_CODES:
+        rollout_reason_code = "invalid_configuration"
     checks.append(_check(
         "rollout_modes",
         rollout_ready,
         mode_counts=mode_counts,
+        **(
+            {"reason_code": rollout_reason_code}
+            if rollout_reason_code is not None else {}
+        ),
     ))
 
     report_settings: RolloutReportSettings | None = None

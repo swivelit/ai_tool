@@ -174,3 +174,36 @@ def test_controlled_or_percentage_configuration_blocks_direct_ga(monkeypatch):
         if item["status"] == "block"
     }
     assert {"release_state", "rollout_modes"}.issubset(blocked)
+    rollout = next(
+        item for item in report["checks"]
+        if item["name"] == "rollout_modes"
+    )
+    assert rollout["reason_code"] == "mode_mismatch"
+
+
+def test_release_check_rollout_configuration_reason_is_bounded(monkeypatch):
+    monkeypatch.setattr(
+        triag_release_check, "_alembic_heads", lambda: ("head",)
+    )
+    monkeypatch.setattr(
+        triag_release_check, "_database_checks", _passing_database_checks
+    )
+    monkeypatch.setattr(
+        triag_release_check,
+        "_validator_capability",
+        lambda _settings: "static_only",
+    )
+    report = triag_release_check.build_release_report({
+        **_release_environment(),
+        "WEB_ROLLOUT_TRIAG_PERCENT": "100",
+    })
+    rollout = next(
+        item for item in report["checks"]
+        if item["name"] == "rollout_modes"
+    )
+    assert rollout["status"] == "block"
+    assert rollout["reason_code"] == "invalid_configuration"
+    rendered = triag_release_check.render_release_report(
+        report, pretty=False
+    )
+    assert '"100"' not in rendered

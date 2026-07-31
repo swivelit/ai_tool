@@ -44,7 +44,8 @@ optional state.
 
 The only allowed rollout modes are `disabled`, `internal_accounts`,
 `percentage`, and `all_eligible`; percentages are integers from `0` through
-`100`. Increment `WEB_ROLLOUT_POLICY_VERSION` only for an intentional cohort
+`100` only in `percentage` mode. Every other mode requires percentage `0`.
+Increment `WEB_ROLLOUT_POLICY_VERSION` only for an intentional cohort
 reshuffle. The stable percentage input is owner user ID, feature key, and that
 version. A rollout mode never overrides a false global feature flag.
 

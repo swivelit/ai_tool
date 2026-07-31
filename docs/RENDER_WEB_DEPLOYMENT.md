@@ -131,13 +131,19 @@ Rollback the cohort first with `WEB_ROLLOUT_TRIAG_MODE=disabled`; use
 static-site variable, provider call, frontend feature or route change belongs
 to this sequence.
 
+For every rollout feature, `disabled`, `internal_accounts`, and `all_eligible`
+require the matching percentage to be `0`. Only `percentage` mode accepts a
+non-zero percentage. Invalid combinations fail production configuration by
+environment-variable name only; no configured value is emitted.
+
 ## Direct production all-eligible general availability
 
-This release goes directly to all eligible production accounts; do not create
-another percentage stage. First create two same-region private resources in
-the production Render project, without attaching a shared environment group.
+Production is already at all-eligible general availability. Do not create
+another percentage stage, validator, worker, web service, or staged rollout.
+The existing same-region validator and knowledge worker remain the only
+production resources for this path.
 
-Create a **Private Service** for the validator:
+The existing validator **Private Service** uses:
 
 ```text
 Build Command: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
@@ -161,7 +167,7 @@ provider, Razorpay, SMTP, Valkey or download-token secrets. With the values
 above the capability is intentionally `static_only`; it cannot claim executable
 verification.
 
-Create a **Background Worker**:
+The existing **Background Worker** uses:
 
 ```text
 Build Command: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
@@ -172,11 +178,13 @@ Its only secrets are the production database's private `DATABASE_URL` and the
 provider key. Copy the non-secret worker, embedding, provider-budget, embedding
 price, FX, markup and reservation bounds from the reviewed staging worker.
 Never give it Firebase, Razorpay, SMTP, download-token, validator-token, Valkey
-or public-site variables. Create it with
-`WEB_KNOWLEDGE_WORKER_ENABLED=false`.
+or public-site variables. The current GA worker and API both keep
+`WEB_KNOWLEDGE_WORKER_ENABLED=true`; do not change only one side.
 
-After both services are healthy, run the existing API pre-deploy migration and
-apply one reviewed API environment change:
+The database is already at Alembic head/current `f2a7c9e4b1d6`. No migration is
+required for the acceptance endpoint. Keep the deployed GA settings below and
+correct any non-zero rollout percentages to `0` in one reviewed update to the
+existing API service:
 
 ```dotenv
 WEB_TRIAG_ENABLED=true
@@ -202,8 +210,8 @@ WEB_KNOWLEDGE_WORKER_ENABLED=true
 
 Keep all four percentages `0`. Any optional global feature left false must keep
 its rollout mode `disabled`; do not use `internal_accounts` or `percentage` in
-the direct-GA configuration. Enable the worker flag on the worker and API in
-the same reviewed change so only the dedicated worker claims knowledge jobs.
+the direct-GA configuration. Keep the worker flag enabled on the worker and API
+together so only the dedicated worker claims knowledge jobs.
 
 From the deployed Render Shell, run exactly:
 
@@ -217,6 +225,60 @@ Do not release if the first command exits non-zero. Then verify health,
 authenticated bootstrap, public cache candidate-to-approved promotion, private
 cache exclusion, exact settlement, cancellation, edit/regenerate/continue,
 temporary TTL and SSE.
+
+### Manual production TRIAG acceptance workflow
+
+The dedicated account must be an email-verified Firebase email/password
+account whose token email exactly matches the owned database email. Add it to
+both backend-only `ADMIN_EMAILS` and `SWICO_INTERNAL_TEST_EMAILS`. Reserve this
+account for the suite, enable Swico Pro for it, and do not use it concurrently.
+Internal status prevents wallet debit; admin status grants the verified-admin
+content-free request audit. Neither status may be supplied by the browser.
+
+Create the GitHub Environment `production-triag`, optionally protect it with
+required reviewers, and add these Environment secrets:
+
+```text
+PLAYWRIGHT_BASE_URL=https://<standalone-web-origin>
+E2E_TEST_EMAIL=<dedicated-account-email>
+E2E_TEST_PASSWORD=<dedicated-account-password>
+```
+
+No Render API key is needed or permitted. Open **GitHub Actions → Deployed web
+smoke → Run workflow**, choose `production-triag`, and enter the exact input
+`I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION`. The job runs only Chromium desktop,
+with one worker and the `production-triag-acceptance` concurrency lock. The
+workflow has no push or pull-request trigger.
+
+The suite masks sensitive UI in its named screenshots and uploads only those
+screenshots, a content-free JSON summary, and a redacted failure trace. These
+artifacts contain request IDs and bounded scenario/cleanup states, never
+credentials, authorization headers, messages, answers, document text,
+filenames, provider/model names, or wallet identifiers. Retention is seven
+days. Native Playwright traces are intentionally disabled for this writable
+mode because they capture bearer headers and DOM/network content.
+
+Cleanup runs in `finally`: it restores the account's original Swico tier,
+deletes only threads absent from the initial snapshot, deletes and verifies the
+generated Knowledge Library document, and removes the generated repository and
+temporary upload. It never deletes or modifies `UsageCharge`, wallet-ledger, or
+other historical billing records. Any incomplete cleanup fails the job.
+
+The validator's current `static_only` capability with
+`executable_checks=false` is expected. The repository scenario must not report
+executable or repository verification; grounded or unverified is acceptable.
+
+The GitHub job summary prints request IDs under **Render log request IDs**. In
+the existing production API service, open **Logs** and search one exact UUID at
+a time to correlate safe stream-terminal, retrieval, cancellation and billing
+events. Never search for or copy the test prompts, answers, uploaded content,
+account credentials, or authorization header.
+
+Required Render changes for this implementation are limited to the existing
+API service: deploy the code, ensure the dedicated email is present in both
+allowlists, and set all four `WEB_ROLLOUT_*_PERCENT` values to `0`. Do not add a
+service, change the database schema, request a Render API key, or create another
+rollout stage.
 
 Rollback values are:
 

@@ -1,7 +1,83 @@
+import type { APIRequestContext, Page } from '@playwright/test'
+
 export type ApiResult<T> = { status: number; data: T | null }
 
 export interface DeployedApi {
   request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<T>>
+}
+
+export class AuthenticatedDeployedApi implements DeployedApi {
+  constructor(
+    private readonly requestContext: APIRequestContext,
+    private readonly origin: string,
+    private readonly authorization: string,
+  ) {}
+
+  async request<T>(
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): Promise<ApiResult<T>> {
+    const response = await this.requestContext.fetch(
+      `${this.origin}${path}`,
+      {
+        method,
+        headers: {
+          Authorization: this.authorization,
+          Accept: 'application/json',
+        },
+        ...(body === undefined ? {} : { data: body }),
+      },
+    )
+    const contentType = response.headers()['content-type'] ?? ''
+    const data = contentType.includes('application/json')
+      ? await response.json() as T
+      : null
+    return { status:response.status(), data }
+  }
+}
+
+export async function loginDeployed<TBootstrap>(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<{ api: AuthenticatedDeployedApi; bootstrap: TBootstrap }> {
+  if (!email) throw new Error('E2E_TEST_EMAIL must be configured')
+  if (!password) throw new Error('E2E_TEST_PASSWORD must be configured')
+  await page.goto('/')
+  const bootstrapResponse = page.waitForResponse(response => (
+    new URL(response.url()).pathname === '/api/web/bootstrap'
+    && response.status() === 200
+  ))
+  await page.getByLabel('Email address').fill(email)
+  await page.getByLabel('Password', { exact:true }).fill(password)
+  await page.getByRole('button', { name:'Sign in' }).click()
+  const response = await bootstrapResponse
+  await page.getByRole('button', { name:'Send message' }).waitFor()
+  const authorization = (await response.request().allHeaders()).authorization
+  if (!authorization?.startsWith('Bearer ')) {
+    throw new Error('Authenticated Swico API request was not observed')
+  }
+  return {
+    api: new AuthenticatedDeployedApi(
+      page.request,
+      new URL(response.url()).origin,
+      authorization,
+    ),
+    bootstrap: await response.json() as TBootstrap,
+  }
+}
+
+export async function logoutDeployed(page: Page): Promise<void> {
+  if (page.isClosed()) return
+  await page.goto('/')
+  const sidebar = page.getByRole('button', { name:'Open sidebar' })
+  if (await sidebar.isVisible()) await sidebar.click()
+  const account = page.locator('.account-button')
+  if (!await account.isVisible()) return
+  await account.click()
+  await page.getByRole('menuitem', { name:'Sign out' }).click()
+  await page.getByRole('heading', { name:'Welcome back' }).waitFor()
 }
 
 export function assertUsableTokenCredits(availableMicros: number): void {
@@ -92,4 +168,50 @@ export async function deleteGeneratedThread(
   if (deleted.status !== 204) throw new Error('E2E thread cleanup request failed')
   const verified = await api.request<unknown>('GET', `/api/web/threads/${encodeURIComponent(generatedThreadId)}`)
   if (verified.status !== 404) throw new Error('E2E thread cleanup verification failed')
+}
+
+export async function deleteGeneratedKnowledgeDocument(
+  api: DeployedApi,
+  documentId: string,
+  originalDocumentIds: ReadonlySet<string>,
+): Promise<void> {
+  if (originalDocumentIds.has(documentId)) {
+    throw new Error('refusing to delete a pre-existing knowledge document')
+  }
+  const deleted = await api.request<never>(
+    'DELETE', `/api/web/knowledge/${encodeURIComponent(documentId)}`,
+  )
+  if (deleted.status !== 204) {
+    throw new Error('E2E knowledge-document cleanup request failed')
+  }
+  const verified = await api.request<unknown>(
+    'GET', `/api/web/knowledge/${encodeURIComponent(documentId)}`,
+  )
+  if (verified.status !== 404) {
+    throw new Error('E2E knowledge-document cleanup verification failed')
+  }
+}
+
+export async function deleteGeneratedRepository(
+  api: DeployedApi,
+  repositoryId: string,
+): Promise<void> {
+  const deleted = await api.request<never>(
+    'DELETE', `/api/web/repositories/${encodeURIComponent(repositoryId)}`,
+  )
+  if (deleted.status !== 204) {
+    throw new Error('E2E repository cleanup request failed')
+  }
+}
+
+export async function deleteGeneratedUpload(
+  api: DeployedApi,
+  uploadId: string,
+): Promise<void> {
+  const deleted = await api.request<never>(
+    'DELETE', `/api/web/uploads/${encodeURIComponent(uploadId)}`,
+  )
+  if (deleted.status !== 204) {
+    throw new Error('E2E temporary-upload cleanup request failed')
+  }
 }

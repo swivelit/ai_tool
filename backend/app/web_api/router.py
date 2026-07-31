@@ -108,6 +108,7 @@ from ..web_ai.rollout_metrics import (
     RolloutReportSettings,
     build_rollout_report,
 )
+from ..web_ai.request_audit import build_request_audit
 from ..web_ai.knowledge_jobs import enqueue_knowledge_job, cancel_knowledge_job
 from ..web_ai.retrieval.attachment import safe_locator, upload_content_hash
 from ..web_ai.retrieval.persistent_knowledge import (
@@ -136,6 +137,7 @@ from .schemas import (
     KnowledgeReindexRequest, MessageFeedbackRequest, UsagePreferencesPatch,
     VirtualTextUploadRequest,
     WebChatRequest, WebTTSRequest,
+    TriagRequestAuditRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
 from .upload_store import (
@@ -760,6 +762,26 @@ def triag_rollout_report(
         window_hours=resolved_window,
         settings=settings,
     )
+
+
+@router.post("/admin/triag-request-audit")
+def triag_request_audit(
+    payload: TriagRequestAuditRequest,
+    response: Response,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = get_owned_user(session, auth)
+    if not is_verified_admin_user(auth, user):
+        raise HTTPException(status_code=404, detail="Not found")
+    results = build_request_audit(
+        session,
+        request_ids=[str(request_id) for request_id in payload.request_ids],
+    )
+    if results is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"results": results}
 
 
 @router.get("/voice/diagnostics")

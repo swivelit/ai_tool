@@ -305,7 +305,13 @@ def test_workflow_selects_exact_test_file_for_each_mode():
     source = WORKFLOW.read_text(encoding="utf-8")
     assert "staging) test_file='e2e/deployed-smoke.spec.ts'" in source
     assert "production-readonly) test_file='e2e/deployed-readonly.spec.ts'" in source
+    assert "production-triag) test_file='e2e/production-triag.spec.ts'" in source
     assert 'npx playwright test "$test_file" --project=chromium --project=mobile-chromium' in source
+    assert 'npx playwright test "$test_file" --project=chromium --workers=1' in source
+    assert "I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION" in source
+    assert "environment:\n      name: ${{ inputs.mode }}" in source
+    assert "retention-days: 7" in source
+    assert "RENDER_API_KEY" not in source
     assert source.index("python scripts/check-web-security-headers.py") < source.index('npx playwright test "$test_file"')
     for name in ("PLAYWRIGHT_BASE_URL", "E2E_TEST_EMAIL", "E2E_TEST_PASSWORD"):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in source
@@ -315,7 +321,11 @@ def test_workflow_has_read_only_permissions_and_concurrency_protection():
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     assert data["permissions"] == {"contents": "read"}
     assert data["concurrency"] == {
-        "group": "deployed-smoke-${{ inputs.mode }}",
+        "group": (
+            "${{ inputs.mode == 'production-triag' && "
+            "'production-triag-acceptance' || "
+            "format('deployed-smoke-{0}', inputs.mode) }}"
+        ),
         "cancel-in-progress": False,
     }
     environment = data["jobs"]["playwright"]["environment"]

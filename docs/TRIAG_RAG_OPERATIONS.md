@@ -21,6 +21,13 @@ Percentages are bounded to `0..100`, and the policy version is a bounded
 `v<number>` identifier. Production validation rejects malformed values by
 variable name without echoing the value.
 
+The percentage field is active only when its matching mode is `percentage`.
+Modes `disabled`, `internal_accounts`, and `all_eligible` require percentage
+`0`. This applies independently to TRIAG hybrid, Knowledge Library,
+repository chat, and Answer Guard. A non-zero percentage in any other mode is
+a startup/configuration error that names only the affected environment
+variables; the configured value is never included.
+
 `WEB_TRIAG_RELEASE_STATE` is independently validated as `controlled` or
 `general_availability` and defaults to `controlled`. Invalid values report the
 variable name only and the request path fails closed to controlled behavior.
@@ -297,7 +304,8 @@ rejects cancelled or truncated responses, insufficient or unverified answers,
 failed repairs and invalid citations. General availability does not bypass any
 of those checks.
 
-Create the private validator as a same-region Render Private Service with:
+The production validator is already deployed as a same-region Render Private
+Service. Do not create another service. Its reviewed commands remain:
 
 ```text
 Build: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
@@ -314,7 +322,8 @@ No database, Firebase, provider, payment, SMTP, Valkey or download secret
 belongs on the validator. Static-only is a truthful limitation: executable
 validation remains disabled until every isolation proof is positively met.
 
-Create the same-region Render Background Worker with:
+The production knowledge worker is likewise already deployed. Do not create
+another worker. Its reviewed commands remain:
 
 ```text
 Build: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
@@ -325,9 +334,9 @@ Its only secrets are the private production `DATABASE_URL` and provider key.
 Copy only the bounded knowledge worker, embedding model/dimensions, provider
 budget, embedding price, FX, markup and reservation settings from the reviewed
 staging worker. Never add Firebase, Razorpay, SMTP, download-token, validator
-or Valkey secrets. Create it with `WEB_KNOWLEDGE_WORKER_ENABLED=false`; after it
-is healthy, enable that flag on the worker and API together so job ownership is
-unambiguous.
+or Valkey secrets. The current GA worker and API both keep
+`WEB_KNOWLEDGE_WORKER_ENABLED=true` so only the dedicated worker claims these
+jobs. Do not toggle one without the other.
 
 Run after the single-head migration and before declaring production ready:
 
@@ -344,11 +353,71 @@ required tables, validator isolation, and knowledge-job counts. A non-zero exit
 is a release blocker. Do not paste raw database, validator or provider errors
 into release artifacts.
 
-Direct-GA order is: provision both private services disabled; validate the
-validator; migrate; enable worker ownership; apply GA/all-eligible API values
-with every percent `0`; run both commands; verify `/api/web/health`, cache
+For the current deployed GA runtime, validate the existing services and keep
+worker ownership enabled. Every `all_eligible` rollout must have percent `0`;
+the release check returns a bounded `reason_code` on rollout failure. Run both
+commands and verify `/api/web/health`, cache
 candidate promotion, exact settlement, cancellation and SSE. Roll back in this
 order: set all rollout modes `disabled`, set
 `WEB_TRIAG_RELEASE_STATE=controlled`, set `WEB_TRIAG_ENABLED=false`, disable
 worker ownership and all knowledge/repository/Answer Guard/dense derived flags,
 then stop the worker. Do not downgrade the database.
+
+## Production TRIAG acceptance
+
+`POST /api/web/admin/triag-request-audit` is the only per-request acceptance
+endpoint. It accepts one to twelve unique request UUIDs and requires the
+existing verified-admin authorization: verified Firebase email, exact match to
+the owned database email, and membership in `ADMIN_EMAILS`. Unknown IDs and
+unauthorized users receive the same 404 response. Results contain only bounded
+counts, status enums, micro-INR totals, source-kind counts, settlement and
+cancellation indicators. They never include identities, provider/model names,
+prompts, messages, answers, filenames, locators, source text, code, metadata,
+exceptions, or secrets.
+
+Use one dedicated production acceptance account. Its Firebase email/password
+account must be email-verified; its token email must exactly match its owned
+database user; and the same normalized email must be listed in both
+`ADMIN_EMAILS` and `SWICO_INTERNAL_TEST_EMAILS`. Do not use a personal or
+customer account. The internal allowlist makes Chat billing-exempt while still
+recording provider cost, and the admin allowlist grants only the content-free
+audit. The account must have Swico Pro available and all four GA features. Do
+not run other tests or manual chats on it concurrently.
+
+In GitHub create an Environment named `production-triag`, add any required
+reviewers, and configure exactly these Environment secrets:
+
+```text
+PLAYWRIGHT_BASE_URL=https://<standalone-web-origin>
+E2E_TEST_EMAIL=<dedicated-account-email>
+E2E_TEST_PASSWORD=<dedicated-account-password>
+```
+
+Do not configure a Render API key. To run the suite, open **Actions → Deployed
+web smoke → Run workflow**, choose `production-triag`, enter exactly
+`I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION` in the confirmation input, and run the
+workflow. This mode is manual only, Chromium desktop only, uses one worker, and
+is protected by the production-specific concurrency lock. It never runs on a
+push or pull request.
+
+The six scenarios create temporary chats, one PDF upload, one approved
+Knowledge Library document, and one repository snapshot. Cleanup restores the
+previous Swico tier and deletes only resources proven absent from the initial
+account snapshot. It verifies thread and Knowledge deletion, removes the
+temporary upload and repository, and never deletes or changes historical
+billing records. Incomplete cleanup fails the job. Screenshots mask messages,
+answers, filenames, account UI and thread titles. The uploaded JSON summary and
+redacted failure trace contain scenario states, cleanup state, and request IDs
+only; retention is seven days.
+
+The existing validator currently reports `static_only` with
+`executable_checks=false`. That is healthy for this suite. Repository results
+may be `grounded` or `unverified`; they must never be labeled
+executable-verified or repository-verified.
+
+After the workflow, copy request IDs from the **Render log request IDs** section
+of the GitHub job summary. Open the existing production API service in Render,
+choose **Logs**, and search each exact UUID. Use those IDs to correlate safe
+terminal, cancellation, retrieval, and settlement events. Do not paste
+messages, uploaded content, credentials, or raw database rows into the search
+or into GitHub artifacts.

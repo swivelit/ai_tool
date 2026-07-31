@@ -4,17 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: staging or production-readonly
+        description: staging, production-readonly, or production-triag
         required: true
         default: staging
         type: choice
-        options: [staging, production-readonly]
+        options: [staging, production-readonly, production-triag]
+      production_write_confirmation:
+        description: Type I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION for production-triag
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: deployed-smoke-${{ inputs.mode }}
+  group: ${{ inputs.mode == 'production-triag' && 'production-triag-acceptance' || format('deployed-smoke-{0}', inputs.mode) }}
   cancel-in-progress: false
 
 jobs:
@@ -23,7 +27,7 @@ jobs:
     environment:
       name: ${{ inputs.mode }}
       deployment: false
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,6 +50,16 @@ jobs:
             printf 'Missing required environment secret: %s\n' "${missing[@]}" >&2
             exit 1
           fi
+      - name: Confirm production writes
+        if: inputs.mode == 'production-triag'
+        shell: bash
+        env:
+          PRODUCTION_WRITE_CONFIRMATION: ${{ inputs.production_write_confirmation }}
+        run: |
+          if [[ "$PRODUCTION_WRITE_CONFIRMATION" != 'I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION' ]]; then
+            echo 'production-triag requires the exact production write confirmation' >&2
+            exit 1
+          fi
       - name: Install web dependencies
         run: npm ci
         working-directory: web
@@ -65,21 +79,27 @@ jobs:
           PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          PRODUCTION_TRIAG_CONFIRMATION: ${{ inputs.production_write_confirmation }}
         run: |
           case "$PLAYWRIGHT_MODE" in
             staging) test_file='e2e/deployed-smoke.spec.ts' ;;
             production-readonly) test_file='e2e/deployed-readonly.spec.ts' ;;
+            production-triag) test_file='e2e/production-triag.spec.ts' ;;
             *) echo 'Unsupported deployed test mode' >&2; exit 2 ;;
           esac
           set +e
-          npx playwright test "$test_file" --project=chromium --project=mobile-chromium
+          if [[ "$PLAYWRIGHT_MODE" == 'production-triag' ]]; then
+            npx playwright test "$test_file" --project=chromium --workers=1
+          else
+            npx playwright test "$test_file" --project=chromium --project=mobile-chromium
+          fi
           status=$?
           set -e
           if [[ $status -eq 0 ]]; then result=passed; else result=failed; fi
           echo "result=$result" >> "$GITHUB_OUTPUT"
           exit "$status"
       - name: Upload private failure diagnostics
-        if: failure()
+        if: failure() && inputs.mode != 'production-triag'
         uses: actions/upload-artifact@v4
         with:
           name: deployed-playwright-failure-${{ github.run_id }}
@@ -87,6 +107,24 @@ jobs:
             web/playwright-report
             web/test-results
           if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload redacted production TRIAG trace on failure
+        if: failure() && inputs.mode == 'production-triag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-triag-redacted-playwright-trace-${{ github.run_id }}
+          path: web/test-results/production-triag-safe-trace.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload safe production TRIAG artifacts
+        if: always() && inputs.mode == 'production-triag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-triag-safe-artifacts-${{ github.run_id }}
+          path: |
+            web/test-results/production-triag-screenshots
+            web/test-results/production-triag-summary.json
+          if-no-files-found: warn
           retention-days: 7
       - name: Write safe test summary
         if: always()
@@ -103,6 +141,21 @@ jobs:
             echo "- mode: $MODE"
             echo "- base hostname: $hostname"
             echo "- commit SHA: $GITHUB_SHA"
-            echo "- desktop/mobile result: $result"
+            if [[ "$MODE" == 'production-triag' ]]; then
+              echo "- Chromium desktop result: $result"
+            else
+              echo "- desktop/mobile result: $result"
+            fi
             echo "- timestamp: $timestamp"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$MODE" == 'production-triag' && -f web/test-results/production-triag-summary.json ]]; then
+            node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const summary = require('./web/test-results/production-triag-summary.json')
+          process.stdout.write('\n### Render log request IDs\n\n')
+          for (const item of summary.scenarios || []) {
+            const ids = Array.isArray(item.request_ids) ? item.request_ids : []
+            process.stdout.write(`- ${item.scenario}: ${ids.length ? ids.join(', ') : 'none'}\n`)
+          }
+          process.stdout.write(`- cleanup: ${summary.cleanup || 'unknown'}\n`)
+          NODE
+          fi
