@@ -124,9 +124,26 @@ additionally permits triplets. The shared evidence cap remains authoritative.
 The versioned job types are `web_knowledge_ingest`,
 `web_embedding_backfill`, `web_triplet_extract`, and
 `web_hierarchy_build`. Their payloads contain owner/document/version
-identifiers only. They are idempotent and cancellable. The shared worker does
-not construct an embedding provider: a later dedicated worker must inject one
-only after an authoritative reservation and `web_usage_stage` exist.
+identifiers only. They are idempotent and cancellable.
+
+The disabled-by-default dedicated knowledge worker runs as
+`python -m app.knowledge_worker`. With
+`WEB_KNOWLEDGE_WORKER_ENABLED=false`, the shared queue retains its earlier
+claim behavior and constructs no embedding provider. With the flag true, the
+shared queue excludes exactly the four knowledge job types and the dedicated
+worker allowlists exactly those types. The dedicated worker injects the
+existing tracked embedding provider only after it has revalidated the
+owner/document/source version and durably created or reused an authoritative
+`UsageCharge` reservation and idempotent `knowledge_embedding`
+`web_usage_stage`.
+
+Successful provider usage is settled exactly once at the authoritative parent,
+including when cancellation or source invalidation means returned vectors must
+be discarded. An indeterminate previously-running stage is never replayed
+after reclaim: its reservation is released and lexical chunks remain usable.
+The worker chains ingest → embedding backfill → hierarchy → triplet in one
+completion transaction, skipping stages whose global flag or central tier
+policy is false. A failed derived stage never changes authoritative raw chunks.
 
 Phase 5.1 exposes the foundation through authenticated
 `/api/web/knowledge` endpoints. Approval accepts an existing temporary upload

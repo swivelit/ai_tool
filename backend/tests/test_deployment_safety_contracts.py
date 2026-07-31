@@ -36,6 +36,7 @@ def test_staging_blueprint_contains_required_safe_values():
     assert set(services) == {
         "swico-api-staging", "swico-web-staging",
         "swico-upload-cache-staging", "swico-code-validator-staging",
+        "swico-knowledge-worker-staging",
     }
     api = services["swico-api-staging"]
     values = {key: item.get("value") for key, item in env_vars(api).items() if "value" in item}
@@ -70,6 +71,9 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_RAG_TRIPLET_ENABLED": "false",
         "WEB_RAG_HIERARCHY_ENABLED": "false",
         "WEB_KNOWLEDGE_JOB_BATCH_SIZE": "50",
+        "WEB_KNOWLEDGE_WORKER_ENABLED": "false",
+        "WEB_KNOWLEDGE_WORKER_POLL_SECONDS": "2",
+        "WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY": "1",
         "WEB_RAG_LITE_CANDIDATE_LIMIT": "12",
         "WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT": "4",
         "WEB_RAG_LITE_EVIDENCE_TOKEN_CAP": "1200",
@@ -239,6 +243,29 @@ def test_staging_blueprint_cannot_reference_production_resources_or_groups():
         "SMTP_PASSWORD", "SARVAM_API_KEY",
     }
     assert forbidden_validator_keys.isdisjoint(validator_vars)
+    worker = services["swico-knowledge-worker-staging"]
+    worker_vars = env_vars(worker)
+    assert worker["type"] == "worker"
+    assert worker["region"] == api["region"]
+    assert worker["startCommand"] == "cd backend && python -m app.knowledge_worker"
+    assert worker_vars["DATABASE_URL"] == {
+        "key": "DATABASE_URL",
+        "fromDatabase": {
+            "name": "swico-postgres-staging",
+            "property": "connectionString",
+        },
+    }
+    assert worker_vars["OPENAI_API_KEY"] == {
+        "key": "OPENAI_API_KEY", "sync": False,
+    }
+    forbidden_worker_keys = {
+        "GOOGLE_APPLICATION_CREDENTIALS", "FIREBASE_CREDENTIALS_JSON",
+        "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET",
+        "SMTP_HOST", "SMTP_PASSWORD", "DOWNLOAD_TOKEN_SECRET",
+        "WEB_CODE_VALIDATOR_URL", "WEB_CODE_VALIDATOR_AUTH_TOKEN",
+        "WEB_UPLOAD_CACHE_URL", "SARVAM_API_KEY",
+    }
+    assert forbidden_worker_keys.isdisjoint(worker_vars)
     serialized = BLUEPRINT.read_text(encoding="utf-8").lower()
     assert "tamil_voice_ai_db" not in serialized
     assert "fromgroup" not in serialized

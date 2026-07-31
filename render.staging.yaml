@@ -79,6 +79,15 @@ projects:
                 value: "false"
               - key: WEB_KNOWLEDGE_JOB_BATCH_SIZE
                 value: "50"
+              # When true, the API/shared worker excludes all four dedicated
+              # knowledge job types. Keep false until the private worker is
+              # enabled and its accounting gates pass.
+              - key: WEB_KNOWLEDGE_WORKER_ENABLED
+                value: "false"
+              - key: WEB_KNOWLEDGE_WORKER_POLL_SECONDS
+                value: "2"
+              - key: WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY
+                value: "1"
               - key: WEB_RAG_LITE_CANDIDATE_LIMIT
                 value: "12"
               - key: WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT
@@ -324,6 +333,58 @@ projects:
                 value: "90"
               - key: CODE_VALIDATOR_MAX_OUTPUT_BYTES
                 value: "65536"
+          - type: worker
+            name: swico-knowledge-worker-staging
+            runtime: python
+            region: singapore
+            plan: starter
+            buildCommand: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+            startCommand: cd backend && python -m app.knowledge_worker
+            envVars:
+              - key: APP_ENV
+                value: staging
+              - key: WEB_KNOWLEDGE_WORKER_ENABLED
+                value: "false"
+              - key: WEB_KNOWLEDGE_WORKER_POLL_SECONDS
+                value: "2"
+              - key: WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY
+                value: "1"
+              - key: WEB_KNOWLEDGE_JOB_BATCH_SIZE
+                value: "50"
+              - key: WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED
+                value: "false"
+              - key: WEB_RAG_DENSE_ENABLED
+                value: "false"
+              - key: WEB_RAG_HIERARCHY_ENABLED
+                value: "false"
+              - key: WEB_RAG_TRIPLET_ENABLED
+                value: "false"
+              - key: WEB_RAG_EMBEDDING_MODEL
+                value: text-embedding-3-small
+              - key: WEB_RAG_EMBEDDING_DIMENSIONS
+                value: "1536"
+              - key: OPENAI_DAILY_BUDGET_USD
+                value: "5"
+              - key: OPENAI_BUDGET_SAFETY_MARGIN_RATIO
+                value: "0.05"
+              - key: OPENAI_PRICE_TEXT_EMBEDDING_3_SMALL_INPUT_PER_1M
+                value: "0.02"
+              - key: OPENAI_PRICE_TEXT_EMBEDDING_3_SMALL_OUTPUT_PER_1M
+                value: "0"
+              - key: USD_TO_INR_BILLING_RATE
+                value: "90"
+              - key: OPENAI_FX_BUFFER_PERCENT
+                value: "3"
+              - key: USAGE_MARKUP_MULTIPLIER
+                value: "1.0"
+              - key: BILLING_RESERVE_MULTIPLIER
+                value: "1.25"
+              - key: OPENAI_API_KEY
+                sync: false
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: swico-postgres-staging
+                  property: connectionString
           - type: web
             name: swico-web-staging
             runtime: static

@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from datetime import timedelta
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Collection, Dict, Optional
 
 from sqlalchemy import update as sql_update
 from sqlalchemy.orm import sessionmaker
@@ -19,9 +19,33 @@ JobHandler = Callable[[Session, Dict[str, Any]], Dict[str, Any]]
 
 
 class DBJobQueue:
-    def __init__(self, engine: Any, *, poll_seconds: float = 1.0) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        poll_seconds: float = 1.0,
+        allowed_job_types: Collection[str] | None = None,
+        excluded_job_types: Collection[str] | None = None,
+        knowledge_embedding_provider_factory: Callable[
+            [Session, dict[str, object]], Any
+        ] | None = None,
+        chain_knowledge_jobs: bool = False,
+    ) -> None:
         self.engine = engine
         self.poll_seconds = max(0.25, float(poll_seconds))
+        self.allowed_job_types = (
+            tuple(sorted({str(value) for value in allowed_job_types}))
+            if allowed_job_types is not None
+            else None
+        )
+        self.excluded_job_types = tuple(
+            sorted({str(value) for value in (excluded_job_types or ())})
+        )
+        if self.allowed_job_types is not None and (
+            set(self.allowed_job_types) & set(self.excluded_job_types)
+        ):
+            raise ValueError("allowed and excluded job types must not overlap")
+        self._chain_knowledge_jobs = bool(chain_knowledge_jobs)
         self._handlers: Dict[str, JobHandler] = {}
         self._session_factory = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
         self._thread: Optional[threading.Thread] = None
@@ -33,6 +57,16 @@ class DBJobQueue:
         self.register("web_embedding_backfill", _handle_web_embedding_backfill)
         self.register("web_triplet_extract", _handle_web_triplet_extract)
         self.register("web_hierarchy_build", _handle_web_hierarchy_build)
+        if knowledge_embedding_provider_factory is not None:
+            self.register(
+                "web_embedding_backfill",
+                lambda session, payload: _handle_web_embedding_backfill(
+                    session,
+                    payload,
+                    provider_factory=knowledge_embedding_provider_factory,
+                    enforce_feature_policy=True,
+                ),
+            )
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[str(job_type)] = handler
@@ -98,21 +132,40 @@ class DBJobQueue:
 
     def _claim_next_job(self, session: Session) -> Optional[Job]:
         now = utc_now()
-        candidate_id = session.exec(
+        statement = (
             select(Job.id)
             .where(Job.status.in_(["queued", "retrying"]))
             .where(Job.run_at <= now)
             .order_by(Job.created_at.asc())
-        ).first()
+        )
+        if self.allowed_job_types is not None:
+            statement = statement.where(
+                Job.job_type.in_(self.allowed_job_types)
+            )
+        if self.excluded_job_types:
+            statement = statement.where(
+                Job.job_type.notin_(self.excluded_job_types)
+            )
+        candidate_id = session.exec(statement).first()
         if candidate_id is None:
             return None
 
-        claim_result = session.exec(
+        claim_statement = (
             sql_update(Job)
             .where(Job.id == candidate_id)
             .where(Job.status.in_(["queued", "retrying"]))
             .where(Job.run_at <= now)
-            .values(
+        )
+        if self.allowed_job_types is not None:
+            claim_statement = claim_statement.where(
+                Job.job_type.in_(self.allowed_job_types)
+            )
+        if self.excluded_job_types:
+            claim_statement = claim_statement.where(
+                Job.job_type.notin_(self.excluded_job_types)
+            )
+        claim_result = session.exec(
+            claim_statement.values(
                 status="running",
                 started_at=now,
                 updated_at=now,
@@ -159,6 +212,18 @@ class DBJobQueue:
                 job.finished_at = utc_now()
                 job.updated_at = utc_now()
                 session.add(job)
+                if (
+                    self._chain_knowledge_jobs
+                    and job.job_type in _knowledge_job_types()
+                ):
+                    from .web_ai.knowledge_jobs import enqueue_next_knowledge_job
+
+                    enqueue_next_knowledge_job(
+                        session,
+                        completed_job_type=job.job_type,
+                        payload=payload,
+                        result=result or {},
+                    )
                 session.commit()
                 logger.info("job completed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
                 if (
@@ -248,13 +313,23 @@ def _handle_web_knowledge_ingest(
 
 
 def _handle_web_embedding_backfill(
-    session: Session, payload: Dict[str, Any]
+    session: Session,
+    payload: Dict[str, Any],
+    *,
+    provider_factory: Callable[[Session, dict[str, object]], Any] | None = None,
+    enforce_feature_policy: bool = False,
 ) -> Dict[str, Any]:
     from .web_ai.knowledge_jobs import handle_embedding_backfill
 
-    # No provider is implicitly constructed by the shared worker. A later
-    # dedicated worker must inject an accounted provider explicitly.
-    return handle_embedding_backfill(session, payload, provider=None)
+    # The shared worker never implicitly constructs a provider. Only the
+    # dedicated worker injects one after its isolated claim.
+    return handle_embedding_backfill(
+        session,
+        payload,
+        provider=None,
+        provider_factory=provider_factory,
+        enforce_feature_policy=enforce_feature_policy,
+    )
 
 
 def _handle_web_triplet_extract(
@@ -271,6 +346,12 @@ def _handle_web_hierarchy_build(
     from .web_ai.knowledge_jobs import handle_hierarchy_build
 
     return handle_hierarchy_build(session, payload)
+
+
+def _knowledge_job_types() -> tuple[str, ...]:
+    from .web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES
+
+    return KNOWLEDGE_JOB_TYPES
 
 
 def enqueue_memory_embedding_backfill(

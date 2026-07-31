@@ -28,6 +28,9 @@ WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
 WEB_RAG_TRIPLET_ENABLED=false
 WEB_RAG_HIERARCHY_ENABLED=false
 WEB_KNOWLEDGE_JOB_BATCH_SIZE=50
+WEB_KNOWLEDGE_WORKER_ENABLED=false
+WEB_KNOWLEDGE_WORKER_POLL_SECONDS=2
+WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY=1
 WEB_ANSWER_GUARD_ENABLED=false
 WEB_VERIFIED_STREAMING_ENABLED=false
 WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
@@ -115,15 +118,33 @@ Do not enable persistent knowledge merely because the migration is deployed.
    turns neither read nor write the global answer cache.
 6. Validate reservation, idempotent stage accounting, exact settlement and
    cancellation before enabling an embedding worker.
-7. Enable hierarchy, then triplets, separately and compare evidence to raw
+7. Deploy the private staging knowledge worker with its flag false and only
+   its minimum database, provider, pricing, budget and worker configuration.
+   Confirm it has no Firebase, Razorpay webhook, SMTP, download-token or
+   validator secrets.
+8. Enable the worker and the API's claim-separation flag as one reviewed
+   staging change. Confirm the API/shared worker no longer claims knowledge
+   jobs, the dedicated worker never claims unrelated jobs, and provider
+   construction remains behind wallet reservation.
+9. Prove restart/reclaim idempotency, exact settlement, cancellation both
+   before and after the provider response, source-version invalidation and
+   lexical fallback. An indeterminate running provider stage must fail closed,
+   not replay.
+10. Enable hierarchy, then triplets, separately and compare evidence to raw
    chunk anchors.
-8. Pass latency, retrieval-quality, privacy, billing, error-rate and rollback
+11. Pass latency, retrieval-quality, privacy, billing, error-rate and rollback
    gates before any production flag changes.
 
 Production retains all flags as `false` until approval. Production
 `WEB_CODE_VALIDATOR_URL` must be blank unless a separately isolated production
 validator is deliberately provisioned; it must never reference the staging
 validator.
+
+The worker is not a percentage-rollout mechanism. Job-type separation is a
+service-wide operational switch, and the existing server-authoritative
+Knowledge Library rollout still determines who may create work. Keep
+`WEB_KNOWLEDGE_WORKER_ENABLED=false` in production and do not create a
+production worker until the staging gates above are approved.
 
 ## Phase 6A cohort gates
 

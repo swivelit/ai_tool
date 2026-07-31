@@ -115,9 +115,51 @@ authoritative reservation. A paid attempt requires an owner/request-matched
 exact parent settlement. Disabled or failed derived work is healthy fallback.
 
 Cancellation sets the owner-scoped job to `cancelled`; handlers recheck that
-state between bounded units. Failed jobs persist only a static error code. A
-future Render worker must use the same database, carry no raw payloads, and
-remain disabled until accounting and cancellation gates pass.
+state before and after the paid call. Failed jobs persist only a static error
+code. The dedicated process is:
+
+```text
+cd backend
+python -m app.knowledge_worker
+```
+
+Its settings are bounded at startup:
+
+```text
+WEB_KNOWLEDGE_WORKER_ENABLED=false
+WEB_KNOWLEDGE_WORKER_POLL_SECONDS=2       # 0.25..60
+WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY=1   # 1..8
+```
+
+False preserves the shared worker's earlier claim behavior. True makes the
+shared worker exclude the four knowledge types and makes the dedicated process
+the only claimant for them. Do not set true on the API until the private worker
+is deployed, connected to the same PostgreSQL database, healthy, and still
+disabled. Then enable the worker first and the API separation flag in one
+reviewed staging change.
+
+The chain order is ingest, embedding backfill, hierarchy, then triplet.
+Persistent knowledge, dense retrieval, hierarchy/triplet flags, and the
+selected tier policy independently gate later stages. A provider failure
+completes as lexical fallback and may continue to enabled provider-free derived
+stages; it never invalidates ready raw chunks. A provider response that arrives
+after cancellation or source invalidation is charged exactly once but its
+vectors are discarded.
+
+For a content-free billing audit:
+
+```sql
+select s.status as stage_status, c.status as charge_status, count(*),
+       sum(s.debited_micros) as stage_micros,
+       sum(c.debited_micros) as charge_micros
+from web_usage_stage s
+join usage_charge c on c.id = s.usage_charge_id
+where s.stage_name = 'knowledge_embedding'
+group by s.status, c.status;
+```
+
+Do not select `job.payload_json`, chunk bodies, embeddings, provider output, or
+ledger metadata during routine operations.
 
 The Phase 5.1 owner operations are:
 

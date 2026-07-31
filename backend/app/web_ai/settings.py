@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import math
 import os
 import re
 from urllib.parse import urlsplit
@@ -56,6 +57,26 @@ def _parse_int(
     return value
 
 
+def _parse_float(
+    environ: Mapping[str, str],
+    name: str,
+    default: float,
+    errors: list[str],
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(str(environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        errors.append(f"{name} must be a number")
+        return default
+    if not math.isfinite(value) or value < minimum or value > maximum:
+        errors.append(f"{name} is outside supported bounds")
+        return default
+    return value
+
+
 @dataclass(frozen=True)
 class TriagSettings:
     enabled: bool = False
@@ -89,6 +110,9 @@ class TriagSettings:
     rag_triplet_enabled: bool = False
     rag_hierarchy_enabled: bool = False
     knowledge_job_batch_size: int = 50
+    knowledge_worker_enabled: bool = False
+    knowledge_worker_poll_seconds: float = 2.0
+    knowledge_worker_max_concurrency: int = 1
 
     @classmethod
     def from_environ(
@@ -132,6 +156,9 @@ class TriagSettings:
         )
         hierarchy = _parse_bool(
             env, "WEB_RAG_HIERARCHY_ENABLED", False, errors
+        )
+        knowledge_worker = _parse_bool(
+            env, "WEB_KNOWLEDGE_WORKER_ENABLED", False, errors
         )
         verified_buffer_max = _parse_int(
             env,
@@ -196,6 +223,14 @@ class TriagSettings:
         knowledge_job_batch_size = _parse_int(
             env, "WEB_KNOWLEDGE_JOB_BATCH_SIZE", 50, errors,
             minimum=1, maximum=200,
+        )
+        knowledge_worker_poll_seconds = _parse_float(
+            env, "WEB_KNOWLEDGE_WORKER_POLL_SECONDS", 2.0, errors,
+            minimum=0.25, maximum=60.0,
+        )
+        knowledge_worker_max_concurrency = _parse_int(
+            env, "WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY", 1, errors,
+            minimum=1, maximum=8,
         )
         validator_url = str(env.get("WEB_CODE_VALIDATOR_URL", "") or "").strip()
         validator_token = str(
@@ -281,6 +316,9 @@ class TriagSettings:
             rag_triplet_enabled=triplet,
             rag_hierarchy_enabled=hierarchy,
             knowledge_job_batch_size=knowledge_job_batch_size,
+            knowledge_worker_enabled=knowledge_worker,
+            knowledge_worker_poll_seconds=knowledge_worker_poll_seconds,
+            knowledge_worker_max_concurrency=knowledge_worker_max_concurrency,
         )
 
     @property
@@ -418,5 +456,8 @@ class TriagSettings:
             ),
             "hierarchical_retrieval": (
                 "enabled" if self.hierarchy_runtime_enabled else "disabled"
+            ),
+            "knowledge_worker": (
+                "enabled" if self.knowledge_worker_enabled else "disabled"
             ),
         }

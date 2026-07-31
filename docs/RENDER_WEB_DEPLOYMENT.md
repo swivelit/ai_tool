@@ -4,19 +4,20 @@ Do not create a Blueprint for the existing production resources. They were creat
 
 ## New isolated staging project — beginner setup
 
-`render.staging.yaml` is only for five new resources:
+`render.staging.yaml` is only for six new resources:
 `swico-api-staging`, `swico-web-staging`, `swico-postgres-staging`,
-`swico-upload-cache-staging`, and `swico-code-validator-staging`. It puts
-the API and database in the same region, wires `DATABASE_URL` only through the
-staging `fromDatabase` reference, and defines no environment group. Never
-attach a production environment group or copy a production credential.
+`swico-upload-cache-staging`, `swico-code-validator-staging`, and
+`swico-knowledge-worker-staging`. It puts the API, worker, and database in the
+same region, wires each `DATABASE_URL` only through the staging `fromDatabase`
+reference, and defines no environment group. Never attach a production
+environment group or copy a production credential.
 
 1. In Render, create or select a project named **Swico Staging** and an
    environment named **Staging**. Do not place existing production resources in
    it.
 2. Open **Blueprints → New Blueprint Instance**, connect this repository and
    branch, select **Use a custom Blueprint path**, and enter
-   `render.staging.yaml`. Review that the plan contains only the five staging
+   `render.staging.yaml`. Review that the plan contains only the six staging
    resource names before applying it.
 3. In the initial Blueprint form, provide every `sync:false` value. On the API,
    set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; provide a
@@ -53,6 +54,13 @@ attach a production environment group or copy a production credential.
     Persistence **Off**, eviction policy **allkeys-lru**, and no public IP allow
     list. Confirm `swico-api-staging` receives its internal connection string as
     `WEB_UPLOAD_CACHE_URL`; never copy it into the static site.
+11. Open `swico-knowledge-worker-staging` and confirm region **Singapore**,
+    start command `cd backend && python -m app.knowledge_worker`, and
+    `WEB_KNOWLEDGE_WORKER_ENABLED=false`. Its only secret/provider connections
+    are its staging `DATABASE_URL` and staging `OPENAI_API_KEY`. Confirm it has
+    no Firebase Admin file or credential, Razorpay/webhook, SMTP,
+    download-token, validator token/URL, Valkey, or production environment
+    group.
 
 The file has been checked by repository tests and parsed as YAML. A Render CLI
 or API validation must be run by the operator when authenticated tooling is
@@ -95,6 +103,10 @@ backend-only rollout variables directly to the API service. Keep every mode
 Phase 6B likewise adds no resource or public variable. Add its four
 backend-only reporting variables with reporting disabled; enable it only for a
 bounded staging admin/Render Shell acceptance review.
+The dedicated knowledge-indexing patch adds only the private staging worker
+declared in `render.staging.yaml`. It does not add a production worker or a
+public variable. Keep its API and worker flags false until the staging billing,
+claim-isolation, cancellation, and restart gates pass.
 The single Alembic head `f2a7c9e4b1d6` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
@@ -130,6 +142,9 @@ WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
 WEB_RAG_TRIPLET_ENABLED=false
 WEB_RAG_HIERARCHY_ENABLED=false
 WEB_KNOWLEDGE_JOB_BATCH_SIZE=50
+WEB_KNOWLEDGE_WORKER_ENABLED=false
+WEB_KNOWLEDGE_WORKER_POLL_SECONDS=2
+WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY=1
 WEB_RAG_LITE_CANDIDATE_LIMIT=12
 WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT=4
 WEB_RAG_LITE_EVIDENCE_TOKEN_CAP=1200
@@ -331,19 +346,23 @@ checkout, duplicate webhook replay, reconciliation, audit, and same-bucket
 refunds after intentionally enabling the switch there.
 
 This release uses the existing API service, PostgreSQL database, and private
-Valkey at `WEB_UPLOAD_CACHE_URL`. Staging adds one private validator process in
-the same region. It receives only its dedicated token and non-secret limits;
-it must not link any production environment group. Do not create or enable a
-production validator. No new database, Valkey, Cron Job, disk, object storage,
-or stored-audio facility is required. The staging Blueprint declares five
-resources total: API, private Valkey, private validator, static website, and
-PostgreSQL. Phase 5 adds no sixth resource and does not start a dedicated
-knowledge worker; the four job types remain safe for a later separately gated
-worker. Phase 5.1 adds authenticated API/UI access only: it needs no sixth
-resource, no new secret, and no `VITE_*` value. Keep
+Valkey at `WEB_UPLOAD_CACHE_URL`. Staging has one private validator and one
+private knowledge worker in the same region. Neither links a production
+environment group. The validator receives only its dedicated token and
+non-secret limits. The knowledge worker receives only the staging database,
+provider key, embedding pricing/budget settings, and knowledge-worker flags;
+it receives no Firebase, Razorpay webhook, SMTP, download-token, validator, or
+Valkey secret. Do not create or enable a production validator or knowledge
+worker. No new database, Valkey, Cron Job, disk, object storage, or stored-audio
+facility is required. The staging Blueprint declares six resources total: API,
+private Valkey, private validator, private knowledge worker, static website,
+and PostgreSQL. Phase 5.1 remains API/UI only and adds no public `VITE_*`
+value. Keep
 `WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false` in production until the explicit
 approval, owner-marker, deletion, re-index and cancellation staging gates pass.
-Production flags remain disabled until the staged rollout gates pass.
+Keep `WEB_KNOWLEDGE_WORKER_ENABLED=false` in production until a separately
+approved production worker exists. Production flags remain disabled until the
+staged rollout gates pass.
 
 ## Production temporary uploads and voice — exact dashboard steps
 

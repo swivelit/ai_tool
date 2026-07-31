@@ -235,6 +235,12 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "knowledge_hybrid",
             "triplet",
             "hierarchy_raw_anchored",
+            "knowledge_provider_unavailable",
+            "knowledge_job_cancelled",
+            "knowledge_source_version_changed",
+            "knowledge_embedding_attempt_indeterminate",
+            "knowledge_embedding_stage_unavailable",
+            "malformed_embedding_result",
         }
     ),
 }

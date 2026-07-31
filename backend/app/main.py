@@ -914,7 +914,19 @@ def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
 def _get_job_queue() -> DBJobQueue:
     global JOB_QUEUE
     if JOB_QUEUE is None:
-        JOB_QUEUE = DBJobQueue(engine, poll_seconds=float(os.getenv("JOB_QUEUE_POLL_SECONDS", "1.0") or 1.0))
+        triag_settings = TriagSettings.from_environ()
+        excluded_job_types: tuple[str, ...] = ()
+        if triag_settings.knowledge_worker_enabled:
+            from .web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES
+
+            excluded_job_types = KNOWLEDGE_JOB_TYPES
+        JOB_QUEUE = DBJobQueue(
+            engine,
+            poll_seconds=float(
+                os.getenv("JOB_QUEUE_POLL_SECONDS", "1.0") or 1.0
+            ),
+            excluded_job_types=excluded_job_types,
+        )
     return JOB_QUEUE
 
 
