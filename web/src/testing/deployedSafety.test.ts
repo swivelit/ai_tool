@@ -1,11 +1,13 @@
 import {
-  assertUsableTokenCredits, deleteGeneratedKnowledgeDocument,
+  assertUsableTokenCredits, AuthenticatedDeployedApi,
+  deleteGeneratedKnowledgeDocument,
   deleteGeneratedRepository, deleteGeneratedThread, deleteGeneratedUpload,
   productionRequestViolation, restoreProfile, restoreUsagePreferences,
+  ThreadCleanupError,
   waitForDeployedWorkspace,
   type ApiResult, type DeployedApi, type RestorableProfile, type RestorableUsagePreferences,
 } from './deployedSafety'
-import type { Page } from '@playwright/test'
+import type { APIRequestContext, Page } from '@playwright/test'
 
 function workspacePage(options: {
   composerVisible?: boolean
@@ -101,11 +103,147 @@ test('staging cleanup restores all original usage settings', async () => {
   expect(api.usage).toEqual(original)
 })
 
-test('staging cleanup deletes only the generated E2E thread', async () => {
+test('generated-thread deletion accepts 204 and deletes only that thread', async () => {
   const api = new FakeApi()
-  await deleteGeneratedThread(api, 'generated-thread', new Set(['existing-thread']))
+  await deleteGeneratedThread(
+    api, 'generated-thread', new Set(['existing-thread']),
+    new Set(['generated-thread']),
+  )
   expect([...api.threads]).toEqual(['existing-thread'])
-  await expect(deleteGeneratedThread(api, 'existing-thread', new Set(['existing-thread']))).rejects.toThrow('pre-existing')
+  await expect(deleteGeneratedThread(
+    api, 'existing-thread', new Set(['existing-thread']),
+    new Set(['generated-thread']),
+  )).rejects.toBeInstanceOf(ThreadCleanupError)
+})
+
+test('application/json 204 with an empty body returns null without parsing', async () => {
+  const response = {
+    status:vi.fn(() => 204),
+    headers:vi.fn(() => ({ 'content-type':'application/json' })),
+    body:vi.fn(() => Promise.resolve(Buffer.alloc(0))),
+    json:vi.fn(() => Promise.reject(new SyntaxError('empty JSON'))),
+  }
+  const requestContext = {
+    fetch:vi.fn(() => Promise.resolve(response)),
+  } as unknown as APIRequestContext
+  const api = new AuthenticatedDeployedApi(
+    requestContext, 'https://redacted.invalid', 'Bearer redacted',
+  )
+  await expect(api.request('DELETE', '/api/web/threads/generated'))
+    .resolves.toEqual({ status:204, data:null })
+  expect(response.json).not.toHaveBeenCalled()
+  expect(response.body).not.toHaveBeenCalled()
+})
+
+test('malformed optional JSON preserves both successful and failure statuses', async () => {
+  const statuses = [200, 503]
+  const requestContext = {
+    fetch:vi.fn(async () => ({
+      status:() => statuses.shift()!,
+      headers:() => ({ 'content-type':'application/json; charset=utf-8' }),
+      body:() => Promise.resolve(Buffer.from('{malformed')),
+    })),
+  } as unknown as APIRequestContext
+  const api = new AuthenticatedDeployedApi(
+    requestContext, 'https://redacted.invalid', 'Bearer redacted',
+  )
+  await expect(api.request('GET', '/api/web/optional'))
+    .resolves.toEqual({ status:200, data:null })
+  await expect(api.request('GET', '/api/web/failure'))
+    .resolves.toEqual({ status:503, data:null })
+})
+
+test('generated-thread deletion safely accepts a verified 404', async () => {
+  const api: DeployedApi = {
+    request:vi.fn(async method => ({
+      status:method === 'DELETE' ? 404 : 404,
+      data:null,
+    })),
+  }
+  await expect(deleteGeneratedThread(
+    api, 'generated-thread', new Set(['original-thread']),
+    new Set(['generated-thread']),
+  )).resolves.toBeUndefined()
+  expect(api.request).toHaveBeenCalledTimes(2)
+})
+
+test('transient generated-thread cleanup failures retry within a hard bound', async () => {
+  const statuses = [409, 429, 503, 204]
+  let deleteCalls = 0
+  const api: DeployedApi = {
+    request:vi.fn(async method => {
+      if (method === 'GET') return { status:404, data:null }
+      const status = statuses[deleteCalls] ?? 500
+      deleteCalls += 1
+      return { status, data:null }
+    }),
+  }
+  await deleteGeneratedThread(
+    api, 'generated-thread', new Set(), new Set(['generated-thread']),
+  )
+  expect(deleteCalls).toBe(4)
+
+  let boundedCalls = 0
+  const failingApi: DeployedApi = {
+    request:vi.fn(async () => {
+      boundedCalls += 1
+      return { status:503, data:null }
+    }),
+  }
+  await expect(deleteGeneratedThread(
+    failingApi, 'generated-thread', new Set(), new Set(['generated-thread']),
+  )).rejects.toMatchObject({ reasonCode:'thread_delete_http_failure' })
+  expect(boundedCalls).toBe(4)
+})
+
+test('exhausted thread deletion rate limits use the bounded rate code', async () => {
+  let calls = 0
+  const api: DeployedApi = {
+    request:vi.fn(async () => {
+      calls += 1
+      return { status:429, data:null }
+    }),
+  }
+  await expect(deleteGeneratedThread(
+    api, 'generated-thread', new Set(), new Set(['generated-thread']),
+  )).rejects.toMatchObject({ reasonCode:'thread_delete_rate_limited' })
+  expect(calls).toBe(4)
+})
+
+test('original or untracked threads can never be deleted', async () => {
+  const api: DeployedApi = { request:vi.fn() }
+  await expect(deleteGeneratedThread(
+    api, 'original-thread', new Set(['original-thread']),
+    new Set(['original-thread']),
+  )).rejects.toMatchObject({ reasonCode:'thread_delete_http_failure' })
+  await expect(deleteGeneratedThread(
+    api, 'unknown-thread', new Set(), new Set(['generated-thread']),
+  )).rejects.toMatchObject({ reasonCode:'thread_delete_http_failure' })
+  expect(api.request).not.toHaveBeenCalled()
+})
+
+test('thread deletion reports bounded parse and verification failures', async () => {
+  const parseApi: DeployedApi = {
+    request:vi.fn(async () => { throw new SyntaxError('empty JSON') }),
+  }
+  await expect(deleteGeneratedThread(
+    parseApi, 'generated-thread', new Set(), new Set(['generated-thread']),
+  )).rejects.toMatchObject({
+    reasonCode:'thread_delete_response_parse_failure',
+  })
+
+  const verificationApi: DeployedApi = {
+    request:vi.fn(async method => ({
+      status:method === 'DELETE' ? 204 : 200,
+      data:null,
+    })),
+  }
+  await expect(deleteGeneratedThread(
+    verificationApi, 'generated-thread', new Set(),
+    new Set(['generated-thread']),
+  )).rejects.toMatchObject({
+    reasonCode:'thread_delete_verification_failure',
+  })
 })
 
 test('production cleanup protects existing knowledge and removes generated resources', async () => {

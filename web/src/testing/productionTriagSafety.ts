@@ -2,6 +2,7 @@ import type { Page, Response } from '@playwright/test'
 import {
   AuthenticatedDeployedApi,
   waitForDeployedWorkspace,
+  type DeployedApi,
 } from './deployedSafety'
 
 export const PRODUCTION_TRIAG_TEST_TIMEOUT_MS = 20 * 60 * 1000
@@ -30,7 +31,10 @@ export type ProductionPreflightReasonCode =
 
 export type ProductionCleanupReasonCode =
   | 'thread_discovery_failed'
-  | 'thread_delete_failed'
+  | 'thread_delete_http_failure'
+  | 'thread_delete_response_parse_failure'
+  | 'thread_delete_verification_failure'
+  | 'thread_delete_rate_limited'
   | 'thread_verification_failed'
   | 'knowledge_delete_failed'
   | 'repository_delete_failed'
@@ -59,6 +63,24 @@ export type ProductionScenarioReasonCode =
   | 'repository_pro_failed'
   | 'cancellation_settlement_failed'
 
+export type GreetingSubreasonCode =
+  | 'greeting_request_not_observed'
+  | 'greeting_request_id_missing'
+  | 'greeting_payload_not_isolated'
+  | 'greeting_assistant_not_visible'
+  | 'greeting_assistant_not_complete'
+  | 'greeting_response_empty'
+  | 'greeting_wallet_read_failed'
+  | 'greeting_wallet_changed'
+  | 'greeting_audit_not_ready'
+  | 'greeting_provider_call_detected'
+  | 'greeting_nonzero_charge'
+  | 'greeting_paid_stage_detected'
+  | 'greeting_duplicate_settlement'
+
+export type ProductionPrerequisiteReasonCode =
+  'deterministic_greeting_prerequisite_failed'
+
 export type ProductionPrimaryFailureReasonCode =
   | Exclude<ProductionPreflightReasonCode, 'preflight_passed'>
   | 'production_write_confirmation_missing'
@@ -73,6 +95,8 @@ export type ProductionSafeScenarioResult = {
   status: 'passed' | 'failed' | 'not_run'
   request_ids: string[]
   reason_code?: ProductionScenarioReasonCode
+  subreason_code?: GreetingSubreasonCode
+  prerequisite_reason_code?: ProductionPrerequisiteReasonCode
 }
 
 export type ProductionSafeSummary = {
@@ -108,6 +132,99 @@ export class ProductionPreflightError extends Error {
     super(`Production TRIAG preflight failed: ${reasonCode}`)
     this.name = 'ProductionPreflightError'
   }
+}
+
+export class GreetingHarnessError extends Error {
+  constructor(readonly reasonCode: GreetingSubreasonCode) {
+    super(`Deterministic greeting failed: ${reasonCode}`)
+    this.name = 'GreetingHarnessError'
+  }
+}
+
+export type GreetingAuditState = {
+  provider_call_count: number
+  charged_micro_inr_total: number
+  settled_micro_inr_total: number
+  paid_usage_stage_count: number
+  duplicate_settlement_indicator: boolean
+  cancellation_state: string
+  orphaned_active_reservation: boolean
+}
+
+const REQUEST_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+export function isProductionRequestId(value: unknown): value is string {
+  return typeof value === 'string' && REQUEST_UUID.test(value)
+}
+
+export function assertIsolatedGreetingPayload(payload: unknown): void {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new GreetingHarnessError('greeting_payload_not_isolated')
+  }
+  const value = payload as Record<string, unknown>
+  const attachments = value.attachment_ids
+  if (
+    'thread_id' in value
+    || 'repository_id' in value
+    || (attachments !== undefined && (
+      !Array.isArray(attachments) || attachments.length > 0
+    ))
+  ) throw new GreetingHarnessError('greeting_payload_not_isolated')
+}
+
+export function greetingAuditSubreason(
+  audit: GreetingAuditState,
+): GreetingSubreasonCode | null {
+  if (
+    audit.cancellation_state !== 'complete'
+    || audit.orphaned_active_reservation !== false
+  ) return 'greeting_audit_not_ready'
+  if (audit.provider_call_count !== 0) {
+    return 'greeting_provider_call_detected'
+  }
+  if (
+    audit.charged_micro_inr_total !== 0
+    || audit.settled_micro_inr_total !== 0
+  ) return 'greeting_nonzero_charge'
+  if (audit.paid_usage_stage_count !== 0) {
+    return 'greeting_paid_stage_detected'
+  }
+  if (audit.duplicate_settlement_indicator !== false) {
+    return 'greeting_duplicate_settlement'
+  }
+  return null
+}
+
+export function assertGreetingAudit(audit: GreetingAuditState): void {
+  const reasonCode = greetingAuditSubreason(audit)
+  if (reasonCode) throw new GreetingHarnessError(reasonCode)
+}
+
+export async function pollTerminalGreetingAudit<T extends GreetingAuditState>(
+  api: DeployedApi,
+  requestId: string,
+  options: { timeoutMilliseconds?: number; intervalMilliseconds?: number } = {},
+): Promise<T> {
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000
+  const intervalMilliseconds = options.intervalMilliseconds ?? 500
+  const deadline = Date.now() + timeoutMilliseconds
+  while (Date.now() < deadline) {
+    try {
+      const response = await api.request<{ results: T[] }>(
+        'POST', '/api/web/admin/triag-request-audit',
+        { request_ids:[requestId] },
+      )
+      const current = response.status === 200
+        ? response.data?.results[0] : undefined
+      if (current?.cancellation_state === 'complete') return current
+    } catch {
+      // Audit creation and terminal settlement are eventually consistent.
+    }
+    await new Promise(resolveWait => setTimeout(
+      resolveWait, Math.min(intervalMilliseconds, Math.max(1, deadline - Date.now())),
+    ))
+  }
+  throw new GreetingHarnessError('greeting_audit_not_ready')
 }
 
 export function bootstrapReasonCode(status: number): ProductionPreflightReasonCode {
@@ -198,8 +315,6 @@ export function boundedCombinedFailure(
   return `production_triag_failed primary=${primaryReasonCode} cleanup_status=${cleanup.status} cleanup=${cleanupCodes}`
 }
 
-const REQUEST_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
 export function buildProductionTriagSummary(input: {
   preflight: ProductionSafeSummary['preflight']
   scenarios: ProductionSafeScenarioResult[]
@@ -212,6 +327,10 @@ export function buildProductionTriagSummary(input: {
     request_ids:item.request_ids.filter(value => REQUEST_UUID.test(value)),
     ...(item.status === 'failed' && item.reason_code
       ? { reason_code:item.reason_code } : {}),
+    ...(item.status === 'failed' && item.subreason_code
+      ? { subreason_code:item.subreason_code } : {}),
+    ...(item.status === 'not_run' && item.prerequisite_reason_code
+      ? { prerequisite_reason_code:item.prerequisite_reason_code } : {}),
   }))
   return {
     schema_version:2,

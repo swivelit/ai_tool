@@ -7,12 +7,18 @@ import {
   deleteGeneratedThread,
   deleteGeneratedUpload,
   logoutDeployed,
+  ThreadCleanupError,
   type DeployedApi,
 } from '../src/testing/deployedSafety'
 import {
+  assertGreetingAudit,
+  assertIsolatedGreetingPayload,
   boundedCombinedFailure,
   buildProductionTriagSummary,
+  GreetingHarnessError,
+  isProductionRequestId,
   loginProductionTriag,
+  pollTerminalGreetingAudit,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   ProductionPreflightError,
   resolveProductionCleanup,
@@ -210,32 +216,85 @@ async function openSidebar(page: Page): Promise<void> {
 async function newChat(page: Page): Promise<void> {
   await openSidebar(page)
   await page.getByRole('button', { name:'New chat' }).click()
+  const composer = page.getByTestId('composer')
+  const textbox = page.getByLabel('Message Swico')
+  await expect(composer).toBeVisible({ timeout:30_000 })
+  await expect(composer).toBeEnabled({ timeout:30_000 })
+  await expect(textbox).toBeVisible({ timeout:30_000 })
+  await expect(textbox).toBeEnabled({ timeout:30_000 })
+  await expect(textbox).toHaveValue('', { timeout:30_000 })
+  await expect(page.locator('.message')).toHaveCount(0, { timeout:30_000 })
+  await expect(page.locator('.attachment-chip')).toHaveCount(0, {
+    timeout:30_000,
+  })
+  await expect(page.getByLabel('Active code repository')).toHaveCount(0, {
+    timeout:30_000,
+  })
 }
 
 async function sendMessage(
   page: Page,
   message: string,
-  options: { waitForCompletion?: boolean } = {},
+  options: {
+    waitForCompletion?: boolean
+    greeting?: boolean
+    onRequestCaptured?: (
+      requestId: string,
+      payload: Record<string, unknown>,
+    ) => void
+  } = {},
 ): Promise<{ requestId: string; assistant: Locator }> {
   const observed = page.waitForRequest(request => (
     new URL(request.url()).pathname === '/api/web/chat/stream'
     && request.method() === 'POST'
-  ))
-  await page.getByLabel('Message Swico').fill(message)
-  await page.getByRole('button', { name:'Send message' }).click()
-  const request = await observed
-  const requestId = String(
-    (request.postDataJSON() as { request_id?: unknown }).request_id ?? '',
-  )
-  if (!/^[0-9a-f-]{36}$/i.test(requestId)) {
+  ), { timeout:30_000 })
+  let request: Awaited<typeof observed>
+  try {
+    await page.getByLabel('Message Swico').fill(message)
+    await page.getByRole('button', { name:'Send message' }).click()
+    request = await observed
+  } catch {
+    if (options.greeting) {
+      throw new GreetingHarnessError('greeting_request_not_observed')
+    }
+    throw new Error('Production chat request was not observed')
+  }
+  let payload: Record<string, unknown>
+  try {
+    payload = request.postDataJSON() as Record<string, unknown>
+  } catch {
+    payload = {}
+  }
+  const requestId = payload.request_id
+  if (!isProductionRequestId(requestId)) {
+    if (options.greeting) {
+      throw new GreetingHarnessError('greeting_request_id_missing')
+    }
     throw new Error('Production request identifier was not captured')
   }
+  // This callback runs before any DOM wait so the safe summary retains the
+  // request ID even when rendering or stream completion subsequently fails.
+  options.onRequestCaptured?.(requestId, payload)
   const assistant = page.locator(
     `.message.assistant[data-request-id="${requestId}"]`,
   )
-  await expect(assistant).toBeVisible({ timeout:90_000 })
+  try {
+    await expect(assistant).toBeVisible({ timeout:90_000 })
+  } catch {
+    if (options.greeting) {
+      throw new GreetingHarnessError('greeting_assistant_not_visible')
+    }
+    throw new Error('Production assistant response was not visible')
+  }
   if (options.waitForCompletion !== false) {
-    await expect(assistant).not.toHaveClass(/streaming/, { timeout:180_000 })
+    try {
+      await expect(assistant).not.toHaveClass(/streaming/, { timeout:180_000 })
+    } catch {
+      if (options.greeting) {
+        throw new GreetingHarnessError('greeting_assistant_not_complete')
+      }
+      throw new Error('Production assistant response did not complete')
+    }
   }
   return { requestId, assistant }
 }
@@ -360,7 +419,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           status:'passed',
           request_ids:requestIds.get(scenario) ?? [],
         })
-      } catch {
+      } catch (error) {
         const reasonCode = scenarioFailureReason[scenario]
         if (primaryFailureReason === 'none') primaryFailureReason = reasonCode
         safeResults.set(scenario, {
@@ -368,6 +427,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           status:'failed',
           request_ids:requestIds.get(scenario) ?? [],
           reason_code:reasonCode,
+          ...(scenario === 'deterministic_greeting'
+            && error instanceof GreetingHarnessError
+            ? { subreason_code:error.reasonCode } : {}),
         })
       } finally {
         try {
@@ -421,26 +483,63 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     snapshotsCaptured = true
 
     await runScenario('deterministic_greeting', async () => {
-      const before = await api!.request<{
-        available_micros: number
-      }>('GET', '/api/web/billing/wallet')
-      expect(before.status).toBe(200)
-      const sent = await sendMessage(page, 'Hi')
-      recordRequest('deterministic_greeting', sent.requestId)
-      await expect(sent.assistant.locator('.message-body')).not.toBeEmpty()
-      const after = await api!.request<{
-        available_micros: number
-      }>('GET', '/api/web/billing/wallet')
-      expect(after.status).toBe(200)
-      expect(after.data?.available_micros).toBe(before.data?.available_micros)
-      const result = (await audit(api!, [sent.requestId]))[0]
-      expect(result.provider_call_count).toBe(0)
-      expect(result.charged_micro_inr_total).toBe(0)
-      expect(result.settled_micro_inr_total).toBe(0)
-      expect(result.paid_usage_stage_count).toBe(0)
-      expect(result.duplicate_settlement_indicator).toBe(false)
+      try {
+        await newChat(page)
+      } catch {
+        throw new GreetingHarnessError('greeting_payload_not_isolated')
+      }
+      let before: { available_micros: number } | null = null
+      try {
+        const wallet = await api!.request<{ available_micros: number }>(
+          'GET', '/api/web/billing/wallet',
+        )
+        if (wallet.status !== 200 || !wallet.data) {
+          throw new Error('bounded wallet read failure')
+        }
+        before = wallet.data
+      } catch {
+        throw new GreetingHarnessError('greeting_wallet_read_failed')
+      }
+      const sent = await sendMessage(page, 'Hi', {
+        greeting:true,
+        onRequestCaptured:(requestId, payload) => {
+          recordRequest('deterministic_greeting', requestId)
+          assertIsolatedGreetingPayload(payload)
+        },
+      })
+      let responseText: string | null = null
+      try {
+        responseText = await sent.assistant.locator('.message-body')
+          .textContent()
+      } catch {
+        throw new GreetingHarnessError('greeting_response_empty')
+      }
+      if (!responseText?.trim()) {
+        throw new GreetingHarnessError('greeting_response_empty')
+      }
+      const result = await pollTerminalGreetingAudit<AuditResult>(
+        api!, sent.requestId,
+        { timeoutMilliseconds:30_000, intervalMilliseconds:500 },
+      )
+      assertGreetingAudit(result)
+      let after: { available_micros: number } | null = null
+      try {
+        const wallet = await api!.request<{ available_micros: number }>(
+          'GET', '/api/web/billing/wallet',
+        )
+        if (wallet.status !== 200 || !wallet.data) {
+          throw new Error('bounded wallet read failure')
+        }
+        after = wallet.data
+      } catch {
+        throw new GreetingHarnessError('greeting_wallet_read_failed')
+      }
+      if (after.available_micros !== before.available_micros) {
+        throw new GreetingHarnessError('greeting_wallet_changed')
+      }
     })
 
+    if (safeResults.get('deterministic_greeting')?.status === 'passed') {
     await runScenario('supported_pdf', async () => {
       await newChat(page)
       const uploadResponse = page.waitForResponse(response => (
@@ -633,6 +732,16 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           .toBe(cancelled!.charged_micro_inr_total)
       }
     })
+    } else {
+      for (const scenario of scenarioNames.slice(1)) {
+        safeResults.set(scenario, {
+          scenario,
+          status:'not_run',
+          request_ids:[],
+          prerequisite_reason_code:'deterministic_greeting_prerequisite_failed',
+        })
+      }
+    }
   } catch (error) {
     if (error instanceof ProductionPreflightError) {
       preflight = { status:'failed', reason_code:error.reasonCode }
@@ -662,9 +771,14 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           }
           for (const threadId of generatedThreadIds) {
             try {
-              await deleteGeneratedThread(api, threadId, originalThreadIds)
-            } catch {
-              cleanupErrors.push('thread_delete_failed')
+              await deleteGeneratedThread(
+                api, threadId, originalThreadIds, generatedThreadIds,
+              )
+            } catch (error) {
+              cleanupErrors.push(
+                error instanceof ThreadCleanupError
+                  ? error.reasonCode : 'thread_delete_http_failure',
+              )
             }
           }
           const verifiedThreads = await api.request<ThreadList>(

@@ -29,11 +29,23 @@ export class AuthenticatedDeployedApi implements DeployedApi {
         ...(body === undefined ? {} : { data: body }),
       },
     )
+    const status = response.status()
+    if (status === 204 || status === 205) {
+      return { status, data:null }
+    }
     const contentType = response.headers()['content-type'] ?? ''
-    const data = contentType.includes('application/json')
-      ? await response.json() as T
-      : null
-    return { status:response.status(), data }
+    if (!contentType.includes('application/json')) {
+      return { status, data:null }
+    }
+    const bodyBytes = await response.body()
+    if (bodyBytes.length === 0) return { status, data:null }
+    try {
+      return { status, data:JSON.parse(bodyBytes.toString('utf8')) as T }
+    } catch {
+      // Optional or malformed JSON must not turn an observed HTTP status into
+      // a transport failure. Callers still receive and validate non-2xx status.
+      return { status, data:null }
+    }
   }
 }
 
@@ -177,16 +189,74 @@ export async function restoreUsagePreferences(api: DeployedApi, original: Restor
   }
 }
 
+export type ThreadCleanupReasonCode =
+  | 'thread_delete_http_failure'
+  | 'thread_delete_response_parse_failure'
+  | 'thread_delete_verification_failure'
+  | 'thread_delete_rate_limited'
+
+export class ThreadCleanupError extends Error {
+  constructor(readonly reasonCode: ThreadCleanupReasonCode) {
+    super(`Generated thread cleanup failed: ${reasonCode}`)
+    this.name = 'ThreadCleanupError'
+  }
+}
+
+const THREAD_DELETE_MAX_ATTEMPTS = 4
+const THREAD_DELETE_BACKOFF_MS = [100, 250, 500]
+
+function threadCleanupFailure(error: unknown): ThreadCleanupError {
+  return new ThreadCleanupError(
+    error instanceof SyntaxError
+      ? 'thread_delete_response_parse_failure'
+      : 'thread_delete_http_failure',
+  )
+}
+
 export async function deleteGeneratedThread(
   api: DeployedApi,
   generatedThreadId: string,
   originalThreadIds: ReadonlySet<string>,
+  knownGeneratedThreadIds: ReadonlySet<string> = new Set([generatedThreadId]),
 ): Promise<void> {
-  if (originalThreadIds.has(generatedThreadId)) throw new Error('refusing to delete a pre-existing thread')
-  const deleted = await api.request<never>('DELETE', `/api/web/threads/${encodeURIComponent(generatedThreadId)}`)
-  if (deleted.status !== 204) throw new Error('E2E thread cleanup request failed')
-  const verified = await api.request<unknown>('GET', `/api/web/threads/${encodeURIComponent(generatedThreadId)}`)
-  if (verified.status !== 404) throw new Error('E2E thread cleanup verification failed')
+  if (
+    originalThreadIds.has(generatedThreadId)
+    || !knownGeneratedThreadIds.has(generatedThreadId)
+  ) {
+    throw new ThreadCleanupError('thread_delete_http_failure')
+  }
+  const path = `/api/web/threads/${encodeURIComponent(generatedThreadId)}`
+  for (let attempt = 0; attempt < THREAD_DELETE_MAX_ATTEMPTS; attempt += 1) {
+    let deleted: ApiResult<never>
+    try {
+      deleted = await api.request<never>('DELETE', path)
+    } catch (error) {
+      throw threadCleanupFailure(error)
+    }
+    if (deleted.status === 204 || deleted.status === 404) break
+    const transient = deleted.status === 409
+      || deleted.status === 429
+      || deleted.status >= 500
+    if (!transient || attempt === THREAD_DELETE_MAX_ATTEMPTS - 1) {
+      throw new ThreadCleanupError(
+        deleted.status === 429
+          ? 'thread_delete_rate_limited'
+          : 'thread_delete_http_failure',
+      )
+    }
+    await new Promise(resolveWait => setTimeout(
+      resolveWait, THREAD_DELETE_BACKOFF_MS[attempt],
+    ))
+  }
+  let verified: ApiResult<unknown>
+  try {
+    verified = await api.request<unknown>('GET', path)
+  } catch {
+    throw new ThreadCleanupError('thread_delete_verification_failure')
+  }
+  if (verified.status !== 404) {
+    throw new ThreadCleanupError('thread_delete_verification_failure')
+  }
 }
 
 export async function deleteGeneratedKnowledgeDocument(

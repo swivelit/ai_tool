@@ -2,18 +2,24 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   adminAuditReasonCode,
+  assertGreetingAudit,
+  assertIsolatedGreetingPayload,
   authenticatedHeaderReasonCode,
   bootstrapReasonCode,
   boundedCombinedFailure,
   buildProductionTriagSummary,
+  greetingAuditSubreason,
   loginObservationReasonCode,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   productionCapabilityReasonCode,
+  pollTerminalGreetingAudit,
   resolveProductionCleanup,
   workspaceShellReasonCode,
   type ProductionBootstrap,
   type ProductionSafeScenarioResult,
+  type GreetingSubreasonCode,
 } from './productionTriagSafety'
+import type { DeployedApi } from './deployedSafety'
 
 const requestId = '123e4567-e89b-42d3-a456-426614174000'
 
@@ -130,13 +136,157 @@ test('combined failure preserves primary and real cleanup failures', () => {
     .toContain('cleanup_status=not_required')
 
   const failedCleanup = resolveProductionCleanup(true, true, [
-    'upload_delete_failed',
+    'thread_delete_verification_failure',
   ])
   const combined = boundedCombinedFailure(
     'supported_pdf_failed', failedCleanup,
   )
   expect(combined).toContain('primary=supported_pdf_failed')
-  expect(combined).toContain('cleanup=upload_delete_failed')
+  expect(combined).toContain('cleanup=thread_delete_verification_failure')
+
+  const greetingCombined = boundedCombinedFailure(
+    'deterministic_greeting_failed',
+    resolveProductionCleanup(true, true, ['thread_delete_http_failure']),
+  )
+  expect(greetingCombined).toContain('primary=deterministic_greeting_failed')
+  expect(greetingCombined).toContain('cleanup=thread_delete_http_failure')
+})
+
+test('isolated greeting payload has no previous thread, attachments, or repository', () => {
+  expect(() => assertIsolatedGreetingPayload({
+    request_id:requestId, message:'redacted', attachment_ids:[], input_mode:'text',
+  })).not.toThrow()
+  for (const payload of [
+    { request_id:requestId, thread_id:'old-thread' },
+    { request_id:requestId, attachment_ids:['old-upload'] },
+    { request_id:requestId, repository_id:'old-repository' },
+  ]) {
+    expect(() => assertIsolatedGreetingPayload(payload)).toThrowError(
+      expect.objectContaining({ reasonCode:'greeting_payload_not_isolated' }),
+    )
+  }
+})
+
+test('immediate audit 404 and active state are polled until terminal', async () => {
+  const responses = [
+    { status:404, data:null },
+    { status:200, data:{ results:[{ cancellation_state:'active' }] } },
+    { status:200, data:{ results:[{
+      cancellation_state:'complete', provider_call_count:0,
+      charged_micro_inr_total:0, settled_micro_inr_total:0,
+      paid_usage_stage_count:0, duplicate_settlement_indicator:false,
+      orphaned_active_reservation:false,
+    }] } },
+  ]
+  let calls = 0
+  const api: DeployedApi = {
+    request:vi.fn(async () => responses[calls++] as never),
+  }
+  const result = await pollTerminalGreetingAudit(api, requestId, {
+    timeoutMilliseconds:100, intervalMilliseconds:1,
+  })
+  expect(result.cancellation_state).toBe('complete')
+  expect(calls).toBe(3)
+})
+
+const cleanGreetingAudit = {
+  cancellation_state:'complete', provider_call_count:0,
+  charged_micro_inr_total:0, settled_micro_inr_total:0,
+  paid_usage_stage_count:0, duplicate_settlement_indicator:false,
+  orphaned_active_reservation:false,
+}
+
+test.each([
+  [{ ...cleanGreetingAudit, cancellation_state:'active' }, 'greeting_audit_not_ready'],
+  [{ ...cleanGreetingAudit, orphaned_active_reservation:true }, 'greeting_audit_not_ready'],
+  [{ ...cleanGreetingAudit, provider_call_count:1 }, 'greeting_provider_call_detected'],
+  [{ ...cleanGreetingAudit, charged_micro_inr_total:1 }, 'greeting_nonzero_charge'],
+  [{ ...cleanGreetingAudit, settled_micro_inr_total:1 }, 'greeting_nonzero_charge'],
+  [{ ...cleanGreetingAudit, paid_usage_stage_count:1 }, 'greeting_paid_stage_detected'],
+  [{ ...cleanGreetingAudit, duplicate_settlement_indicator:true }, 'greeting_duplicate_settlement'],
+] as const)('greeting audit assertion maps safely to %s', (audit, reasonCode) => {
+  expect(greetingAuditSubreason(audit)).toBe(reasonCode)
+  expect(() => assertGreetingAudit(audit)).toThrowError(
+    expect.objectContaining({ reasonCode }),
+  )
+})
+
+test('clean terminal greeting audit passes every billing-exempt assertion', () => {
+  expect(greetingAuditSubreason(cleanGreetingAudit)).toBeNull()
+  expect(() => assertGreetingAudit(cleanGreetingAudit)).not.toThrow()
+})
+
+test('greeting starts fresh and captures its request before rendering waits', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  const greeting = spec.slice(
+    spec.indexOf("await runScenario('deterministic_greeting'"),
+    spec.indexOf("await runScenario('supported_pdf'"),
+  )
+  expect(greeting).toContain('await newChat(page)')
+  expect(greeting).toContain('assertIsolatedGreetingPayload(payload)')
+  expect(spec.indexOf('options.onRequestCaptured?.(requestId, payload)'))
+    .toBeLessThan(spec.indexOf('await expect(assistant).toBeVisible'))
+})
+
+test('request ID survives assistant rendering failure in the safe summary', () => {
+  const summary = buildProductionTriagSummary({
+    preflight:{ status:'passed', reason_code:'preflight_passed' },
+    scenarios:[{
+      scenario:'deterministic_greeting', status:'failed',
+      request_ids:[requestId], reason_code:'deterministic_greeting_failed',
+      subreason_code:'greeting_assistant_not_visible',
+    }],
+    cleanup:{ status:'complete', reason_codes:[] },
+    primaryFailureReasonCode:'deterministic_greeting_failed',
+  })
+  expect(summary.scenarios[0]).toMatchObject({
+    request_ids:[requestId],
+    subreason_code:'greeting_assistant_not_visible',
+  })
+})
+
+test('all bounded greeting subreasons are retained without private detail', () => {
+  const reasons: GreetingSubreasonCode[] = [
+    'greeting_request_not_observed', 'greeting_request_id_missing',
+    'greeting_payload_not_isolated', 'greeting_assistant_not_visible',
+    'greeting_assistant_not_complete', 'greeting_response_empty',
+    'greeting_wallet_read_failed', 'greeting_wallet_changed',
+    'greeting_audit_not_ready', 'greeting_provider_call_detected',
+    'greeting_nonzero_charge', 'greeting_paid_stage_detected',
+    'greeting_duplicate_settlement',
+  ]
+  for (const subreason_code of reasons) {
+    const summary = buildProductionTriagSummary({
+      preflight:{ status:'passed', reason_code:'preflight_passed' },
+      scenarios:[{
+        scenario:'deterministic_greeting', status:'failed', request_ids:[],
+        reason_code:'deterministic_greeting_failed', subreason_code,
+      }],
+      cleanup:{ status:'not_required', reason_codes:[] },
+      primaryFailureReasonCode:'deterministic_greeting_failed',
+    })
+    expect(summary.scenarios[0].subreason_code).toBe(subreason_code)
+  }
+  const source = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  ) + readFileSync(
+    resolve(process.cwd(), 'src/testing/productionTriagSafety.ts'), 'utf8',
+  )
+  for (const reason of reasons) expect(source).toContain(reason)
+})
+
+test('baseline failure prevents dependent production mutation scenarios', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    "if (safeResults.get('deterministic_greeting')?.status === 'passed')",
+  )
+  expect(spec).toContain(
+    "prerequisite_reason_code:'deterministic_greeting_prerequisite_failed'",
+  )
 })
 
 test('safe summary strips non-schema content and retains request UUIDs', () => {
@@ -151,6 +301,9 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
     message:'raw message',
     answer:'raw answer',
     filename:'private.pdf',
+    wallet_id:'wallet-private-id',
+    url:'https://private.example.test/path',
+    headers:{ 'x-private-header':'private-header-value' },
     source_locator:'page 1',
     provider:'private-provider',
     model:'private-model',
@@ -166,6 +319,7 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
   for (const forbidden of [
     'person@example.test', 'secret-password', 'secret-token', 'raw message',
     'raw answer', 'private.pdf', 'page 1', 'private-provider', 'private-model',
+    'wallet-private-id', 'private.example.test', 'private-header-value',
   ]) {
     expect(serialized).not.toContain(forbidden)
   }
