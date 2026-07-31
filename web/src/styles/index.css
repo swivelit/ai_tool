@@ -426,6 +426,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .memory-list article span { display: grid; gap: 3px }
 .memory-list article small { color: var(--muted) }
 .memory-list article button { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); cursor: pointer }
+.knowledge-library { display: grid; gap: 14px }
+.knowledge-library > p, .knowledge-approval small, .knowledge-list small { color: var(--muted); font-size: 12px; line-height: 1.5 }
+.knowledge-approval { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface) }
+.knowledge-approval label:not(.check-row) { display: grid; gap: 6px }
+.knowledge-list { display: grid; gap: 8px }
+.knowledge-list article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px; border: 1px solid var(--line); border-radius: 9px }
+.knowledge-list article > span { display: grid; gap: 4px; min-width: 0 }
+.knowledge-list article > span strong { overflow-wrap: anywhere }
+.knowledge-list article > div { display: flex; gap: 7px }
+.knowledge-list button { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); cursor: pointer }
 .settings-legal { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 22px }
 .settings-legal a { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); text-decoration: none; font-size: 12px; overflow-wrap: anywhere }
 .settings-notice { position: sticky; bottom: -30px; margin: 20px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface); font-size: 12px }

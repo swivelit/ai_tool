@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -96,6 +97,68 @@ class VirtualTextUploadRequest(BaseModel):
         if not value.strip():
             raise ValueError("text cannot be blank")
         return value
+
+
+class KnowledgeApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_id: UUID
+    confirm_persistence: Literal[True]
+    replace_document_id: UUID | None = None
+
+
+class KnowledgeReindexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: UUID
+
+
+KnowledgeDocumentStatus = Literal[
+    "pending", "indexing", "ready", "failed", "invalidated"
+]
+KnowledgeJobStatus = Literal[
+    "not_scheduled", "queued", "retrying", "running", "complete",
+    "failed", "cancelled",
+]
+
+
+class KnowledgeDocumentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    title: str = Field(max_length=256)
+    status: KnowledgeDocumentStatus
+    source_kind: str = Field(max_length=32)
+    chunk_count: int = Field(ge=0, le=10_000)
+    approved_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeJobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: KnowledgeJobStatus
+    updated_at: datetime | None
+
+
+class KnowledgeDocumentResultResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document: KnowledgeDocumentResponse
+    job: KnowledgeJobResponse
+
+
+class KnowledgeDocumentListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[KnowledgeDocumentResponse] = Field(max_length=100)
+
+
+class KnowledgeJobResultResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job: KnowledgeJobResponse
 
 
 class WebTTSRequest(BaseModel):

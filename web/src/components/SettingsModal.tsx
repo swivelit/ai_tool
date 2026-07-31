@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
+import { Archive, BookOpen, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
-import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, SwicoTier, UsagePreferences, UsageSummary } from '../types'
+import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
 import { SwicoTierSelector } from './SwicoTierSelector'
+import { KnowledgeLibrary } from './KnowledgeLibrary'
 
-type Section = 'general' | 'profile' | 'usage' | 'data'
+type Section = 'general' | 'profile' | 'usage' | 'knowledge' | 'data'
 type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[]; memory: MemorySettings }
 
 const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'profile', label: 'Profile', icon: UserRound },
   { id: 'usage', label: 'Token credits', icon: CreditCard },
+  { id: 'knowledge', label: 'Knowledge Library', icon: BookOpen },
   { id: 'data', label: 'Data controls', icon: Database },
 ]
 
@@ -58,10 +60,11 @@ function UsageBars({ usage }: { usage: UsageSummary }) {
   </div>
 }
 
-export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile }: {
+export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile, knowledgeLibraryEnabled = false, knowledgeUploads = [] }: {
   user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
   assistant: AssistantSettings; tierSaving: boolean; saveTier: (tier: SwicoTier) => Promise<void>;
   addCredits: () => void; openArchived: () => void; savedProfile: (profile: ProfileSettings) => void;
+  knowledgeLibraryEnabled?: boolean; knowledgeUploads?: ReadyAttachment[];
 }) {
   const [section, setSection] = useState<Section>('general')
   const [loaded, setLoaded] = useState<Loaded | null>(null)
@@ -187,7 +190,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header className="settings-heading"><h2 id="settings-title">Settings</h2><button ref={closeRef} className="icon-button" aria-label="Close settings" onClick={close} disabled={saving}><X size={20} /></button></header>
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label="Settings sections">{sections.map(item => { const Icon = item.icon; return <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => { setSection(item.id); setNotice('') }}><Icon size={17} /><span>{item.label}</span></button> })}</nav>
+        <nav className="settings-nav" aria-label="Settings sections">{sections.filter(item => item.id !== 'knowledge' || knowledgeLibraryEnabled).map(item => { const Icon = item.icon; return <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => { setSection(item.id); setNotice('') }}><Icon size={17} /><span>{item.label}</span></button> })}</nav>
         <div className="settings-content">
           {loadError && <div className="settings-state" role="alert"><p>{loadError}</p><button onClick={() => void load()}>Retry</button></div>}
           {!loadError && !loaded && <div className="settings-state" role="status">Loading settings…</div>}
@@ -209,6 +212,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
             {!billingExempt && <button className="secondary-button" onClick={addCredits}>Add credits</button>}
             <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); const paymentBucket = payment.credit_bucket ?? 'chat'; return <article key={payment.id}><strong>{presentation.heading}</strong><span>{paymentBucket === 'voice' ? 'Voice credits' : 'Chat credits'}</span>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && paymentBucket === 'chat' && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showTokensAdded && paymentBucket === 'voice' && <span>{payment.voice_estimate ? `${payment.voice_estimate.estimated_stt_minutes} STT-only minutes or ${payment.voice_estimate.estimated_tts_characters.toLocaleString()} TTS-only characters; component-only estimates. Realtime Voice also uses Voice credits for AI response generation.` : 'Voice estimate unavailable'}</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'credits unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
           </section>}
+          {loaded && knowledgeLibraryEnabled && section === 'knowledge' && <KnowledgeLibrary user={user} uploads={knowledgeUploads} />}
           {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button>
             <div className="memory-controls"><h4>Cross-chat memory</h4>{loaded.memory.available ? <><label className="check-row"><input type="checkbox" checked={loaded.memory.enabled} disabled={saving} onChange={event => void setMemoryEnabled(event.target.checked)} />Use relevant saved details in other chats</label><small>Only explicit preferences, ongoing projects, and deterministic conversation summaries are saved. No LLM is called to manage memory.</small>
               <div className="memory-list">{!loaded.memory.items.length ? <p>No saved memory facts.</p> : loaded.memory.items.map(item => <article key={item.id}><span><strong>{item.category.replaceAll('_', ' ')}</strong><small>{item.value_text}</small></span><button type="button" disabled={saving} aria-label={`Delete memory ${item.value_text}`} onClick={() => void deleteMemory(item.id)}>Delete</button></article>)}</div>

@@ -320,7 +320,11 @@ or stored-audio facility is required. The staging Blueprint declares five
 resources total: API, private Valkey, private validator, static website, and
 PostgreSQL. Phase 5 adds no sixth resource and does not start a dedicated
 knowledge worker; the four job types remain safe for a later separately gated
-worker. Production flags remain disabled until the staged rollout gates pass.
+worker. Phase 5.1 adds authenticated API/UI access only: it needs no sixth
+resource, no new secret, and no `VITE_*` value. Keep
+`WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false` in production until the explicit
+approval, owner-marker, deletion, re-index and cancellation staging gates pass.
+Production flags remain disabled until the staged rollout gates pass.
 
 ## Production temporary uploads and voice — exact dashboard steps
 

@@ -37,7 +37,9 @@ invocation.
 `backend/app/web_ai/` contains the Phase 0/1 foundation, Phase 2
 temporary-document hybrid retrieval, Phase 3 Answer Guard, and the Phase 4
 temporary repository contracts and retrieval implementation. Phase 5 adds an
-explicitly approved, owner-scoped persistent-knowledge foundation.
+explicitly approved, owner-scoped persistent-knowledge foundation. Phase 5.1
+adds its authenticated `/api/web/knowledge` lifecycle API and website settings
+UI; it does not alter `/api/web/chat/stream`.
 It does not replace
 `WebRequestCoordinator`: disabled and shadow modes retain the original path.
 The live Phase 2 path is entered only when TRIAG is non-shadow and

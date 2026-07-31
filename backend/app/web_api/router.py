@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sa_delete, or_, text, update as sa_update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
 from ..auth import AuthUser, get_current_user, get_owned_user, is_internal_test_user
@@ -78,6 +78,7 @@ from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
+    WebKnowledgeDocument,
 )
 from ..web_ai.code_quality.repository_archive import (
     ArchiveLimits, UnsafeRepositoryArchive,
@@ -86,6 +87,12 @@ from ..web_ai.code_quality.validation_client import (
     RepositoryValidationClient, ValidationClientSettings,
 )
 from ..web_ai.settings import TriagSettings
+from ..web_ai.knowledge_jobs import enqueue_knowledge_job, cancel_knowledge_job
+from ..web_ai.retrieval.attachment import safe_locator, upload_content_hash
+from ..web_ai.retrieval.persistent_knowledge import (
+    ApprovedKnowledgeChunk,
+    approve_persistent_knowledge,
+)
 from ..observability import APP_RELEASE, get_request_id
 from ..openai_tracked import OpenAIBudgetExceededError
 from ..time_utils import utc_now
@@ -103,7 +110,10 @@ from .document_extraction import (
 )
 from .schemas import (
     AssistantSettingsPatch, MemorySettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
-    MessageFeedbackRequest, UsagePreferencesPatch, VirtualTextUploadRequest,
+    KnowledgeApprovalRequest, KnowledgeDocumentListResponse,
+    KnowledgeDocumentResultResponse, KnowledgeJobResultResponse,
+    KnowledgeReindexRequest, MessageFeedbackRequest, UsagePreferencesPatch,
+    VirtualTextUploadRequest,
     WebChatRequest, WebTTSRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
@@ -116,6 +126,15 @@ from .repository_service import (
 )
 from .repository_store import (
     get_repository_snapshot, repository_store_key,
+)
+from .knowledge_library import (
+    delete_owned_knowledge_document,
+    latest_owned_knowledge_job,
+    list_owned_knowledge_documents,
+    owned_knowledge_document,
+    reindex_owned_knowledge_document,
+    safe_document_summary,
+    safe_job_summary,
 )
 from .voice_sessions import (
     VoiceSessionConflict, VoiceTicket, VoiceTicketStore,
@@ -640,6 +659,9 @@ def bootstrap(
             "web_repository_chat": triag_settings.repository_chat_runtime_enabled,
             "web_repository_validation": (
                 triag_settings.code_validation_runtime_enabled
+            ),
+            "web_knowledge_library": (
+                triag_settings.persistent_knowledge_runtime_enabled
             ),
         },
         "backend_release": _backend_release(),
@@ -2513,6 +2535,355 @@ async def _save_temporary_upload(file: UploadFile, *, limit: int, suffix: str) -
         raise
     finally:
         await file.close()
+
+
+def _knowledge_library_unavailable() -> JSONResponse:
+    return _temporary_error(
+        404,
+        "knowledge_library_unavailable",
+        "Knowledge Library is unavailable.",
+    )
+
+
+@router.post(
+    "/knowledge",
+    status_code=201,
+    response_model=KnowledgeDocumentResultResponse,
+)
+def approve_knowledge_document(
+    payload: KnowledgeApprovalRequest,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        store = get_upload_store()
+        # This owner-scoped marker is checked before the raw upload value is
+        # fetched, so another user's identifier cannot expose source text.
+        if not store.is_owned(str(payload.upload_id), int(user.id)):
+            return _temporary_error(
+                404,
+                "upload_expired_or_not_found",
+                "The temporary document expired or was not found.",
+            )
+        upload = store.get(str(payload.upload_id))
+    except UploadStoreUnavailable:
+        return _temporary_error(
+            503,
+            "attachment_cache_unavailable",
+            "Temporary attachments are unavailable. Please try again later.",
+        )
+    if upload is None or upload.owner_user_id != int(user.id):
+        return _temporary_error(
+            404,
+            "upload_expired_or_not_found",
+            "The temporary document expired or was not found.",
+        )
+    if not upload.chunks:
+        return _temporary_error(
+            422,
+            "no_extractable_text",
+            "This document has no text that can be saved.",
+        )
+
+    source_id = f"upload:{upload.id}"
+    if payload.replace_document_id is not None:
+        try:
+            previous = owned_knowledge_document(
+                session,
+                owner_user_id=int(user.id),
+                document_id=str(payload.replace_document_id),
+            )
+        except PermissionError:
+            return _temporary_error(
+                404, "knowledge_document_not_found", "Document not found."
+            )
+        source_id = previous.source_id
+    source_version = upload_content_hash(upload)
+    chunks = tuple(
+        ApprovedKnowledgeChunk(
+            text=chunk.text,
+            locator=safe_locator(upload, index),
+            section_path=chunk.source[:512],
+        )
+        for index, chunk in enumerate(upload.chunks)
+    )
+    approval_key = f"knowledge-approval:{source_id}:{source_version}"
+    try:
+        document = approve_persistent_knowledge(
+            session,
+            owner_user_id=int(user.id),
+            source_id=source_id,
+            source_version=source_version,
+            title=upload.name,
+            chunks=chunks,
+            user_approved=payload.confirm_persistence,
+            idempotency_key=approval_key,
+            source_kind="approved_document",
+            safe_metadata={
+                "attachment_count": 1,
+                "attachment_bytes": upload.size_bytes,
+                "attachment_media_categories": [
+                    upload.media_type.split("/", 1)[0]
+                    if "/" in upload.media_type else "other"
+                ],
+                "has_extracted_attachment_chunks": bool(upload.chunks),
+            },
+        )
+    except IntegrityError:
+        # A concurrent retry may win the owner/idempotency constraint. Catch
+        # the database exception here so its raw chunk parameters never reach
+        # request logs, then resolve the authoritative owner-scoped row.
+        session.rollback()
+        document = session.exec(
+            select(WebKnowledgeDocument).where(
+                WebKnowledgeDocument.owner_user_id == int(user.id),
+                WebKnowledgeDocument.idempotency_key == approval_key,
+                WebKnowledgeDocument.deleted_at.is_(None),
+            )
+        ).first()
+        if document is None:
+            return _temporary_error(
+                503,
+                "knowledge_storage_unavailable",
+                "The document could not be saved right now.",
+            )
+    except (PermissionError, ValueError):
+        session.rollback()
+        return _temporary_error(
+            422,
+            "knowledge_approval_rejected",
+            "The document could not be saved to your Knowledge Library.",
+        )
+    except SQLAlchemyError:
+        session.rollback()
+        return _temporary_error(
+            503,
+            "knowledge_storage_unavailable",
+            "The document could not be saved right now.",
+        )
+    try:
+        job = enqueue_knowledge_job(
+            session,
+            owner_user_id=int(user.id),
+            job_type="web_knowledge_ingest",
+            document_id=document.id,
+            source_version=document.source_version,
+            idempotency_key=f"knowledge-ingest:{document.id}:{source_version}",
+        )
+    except (PermissionError, ValueError):
+        session.rollback()
+        return _temporary_error(
+            503,
+            "knowledge_indexing_unavailable",
+            "The document could not be queued for indexing.",
+        )
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder({
+            "document": safe_document_summary(session, document),
+            "job": safe_job_summary(job),
+        }),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/knowledge", response_model=KnowledgeDocumentListResponse)
+def list_knowledge_documents(
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    documents = list_owned_knowledge_documents(
+        session, owner_user_id=int(user.id)
+    )
+    return JSONResponse(
+        content=jsonable_encoder({
+            "items": [
+                safe_document_summary(session, document)
+                for document in documents
+            ]
+        }),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/knowledge/{document_id}",
+    response_model=KnowledgeDocumentResultResponse,
+)
+def get_knowledge_document_status(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        document = owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+        )
+    except PermissionError:
+        return _temporary_error(
+            404, "knowledge_document_not_found", "Document not found."
+        )
+    job = latest_owned_knowledge_job(
+        session, owner_user_id=int(user.id), document_id=document.id
+    )
+    return JSONResponse(
+        content=jsonable_encoder({
+            "document": safe_document_summary(session, document),
+            "job": safe_job_summary(job),
+        }),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.delete("/knowledge/{document_id}", status_code=204)
+def delete_knowledge_document(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        delete_owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+        )
+    except PermissionError:
+        return _temporary_error(
+            404, "knowledge_document_not_found", "Document not found."
+        )
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+@router.post(
+    "/knowledge/{document_id}/reindex",
+    response_model=KnowledgeDocumentResultResponse,
+)
+def reindex_knowledge_document(
+    document_id: UUID,
+    payload: KnowledgeReindexRequest,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        job = reindex_owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+            operation_id=str(payload.operation_id),
+        )
+        document = owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+        )
+    except PermissionError:
+        return _temporary_error(
+            404, "knowledge_document_not_found", "Document not found."
+        )
+    except ValueError:
+        session.rollback()
+        return _temporary_error(
+            409,
+            "knowledge_reindex_unavailable",
+            "This document cannot be re-indexed.",
+        )
+    return JSONResponse(
+        content=jsonable_encoder({
+            "document": safe_document_summary(session, document),
+            "job": safe_job_summary(job),
+        }),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/knowledge/{document_id}/job",
+    response_model=KnowledgeJobResultResponse,
+)
+def get_knowledge_job_status(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        document = owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+        )
+    except PermissionError:
+        return _temporary_error(
+            404, "knowledge_document_not_found", "Document not found."
+        )
+    job = latest_owned_knowledge_job(
+        session, owner_user_id=int(user.id), document_id=document.id
+    )
+    return JSONResponse(
+        content=jsonable_encoder({"job": safe_job_summary(job)}),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.delete(
+    "/knowledge/{document_id}/job",
+    response_model=KnowledgeJobResultResponse,
+)
+def cancel_knowledge_document_job(
+    document_id: UUID,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not TriagSettings.from_environ().persistent_knowledge_runtime_enabled:
+        return _knowledge_library_unavailable()
+    try:
+        document = owned_knowledge_document(
+            session,
+            owner_user_id=int(user.id),
+            document_id=str(document_id),
+        )
+    except PermissionError:
+        return _temporary_error(
+            404, "knowledge_document_not_found", "Document not found."
+        )
+    job = latest_owned_knowledge_job(
+        session, owner_user_id=int(user.id), document_id=document.id
+    )
+    if job is not None and job.status in {"queued", "retrying", "running"}:
+        cancel_knowledge_job(
+            session,
+            owner_user_id=int(user.id),
+            job_id=int(job.id or 0),
+        )
+        document.status = "failed"
+        document.updated_at = utc_now()
+        session.add(document)
+        session.commit()
+        session.refresh(job)
+    return JSONResponse(
+        content=jsonable_encoder({"job": safe_job_summary(job)}),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/uploads", status_code=201)

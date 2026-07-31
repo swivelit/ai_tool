@@ -90,6 +90,14 @@ retrieval survives vector, provider and budget failure. Private-source turns
 disable the global cache. Phase 6 leaves this path and every earlier feature
 flag off in production until staged gates pass.
 
+Phase 5.1 adds an authenticated Knowledge Library settings surface and
+owner-scoped `/api/web/knowledge` lifecycle endpoints. The browser can approve
+only a currently available temporary upload and must send an explicit
+confirmation. Bootstrap exposes one optional boolean capability. API/UI
+metadata is limited to safe names, statuses, counts and timestamps; raw
+document text, source hashes, embedding details and internal job IDs are not
+returned. The website chat stream route is unchanged.
+
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the
 immediately previous completed assistant message's safe `topic=swico` metadata,

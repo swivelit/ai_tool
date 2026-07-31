@@ -289,6 +289,7 @@ def test_redis_setex_uses_600_and_reads_do_not_renew(monkeypatch):
     class FakeRedis:
         def setex(self, key, ttl, value): calls.append(("setex", key, ttl)); values[key] = value
         def get(self, key): calls.append(("get", key)); return values.get(key)
+        def exists(self, key): calls.append(("exists", key)); return int(key in values)
         def delete(self, key): values.pop(key, None); return 1
         def ping(self): return True
 
@@ -301,9 +302,14 @@ def test_redis_setex_uses_600_and_reads_do_not_renew(monkeypatch):
         chunks=[ExtractedChunk("hello", "line 1")], source_locators=["line 1"], warnings=[],
     )
     store.put(upload)
+    assert store.is_owned(upload.id, 1) is True
+    assert store.is_owned(upload.id, 2) is False
     store.get(upload.id)
     assert calls[0][0] == "setex" and calls[0][2] == 600
-    assert [call[0] for call in calls] == ["setex", "get"]
+    assert calls[1][0] == "setex" and calls[1][2] == 600
+    assert [call[0] for call in calls] == [
+        "setex", "setex", "exists", "exists", "get",
+    ]
 
 
 def test_upload_ttl_defaults_to_one_hour_and_is_capped_at_24_hours(monkeypatch):

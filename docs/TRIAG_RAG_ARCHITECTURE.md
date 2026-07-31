@@ -128,6 +128,23 @@ identifiers only. They are idempotent and cancellable. The shared worker does
 not construct an embedding provider: a later dedicated worker must inject one
 only after an authoritative reservation and `web_usage_stage` exist.
 
+Phase 5.1 exposes the foundation through authenticated
+`/api/web/knowledge` endpoints. Approval accepts an existing temporary upload
+only when the caller supplies an explicit true confirmation. An owner-scoped
+Valkey marker is checked before the raw upload value is read; missing,
+cross-owner, and expired identifiers all fail closed. List, document-status
+and job-status responses contain only safe titles, lifecycle states, counts
+and timestamps. They do not contain chunks, hashes, embeddings, model/provider
+details, or internal job identifiers. Delete removes the approved source and
+invalidates owner cache state; re-indexing resets derived data and queues the
+existing idempotent ingest job.
+
+The authenticated bootstrap adds only `features.web_knowledge_library`. It is
+true only when the existing persistent-knowledge runtime gate is live. The
+website settings UI uses temporary upload display metadata already in memory,
+requires “Save to my Knowledge Library”, and writes no repository text or
+knowledge identifiers to browser storage.
+
 ## Phase 6 rollout boundary
 
 Phase 6 is readiness, not activation. All Phase 0–5 production flags remain

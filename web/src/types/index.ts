@@ -51,6 +51,28 @@ export type ComposerRepository = {
 export type ExpiredAttachment = AttachmentDisplay & { status: 'expired' | 'unavailable' }
 export type MessageAttachment = ReadyAttachment | ExpiredAttachment
 export type ComposerAttachment = PendingAttachment | ReadyAttachment | ExpiredAttachment
+export type KnowledgeDocumentStatus = 'pending' | 'indexing' | 'ready' | 'failed' | 'invalidated'
+export type KnowledgeDocument = {
+  id: string;
+  title: string;
+  status: KnowledgeDocumentStatus;
+  source_kind: string;
+  chunk_count: number;
+  approved_at: string;
+  created_at: string;
+  updated_at: string;
+}
+export type KnowledgeJobStatus =
+  | 'not_scheduled' | 'queued' | 'retrying' | 'running'
+  | 'complete' | 'failed' | 'cancelled'
+export type KnowledgeJobSummary = {
+  status: KnowledgeJobStatus;
+  updated_at: string | null;
+}
+export type KnowledgeDocumentResult = {
+  document: KnowledgeDocument;
+  job: KnowledgeJobSummary;
+}
 export type AudioRecorderState = {
   status: 'idle' | 'requesting' | 'recording' | 'stopping' | 'transcribing' | 'error';
   elapsed_seconds: number; mime_type: string | null; error: string | null;
@@ -120,6 +142,7 @@ export type Bootstrap = {
     web_answer_feedback?: boolean; web_content_search?: boolean; web_response_provenance?: boolean;
     web_repository_upload?: boolean; web_repository_chat?: boolean;
     web_repository_validation?: boolean;
+    web_knowledge_library?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;

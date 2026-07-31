@@ -37,6 +37,13 @@ function mockSettingsApi(payments: unknown[] = [], usageValue: UsageSummary = us
   })
 }
 
+it('does not expose the Knowledge Library when its bootstrap capability is disabled', async () => {
+  mockSettingsApi()
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} knowledgeLibraryEnabled={false} knowledgeUploads={[]} />)
+  await screen.findByRole('heading', { name:'General' })
+  expect(screen.queryByRole('button', { name:'Knowledge Library' })).not.toBeInTheDocument()
+})
+
 it('displays and saves the shared Swico mode in General settings', async () => {
   mockSettingsApi(); const saveTier = vi.fn().mockResolvedValue(undefined)
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={saveTier} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)

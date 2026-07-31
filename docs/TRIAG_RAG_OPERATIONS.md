@@ -112,5 +112,26 @@ state between bounded units. Failed jobs persist only a static error code. A
 future Render worker must use the same database, carry no raw payloads, and
 remain disabled until accounting and cancellation gates pass.
 
+The Phase 5.1 owner operations are:
+
+```text
+POST   /api/web/knowledge
+GET    /api/web/knowledge
+GET    /api/web/knowledge/{document_id}
+DELETE /api/web/knowledge/{document_id}
+POST   /api/web/knowledge/{document_id}/reindex
+GET    /api/web/knowledge/{document_id}/job
+DELETE /api/web/knowledge/{document_id}/job
+```
+
+All require Firebase authentication and return `Cache-Control: no-store`.
+Approval requires `confirm_persistence: true`; never retry by changing that
+field server-side. A not-found approval may mean expired or non-owned upload
+and must not be diagnosed using raw Valkey contents. Job APIs expose status,
+not the internal job ID. Routine support may inspect content-free counts and
+statuses only. Removal is authoritative and also clears the owner's private
+answer cache; re-indexing clears derived embeddings/triplets/hierarchy before
+the idempotent ingest job is queued.
+
 Rollback is flag-only: disable hierarchy, triplets, then persistent knowledge,
 or set `WEB_TRIAG_ENABLED=false`. Keep additive tables and fix forward.

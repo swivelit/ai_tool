@@ -52,6 +52,15 @@ clients discover repository upload/chat/validation through
 `/api/web/bootstrap`. Keep those flags false until the staged repository
 lifecycle and validator capability have been verified.
 
+Phase 5.1 likewise requires no new Render resource or public `VITE_*`
+variable. Deploy its API and settings UI with
+`WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false`. In an approved staging gate,
+enable the existing TRIAG, non-shadow hybrid, attachments and persistent
+knowledge flags together; then verify bootstrap advertises
+`web_knowledge_library`, explicit confirmation, owner rejection, expiry,
+idempotent approval, cancellation, removal and re-indexing. Do not enable the
+flag in production merely because the UI is deployed.
+
 ## Rollback
 
 Set `WEB_RAG_HYBRID_ENABLED=false` (or `WEB_TRIAG_ENABLED=false`) and restart
@@ -76,6 +85,9 @@ Do not enable persistent knowledge merely because the migration is deployed.
 
 1. Migrate to `f2a7c9e4b1d6` and verify one head.
 2. Prove explicit approval and source-version invalidation.
+   Exercise approval through `/api/web/knowledge`; verify the owner marker is
+   checked before temporary content is fetched and API responses remain
+   content-free.
 3. Prove owner isolation and that temporary uploads expire without knowledge
    rows.
 4. Enable persistent knowledge for a bounded staging cohort while triplets and

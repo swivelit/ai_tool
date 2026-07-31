@@ -12,6 +12,7 @@ from typing import Protocol
 DEFAULT_UPLOAD_TTL_SECONDS = 3_600
 MAX_UPLOAD_TTL_SECONDS = 86_400
 UPLOAD_KEY_PREFIX = "swico:web-upload:"
+UPLOAD_OWNER_KEY_PREFIX = "swico:web-upload-owner:"
 
 
 class UploadStoreUnavailable(RuntimeError):
@@ -59,6 +60,7 @@ class EphemeralUploadStore(Protocol):
     ttl_seconds: int
 
     def put(self, upload: EphemeralUpload) -> None: ...
+    def is_owned(self, upload_id: str, owner_user_id: int) -> bool: ...
     def get(self, upload_id: str) -> EphemeralUpload | None: ...
     def delete(self, upload_id: str) -> bool: ...
     def available(self) -> bool: ...
@@ -135,6 +137,15 @@ class InProcessEphemeralUploadStore:
             # Do not move the entry or change its expiry: reads are non-sliding.
             return self._items.get(upload_id)
 
+    def is_owned(self, upload_id: str, owner_user_id: int) -> bool:
+        with self._lock:
+            self._purge()
+            upload = self._items.get(upload_id)
+            return bool(
+                upload is not None
+                and upload.owner_user_id == int(owner_user_id)
+            )
+
     def delete(self, upload_id: str) -> bool:
         with self._lock:
             return self._items.pop(upload_id, None) is not None
@@ -185,11 +196,32 @@ class RedisEphemeralUploadStore:
     def _key(upload_id: str) -> str:
         return f"{UPLOAD_KEY_PREFIX}{upload_id}"
 
+    @staticmethod
+    def _owner_key(upload_id: str, owner_user_id: int) -> str:
+        return f"{UPLOAD_OWNER_KEY_PREFIX}{int(owner_user_id)}:{upload_id}"
+
     def put(self, upload: EphemeralUpload) -> None:
         try:
-            self._client.setex(self._key(upload.id), self.ttl_seconds, _encode(upload))
+            self._client.setex(
+                self._key(upload.id), self.ttl_seconds, _encode(upload)
+            )
+            self._client.setex(
+                self._owner_key(upload.id, upload.owner_user_id),
+                self.ttl_seconds,
+                "1",
+            )
         except Exception as exc:
             raise UploadStoreUnavailable("The temporary upload cache is unavailable.") from exc
+
+    def is_owned(self, upload_id: str, owner_user_id: int) -> bool:
+        try:
+            return bool(
+                self._client.exists(self._owner_key(upload_id, owner_user_id))
+            )
+        except Exception as exc:
+            raise UploadStoreUnavailable(
+                "The temporary upload cache is unavailable."
+            ) from exc
 
     def get(self, upload_id: str) -> EphemeralUpload | None:
         try:
@@ -254,6 +286,9 @@ class UnavailableEphemeralUploadStore:
         self._raise()
 
     def get(self, upload_id: str) -> EphemeralUpload | None:
+        self._raise()
+
+    def is_owned(self, upload_id: str, owner_user_id: int) -> bool:
         self._raise()
 
     def delete(self, upload_id: str) -> bool:

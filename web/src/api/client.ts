@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, RepositorySnapshot, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, KnowledgeDocument, KnowledgeDocumentResult, KnowledgeJobSummary, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, RepositorySnapshot, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -193,6 +193,77 @@ export async function deleteUpload(user: User, uploadId: string): Promise<void> 
     const body = await response.json().catch(() => ({})) as unknown
     throw new ApiError(response.status, body)
   }
+}
+
+export async function approveKnowledgeDocument(
+  user: User,
+  uploadId: string,
+): Promise<KnowledgeDocumentResult> {
+  return apiJson<KnowledgeDocumentResult>(user, '/api/web/knowledge', {
+    method: 'POST',
+    body: JSON.stringify({
+      upload_id: uploadId,
+      confirm_persistence: true,
+    }),
+  })
+}
+
+export async function listKnowledgeDocuments(
+  user: User,
+): Promise<KnowledgeDocument[]> {
+  const result = await apiJson<{ items: KnowledgeDocument[] }>(
+    user,
+    '/api/web/knowledge',
+  )
+  return result.items
+}
+
+export async function deleteKnowledgeDocument(
+  user: User,
+  documentId: string,
+): Promise<void> {
+  await apiJson<void>(
+    user,
+    `/api/web/knowledge/${encodeURIComponent(documentId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function reindexKnowledgeDocument(
+  user: User,
+  documentId: string,
+): Promise<KnowledgeDocumentResult> {
+  return apiJson<KnowledgeDocumentResult>(
+    user,
+    `/api/web/knowledge/${encodeURIComponent(documentId)}/reindex`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ operation_id: crypto.randomUUID() }),
+    },
+  )
+}
+
+export async function getKnowledgeJobStatus(
+  user: User,
+  documentId: string,
+): Promise<KnowledgeJobSummary> {
+  const result = await apiJson<{ job: KnowledgeJobSummary }>(
+    user,
+    `/api/web/knowledge/${encodeURIComponent(documentId)}/job`,
+  )
+  return result.job
+}
+
+export async function cancelKnowledgeJob(
+  user: User,
+  documentId: string,
+): Promise<KnowledgeJobSummary> {
+  const result = await apiJson<{ job: KnowledgeJobSummary }>(
+    user,
+    `/api/web/knowledge/${encodeURIComponent(documentId)}/job`,
+    { method: 'DELETE' },
+  )
+  return result.job
 }
 
 export async function uploadRepository(
