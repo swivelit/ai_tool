@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, LongInputMode, ReadyAttachment, SSEEvent, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, LongInputMode, ReadyAttachment, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -41,6 +41,23 @@ export class SSEStreamError extends Error {
     public retryable = false,
     public retry_at: string | null = null,
   ) { super(message) }
+}
+
+function normalizeSourcesEvent(event: SSEEvent): SSEEvent {
+  if (event.event !== 'sources' || !event.data || typeof event.data !== 'object') return event
+  const values = (event.data as { sources?: unknown }).sources
+  if (!Array.isArray(values)) return { event: 'sources', data: { sources: [] } }
+  const sources = values.filter(value => value && typeof value === 'object').map(value => {
+    const source = value as Record<string, unknown>
+    return {
+      id: String(source.id ?? '').slice(0, 16),
+      label: String(source.label ?? '').slice(0, 128),
+      locator: String(source.locator ?? '').slice(0, 256),
+      confidence: Math.max(0, Math.min(1, Number(source.confidence ?? 0))),
+      source_kind: String(source.source_kind ?? '').slice(0, 32),
+    } satisfies SourceSummary
+  }).filter(source => source.id && source.label && source.locator)
+  return { event: 'sources', data: { sources } }
 }
 
 export async function publicApiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -89,7 +106,8 @@ export async function streamChat(
   let streamError: SSEStreamError | null = null
   let terminalEventReceived = false
   await consumeSSE(response, event => {
-    onEvent(event)
+    const normalizedEvent = normalizeSourcesEvent(event)
+    onEvent(normalizedEvent)
     if (event.event === 'done') terminalEventReceived = true
     if (event.event === 'error') {
       terminalEventReceived = true

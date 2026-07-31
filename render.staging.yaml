@@ -31,6 +31,38 @@ projects:
                 value: "true"
               - key: WEB_TRIAG_POLICY_VERSION
                 value: v1
+              - key: WEB_RAG_HYBRID_ENABLED
+                value: "false"
+              - key: WEB_RAG_DENSE_ENABLED
+                value: "false"
+              - key: WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED
+                value: "false"
+              - key: WEB_RAG_MAX_CORRECTIVE_ROUNDS
+                value: "1"
+              - key: WEB_RAG_QUERY_EMBEDDING_CACHE_TTL_SECONDS
+                value: "86400"
+              - key: WEB_RAG_EMBEDDING_MODEL
+                value: text-embedding-3-small
+              - key: WEB_RAG_EMBEDDING_DIMENSIONS
+                value: "1536"
+              - key: WEB_RAG_LITE_CANDIDATE_LIMIT
+                value: "12"
+              - key: WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT
+                value: "4"
+              - key: WEB_RAG_LITE_EVIDENCE_TOKEN_CAP
+                value: "1200"
+              - key: WEB_RAG_STANDARD_CANDIDATE_LIMIT
+                value: "30"
+              - key: WEB_RAG_STANDARD_EVIDENCE_ITEM_LIMIT
+                value: "7"
+              - key: WEB_RAG_STANDARD_EVIDENCE_TOKEN_CAP
+                value: "3200"
+              - key: WEB_RAG_PRO_CANDIDATE_LIMIT
+                value: "60"
+              - key: WEB_RAG_PRO_EVIDENCE_ITEM_LIMIT
+                value: "12"
+              - key: WEB_RAG_PRO_EVIDENCE_TOKEN_CAP
+                value: "6000"
               - key: WEB_SAME_THREAD_CONTEXT_MODE
                 value: adaptive
               - key: WEB_SWICO_BRAND_GUARD_ENABLED

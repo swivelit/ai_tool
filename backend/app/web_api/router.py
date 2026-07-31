@@ -440,6 +440,24 @@ def _serialize_message(
                 retry_at = candidate_retry_at
         except ValueError:
             pass
+    raw_sources = metadata.get("sources")
+    sources = [
+        {
+            "id": str(source.get("id") or "")[:16],
+            "label": sanitize_filename(
+                str(source.get("label") or "Uploaded document")
+            )[:128],
+            "locator": str(source.get("locator") or "")[:256],
+            "confidence": max(
+                0.0, min(1.0, float(source.get("confidence") or 0.0))
+            ),
+            "source_kind": str(source.get("source_kind") or "")[:32],
+        }
+        for source in (
+            raw_sources if isinstance(raw_sources, list) else []
+        )
+        if isinstance(source, dict)
+    ]
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
         "request_id": row.request_id, "tier": tier,
@@ -495,6 +513,7 @@ def _serialize_message(
             and isinstance(metadata.get("provenance"), list)
             else []
         ),
+        "sources": sources,
     }
 
 
@@ -3133,6 +3152,11 @@ async def chat_stream(
             terminal_provider_attempts = int(
                 response.raw.get("provider_attempts") or 0
             )
+            if completed.message.sources:
+                yield _sse(
+                    "sources",
+                    {"sources": list(completed.message.sources)},
+                )
             yield _sse("usage", {
                 "tier": completed.message.swico_tier,
                 "tier_label": (
@@ -3176,6 +3200,7 @@ async def chat_stream(
                     if _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED") else []
                 ),
                 "memory_updated": bool(response.raw.get("memory_updated")),
+                "sources": list(completed.message.sources),
             })
             outcome = "done"
         except asyncio.CancelledError:

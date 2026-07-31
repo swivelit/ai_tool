@@ -34,11 +34,14 @@ Historical messages retain their `user` and `assistant` provider roles, and the
 same frozen message list drives prompt estimation, reservation, and provider
 invocation.
 
-`backend/app/web_ai/` now contains Phase 0/1 TRIAG-RAG contracts and
-provider-free shadow planning. It does not replace `WebRequestCoordinator`.
-The new dynamic allocator can assign zero tokens to irrelevant history,
-cross-thread memory, profile, or documents, but its output is telemetry only.
-The active `_apply_prompt_budget` behavior remains unchanged. Shadow mode
+`backend/app/web_ai/` contains the Phase 0/1 foundation and the Phase 2
+temporary-document hybrid retrieval implementation. It does not replace
+`WebRequestCoordinator`: disabled and shadow modes retain the original path.
+The live Phase 2 path is entered only when TRIAG is non-shadow and
+`WEB_RAG_HYBRID_ENABLED=true`. It adapts the existing lexical attachment scorer,
+optionally caches temporary chunk/query embeddings in the existing private
+upload Valkey, fuses and deduplicates candidates, builds a tier-capped evidence
+pack, then freezes the exact provider messages. Shadow mode
 persists only allowlisted scalar/count metadata in `web_retrieval_trace`; it
 does not persist messages, memory/profile text, attachment excerpts, generated
 code, secrets, credentials, environment values, or provider/model names.
@@ -49,14 +52,20 @@ The safe backend defaults are:
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_RAG_HYBRID_ENABLED=false
+WEB_RAG_DENSE_ENABLED=false
+WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
 ```
 
-Phase 2 is the earliest phase that may introduce retrieval execution or
-evidence assembly. It is not implemented or activated here.
+Phase 2 remains disabled by default. It adds safe `sources` SSE/message
+metadata containing labels and locators only. It does not add Answer Guard,
+repair calls, repository execution, triplets, hierarchy, or persistent
+knowledge.
 
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment
-text lives in the dedicated private Valkey and raw uploads are not retained.
+text and temporary vectors live in the dedicated private Valkey under the
+upload TTL; neither is written to permanent PostgreSQL knowledge tables.
 
 ## Legacy/mobile orchestration path
 

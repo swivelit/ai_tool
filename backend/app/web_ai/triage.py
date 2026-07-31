@@ -151,7 +151,14 @@ def build_execution_plan(
         )
         if token_count > 0
     )
-    expected_calls = 0 if deterministic or blocked else 1
+    dense_planned = bool(
+        not deterministic
+        and not blocked
+        and "documents" in retrieval_sources
+        and config.dense_runtime_enabled
+        and policy.dense_retrieval_allowed
+    )
+    expected_calls = 0 if deterministic or blocked else 1 + int(dense_planned)
     reasons = (
         optimization.optimization_route,
         triage_input.continuity.reason,
@@ -173,7 +180,13 @@ def build_execution_plan(
         deterministic=deterministic or blocked,
         streaming_mode="none" if deterministic or blocked else "existing_sse",
         planned_usage_stages=(
-            () if expected_calls == 0 else ("reservation", "generation", "settlement")
+            ()
+            if expected_calls == 0
+            else (
+                ("embedding", "reservation", "generation", "settlement")
+                if dense_planned
+                else ("reservation", "generation", "settlement")
+            )
         ),
     )
 

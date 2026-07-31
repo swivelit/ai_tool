@@ -38,6 +38,50 @@ class RankedChunk:
     text: str
 
 
+def rank_attachment_chunks(
+    uploads: list[EphemeralUpload],
+    question: str,
+) -> list[RankedChunk]:
+    """Return the existing lexical ranking without formatting prompt text."""
+
+    question_tokens = _tokens(question)
+    all_chunks = [chunk for upload in uploads for chunk in upload.chunks]
+    document_frequency = Counter(
+        token for chunk in all_chunks for token in _tokens(chunk.text)
+    )
+    ranked: list[RankedChunk] = []
+    for upload_index, upload in enumerate(uploads):
+        for chunk_index, chunk in enumerate(upload.chunks):
+            chunk_tokens = _tokens(chunk.text)
+            overlap_terms = question_tokens & chunk_tokens
+            lexical = sum(
+                math.log((len(all_chunks) + 1) / (document_frequency[token] + 1))
+                + 1.0
+                for token in overlap_terms
+            )
+            phrase = (
+                2.5
+                if question.strip().lower()
+                and question.strip().lower() in chunk.text.lower()
+                else 0.0
+            )
+            length_normalizer = 1.0 + max(0, len(chunk_tokens) - 120) / 600
+            overlap = (
+                (lexical + phrase) / length_normalizer if question_tokens else 0.0
+            )
+            label = f"[{upload.name}, {chunk.source}]"
+            ranked.append(
+                RankedChunk(
+                    overlap,
+                    upload_index,
+                    chunk_index,
+                    label,
+                    chunk.text,
+                )
+            )
+    return ranked
+
+
 def _tokens(value: str) -> set[str]:
     return {
         token
@@ -79,24 +123,7 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
             )
         return full_context
     question_tokens = _tokens(question)
-    all_chunks = [chunk for upload in uploads for chunk in upload.chunks]
-    document_frequency = Counter(
-        token for chunk in all_chunks for token in _tokens(chunk.text)
-    )
-    ranked: list[RankedChunk] = []
-    for upload_index, upload in enumerate(uploads):
-        for chunk_index, chunk in enumerate(upload.chunks):
-            chunk_tokens = _tokens(chunk.text)
-            overlap_terms = question_tokens & chunk_tokens
-            lexical = sum(
-                math.log((len(all_chunks) + 1) / (document_frequency[token] + 1)) + 1.0
-                for token in overlap_terms
-            )
-            phrase = 2.5 if question.strip().lower() in chunk.text.lower() else 0.0
-            length_normalizer = 1.0 + max(0, len(chunk_tokens) - 120) / 600
-            overlap = (lexical + phrase) / length_normalizer if question_tokens else 0.0
-            label = f"[{upload.name}, {chunk.source}]"
-            ranked.append(RankedChunk(overlap, upload_index, chunk_index, label, chunk.text))
+    ranked = rank_attachment_chunks(uploads, question)
 
     selected: list[RankedChunk] = []
     selected_keys: set[tuple[int, int]] = set()

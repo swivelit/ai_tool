@@ -1,6 +1,6 @@
 # TRIAG-RAG architecture
 
-## Phase 0/1 scope
+## Phase 0–2 scope
 
 The Phase 0/1 implementation is a provider-free planning foundation under
 `backend/app/web_ai/`. It defines immutable execution, tier, retrieval,
@@ -31,9 +31,23 @@ It makes no LLM, embedding, retrieval, or provider call. Identical input and
 configuration produce the same `ExecutionPlan`.
 
 `DynamicTokenAllocator` applies validated tier ceilings and can assign zero to
-history, cross-thread memory, profile, and documents independently. Its Phase 1
-output is observational. The existing `_apply_prompt_budget` remains
-authoritative and unchanged.
+history, cross-thread memory, profile, and documents independently. Its output
+is observational while TRIAG is disabled or shadow-only.
+
+## Phase 2 temporary-document retrieval
+
+The enabled-only runtime adapts `select_attachment_context()` and its lexical
+ranker, optionally adds dense retrieval, uses deterministic reciprocal-rank
+fusion, near-duplicate removal, marginal-value-per-token selection, and builds
+a capped evidence pack with stable S1/S2 identifiers. Document content is
+always wrapped as untrusted data. Evidence status is `sufficient`, `ambiguous`,
+`insufficient`, or `contradictory`; at most one deterministic corrective
+lexical round is allowed by the central tier policy.
+
+Temporary chunk and query embeddings use the existing `WEB_UPLOAD_CACHE_URL`.
+Keys are owner/upload/content/model/schema scoped and expire no later than the
+upload. PostgreSQL receives provenance and safe locators only. Every embedding
+stage must be reserved and linked to `UsageCharge` before provider execution.
 
 ## Safe persistence
 
@@ -55,8 +69,8 @@ allocations. It cannot contain raw messages, memory/profile text, attachment
 excerpts, generated code, secrets, tokens, credentials, environment values, or
 provider/model names.
 
-## Non-goals
+## Non-goals / Phase 3 boundary
 
-Phase 1 does not execute retrieval, construct evidence for generation, check
-answers, split usage billing into stages, select a new route, alter cache
-eligibility, change prompts, or emit new SSE events. Those are Phase 2 or later.
+Phase 2 does not implement Answer Guard, answer repair calls, repository code
+execution, triplets, hierarchy, or persistent knowledge. It does not change
+provider/model disclosure rules or route website traffic through AgentRuntime.

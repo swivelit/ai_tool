@@ -6,6 +6,7 @@ import { MarkdownMessage } from './MarkdownMessage'
 import { ResponseToolbar } from './ResponseToolbar'
 import { PromptToolbar } from './PromptToolbar'
 import { continuationMarkdown } from '../continuationMarkdown'
+import { SourceCitations } from './SourceCitations'
 
 const BOTTOM_THRESHOLD_PX = 120
 
@@ -224,6 +225,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
     />}
     {displayedContent ? <MarkdownMessage streaming={message.status === 'streaming'}>{displayedContent}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
+    {!!message.sources?.length && <SourceCitations sources={message.sources} />}
     {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
     {message.status !== 'streaming' && <div className="answer-actions">
       {feedbackEnabled && message.status === 'complete' && <><button className={feedback === 'up' ? 'selected' : ''} aria-label="Good answer" title="Good answer" aria-pressed={feedback === 'up'} onClick={() => rate('up')}><ThumbsUp size={15} /></button>

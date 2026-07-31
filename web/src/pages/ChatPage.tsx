@@ -293,6 +293,9 @@ export function ChatPage() {
       }, event => {
         const scope = streamScopeRef.current
         if (!scope || scope.requestId !== nextRequestId) return
+        if (event.event === 'sources' && (
+          typeof event.data !== 'object' || event.data === null
+        )) return
         dispatchStream({ type: 'event', event })
         if (event.event === 'thread' && typeof event.data === 'object' && event.data) {
           const id = String((event.data as Record<string, unknown>).thread_id ?? '')

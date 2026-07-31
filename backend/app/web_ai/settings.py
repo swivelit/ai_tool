@@ -35,11 +35,38 @@ def _parse_bool(
     return default
 
 
+def _parse_int(
+    environ: Mapping[str, str],
+    name: str,
+    default: int,
+    errors: list[str],
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(str(environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        errors.append(f"{name} must be an integer")
+        return default
+    if value < minimum or value > maximum:
+        errors.append(f"{name} is outside supported bounds")
+        return default
+    return value
+
+
 @dataclass(frozen=True)
 class TriagSettings:
     enabled: bool = False
     shadow_mode: bool = True
     policy_version: str = "v1"
+    rag_hybrid_enabled: bool = False
+    rag_dense_enabled: bool = False
+    retrieval_evaluator_enabled: bool = False
+    max_corrective_rounds: int = 1
+    query_embedding_cache_ttl_seconds: int = 86_400
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1_536
 
     @classmethod
     def from_environ(
@@ -49,13 +76,47 @@ class TriagSettings:
         errors: list[str] = []
         enabled = _parse_bool(env, "WEB_TRIAG_ENABLED", False, errors)
         shadow = _parse_bool(env, "WEB_TRIAG_SHADOW_MODE", True, errors)
+        hybrid = _parse_bool(env, "WEB_RAG_HYBRID_ENABLED", False, errors)
+        dense = _parse_bool(env, "WEB_RAG_DENSE_ENABLED", False, errors)
+        evaluator = _parse_bool(
+            env, "WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED", False, errors
+        )
+        max_corrective_rounds = _parse_int(
+            env,
+            "WEB_RAG_MAX_CORRECTIVE_ROUNDS",
+            1,
+            errors,
+            minimum=0,
+            maximum=1,
+        )
+        query_cache_ttl = _parse_int(
+            env,
+            "WEB_RAG_QUERY_EMBEDDING_CACHE_TTL_SECONDS",
+            86_400,
+            errors,
+            minimum=60,
+            maximum=604_800,
+        )
+        embedding_dimensions = _parse_int(
+            env,
+            "WEB_RAG_EMBEDDING_DIMENSIONS",
+            1_536,
+            errors,
+            minimum=64,
+            maximum=8_192,
+        )
+        embedding_model = str(
+            env.get("WEB_RAG_EMBEDDING_MODEL", "text-embedding-3-small") or ""
+        ).strip()
+        if not embedding_model or len(embedding_model) > 128:
+            errors.append("WEB_RAG_EMBEDDING_MODEL must be a bounded model id")
         policy_version = str(
             env.get("WEB_TRIAG_POLICY_VERSION", "v1") or ""
         ).strip()
         if not _POLICY_VERSION.fullmatch(policy_version):
             errors.append("WEB_TRIAG_POLICY_VERSION must be a bounded version id")
         try:
-            validated_tier_policies()
+            validated_tier_policies(env)
         except ValueError:
             errors.append("TRIAG tier-policy defaults are invalid")
         if errors:
@@ -64,6 +125,13 @@ class TriagSettings:
             enabled=enabled,
             shadow_mode=shadow,
             policy_version=policy_version,
+            rag_hybrid_enabled=hybrid,
+            rag_dense_enabled=dense,
+            retrieval_evaluator_enabled=evaluator,
+            max_corrective_rounds=max_corrective_rounds,
+            query_embedding_cache_ttl_seconds=query_cache_ttl,
+            embedding_model=embedding_model,
+            embedding_dimensions=embedding_dimensions,
         )
 
     @property
@@ -71,17 +139,38 @@ class TriagSettings:
         return self.enabled and self.shadow_mode
 
     @property
+    def hybrid_runtime_enabled(self) -> bool:
+        return self.enabled and not self.shadow_mode and self.rag_hybrid_enabled
+
+    @property
+    def dense_runtime_enabled(self) -> bool:
+        return self.hybrid_runtime_enabled and self.rag_dense_enabled
+
+    @property
     def runtime_status(self) -> dict[str, object]:
         if not self.enabled:
             status = "disabled"
         elif self.shadow_mode:
             status = "shadow"
+        elif self.rag_hybrid_enabled:
+            status = "hybrid"
         else:
-            # Phase 1 intentionally has no live activation path.
             status = "configured_inactive"
         return {
             "status": status,
             "enabled": self.enabled,
             "shadow_mode": self.shadow_mode,
             "policy_version": self.policy_version,
+            "hybrid_retrieval": (
+                "enabled" if self.hybrid_runtime_enabled else "disabled"
+            ),
+            "dense_retrieval": (
+                "enabled" if self.dense_runtime_enabled else "disabled"
+            ),
+            "retrieval_evaluator": (
+                "enabled"
+                if self.hybrid_runtime_enabled
+                and self.retrieval_evaluator_enabled
+                else "disabled"
+            ),
         }

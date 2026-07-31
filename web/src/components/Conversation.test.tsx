@@ -220,6 +220,17 @@ it('shows public tier and measured categories without monetary or routing detail
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
 })
 
+it('renders safe source labels and locators without provider names', () => {
+  render(<Conversation messages={[message('sourced', { sources:[{
+    id:'S1', label:'employee-guide.pdf', locator:'employee-guide.pdf — page 4',
+    confidence:0.9, source_kind:'temporary_upload',
+  }] })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByRole('region', { name:'Sources' })).toBeInTheDocument()
+  expect(screen.getByText('employee-guide.pdf')).toBeInTheDocument()
+  expect(screen.getByText('employee-guide.pdf — page 4')).toBeInTheDocument()
+  expect(document.body.textContent).not.toMatch(/openai|gpt-|sarvam/i)
+})
+
 it('labels historical messages without a tier simply as Swico', () => {
   render(<Conversation messages={[{ ...message('historical'), tier:null, tier_label:'Swico' }]} retry={vi.fn()} suggest={vi.fn()} />)
   fireEvent.click(screen.getByText('Details'))

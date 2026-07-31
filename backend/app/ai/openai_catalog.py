@@ -181,6 +181,20 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
 
     gpt41_nano_endpoint = _env_endpoint("OPENAI_MODEL_ENDPOINT_GPT_4_1_NANO", "chat_completions")
     return {
+        "text-embedding-3-small": _spec(
+            "text-embedding-3-small",
+            family="embedding-3",
+            tier="embedding",
+            endpoint="responses",
+            default_input=0.02,
+            default_cached=None,
+            default_output=0.0,
+            supports_temperature=False,
+            supports_response_format=False,
+            supports_reasoning_effort=False,
+            supports_tools=False,
+            free_user_allowed=False,
+        ),
         "gpt-5-nano": _spec(
             "gpt-5-nano",
             family="gpt-5",

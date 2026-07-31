@@ -17,7 +17,7 @@ from ..ai.providers.base import GenerationCancelled
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import estimate_tokens, env_decimal, openai_reported_price, price_usage, reserve_price, snapshot_json
-from ..billing.errors import PaymentValidationError
+from ..billing.errors import BillingError, PaymentValidationError
 from ..billing.service import (
     create_billing_exempt_usage, create_usage_reservation, get_wallet_summary,
     normalize_credit_bucket,
@@ -31,19 +31,27 @@ from ..job_queue import (
 )
 from ..models import (
     UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
-    WebMemoryFact,
+    WebMemoryFact, WebUsageStage,
 )
 from ..web_ai.evidence.models import EvidencePack
+from ..web_ai.evidence.pack_builder import cap_evidence_pack, evidence_prompt
 from ..web_ai.execution_plan import ExecutionPlan
-from ..web_ai.persistence import persist_shadow_plan
+from ..web_ai.persistence import (
+    get_or_create_usage_stage,
+    persist_retrieval_pack,
+    persist_shadow_plan,
+)
+from ..web_ai.retrieval.runtime import execute_hybrid_retrieval
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
+from ..web_ai.tier_policy import tier_policy_for
+from ..web_ai.token_allocator import DynamicTokenAllocator
 from ..web_ai.triage import (
     TriageInput,
     attachment_metadata_from_uploads,
     build_execution_plan,
     shadow_metadata,
 )
-from ..openai_tracked import OpenAIBudgetExceededError
+from ..openai_tracked import OpenAIBudgetExceededError, tracked_embedding
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
@@ -160,9 +168,25 @@ class CompletedWebMessage:
     request_id: str | None
     replaces_message_id: str | None
     revision_number: int
+    sources: tuple[dict[str, object], ...] = ()
 
 
 def _completed_message_snapshot(message: WebChatMessage) -> CompletedWebMessage:
+    metadata = _message_metadata(message)
+    raw_sources = metadata.get("sources")
+    sources = tuple(
+        {
+            "id": str(source.get("id") or "")[:16],
+            "label": str(source.get("label") or "")[:128],
+            "locator": str(source.get("locator") or "")[:256],
+            "confidence": max(
+                0.0, min(1.0, float(source.get("confidence") or 0.0))
+            ),
+            "source_kind": str(source.get("source_kind") or "")[:32],
+        }
+        for source in (raw_sources if isinstance(raw_sources, list) else [])
+        if isinstance(source, dict)
+    )
     return CompletedWebMessage(
         id=message.id,
         content=message.content,
@@ -175,6 +199,7 @@ def _completed_message_snapshot(message: WebChatMessage) -> CompletedWebMessage:
         request_id=message.request_id,
         replaces_message_id=message.replaces_message_id,
         revision_number=int(message.revision_number or 1),
+        sources=sources,
     )
 
 
@@ -210,6 +235,10 @@ class PreparedWebTurn:
     streaming_mode: str | None = None
     planned_usage_stages: tuple[str, ...] = ()
     triag_shadow_metadata: dict[str, object] | None = None
+    retrieval_uploads: tuple[object, ...] = ()
+    embedding_request_id: str | None = None
+    embedding_reserved_micros: int = 0
+    embedding_accounted: bool = False
 
 
 @dataclass(frozen=True)
@@ -415,13 +444,21 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _hard_budget_provider_messages(
-    request: AIRequest, route: AIRoute
+    request: AIRequest,
+    route: AIRoute,
+    *,
+    prompt_maximum: int | None = None,
 ) -> list[dict[str, str]]:
     messages = build_provider_messages(request, route, provider=route.provider)
     try:
-        maximum = max(1, int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()))
+        maximum = max(
+            1,
+            int(str(os.getenv("WEB_MAX_PROMPT_TOKENS", "6000")).strip()),
+        )
     except (TypeError, ValueError):
         maximum = 6000
+    if prompt_maximum is not None:
+        maximum = min(maximum, max(256, int(prompt_maximum)))
 
     def over_budget() -> bool:
         return estimate_tokens(serialize_provider_messages(messages)) > maximum
@@ -1115,6 +1152,7 @@ def prepare_web_turn(
 
         execution_plan: ExecutionPlan | None = None
         triag_shadow_metadata: dict[str, object] | None = None
+        triag_settings: TriagSettings | None = None
         try:
             triag_settings = TriagSettings.from_environ()
         except TriagConfigurationError:
@@ -1125,7 +1163,7 @@ def prepare_web_turn(
                 extra={"request_id": request_id},
             )
         else:
-            if triag_settings.shadow_planning_enabled:
+            if triag_settings.enabled:
                 attachment_metadata = attachment_metadata_from_uploads(uploads)
                 history_text = "\n".join(
                     value
@@ -1161,17 +1199,18 @@ def prepare_web_turn(
                     ),
                     settings=triag_settings,
                 )
-                triag_shadow_metadata = shadow_metadata(
-                    execution_plan, attachment_metadata
-                )
-                persist_shadow_plan(
-                    session,
-                    user_id=user_id,
-                    thread_id=thread.id,
-                    request_id=request_id,
-                    plan=execution_plan,
-                    metadata=triag_shadow_metadata,
-                )
+                if triag_settings.shadow_planning_enabled:
+                    triag_shadow_metadata = shadow_metadata(
+                        execution_plan, attachment_metadata
+                    )
+                    persist_shadow_plan(
+                        session,
+                        user_id=user_id,
+                        thread_id=thread.id,
+                        request_id=request_id,
+                        plan=execution_plan,
+                        metadata=triag_shadow_metadata,
+                    )
 
         if explicit_memory_write_requested(model_message):
             memory_updated = False
@@ -1784,6 +1823,95 @@ def prepare_web_turn(
                 usage_kind="chat", credit_bucket=authoritative_bucket,
                 voice_turn_id=voice_turn_id,
             )
+        embedding_request_id: str | None = None
+        embedding_reserved_micros = 0
+        embedding_accounted = False
+        if (
+            triag_settings is not None
+            and triag_settings.dense_runtime_enabled
+            and execution_plan is not None
+            and "embedding" in execution_plan.planned_usage_stages
+            and uploads
+            and not any(upload.virtual_text_operation for upload in uploads)
+        ):
+            embedding_request_id = f"{request_id}:embedding"
+            embedding_tokens = estimate_tokens(model_message) + sum(
+                estimate_tokens(str(chunk.text or ""))
+                for upload in uploads
+                for chunk in upload.chunks
+            )
+            embedding_reserve = reserve_price(
+                "openai",
+                triag_settings.embedding_model,
+                embedding_tokens,
+                0,
+            )
+            stage = get_or_create_usage_stage(
+                session,
+                user_id=user_id,
+                thread_id=thread.id,
+                request_id=request_id,
+                stage_name="embedding",
+                stage_order=0,
+                status="planned",
+                safe_metadata={
+                    "status": "planned",
+                    "total_token_count": embedding_tokens,
+                    "embedding_call_count": 0,
+                },
+            )
+            try:
+                if billing_exempt:
+                    embedding_charge = create_billing_exempt_usage(
+                        session,
+                        request_id=embedding_request_id,
+                        user_id=user_id,
+                        thread_id=thread.id,
+                        provider="openai",
+                        model=triag_settings.embedding_model,
+                        pricing_snapshot_json=snapshot_json(
+                            embedding_reserve.snapshot
+                        ),
+                        swico_tier=swico_tier,
+                        usage_kind="chat",
+                        credit_bucket=authoritative_bucket,
+                    )
+                else:
+                    embedding_charge = create_usage_reservation(
+                        session,
+                        request_id=embedding_request_id,
+                        user_id=user_id,
+                        thread_id=thread.id,
+                        provider="openai",
+                        model=triag_settings.embedding_model,
+                        reserved_micros=embedding_reserve.micros,
+                        pricing_snapshot_json=snapshot_json(
+                            embedding_reserve.snapshot
+                        ),
+                        swico_tier=swico_tier,
+                        usage_kind="chat",
+                        credit_bucket=authoritative_bucket,
+                    )
+                stage.usage_charge_id = embedding_charge.id
+                stage.reserved_micros = (
+                    0 if billing_exempt else embedding_reserve.micros
+                )
+                stage.status = "reserved"
+                session.add(stage)
+                embedding_reserved_micros = stage.reserved_micros
+                embedding_accounted = True
+            except BillingError:
+                stage.status = "skipped"
+                stage.safe_metadata_json = json.dumps(
+                    {
+                        "status": "skipped",
+                        "status_codes": ["embedding_budget_unavailable"],
+                        "embedding_call_count": 0,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                session.add(stage)
         session.commit()
         return PreparedWebTurn(
             request_id=request_id, user_id=user_id, thread_id=thread.id,
@@ -1825,6 +1953,10 @@ def prepare_web_turn(
                 execution_plan.planned_usage_stages if execution_plan else ()
             ),
             triag_shadow_metadata=triag_shadow_metadata,
+            retrieval_uploads=tuple(uploads),
+            embedding_request_id=embedding_request_id,
+            embedding_reserved_micros=embedding_reserved_micros,
+            embedding_accounted=embedding_accounted,
         )
 
 
@@ -1886,6 +2018,361 @@ def _run_post_turn_operation(
         )
 
 
+def _phase2_embedding_vectors(
+    prepared: PreparedWebTurn,
+    settings: TriagSettings,
+    providers: dict[str, Any],
+    counters: dict[str, int],
+) -> Callable[[list[str]], list[list[float]]]:
+    injected = providers.get("embedding")
+
+    def embed(values: list[str]) -> list[list[float]]:
+        if not prepared.embedding_accounted:
+            raise RuntimeError("embedding_budget_unavailable")
+        estimated = sum(estimate_tokens(value) for value in values)
+        counters["attempted_calls"] += 1
+        counters["attempted_input_tokens"] += estimated
+        if callable(injected):
+            result = injected(values)
+            vectors = [list(vector) for vector in result]
+        else:
+            provider = OpenAIProvider()
+            client = provider._client_or_create()
+            response = tracked_embedding(
+                client,
+                input=values,
+                route="web_temporary_document_retrieval",
+                user_id=prepared.user_id,
+                request_id=(
+                    f"{prepared.request_id}:embed:{counters['attempted_calls']}"
+                ),
+                model=settings.embedding_model,
+                dimensions=settings.embedding_dimensions,
+                timeout=2.5,
+            )
+            data = (
+                response.get("data")
+                if isinstance(response, dict)
+                else getattr(response, "data", None)
+            ) or []
+            vectors = []
+            for item in data:
+                vector = (
+                    item.get("embedding")
+                    if isinstance(item, dict)
+                    else getattr(item, "embedding", None)
+                )
+                vectors.append(list(vector) if isinstance(vector, list) else [])
+        counters["successful_calls"] += 1
+        counters["input_tokens"] += estimated
+        return vectors
+
+    return embed
+
+
+def _finalize_embedding_stage(
+    prepared: PreparedWebTurn,
+    settings: TriagSettings,
+    counters: dict[str, int],
+) -> None:
+    if not prepared.embedding_request_id:
+        return
+    with SessionLocal() as session:
+        stage = session.exec(
+            select(WebUsageStage).where(
+                WebUsageStage.user_id == prepared.user_id,
+                WebUsageStage.request_id == prepared.request_id,
+                WebUsageStage.stage_name == "embedding",
+            )
+        ).first()
+        successful_calls = max(0, int(counters["successful_calls"]))
+        input_tokens = max(0, int(counters["input_tokens"]))
+        attempted_calls = max(0, int(counters["attempted_calls"]))
+        attempted_input_tokens = max(
+            0, int(counters["attempted_input_tokens"])
+        )
+        if successful_calls <= 0:
+            if prepared.billing_exempt:
+                release_billing_exempt_usage(
+                    session,
+                    prepared.embedding_request_id,
+                    reason="embedding_not_used_or_unavailable",
+                )
+            else:
+                release_usage_reservation(
+                    session,
+                    prepared.embedding_request_id,
+                    reason="embedding_not_used_or_unavailable",
+                )
+            if stage is not None:
+                stage.status = "released"
+                stage.input_tokens = attempted_input_tokens
+                stage.safe_metadata_json = json.dumps(
+                    {
+                        "status": "released",
+                        "embedding_call_count": attempted_calls,
+                        "total_token_count": attempted_input_tokens,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                session.add(stage)
+            session.commit()
+            return
+        price = price_usage(
+            "openai", settings.embedding_model, input_tokens, 0
+        )
+        if prepared.billing_exempt:
+            settle_billing_exempt_usage(
+                session,
+                request_id=prepared.embedding_request_id,
+                provider_cost_amount=price.amount,
+                provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros,
+                input_tokens=input_tokens,
+                cached_input_tokens=0,
+                output_tokens=0,
+                usage_source="estimated",
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90"),
+                provider="openai",
+                model=settings.embedding_model,
+                usage_kind="chat",
+                swico_tier=prepared.swico_tier,
+            )
+        else:
+            settle_usage_reservation(
+                session,
+                request_id=prepared.embedding_request_id,
+                provider_cost_amount=price.amount,
+                provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros,
+                input_tokens=input_tokens,
+                cached_input_tokens=0,
+                output_tokens=0,
+                usage_source="estimated",
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90"),
+                provider="openai",
+                model=settings.embedding_model,
+                usage_kind="chat",
+                swico_tier=prepared.swico_tier,
+            )
+        if stage is not None:
+            stage.status = "settled"
+            stage.input_tokens = input_tokens
+            charge = session.exec(
+                select(UsageCharge).where(
+                    UsageCharge.request_id == prepared.embedding_request_id
+                )
+            ).first()
+            stage.debited_micros = int(
+                charge.debited_micros if charge is not None else 0
+            )
+            stage.safe_metadata_json = json.dumps(
+                {
+                    "status": "settled",
+                    "embedding_call_count": successful_calls,
+                    "total_token_count": input_tokens,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            session.add(stage)
+        session.commit()
+
+
+def _execute_phase2_retrieval(
+    prepared: PreparedWebTurn,
+    *,
+    providers: dict[str, Any],
+) -> None:
+    try:
+        settings = TriagSettings.from_environ()
+    except TriagConfigurationError:
+        return
+    if (
+        not settings.hybrid_runtime_enabled
+        or prepared.execution_plan is None
+        or prepared.route.provider not in {"openai", "sarvam"}
+        or "documents" not in prepared.execution_plan.retrieval_sources
+        or not prepared.retrieval_uploads
+        or any(
+            getattr(upload, "virtual_text_operation", None)
+            for upload in prepared.retrieval_uploads
+        )
+    ):
+        return
+    policy = tier_policy_for(prepared.swico_tier)
+    counters = {
+        "attempted_calls": 0,
+        "successful_calls": 0,
+        "input_tokens": 0,
+        "attempted_input_tokens": 0,
+    }
+    embed = _phase2_embedding_vectors(
+        prepared, settings, providers, counters
+    )
+    original_attachment_context = prepared.ai_request.metadata.get(
+        "attachment_prompt_context"
+    )
+    original_provider_messages = prepared.ai_request.metadata.get(
+        "provider_messages"
+    )
+    original_serialized_prompt = prepared.ai_request.metadata.get(
+        "serialized_provider_prompt"
+    )
+    original_estimated_tokens = prepared.ai_request.metadata.get(
+        "estimated_prompt_tokens"
+    )
+    try:
+        result = execute_hybrid_retrieval(
+            plan=prepared.execution_plan,
+            policy=policy,
+            settings=settings,
+            owner_user_id=prepared.user_id,
+            request_id=prepared.request_id,
+            query=prepared.ai_request.message,
+            uploads=list(prepared.retrieval_uploads),
+            store=get_upload_store(),
+            embed=embed,
+            dense_accounted=prepared.embedding_accounted,
+            cancellation_signal=prepared.ai_request.metadata.get(
+                "cancellation_signal"
+            ),
+        )
+        allocation = DynamicTokenAllocator(policy).allocate(
+            fixed_tokens=estimate_tokens(prepared.ai_request.message) + 320,
+            relevance={
+                "history": bool(prepared.ai_request.context_turns),
+                "memory": bool(
+                    prepared.ai_request.metadata.get("memory_prompt_context")
+                ),
+                "profile": bool(
+                    prepared.ai_request.metadata.get("profile_prompt_context")
+                ),
+                "documents": bool(result.pack.items),
+            },
+            available_tokens={
+                "history": estimate_tokens(
+                    json.dumps(prepared.ai_request.context_turns)
+                ),
+                "memory": estimate_tokens(
+                    str(
+                        prepared.ai_request.metadata.get(
+                            "memory_prompt_context"
+                        )
+                        or ""
+                    )
+                ),
+                "profile": estimate_tokens(
+                    str(
+                        prepared.ai_request.metadata.get(
+                            "profile_prompt_context"
+                        )
+                        or ""
+                    )
+                ),
+                "documents": result.pack.total_token_count,
+            },
+        )
+        pack = cap_evidence_pack(
+            result.pack,
+            min(policy.evidence_token_cap, allocation.document_tokens),
+        )
+        prepared.retrieval_context = pack
+        if pack.retrieval_status == "insufficient":
+            insufficient_text = (
+                "பதிவேற்றிய ஆவணங்களில் இந்தக் கேள்விக்குப் போதுமான ஆதாரம் "
+                "கிடைக்கவில்லை."
+                if prepared.reply_language == "ta"
+                else (
+                    "I couldn’t find enough support in the uploaded documents "
+                    "to answer that reliably."
+                )
+            )
+            prepared.precomputed_response = AIProviderResponse(
+                text=insufficient_text,
+                provider="backend_tool",
+                model=None,
+                route="retrieval_insufficient",
+                reason="insufficient_temporary_document_evidence",
+                language=prepared.reply_language,
+                intent="document",
+                raw={
+                    "deterministic": True,
+                    "zero_charge": True,
+                    "provider_attempts": 0,
+                    "provider_calls_with_usage": 0,
+                    "fallback_attempted": False,
+                    "cache_hit": False,
+                    "finish_reason": "stop",
+                    "completion_status": "complete",
+                },
+            )
+        prepared.ai_request.metadata["attachment_prompt_context"] = (
+            evidence_prompt(pack)
+        )
+        # Remove the Phase 1 frozen prompt and freeze a new exact prompt only
+        # after bounded retrieval has completed.
+        prepared.ai_request.metadata.pop("provider_messages", None)
+        prepared.ai_request.metadata.pop("serialized_provider_prompt", None)
+        messages = _hard_budget_provider_messages(
+            prepared.ai_request,
+            prepared.route,
+            prompt_maximum=policy.max_prompt_tokens,
+        )
+        serialized = serialize_provider_messages(messages)
+        prepared.provider_messages = messages
+        prepared.ai_request.metadata["provider_messages"] = messages
+        prepared.ai_request.metadata["serialized_provider_prompt"] = serialized
+        prepared.ai_request.metadata["estimated_prompt_tokens"] = (
+            estimate_tokens(serialized)
+        )
+        with SessionLocal() as session:
+            persist_retrieval_pack(
+                session,
+                user_id=prepared.user_id,
+                thread_id=prepared.thread_id,
+                request_id=prepared.request_id,
+                policy_version=prepared.execution_plan.policy_version,
+                tier_id=prepared.execution_plan.tier_id,
+                pack=pack,
+                candidate_count=result.candidate_count,
+            )
+            session.commit()
+    except Exception:
+        # The existing lexical attachment prompt prepared by the coordinator
+        # remains intact unless the Phase 2 prompt was fully rebuilt.
+        prepared.ai_request.metadata["attachment_prompt_context"] = (
+            original_attachment_context
+        )
+        prepared.ai_request.metadata["provider_messages"] = (
+            original_provider_messages
+        )
+        prepared.ai_request.metadata["serialized_provider_prompt"] = (
+            original_serialized_prompt
+        )
+        prepared.ai_request.metadata["estimated_prompt_tokens"] = (
+            original_estimated_tokens
+        )
+        logger.warning(
+            "web_phase2_retrieval_fallback",
+            extra={
+                "request_id": prepared.request_id,
+                "status": "lexical_fallback",
+            },
+        )
+    finally:
+        try:
+            _finalize_embedding_stage(prepared, settings, counters)
+        except Exception:
+            logger.warning(
+                "web_phase2_embedding_settlement_deferred",
+                extra={"request_id": prepared.request_id},
+            )
+
+
 def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], None] | None = None, providers: dict[str, Any] | None = None) -> CompletedWebTurn:
     if prepared.existing_response_id is not None:
         with SessionLocal() as session:
@@ -1937,22 +2424,25 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             response,
         )
 
+    provider_map = providers or {}
+    _execute_phase2_retrieval(prepared, providers=provider_map)
     cancelled = False
+    streamed_by_provider = False
     try:
         if prepared.precomputed_response is not None:
             response = prepared.precomputed_response
         elif prepared.route.provider in {"openai", "sarvam"}:
-            provider_map = providers or {}
             provider = provider_map.get(prepared.route.provider)
             if provider is None:
                 provider = OpenAIProvider() if prepared.route.provider == "openai" else SarvamProvider()
             if on_delta and hasattr(provider, "stream_complete"):
+                streamed_by_provider = True
                 response = provider.stream_complete(prepared.ai_request, prepared.route, on_delta)
             else:
                 response = provider.complete(prepared.ai_request, prepared.route)
         else:
             response = _deterministic_response(prepared.ai_request, prepared.route)
-        if on_delta and not (prepared.route.provider in {"openai", "sarvam"} and hasattr(provider, "stream_complete")):
+        if on_delta and not streamed_by_provider:
             on_delta(response.text)
     except GenerationCancelled as exc:
         cancelled = True
@@ -2071,7 +2561,11 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             for unsafe_key in ("original_message", "normalized_message", "stripped_prefix", "profile_context"):
                 response.raw.pop(unsafe_key, None)
         provider_attempts = int(response.raw.get("provider_attempts") or 0)
-        if prepared.route.provider in {"openai", "sarvam"} and provider_attempts <= 0:
+        if (
+            prepared.precomputed_response is None
+            and prepared.route.provider in {"openai", "sarvam"}
+            and provider_attempts <= 0
+        ):
             provider_attempts = 1
         provider_calls_with_usage = int(response.raw.get("provider_calls_with_usage") or 0)
         if response.raw.get("usage_actual") and provider_calls_with_usage <= 0:
@@ -2110,6 +2604,16 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             ),
         })
         response.raw.update(optimization_metrics)
+        safe_sources = (
+            list(prepared.retrieval_context.safe_sources)
+            if prepared.retrieval_context is not None
+            else []
+        )
+        response.raw["sources"] = safe_sources
+        if prepared.retrieval_context is not None:
+            response.raw["retrieval_status"] = (
+                prepared.retrieval_context.retrieval_status
+            )
         provenance = _response_provenance(prepared, response)
         response.raw["provenance"] = provenance
         used_memory = bool(
@@ -2129,6 +2633,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             and not response_is_truncated
             and not used_memory
             and not used_profile
+            and not safe_sources
             and not prepared.ai_request.metadata.get("explicit_memory_write")
         )
         cache_scope_reason = (
@@ -2137,6 +2642,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             "truncated_response" if response_is_truncated else
             "used_memory" if used_memory else
             "used_profile" if used_profile else
+            "used_private_sources" if safe_sources else
             "explicit_memory_write"
             if prepared.ai_request.metadata.get("explicit_memory_write") else
             "turn_not_cache_eligible"
@@ -2193,6 +2699,16 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 "regenerated_cache_row_id": prepared.regeneration_cache_row_id,
                 "provenance": provenance,
                 "memory_updated": bool(response.raw.get("memory_updated")),
+                "sources": safe_sources,
+                **(
+                    {
+                        "retrieval_status": (
+                            prepared.retrieval_context.retrieval_status
+                        )
+                    }
+                    if prepared.retrieval_context is not None
+                    else {}
+                ),
                 **({
                     "continuation_parent_message_id": (
                         prepared.continuation_parent_message_id

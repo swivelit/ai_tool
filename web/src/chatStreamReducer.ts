@@ -1,4 +1,4 @@
-import type { Message, SSEEvent, SwicoTier, Wallet } from './types'
+import type { Message, SSEEvent, SourceSummary, SwicoTier, Wallet } from './types'
 
 export type StreamState = {
   assistant: Message | null
@@ -22,6 +22,23 @@ export const emptyStreamState: StreamState = { assistant: null, phase: '', walle
 
 function record(data: unknown): Record<string, unknown> {
   return typeof data === 'object' && data !== null ? data as Record<string, unknown> : {}
+}
+
+function sources(data: unknown): SourceSummary[] {
+  const values = Array.isArray(data) ? data : []
+  return values.flatMap(value => {
+    const source = record(value)
+    const id = String(source.id ?? '').slice(0, 16)
+    const label = String(source.label ?? '').slice(0, 128)
+    const locator = String(source.locator ?? '').slice(0, 256)
+    if (!id || !label || !locator) return []
+    const confidence = Math.max(0, Math.min(1, Number(source.confidence ?? 0)))
+    return [{
+      id, label, locator,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+      source_kind: String(source.source_kind ?? '').slice(0, 32),
+    }]
+  })
 }
 
 export function chatStreamReducer(state: StreamState, action: StreamAction): StreamState {
@@ -54,6 +71,14 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
       return {
         ...state, phase: 'responding',
         assistant: state.assistant ? { ...state.assistant, content: state.assistant.content + String(data.text ?? '') } : null,
+      }
+    case 'sources':
+      return {
+        ...state,
+        assistant: state.assistant ? {
+          ...state.assistant,
+          sources: sources(data.sources),
+        } : null,
       }
     case 'usage':
       return {
@@ -92,6 +117,9 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
               'memory', 'document', 'cached_answer', 'semantic_cache', 'backend_tool', 'web_search',
             ].includes(value)) as Message['provenance']
             : [],
+          sources: Array.isArray(data.sources)
+            ? sources(data.sources)
+            : state.assistant.sources,
         } : null,
       }
     case 'error': {

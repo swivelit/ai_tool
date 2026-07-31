@@ -7,10 +7,11 @@ ceilings. Runtime status is one of:
 
 - `disabled`: optional component is off and healthy.
 - `shadow`: content-free planning is enabled.
-- `configured_inactive`: live mode was requested, but Phase 1 does not activate it.
+- `configured_inactive`: TRIAG is non-shadow but hybrid retrieval is disabled.
+- `hybrid`: the explicitly enabled Phase 2 hybrid path is active.
 
 Invalid configuration reports variable names only and never includes values.
-Because TRIAG is optional in Phase 1, its configuration error is visible in
+Because TRIAG-RAG is optional, its configuration error is visible in
 debug runtime services but does not redirect traffic to another runtime.
 
 ## Shadow invariants
@@ -39,13 +40,17 @@ group by status, policy_version, tier_id;
 Do not select or export user messages, memory facts, profile fields, temporary
 attachment chunks, or provider prompts when operating shadow telemetry.
 
-`web_usage_stage` is reserved for later phases. A Phase 1 deployment should
-not create stage rows during ordinary chat. `usage_charge` remains the
-authoritative billing table.
+Phase 2 may create an `embedding` row in `web_usage_stage`. It must reference an
+authoritative `usage_charge` reservation before any embedding call, then become
+settled, released, or skipped. `usage_charge` remains authoritative.
+
+Dense failures use content-free codes such as `dense_unavailable`,
+`embedding_budget_unavailable`, `lexical_fallback`, and `upload_expired`.
+Disabled optional components are healthy and report disabled.
 
 ## Incident response
 
-If shadow metadata appears unsafe, set `WEB_TRIAG_ENABLED=false`, restart the
+If retrieval metadata appears unsafe, set `WEB_TRIAG_ENABLED=false`, restart the
 API, preserve the affected trace IDs for investigation, and follow the normal
 privacy incident process. If route, billing, cache, answer, or SSE behavior
 changes, treat it as a release-blocking invariant violation and disable TRIAG.

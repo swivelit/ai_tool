@@ -62,6 +62,8 @@ class EphemeralUploadStore(Protocol):
     def get(self, upload_id: str) -> EphemeralUpload | None: ...
     def delete(self, upload_id: str) -> bool: ...
     def available(self) -> bool: ...
+    def get_auxiliary(self, key: str) -> str | None: ...
+    def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None: ...
 
 
 def utc_iso(value: datetime | None = None) -> str:
@@ -106,12 +108,17 @@ class InProcessEphemeralUploadStore:
         self.ttl_seconds = min(MAX_UPLOAD_TTL_SECONDS, max(1, int(ttl_seconds)))
         self.max_entries = max(1, int(max_entries))
         self._items: OrderedDict[str, EphemeralUpload] = OrderedDict()
+        self._auxiliary: OrderedDict[str, tuple[str, datetime]] = OrderedDict()
         self._lock = threading.RLock()
 
     def _purge(self) -> None:
         for upload_id, upload in list(self._items.items()):
             if _expired(upload):
                 self._items.pop(upload_id, None)
+        now = datetime.now(timezone.utc)
+        for key, (_value, expires_at) in list(self._auxiliary.items()):
+            if expires_at <= now:
+                self._auxiliary.pop(key, None)
 
     def put(self, upload: EphemeralUpload) -> None:
         with self._lock:
@@ -134,9 +141,28 @@ class InProcessEphemeralUploadStore:
     def available(self) -> bool:
         return True
 
+    def get_auxiliary(self, key: str) -> str | None:
+        with self._lock:
+            self._purge()
+            item = self._auxiliary.get(key)
+            return item[0] if item else None
+
+    def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None:
+        bounded_ttl = min(self.ttl_seconds, max(1, int(ttl_seconds)))
+        with self._lock:
+            self._purge()
+            self._auxiliary[key] = (
+                str(value),
+                datetime.now(timezone.utc) + timedelta(seconds=bounded_ttl),
+            )
+            self._auxiliary.move_to_end(key)
+            while len(self._auxiliary) > self.max_entries * 64:
+                self._auxiliary.popitem(last=False)
+
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
+            self._auxiliary.clear()
 
 
 class RedisEphemeralUploadStore:
@@ -185,6 +211,23 @@ class RedisEphemeralUploadStore:
         except Exception:
             return False
 
+    def get_auxiliary(self, key: str) -> str | None:
+        try:
+            value = self._client.get(key)
+            return str(value) if value is not None else None
+        except Exception as exc:
+            raise UploadStoreUnavailable(
+                "The temporary upload cache is unavailable."
+            ) from exc
+
+    def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None:
+        try:
+            self._client.setex(key, max(1, int(ttl_seconds)), str(value))
+        except Exception as exc:
+            raise UploadStoreUnavailable(
+                "The temporary upload cache is unavailable."
+            ) from exc
+
 
 class UnavailableEphemeralUploadStore:
     def __init__(self, *, ttl_seconds: int = DEFAULT_UPLOAD_TTL_SECONDS) -> None:
@@ -205,6 +248,12 @@ class UnavailableEphemeralUploadStore:
 
     def available(self) -> bool:
         return False
+
+    def get_auxiliary(self, key: str) -> str | None:
+        self._raise()
+
+    def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None:
+        self._raise()
 
 
 _store_lock = threading.Lock()

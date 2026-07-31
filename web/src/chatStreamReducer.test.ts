@@ -80,4 +80,28 @@ describe('chatStreamReducer', () => {
     const state = chatStreamReducer(emptyStreamState, { type: 'event', event: { event: 'future', data: 'bad' } })
     expect(state).toBe(emptyStreamState)
   })
+  it('adds bounded source summaries and preserves them through done', () => {
+    let state = chatStreamReducer(emptyStreamState, {
+      type:'start', requestId:'sources', threadId:'t1',
+      tier:'standard', tierLabel:'Swico',
+    })
+    state = chatStreamReducer(state, { type:'event', event:{
+      event:'sources', data:{ sources:[
+        { id:'S1', label:'guide.pdf', locator:'guide.pdf — page 2', confidence:0.91, source_kind:'temporary_upload' },
+        { id:'', label:'invalid', locator:'' },
+      ] },
+    } })
+    expect(state.assistant?.sources).toEqual([{
+      id:'S1', label:'guide.pdf', locator:'guide.pdf — page 2',
+      confidence:0.91, source_kind:'temporary_upload',
+    }])
+    state = chatStreamReducer(state, {
+      type:'event', event:{ event:'future-v2', data:{ ignored:true } },
+    })
+    expect(state.assistant?.sources).toHaveLength(1)
+    state = chatStreamReducer(state, {
+      type:'event', event:{ event:'done', data:{ message_id:'m1' } },
+    })
+    expect(state.assistant?.sources?.[0].id).toBe('S1')
+  })
 })

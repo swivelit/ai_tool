@@ -6,15 +6,24 @@
 
 The existing FastAPI process conditionally mounts `backend/app/web_api/router.py` at `/api/web` when `WEB_APP_ENABLED=true`. Existing `/api/chat` and `/api/chat/stream` routes are unchanged. The web chat service uses the shared `AIProviderRouter`, `OpenAIProvider`, and `SarvamProvider`; it does not enter the mobile local-RAG or local-model pipeline.
 
-Phase 0/1 TRIAG-RAG foundations live under `backend/app/web_ai/`. They are
-typed, immutable, deterministic, and provider-free. The package is not a new
-website runtime. With the safe defaults `WEB_TRIAG_ENABLED=false`,
-`WEB_TRIAG_SHADOW_MODE=true`, and `WEB_TRIAG_POLICY_VERSION=v1`, it is disabled.
+Phase 0/1 TRIAG-RAG foundations and Phase 2 temporary-document retrieval live
+under `backend/app/web_ai/`. The package is not a new website runtime. With the
+safe defaults `WEB_TRIAG_ENABLED=false`, `WEB_TRIAG_SHADOW_MODE=true`,
+`WEB_RAG_HYBRID_ENABLED=false`, and `WEB_RAG_DENSE_ENABLED=false`, it is
+disabled.
 If deliberately enabled in shadow mode, `prepare_web_turn()` calculates a
 tier-bounded plan and persists allowlisted counts, flags, and reason codes only.
 It cannot change provider messages, routing, reservations, billing, cache
 behavior, answers, or SSE events. `DynamicTokenAllocator` is not connected to
 the active `_apply_prompt_budget` path.
+
+When explicitly enabled outside shadow mode, Phase 2 reuses the coordinator and
+existing lexical attachment selector, optionally retrieves from TTL-bound
+temporary embeddings in `WEB_UPLOAD_CACHE_URL`, and constructs an untrusted,
+tier-capped evidence pack. Each embedding stage must have an authoritative
+`UsageCharge` reservation before provider I/O; otherwise dense retrieval is
+skipped and lexical retrieval continues. Safe S1/S2 labels and locators are
+emitted in `sources`; raw excerpts are never SSE or message metadata.
 
 ## Request flow
 
@@ -35,12 +44,12 @@ with zero provider calls and no reservation. Cache lookup uses the existing
 privacy/live-data eligibility rules and deterministic token-hash lookup; it
 does not add an embedding call.
 
-The future TRIAG-RAG persistence tables are additive:
+The TRIAG-RAG persistence tables are additive:
 `web_retrieval_trace`, `web_evidence_item`, `web_answer_check`, and
 `web_usage_stage`. Phase 1 writes only a content-free `web_retrieval_trace` in
-explicit shadow mode. The other tables and stage accounting are contracts for
-later phases; `UsageCharge` remains the only authoritative reservation and
-settlement record.
+explicit shadow mode. Phase 2 uses the same tables for content-free evidence
+provenance and idempotent embedding-stage linkage; `UsageCharge` remains the
+authoritative reservation and settlement record.
 
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the

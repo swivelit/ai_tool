@@ -51,6 +51,19 @@ _ALLOWED_KEYS = frozenset(
         "has_extracted_attachment_chunks",
         "shadow_mode",
         "status",
+        "retrieval_status",
+        "candidate_count",
+        "evidence_item_count",
+        "total_token_count",
+        "status_codes",
+        "source_label",
+        "source_locator",
+        "source_kind",
+        "confidence",
+        "content_hash",
+        "round_count",
+        "dense_enabled",
+        "embedding_call_count",
     }
 )
 _ENUM_VALUES: dict[str, frozenset[str]] = {
@@ -101,13 +114,16 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
             "error",
         }
     ),
+    "retrieval_status": frozenset(
+        {"sufficient", "ambiguous", "insufficient", "contradictory"}
+    ),
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_sources": frozenset(
         {"history", "memory", "profile", "documents"}
     ),
     "planned_usage_stages": frozenset(
-        {"reservation", "generation", "settlement"}
+        {"embedding", "reservation", "generation", "settlement"}
     ),
     "attachment_media_categories": frozenset(
         {"text", "image", "audio", "video", "application", "other"}
@@ -138,6 +154,21 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "self_contained_no_overlap",
             "continue_response",
             "standalone",
+        }
+    ),
+    "status_codes": frozenset(
+        {
+            "lexical",
+            "dense",
+            "dense_unavailable",
+            "embedding_budget_unavailable",
+            "lexical_fallback",
+            "upload_expired",
+            "malformed_vector",
+            "retrieval_timeout",
+            "retrieval_unavailable",
+            "owner_mismatch",
+            "corrective_round",
         }
     ),
 }
@@ -171,7 +202,7 @@ def _safe_value(value: object, *, depth: int) -> object:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        if len(value) > 80:
+        if len(value) > 256:
             raise UnsafeMetadataError("metadata string exceeds the safe bound")
         return value
     if isinstance(value, (tuple, list)):

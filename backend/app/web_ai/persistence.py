@@ -5,7 +5,8 @@ from typing import Mapping
 
 from sqlmodel import Session, select
 
-from ..models import WebRetrievalTrace, WebUsageStage
+from ..models import WebEvidenceItem, WebRetrievalTrace, WebUsageStage
+from .evidence.models import EvidencePack
 from .execution_plan import ExecutionPlan
 from .telemetry.metadata import sanitize_metadata
 
@@ -89,3 +90,98 @@ def get_or_create_usage_stage(
     )
     session.add(row)
     return row
+
+
+def persist_retrieval_pack(
+    session: Session,
+    *,
+    user_id: int,
+    thread_id: str,
+    request_id: str,
+    policy_version: str,
+    tier_id: str,
+    pack: EvidencePack,
+    candidate_count: int,
+) -> WebRetrievalTrace:
+    """Persist only content-free retrieval and evidence provenance."""
+
+    if not pack.owner_user_id == int(user_id):
+        raise ValueError("retrieval pack owner mismatch")
+    key = f"triag-retrieval:{request_id}:{policy_version}"
+    trace = session.exec(
+        select(WebRetrievalTrace).where(
+            WebRetrievalTrace.user_id == int(user_id),
+            WebRetrievalTrace.idempotency_key == key,
+        )
+    ).first()
+    safe_trace = sanitize_metadata(
+        {
+            "policy_version": policy_version,
+            "tier_id": tier_id,
+            "status": "complete",
+            "retrieval_status": pack.retrieval_status,
+            "candidate_count": max(0, int(candidate_count)),
+            "evidence_item_count": len(pack.items),
+            "total_token_count": pack.total_token_count,
+            "status_codes": list(pack.status_codes),
+        }
+    )
+    if trace is None:
+        trace = WebRetrievalTrace(
+            user_id=int(user_id),
+            thread_id=thread_id,
+            request_id=request_id,
+            idempotency_key=key,
+            policy_version=policy_version,
+            tier_id=tier_id,
+            status="complete",
+            safe_metadata_json=json.dumps(
+                safe_trace, sort_keys=True, separators=(",", ":")
+            ),
+        )
+        session.add(trace)
+        session.flush([trace])
+    else:
+        trace.status = "complete"
+        trace.safe_metadata_json = json.dumps(
+            safe_trace, sort_keys=True, separators=(",", ":")
+        )
+        session.add(trace)
+    for item in pack.items:
+        item_key = f"evidence:{request_id}:{item.citation_label}"
+        existing = session.exec(
+            select(WebEvidenceItem).where(
+                WebEvidenceItem.user_id == int(user_id),
+                WebEvidenceItem.idempotency_key == item_key,
+            )
+        ).first()
+        if existing is not None:
+            continue
+        safe_item = sanitize_metadata(
+            {
+                "source_label": item.source_label,
+                "source_locator": item.source_locator,
+                "source_kind": item.source_type,
+                "confidence": item.confidence,
+                "content_hash": item.content_hash,
+                "total_token_count": item.estimated_tokens,
+                "status": "complete",
+            }
+        )
+        session.add(
+            WebEvidenceItem(
+                trace_id=trace.id,
+                user_id=int(user_id),
+                request_id=request_id,
+                idempotency_key=item_key,
+                source_type=item.source_type[:32],
+                source_id=item.source_id[:160],
+                ordinal=item.ordinal,
+                estimated_tokens=item.estimated_tokens,
+                status="selected",
+                safe_metadata_json=json.dumps(
+                    safe_item, sort_keys=True, separators=(",", ":")
+                ),
+            )
+        )
+    return trace

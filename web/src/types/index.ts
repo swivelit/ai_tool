@@ -52,8 +52,16 @@ export type Message = {
   replaces_message_id?: string | null; revision_number?: number;
   feedback_rating?: 'up' | 'down' | null;
   provenance?: ResponseProvenance[];
+  sources?: SourceSummary[];
 }
 export type ResponseProvenance = 'memory' | 'document' | 'cached_answer' | 'semantic_cache' | 'backend_tool' | 'web_search'
+export type SourceSummary = {
+  id: string;
+  label: string;
+  locator: string;
+  confidence: number;
+  source_kind: string;
+}
 export type SearchResult = {
   thread_id: string | null; message_id: string | null; snippet: string;
   source_kind: 'message' | 'summary' | 'memory'; updated_at: string; rank: number;
@@ -102,7 +110,7 @@ export type RealtimeVoiceSession = {
   playback_mode: RealtimeVoicePlaybackMode; selected_codec: RealtimeVoiceCodec;
   provider_sample_rate: number | null; media_source_allowed: boolean;
 }
-export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
+export type StreamEventName = 'thread' | 'status' | 'delta' | 'sources' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
 export type PaymentStatus = {
   credit_bucket?: CreditBucket;

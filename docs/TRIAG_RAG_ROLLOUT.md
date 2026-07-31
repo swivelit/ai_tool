@@ -8,13 +8,16 @@ Configure these only on the backend API service:
 WEB_TRIAG_ENABLED=false
 WEB_TRIAG_SHADOW_MODE=true
 WEB_TRIAG_POLICY_VERSION=v1
+WEB_RAG_HYBRID_ENABLED=false
+WEB_RAG_DENSE_ENABLED=false
+WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
 ```
 
 Do not add them to the static site, any `VITE_*` configuration, PostgreSQL,
 Valkey, a shared environment group, or billing jobs. Disabled is a healthy
 optional state.
 
-## Phase 1 deployment
+## Phase 2 deployment
 
 1. Deploy the code with `WEB_TRIAG_ENABLED=false`.
 2. Run `python -m alembic -c backend/alembic.ini upgrade head` through the
@@ -24,20 +27,22 @@ optional state.
    a provider-backed turn, reservation/settlement, cache behavior, and SSE.
 4. Leave production disabled. Shadow observation, if later approved, requires
    both `WEB_TRIAG_ENABLED=true` and `WEB_TRIAG_SHADOW_MODE=true`.
+5. A separately approved staging experiment may set shadow false and hybrid
+   true. Dense additionally requires `WEB_RAG_DENSE_ENABLED=true`, a working
+   upload Valkey, and embedding accounting. Enable the evaluator separately.
 
-No new Render resource, route, static-site variable, or frontend deployment
-behavior is required. The staging blueprint records the safe disabled defaults.
+No new Render resource, route, static-site variable, or production activation
+is required. The staging blueprint records the safe disabled defaults.
 
 ## Rollback
 
-Set `WEB_TRIAG_ENABLED=false` and restart the API. This stops planning and trace
-writes without affecting the existing coordinator or billing path. The
+Set `WEB_RAG_HYBRID_ENABLED=false` (or `WEB_TRIAG_ENABLED=false`) and restart
+the API. This restores the existing coordinator/lexical path. The
 additive tables may remain. Do not downgrade a production database merely to
 disable the feature.
 
 ## Phase boundary
 
-Do not set `WEB_TRIAG_SHADOW_MODE=false` to activate a live runtime. In Phase 1
-that state is reported as `configured_inactive`; there is no live integration.
-Retrieval execution, evidence injection, answer checking, stage billing, and
-runtime cutover require a separately reviewed Phase 2+ implementation.
+Answer Guard, repair generation, code execution, triplets, hierarchy, and
+persistent knowledge remain Phase 3+ work and must not be enabled through these
+flags.
