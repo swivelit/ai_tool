@@ -75,6 +75,12 @@ Rows are owner-scoped and include request, status, safe-metadata, and
 idempotency fields. `web_usage_stage` cannot replace or alter `UsageCharge`;
 the latter remains authoritative for reservation and settlement.
 
+Revision `d6f1a8c3e9b4` descends from that Phase 1 revision and adds
+`web_code_repository`, `web_code_file`, `web_code_symbol`, and
+`web_code_edge`. These tables contain owner/version/expiry state, hashes,
+normalized locators, signatures, and dependency edges only. Repository bodies
+and generated files remain temporary request/cache data.
+
 Phase 1 shadow planning can insert one idempotent `web_retrieval_trace` per
 owner/request/policy. Stored JSON is fail-closed and allowlisted. It includes
 only bounded enums, reason codes, flags, counts, byte counts, and token-count
@@ -82,9 +88,15 @@ allocations. It cannot contain raw messages, memory/profile text, attachment
 excerpts, generated code, secrets, tokens, credentials, environment values, or
 provider/model names.
 
-## Non-goals / Phase 4 boundary
+## Phase 4 repository boundary
 
-Phase 3 does not execute or validate repository code and never claims
-repository verification. It does not add arbitrary commands, an isolated
-validator, repository indexing, triplets, hierarchy, persistent knowledge, or
-AgentRuntime routing.
+Phase 4 adds a dedicated temporary repository snapshot contract, deterministic
+Python AST and TypeScript/JavaScript token parsing, symbol/dependency retrieval,
+and a separately authenticated validator process. The validator never accepts
+command strings. Executable checks use server-owned argument templates and
+remain disabled unless startup positively proves non-root, process and
+outbound-network isolation. Static-only validation never produces a
+repository-verified label when executable policy checks are required.
+
+Phase 4 does not add triplets, hierarchy, persistent knowledge, arbitrary
+commands, production activation, or AgentRuntime routing.

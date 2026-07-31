@@ -9,14 +9,17 @@ def quality_outcome(
     evidence_backed: bool,
     verified_buffered: bool,
     repository_validation_required: bool,
-    insufficient_evidence: bool,
+    repository_validation_passed: bool = False,
+    insufficient_evidence: bool = False,
 ) -> QualityOutcome:
     if insufficient_evidence:
         return "insufficient_evidence"
     if any(check.status in {"failed", "error"} for check in checks):
         return "unverified"
-    if repository_validation_required:
+    if repository_validation_required and not repository_validation_passed:
         return "unverified"
+    if repository_validation_required and repository_validation_passed:
+        return "verified"
     if evidence_backed:
         return "grounded"
     if verified_buffered:
@@ -30,6 +33,7 @@ def build_quality_result(
     evidence_backed: bool,
     verified_buffered: bool,
     repository_validation_required: bool,
+    repository_validation_passed: bool = False,
     retrieval_status: str = "",
     insufficient_evidence: bool = False,
     repair_attempted: bool = False,
@@ -41,6 +45,7 @@ def build_quality_result(
             evidence_backed=evidence_backed,
             verified_buffered=verified_buffered,
             repository_validation_required=repository_validation_required,
+            repository_validation_passed=repository_validation_passed,
             insufficient_evidence=insufficient_evidence,
         ),
         checks=checks,

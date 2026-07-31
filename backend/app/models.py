@@ -698,6 +698,158 @@ class WebUsageStage(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class WebCodeRepository(SQLModel, table=True):
+    """Temporary repository registry; raw source remains only in private Valkey."""
+
+    __tablename__ = "web_code_repository"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "repository_id", "source_version",
+            name="uq_web_code_repository_owner_version",
+        ),
+        UniqueConstraint(
+            "owner_user_id", "idempotency_key",
+            name="uq_web_code_repository_owner_idempotency",
+        ),
+        Index(
+            "ix_web_code_repository_owner_repository",
+            "owner_user_id", "repository_id",
+        ),
+        CheckConstraint(
+            "status IN ('indexing', 'ready', 'expired', 'rejected', 'failed')",
+            name="ck_web_code_repository_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    repository_id: str = Field(max_length=36, index=True)
+    idempotency_key: str = Field(max_length=160)
+    scope: str = Field(default="temporary", max_length=24, index=True)
+    source_version: str = Field(max_length=64, index=True)
+    content_hash: str = Field(max_length=64)
+    status: str = Field(default="indexing", max_length=16, index=True)
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebCodeFile(SQLModel, table=True):
+    __tablename__ = "web_code_file"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_row_id", "normalized_path",
+            name="uq_web_code_file_repository_path",
+        ),
+        Index(
+            "ix_web_code_file_owner_repository_path",
+            "owner_user_id", "repository_id", "normalized_path",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    repository_row_id: str = Field(
+        foreign_key="web_code_repository.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    repository_id: str = Field(max_length=36, index=True)
+    source_version: str = Field(max_length=64, index=True)
+    normalized_path: str = Field(max_length=512)
+    language: str = Field(max_length=32, index=True)
+    content_hash: str = Field(max_length=64)
+    line_count: int = Field(default=0)
+    status: str = Field(default="ready", max_length=16, index=True)
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebCodeSymbol(SQLModel, table=True):
+    __tablename__ = "web_code_symbol"
+    __table_args__ = (
+        UniqueConstraint(
+            "file_id", "symbol_name", "symbol_kind", "start_line",
+            name="uq_web_code_symbol_file_symbol_line",
+        ),
+        Index(
+            "ix_web_code_symbol_owner_repository_name",
+            "owner_user_id", "repository_id", "symbol_name",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    repository_row_id: str = Field(
+        foreign_key="web_code_repository.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    file_id: str = Field(
+        foreign_key="web_code_file.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    repository_id: str = Field(max_length=36, index=True)
+    normalized_path: str = Field(max_length=512)
+    symbol_name: str = Field(max_length=160, index=True)
+    symbol_kind: str = Field(max_length=32, index=True)
+    signature: str = Field(default="", max_length=512)
+    start_line: int = Field(default=1)
+    end_line: int = Field(default=1)
+    content_hash: str = Field(max_length=64)
+    status: str = Field(default="ready", max_length=16, index=True)
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebCodeEdge(SQLModel, table=True):
+    __tablename__ = "web_code_edge"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_row_id", "source_locator", "target_locator", "edge_kind",
+            name="uq_web_code_edge_repository_edge",
+        ),
+        Index(
+            "ix_web_code_edge_owner_repository_source",
+            "owner_user_id", "repository_id", "source_locator",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    repository_row_id: str = Field(
+        foreign_key="web_code_repository.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    repository_id: str = Field(max_length=36, index=True)
+    source_version: str = Field(max_length=64, index=True)
+    source_locator: str = Field(max_length=512)
+    target_locator: str = Field(max_length=512)
+    edge_kind: str = Field(max_length=32, index=True)
+    status: str = Field(default="ready", max_length=16, index=True)
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class WebUsagePreferences(SQLModel, table=True):
     __tablename__ = "web_usage_preferences"
     __table_args__ = (UniqueConstraint("user_id", name="uq_web_usage_preferences_user_id"),)

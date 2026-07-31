@@ -33,7 +33,10 @@ def env_vars(service: dict) -> dict[str, dict]:
 
 def test_staging_blueprint_contains_required_safe_values():
     services = services_by_name(load_blueprint())
-    assert set(services) == {"swico-api-staging", "swico-web-staging", "swico-upload-cache-staging"}
+    assert set(services) == {
+        "swico-api-staging", "swico-web-staging",
+        "swico-upload-cache-staging", "swico-code-validator-staging",
+    }
     api = services["swico-api-staging"]
     values = {key: item.get("value") for key, item in env_vars(api).items() if "value" in item}
     assert values == {
@@ -64,6 +67,17 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED": "false",
         "WEB_ANSWER_GUARD_REPAIR_ENABLED": "false",
         "WEB_ANSWER_GUARD_MAX_BUFFER_CHARACTERS": "200000",
+        "WEB_REPOSITORY_UPLOAD_ENABLED": "false",
+        "WEB_REPOSITORY_TTL_SECONDS": "3600",
+        "WEB_REPOSITORY_MAX_ARCHIVE_BYTES": "26214400",
+        "WEB_REPOSITORY_MAX_UNCOMPRESSED_BYTES": "104857600",
+        "WEB_REPOSITORY_MAX_FILES": "5000",
+        "WEB_REPOSITORY_MAX_COMPRESSION_RATIO": "100",
+        "WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE": "3",
+        "WEB_RAG_REPOSITORY_INDEX_ENABLED": "false",
+        "WEB_PRO_CODE_VALIDATION_ENABLED": "false",
+        "WEB_CODE_VALIDATOR_URL": "http://swico-code-validator-staging:10000",
+        "WEB_CODE_VALIDATOR_TIMEOUT_SECONDS": "90",
         "WEB_SAME_THREAD_CONTEXT_MODE": "adaptive",
         "WEB_SWICO_BRAND_GUARD_ENABLED": "true",
         "WEB_CONTEXT_MAX_TURNS": "2",
@@ -181,6 +195,33 @@ def test_staging_blueprint_cannot_reference_production_resources_or_groups():
         "region": "singapore", "plan": "starter", "ipAllowList": [],
         "maxmemoryPolicy": "allkeys-lru", "persistenceMode": "off",
     }
+    validator = services["swico-code-validator-staging"]
+    assert validator["type"] == "pserv"
+    assert validator["region"] == api["region"]
+    validator_vars = env_vars(validator)
+    assert validator_vars == {
+        "CODE_VALIDATOR_AUTH_TOKEN": {
+            "key": "CODE_VALIDATOR_AUTH_TOKEN", "generateValue": True,
+        },
+        "CODE_VALIDATOR_ISOLATION_PROOF": {
+            "key": "CODE_VALIDATOR_ISOLATION_PROOF", "value": "static-only",
+        },
+        "CODE_VALIDATOR_NETWORK_ISOLATED": {
+            "key": "CODE_VALIDATOR_NETWORK_ISOLATED", "value": "false",
+        },
+        "CODE_VALIDATOR_TIMEOUT_SECONDS": {
+            "key": "CODE_VALIDATOR_TIMEOUT_SECONDS", "value": "90",
+        },
+        "CODE_VALIDATOR_MAX_OUTPUT_BYTES": {
+            "key": "CODE_VALIDATOR_MAX_OUTPUT_BYTES", "value": "65536",
+        },
+    }
+    forbidden_validator_keys = {
+        "OPENAI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DATABASE_URL",
+        "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "FIREBASE_CREDENTIALS_JSON",
+        "SMTP_PASSWORD", "SARVAM_API_KEY",
+    }
+    assert forbidden_validator_keys.isdisjoint(validator_vars)
     serialized = BLUEPRINT.read_text(encoding="utf-8").lower()
     assert "tamil_voice_ai_db" not in serialized
     assert "fromgroup" not in serialized

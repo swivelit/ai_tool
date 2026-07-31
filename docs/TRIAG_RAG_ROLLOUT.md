@@ -26,7 +26,7 @@ optional state.
 1. Deploy the code with `WEB_TRIAG_ENABLED=false`.
 2. Run `python -m alembic -c backend/alembic.ini upgrade head` through the
    existing Render pre-deploy migration owner. The single head must be
-   `b4e8c1d6a2f9`.
+   `d6f1a8c3e9b4`.
 3. Verify `/api/web/health`, authentication, a deterministic zero-charge turn,
    a provider-backed turn, reservation/settlement, cache behavior, and SSE.
 4. Leave production disabled. Shadow observation, if later approved, requires
@@ -38,8 +38,9 @@ optional state.
    until stage reservation/settlement is validated. Verified streaming must not
    be enabled without Answer Guard.
 
-No new Render resource, route, static-site variable, or production activation
-is required. The staging blueprint records the safe disabled defaults.
+Phase 4 adds a staging-only private validator service and the authenticated
+`/api/web/repositories` route. No static-site variable or production validator
+is required. The API flags remain false in the staging blueprint.
 
 ## Rollback
 
@@ -48,8 +49,13 @@ the API. This restores the existing coordinator/lexical path. The
 additive tables may remain. Do not downgrade a production database merely to
 disable the feature.
 
-## Phase boundary
+## Phase 4 rollout boundary
 
-Repository execution, an isolated validator service, arbitrary commands,
-repository indexing, triplets, hierarchy, and persistent knowledge remain
-Phase 4+ work.
+Enable `WEB_REPOSITORY_UPLOAD_ENABLED`, then
+`WEB_RAG_REPOSITORY_INDEX_ENABLED`, and only then consider
+`WEB_PRO_CODE_VALIDATION_ENABLED` in staging. The validator reports
+`static_only` unless every isolation capability is proven. Arbitrary commands,
+triplets, hierarchy, persistent knowledge, and production rollout remain out
+of scope. Repository-aware chat additionally requires Answer Guard and
+verified streaming; otherwise the API reports the optional repository chat
+capability as disabled and retains the existing path.

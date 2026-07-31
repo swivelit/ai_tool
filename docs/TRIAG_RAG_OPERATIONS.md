@@ -60,3 +60,16 @@ then verified streaming. Setting `WEB_ANSWER_GUARD_ENABLED=false` restores the
 Phase 2 generation path. Inspect only the content-free `web_answer_check` and
 `web_usage_stage` fields; provider prompts, evidence excerpts, and repair
 prompts must never be stored there.
+
+## Phase 4 repository operations
+
+Repository snapshots use `POST /api/web/repositories`; general uploads retain
+their document-only rules. A missing Valkey record makes the repository
+unavailable even if content-free PostgreSQL index rows await expiry cleanup.
+Delete marks the repository expired and removes the owner-scoped cache key.
+
+The validator exposes only `/v1/isolation` and `/v1/validate`, protected by its
+dedicated bearer token. It receives no API-provider, Firebase, database, email,
+payment, or Razorpay secrets. `static_only` is a healthy bounded capability.
+A 401, 403, 404, timeout, non-2xx or malformed response, or failed isolation
+self-check is unavailable and never falls back to weak execution.

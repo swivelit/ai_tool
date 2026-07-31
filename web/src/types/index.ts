@@ -24,6 +24,18 @@ export type PendingAttachment = {
   status: 'uploading' | 'error'; progress: number; error?: string;
 }
 export type ReadyAttachment = AttachmentDisplay & { status: 'ready' }
+export type RepositorySnapshot = {
+  id: string;
+  source_version: string;
+  content_hash: string;
+  file_count: number;
+  symbol_count: number;
+  status: 'ready';
+  created_at: string;
+  expires_at: string;
+  languages: string[];
+  frameworks: string[];
+}
 export type ExpiredAttachment = AttachmentDisplay & { status: 'expired' | 'unavailable' }
 export type MessageAttachment = ReadyAttachment | ExpiredAttachment
 export type ComposerAttachment = PendingAttachment | ReadyAttachment | ExpiredAttachment
@@ -55,7 +67,7 @@ export type Message = {
   sources?: SourceSummary[];
   quality?: ResponseQuality | null;
 }
-export type ResponseProvenance = 'memory' | 'document' | 'cached_answer' | 'semantic_cache' | 'backend_tool' | 'web_search'
+export type ResponseProvenance = 'memory' | 'document' | 'repository' | 'cached_answer' | 'semantic_cache' | 'backend_tool' | 'web_search'
 export type SourceSummary = {
   id: string;
   label: string;

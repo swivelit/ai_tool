@@ -20,6 +20,33 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
   const warningCount = quality.checks.filter(
     check => ['failed', 'warning', 'error'].includes(check.status),
   ).length
+  const checkLabels = quality.checks.flatMap(check => {
+    if (check.type === 'repository_context' && check.status === 'passed') {
+      return ['Repository context used']
+    }
+    if (check.type === 'repository_syntax' && check.status === 'passed') {
+      return ['Syntax checks passed']
+    }
+    if (check.type === 'repository_typecheck' && check.status === 'passed') {
+      return ['Typecheck passed']
+    }
+    if (check.type === 'repository_test' && check.status === 'passed') {
+      return ['Tests passed']
+    }
+    if (
+      check.type.startsWith('repository_')
+      && ['skipped', 'error'].includes(check.status)
+    ) {
+      return ['Validation unavailable']
+    }
+    return []
+  })
+  if (
+    quality.status === 'unverified'
+    && quality.checks.some(check => check.type.startsWith('repository_'))
+  ) {
+    checkLabels.push('Not repository-verified')
+  }
   return <section
     className={`response-quality ${warning ? 'warning' : 'ok'}`}
     aria-label="Response quality"
@@ -29,5 +56,6 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
     {warningCount > 0 && <small>
       {warningCount} {warningCount === 1 ? 'check needs' : 'checks need'} attention
     </small>}
+    {checkLabels.length > 0 && <small>{[...new Set(checkLabels)].join(' · ')}</small>}
   </section>
 }

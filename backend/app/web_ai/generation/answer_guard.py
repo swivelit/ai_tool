@@ -13,6 +13,7 @@ from .claim_verifier import (
 )
 from .models import AnswerQualityResult, QualityCheck
 from .quality_gate import build_quality_result
+from ..code_quality.result_parser import RepositoryValidationResult
 
 
 _HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$", re.MULTILINE)
@@ -30,9 +31,14 @@ class AnswerGuardContext:
     evidence_pack: EvidencePack | None = None
     verified_buffered: bool = False
     model_verifier_allowed: bool = False
+    repository_validation: RepositoryValidationResult | None = None
+    repository_change_required: bool | None = None
+    repository_context_used: bool = False
 
     @property
     def repository_validation_required(self) -> bool:
+        if self.repository_change_required is not None:
+            return self.repository_change_required
         return bool(_REPOSITORY_CHANGE.search(self.task_contract))
 
 
@@ -108,17 +114,43 @@ class AnswerGuard:
                 )
         if include("task_completeness"):
             checks.append(_task_completeness(answer, context.task_contract))
-        if context.repository_validation_required:
+        if context.repository_context_used:
             checks.append(QualityCheck(
-                "repository_validation",
-                "skipped",
-                "phase4_validator_unavailable",
+                "repository_context", "passed", ""
             ))
+        if context.repository_validation_required:
+            validation = context.repository_validation
+            if validation is None:
+                checks.append(QualityCheck(
+                    "repository_validation",
+                    "skipped",
+                    "validator_unavailable",
+                ))
+            else:
+                checks.extend(
+                    QualityCheck(
+                        f"repository_{item.category}",
+                        item.status if item.status != "unavailable" else "skipped",
+                        item.safe_code,
+                    )
+                    for item in validation.checks
+                )
+                checks.append(QualityCheck(
+                    "repository_validation",
+                    "passed" if validation.all_required_passed else "failed",
+                    "" if validation.all_required_passed else (
+                        "required_repository_checks_not_passed"
+                    ),
+                ))
         return build_quality_result(
             checks=tuple(checks),
             evidence_backed=evidence_backed,
             verified_buffered=context.verified_buffered,
             repository_validation_required=context.repository_validation_required,
+            repository_validation_passed=bool(
+                context.repository_validation
+                and context.repository_validation.all_required_passed
+            ),
             retrieval_status=evidence.retrieval_status if evidence else "",
             insufficient_evidence=bool(
                 evidence and evidence.retrieval_status == "insufficient"

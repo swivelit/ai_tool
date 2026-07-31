@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, RepositorySnapshot, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -120,7 +120,7 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
 }
 
 export async function streamChat(
-  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string },
+  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; repository_id?: string; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string },
   onEvent: (event: SSEEvent) => void, signal: AbortSignal, onAccepted?: () => void,
 ) {
   const response = await authorizedFetch(user, '/api/web/chat/stream', { method: 'POST', body: JSON.stringify(payload), signal })
@@ -189,6 +189,34 @@ export async function uploadDocument(
 
 export async function deleteUpload(user: User, uploadId: string): Promise<void> {
   const response = await authorizedFetch(user, `/api/web/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as unknown
+    throw new ApiError(response.status, body)
+  }
+}
+
+export async function uploadRepository(
+  user: User, file: File, repositoryId: string,
+): Promise<RepositorySnapshot> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  form.append('repository_id', repositoryId)
+  const response = await authorizedFetch(user, '/api/web/repositories', {
+    method: 'POST', body: form,
+  })
+  const body = await response.json().catch(() => ({})) as unknown
+  if (!response.ok) throw new ApiError(response.status, body)
+  return body as RepositorySnapshot
+}
+
+export async function deleteRepository(
+  user: User, repositoryId: string,
+): Promise<void> {
+  const response = await authorizedFetch(
+    user,
+    `/api/web/repositories/${encodeURIComponent(repositoryId)}`,
+    { method: 'DELETE' },
+  )
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as unknown
     throw new ApiError(response.status, body)

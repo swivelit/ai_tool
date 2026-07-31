@@ -149,7 +149,7 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_sources": frozenset(
-        {"history", "memory", "profile", "documents"}
+        {"history", "memory", "profile", "documents", "repository"}
     ),
     "planned_usage_stages": frozenset(
         {
@@ -158,6 +158,7 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "generation",
             "verifier",
             "repair",
+            "repository_validation",
             "settlement",
         }
     ),
@@ -205,6 +206,7 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "retrieval_unavailable",
             "owner_mismatch",
             "corrective_round",
+            "repository_context_used",
         }
     ),
 }

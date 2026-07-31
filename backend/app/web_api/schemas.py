@@ -40,6 +40,7 @@ class WebChatRequest(BaseModel):
     input_mode: Literal["text", "voice", "dictation", "realtime_voice"] = "text"
     voice_turn_id: UUID | None = None
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
+    repository_id: UUID | None = None
     continue_message_id: UUID | None = None
     edit_message_id: UUID | None = None
     regenerate_message_id: UUID | None = None
@@ -65,8 +66,10 @@ class WebChatRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_message_or_attachment(self):
-        if not self.message and not self.attachment_ids:
-            raise ValueError("message or at least one attachment is required")
+        if not self.message and not self.attachment_ids and not self.repository_id:
+            raise ValueError(
+                "message, attachment, or repository context is required"
+            )
         if len(set(self.attachment_ids)) != len(self.attachment_ids):
             raise ValueError("attachment_ids must be unique")
         if self.input_mode in {"voice", "dictation", "realtime_voice"} and self.voice_turn_id is None:

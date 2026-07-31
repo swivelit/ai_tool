@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 import re
+from urllib.parse import urlsplit
 
 from .tier_policy import validated_tier_policies
 
@@ -72,6 +73,17 @@ class TriagSettings:
     model_claim_verifier_enabled: bool = False
     answer_repair_enabled: bool = False
     verified_buffer_max_characters: int = 200_000
+    repository_upload_enabled: bool = False
+    repository_ttl_seconds: int = 3_600
+    repository_max_archive_bytes: int = 26_214_400
+    repository_max_uncompressed_bytes: int = 104_857_600
+    repository_max_files: int = 5_000
+    repository_max_compression_ratio: int = 100
+    repository_index_enabled: bool = False
+    pro_code_validation_enabled: bool = False
+    code_validator_url: str = ""
+    code_validator_auth_token: str = ""
+    code_validator_timeout_seconds: int = 90
 
     @classmethod
     def from_environ(
@@ -97,6 +109,15 @@ class TriagSettings:
         )
         answer_repair = _parse_bool(
             env, "WEB_ANSWER_GUARD_REPAIR_ENABLED", False, errors
+        )
+        repository_upload = _parse_bool(
+            env, "WEB_REPOSITORY_UPLOAD_ENABLED", False, errors
+        )
+        repository_index = _parse_bool(
+            env, "WEB_RAG_REPOSITORY_INDEX_ENABLED", False, errors
+        )
+        code_validation = _parse_bool(
+            env, "WEB_PRO_CODE_VALIDATION_ENABLED", False, errors
         )
         verified_buffer_max = _parse_int(
             env,
@@ -130,6 +151,66 @@ class TriagSettings:
             minimum=64,
             maximum=8_192,
         )
+        repository_ttl = _parse_int(
+            env, "WEB_REPOSITORY_TTL_SECONDS", 3_600, errors,
+            minimum=300, maximum=86_400,
+        )
+        repository_archive_bytes = _parse_int(
+            env, "WEB_REPOSITORY_MAX_ARCHIVE_BYTES", 26_214_400, errors,
+            minimum=1_048_576, maximum=104_857_600,
+        )
+        repository_uncompressed_bytes = _parse_int(
+            env, "WEB_REPOSITORY_MAX_UNCOMPRESSED_BYTES", 104_857_600, errors,
+            minimum=1_048_576, maximum=536_870_912,
+        )
+        repository_max_files = _parse_int(
+            env, "WEB_REPOSITORY_MAX_FILES", 5_000, errors,
+            minimum=1, maximum=20_000,
+        )
+        repository_max_ratio = _parse_int(
+            env, "WEB_REPOSITORY_MAX_COMPRESSION_RATIO", 100, errors,
+            minimum=2, maximum=1_000,
+        )
+        validator_timeout = _parse_int(
+            env, "WEB_CODE_VALIDATOR_TIMEOUT_SECONDS", 90, errors,
+            minimum=1, maximum=300,
+        )
+        validator_url = str(env.get("WEB_CODE_VALIDATOR_URL", "") or "").strip()
+        validator_token = str(
+            env.get("WEB_CODE_VALIDATOR_AUTH_TOKEN", "") or ""
+        ).strip()
+        if validator_url and not (
+            validator_url.startswith("https://")
+            or validator_url.startswith("http://")
+        ):
+            errors.append("WEB_CODE_VALIDATOR_URL must be an HTTP(S) URL")
+        if validator_url:
+            parsed_validator_url = urlsplit(validator_url)
+            if (
+                not parsed_validator_url.hostname
+                or parsed_validator_url.username
+                or parsed_validator_url.password
+                or parsed_validator_url.query
+                or parsed_validator_url.fragment
+            ):
+                errors.append(
+                    "WEB_CODE_VALIDATOR_URL must be a host-only service URL"
+                )
+        if len(validator_url) > 512:
+            errors.append("WEB_CODE_VALIDATOR_URL exceeds supported bounds")
+        if validator_token and not 32 <= len(validator_token) <= 512:
+            errors.append(
+                "WEB_CODE_VALIDATOR_AUTH_TOKEN must be a bounded service token"
+            )
+        if code_validation and (not validator_url or not validator_token):
+            errors.append(
+                "WEB_PRO_CODE_VALIDATION_ENABLED requires validator URL and token"
+            )
+        if repository_uncompressed_bytes < repository_archive_bytes:
+            errors.append(
+                "WEB_REPOSITORY_MAX_UNCOMPRESSED_BYTES must not be smaller than "
+                "WEB_REPOSITORY_MAX_ARCHIVE_BYTES"
+            )
         embedding_model = str(
             env.get("WEB_RAG_EMBEDDING_MODEL", "text-embedding-3-small") or ""
         ).strip()
@@ -162,6 +243,17 @@ class TriagSettings:
             model_claim_verifier_enabled=model_verifier,
             answer_repair_enabled=answer_repair,
             verified_buffer_max_characters=verified_buffer_max,
+            repository_upload_enabled=repository_upload,
+            repository_ttl_seconds=repository_ttl,
+            repository_max_archive_bytes=repository_archive_bytes,
+            repository_max_uncompressed_bytes=repository_uncompressed_bytes,
+            repository_max_files=repository_max_files,
+            repository_max_compression_ratio=repository_max_ratio,
+            repository_index_enabled=repository_index,
+            pro_code_validation_enabled=code_validation,
+            code_validator_url=validator_url,
+            code_validator_auth_token=validator_token,
+            code_validator_timeout_seconds=validator_timeout,
         )
 
     @property
@@ -185,6 +277,31 @@ class TriagSettings:
         return (
             self.answer_guard_runtime_enabled
             and self.verified_streaming_enabled
+        )
+
+    @property
+    def repository_runtime_enabled(self) -> bool:
+        return (
+            self.enabled
+            and not self.shadow_mode
+            and self.repository_upload_enabled
+            and self.repository_index_enabled
+        )
+
+    @property
+    def repository_chat_runtime_enabled(self) -> bool:
+        return (
+            self.repository_runtime_enabled
+            and self.answer_guard_runtime_enabled
+            and self.verified_streaming_runtime_enabled
+        )
+
+    @property
+    def code_validation_runtime_enabled(self) -> bool:
+        return (
+            self.repository_chat_runtime_enabled
+            and self.pro_code_validation_enabled
+            and bool(self.code_validator_url and self.code_validator_auth_token)
         )
 
     @property
@@ -233,5 +350,18 @@ class TriagSettings:
                 if self.answer_guard_runtime_enabled
                 and self.answer_repair_enabled
                 else "disabled"
+            ),
+            "repository_upload": (
+                "enabled" if self.repository_upload_enabled else "disabled"
+            ),
+            "repository_index": (
+                "enabled" if self.repository_runtime_enabled else "disabled"
+            ),
+            "repository_chat": (
+                "enabled"
+                if self.repository_chat_runtime_enabled else "disabled"
+            ),
+            "repository_validation": (
+                "enabled" if self.code_validation_runtime_enabled else "disabled"
             ),
         }

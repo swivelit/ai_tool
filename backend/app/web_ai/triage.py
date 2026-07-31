@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from ..ai.intent import classify_intent_with_metadata
 from ..billing.pricing import estimate_tokens
@@ -39,6 +40,7 @@ class TriageInput:
     profile_available_tokens: int = 0
     document_available_tokens: int = 0
     previous_topic: str | None = None
+    repository_available: bool = False
 
 
 def _media_category(media_type: object) -> str:
@@ -84,6 +86,20 @@ def build_execution_plan(
         continuity=triage_input.continuity,
     )
     deterministic = bool(optimization.local_intent)
+    repository_task = bool(
+        re.search(
+            r"\b(?:repository|repo|codebase|source|file|module|class|function|"
+            r"debug|bug|fix|implement|refactor|test|typecheck|lint)\b",
+            triage_input.message,
+            re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(?:code|repository|repo|codebase|file|module|class|function|"
+            r"debug|bug|fix|implement|refactor|test|typecheck|lint)\b",
+            triage_input.message,
+            re.IGNORECASE,
+        )
+    )
     blocked = optimization.optimization_route == "safety_block"
     route = (
         "blocked"
@@ -126,6 +142,14 @@ def build_execution_plan(
             and not deterministic
             else 0.0
         ),
+        "repository": (
+            1.0
+            if repository_task
+            and triage_input.repository_available
+            and config.repository_chat_runtime_enabled
+            and policy.repository_retrieval_allowed
+            else 0.0
+        ),
     }
     fixed_tokens = min(
         policy.max_prompt_tokens,
@@ -151,6 +175,8 @@ def build_execution_plan(
         )
         if token_count > 0
     )
+    if relevance["repository"] > 0:
+        retrieval_sources = (*retrieval_sources, "repository")
     dense_planned = bool(
         not deterministic
         and not blocked
@@ -162,6 +188,12 @@ def build_execution_plan(
         not deterministic
         and not blocked
         and config.answer_guard_runtime_enabled
+    )
+    repository_validation_planned = bool(
+        repository_task
+        and "repository" in retrieval_sources
+        and config.code_validation_runtime_enabled
+        and policy.repository_validation_allowed
     )
     verifier_planned = bool(
         guard_planned
@@ -225,6 +257,7 @@ def build_execution_plan(
                     ("reservation", True),
                     ("generation", True),
                     ("verifier", verifier_planned),
+                    ("repository_validation", repository_validation_planned),
                     ("repair", repair_planned),
                     ("settlement", True),
                 )

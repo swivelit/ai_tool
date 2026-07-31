@@ -110,7 +110,10 @@ describe('chatStreamReducer', () => {
       type:'start', requestId:'buffered', threadId:'t1',
       tier:'standard', tierLabel:'Swico Standard',
     })
-    for (const phase of ['generating', 'verifying_sources', 'repairing']) {
+    for (const phase of [
+      'generating', 'searching_repository', 'running_code_checks',
+      'verifying_sources', 'repairing',
+    ]) {
       state = chatStreamReducer(state, {
         type:'event', event:{ event:'status', data:{ phase } },
       })

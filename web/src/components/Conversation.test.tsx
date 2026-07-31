@@ -48,6 +48,16 @@ it('keeps the same assistant DOM node when completion replaces the temporary dat
   expect(completed).toHaveAttribute('data-message-id', 'database-message-1')
 })
 
+it.each([
+  ['searching_repository', 'Swico is reading the repository'],
+  ['running_code_checks', 'Swico is running safe code checks'],
+])('renders the safe Phase 4 status for %s', (phase, label) => {
+  controlledAnimationFrames()
+  render(<Conversation messages={[]} retry={vi.fn()} suggest={vi.fn()} phase={phase} />)
+  expect(screen.getByRole('status')).toHaveTextContent(label)
+  expect(document.body.textContent).not.toMatch(/provider|model|command|stdout|stderr/i)
+})
+
 it('does not collide user and assistant render keys for the same request', () => {
   controlledAnimationFrames()
   render(<Conversation messages={[

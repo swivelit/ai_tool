@@ -35,7 +35,8 @@ same frozen message list drives prompt estimation, reservation, and provider
 invocation.
 
 `backend/app/web_ai/` contains the Phase 0/1 foundation, Phase 2
-temporary-document hybrid retrieval, and Phase 3 Answer Guard implementation.
+temporary-document hybrid retrieval, Phase 3 Answer Guard, and the Phase 4
+temporary repository contracts and retrieval implementation.
 It does not replace
 `WebRequestCoordinator`: disabled and shadow modes retain the original path.
 The live Phase 2 path is entered only when TRIAG is non-shadow and
@@ -60,13 +61,21 @@ WEB_ANSWER_GUARD_ENABLED=false
 WEB_VERIFIED_STREAMING_ENABLED=false
 WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
 WEB_ANSWER_GUARD_REPAIR_ENABLED=false
+WEB_REPOSITORY_UPLOAD_ENABLED=false
+WEB_RAG_REPOSITORY_INDEX_ENABLED=false
+WEB_PRO_CODE_VALIDATION_ENABLED=false
 ```
 
 Phases 2 and 3 remain disabled by default. They add safe `sources` and
 `quality` SSE/message metadata. Phase 3 can buffer a draft until deterministic
 checks finish and can optionally run one accounted verifier or repair call.
-It does not execute repository code or add a validator service, repository
-indexing, triplets, hierarchy, or persistent knowledge.
+Phase 4 uses a dedicated ZIP-only repository endpoint; it does not weaken the
+general uploader. Raw source remains owner-scoped in Valkey. Content-free
+repository paths, hashes, symbols, signatures, and dependency edges expire
+through the repository lifecycle. The private validator uses only server-owned
+check IDs and command templates and defaults to static-only when executable
+isolation cannot be proven. It does not add triplets, hierarchy, or persistent
+knowledge.
 
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment

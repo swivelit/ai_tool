@@ -64,6 +64,7 @@ class EphemeralUploadStore(Protocol):
     def available(self) -> bool: ...
     def get_auxiliary(self, key: str) -> str | None: ...
     def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None: ...
+    def delete_auxiliary(self, key: str) -> bool: ...
 
 
 def utc_iso(value: datetime | None = None) -> str:
@@ -159,6 +160,10 @@ class InProcessEphemeralUploadStore:
             while len(self._auxiliary) > self.max_entries * 64:
                 self._auxiliary.popitem(last=False)
 
+    def delete_auxiliary(self, key: str) -> bool:
+        with self._lock:
+            return self._auxiliary.pop(key, None) is not None
+
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
@@ -228,6 +233,14 @@ class RedisEphemeralUploadStore:
                 "The temporary upload cache is unavailable."
             ) from exc
 
+    def delete_auxiliary(self, key: str) -> bool:
+        try:
+            return bool(self._client.delete(key))
+        except Exception as exc:
+            raise UploadStoreUnavailable(
+                "The temporary upload cache is unavailable."
+            ) from exc
+
 
 class UnavailableEphemeralUploadStore:
     def __init__(self, *, ttl_seconds: int = DEFAULT_UPLOAD_TTL_SECONDS) -> None:
@@ -253,6 +266,9 @@ class UnavailableEphemeralUploadStore:
         self._raise()
 
     def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None:
+        self._raise()
+
+    def delete_auxiliary(self, key: str) -> bool:
         self._raise()
 
 

@@ -73,6 +73,33 @@ projects:
                 value: "false"
               - key: WEB_ANSWER_GUARD_MAX_BUFFER_CHARACTERS
                 value: "200000"
+              - key: WEB_REPOSITORY_UPLOAD_ENABLED
+                value: "false"
+              - key: WEB_REPOSITORY_TTL_SECONDS
+                value: "3600"
+              - key: WEB_REPOSITORY_MAX_ARCHIVE_BYTES
+                value: "26214400"
+              - key: WEB_REPOSITORY_MAX_UNCOMPRESSED_BYTES
+                value: "104857600"
+              - key: WEB_REPOSITORY_MAX_FILES
+                value: "5000"
+              - key: WEB_REPOSITORY_MAX_COMPRESSION_RATIO
+                value: "100"
+              - key: WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE
+                value: "3"
+              - key: WEB_RAG_REPOSITORY_INDEX_ENABLED
+                value: "false"
+              - key: WEB_PRO_CODE_VALIDATION_ENABLED
+                value: "false"
+              - key: WEB_CODE_VALIDATOR_URL
+                value: http://swico-code-validator-staging:10000
+              - key: WEB_CODE_VALIDATOR_AUTH_TOKEN
+                fromService:
+                  type: pserv
+                  name: swico-code-validator-staging
+                  envVarKey: CODE_VALIDATOR_AUTH_TOKEN
+              - key: WEB_CODE_VALIDATOR_TIMEOUT_SECONDS
+                value: "90"
               - key: WEB_SAME_THREAD_CONTEXT_MODE
                 value: adaptive
               - key: WEB_SWICO_BRAND_GUARD_ENABLED
@@ -245,6 +272,24 @@ projects:
             ipAllowList: []
             maxmemoryPolicy: allkeys-lru
             persistenceMode: "off"
+          - type: pserv
+            name: swico-code-validator-staging
+            runtime: python
+            region: singapore
+            plan: starter
+            buildCommand: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+            startCommand: uvicorn app.code_validator.main:app --app-dir backend --host 0.0.0.0 --port 10000
+            envVars:
+              - key: CODE_VALIDATOR_AUTH_TOKEN
+                generateValue: true
+              - key: CODE_VALIDATOR_ISOLATION_PROOF
+                value: static-only
+              - key: CODE_VALIDATOR_NETWORK_ISOLATED
+                value: "false"
+              - key: CODE_VALIDATOR_TIMEOUT_SECONDS
+                value: "90"
+              - key: CODE_VALIDATOR_MAX_OUTPUT_BYTES
+                value: "65536"
           - type: web
             name: swico-web-staging
             runtime: static

@@ -28,6 +28,10 @@ class TierPolicy:
     dense_retrieval_allowed: bool
     corrective_retrieval_allowed: bool
     claim_verifier_allowed: bool
+    repository_retrieval_allowed: bool
+    repository_validation_allowed: bool
+    repository_contract_token_cap: int
+    repository_required_validation_categories: tuple[str, ...]
     max_provider_calls: int = 4
 
     def __post_init__(self) -> None:
@@ -44,6 +48,7 @@ class TierPolicy:
             self.query_variant_limit,
             self.retrieval_round_limit,
             self.max_provider_calls,
+            self.repository_contract_token_cap,
         )
         if any(value < 0 for value in numeric):
             raise ValueError("tier-policy ceilings must be non-negative")
@@ -59,6 +64,10 @@ class TierPolicy:
             raise ValueError("retrieval result limits exceed supported bounds")
         if self.evidence_token_cap > self.max_prompt_tokens:
             raise ValueError("evidence ceiling cannot exceed max_prompt_tokens")
+        if self.repository_contract_token_cap > self.max_prompt_tokens:
+            raise ValueError(
+                "repository contract ceiling cannot exceed max_prompt_tokens"
+            )
         for source_limit in (
             self.max_history_tokens,
             self.max_memory_tokens,
@@ -95,6 +104,10 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "dense_retrieval_allowed": False,
         "corrective_retrieval_allowed": False,
         "claim_verifier_allowed": False,
+        "repository_retrieval_allowed": True,
+        "repository_validation_allowed": False,
+        "repository_contract_token_cap": 900,
+        "repository_required_validation_categories": (),
     },
     "standard": {
         "max_prompt_tokens": 6_500,
@@ -111,6 +124,10 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "dense_retrieval_allowed": True,
         "corrective_retrieval_allowed": True,
         "claim_verifier_allowed": True,
+        "repository_retrieval_allowed": True,
+        "repository_validation_allowed": False,
+        "repository_contract_token_cap": 1_800,
+        "repository_required_validation_categories": (),
     },
     "pro": {
         "max_prompt_tokens": 12_000,
@@ -127,6 +144,13 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "dense_retrieval_allowed": True,
         "corrective_retrieval_allowed": True,
         "claim_verifier_allowed": True,
+        "repository_retrieval_allowed": True,
+        "repository_validation_allowed": True,
+        "repository_contract_token_cap": 3_500,
+        "repository_required_validation_categories": (
+            "syntax", "lint", "typecheck", "test", "api_schema",
+            "migration", "authorization",
+        ),
     },
 }
 

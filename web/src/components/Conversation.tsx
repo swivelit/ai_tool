@@ -139,11 +139,14 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
           submitFeedback={submitFeedback} highlighted={message.id === highlightMessageId} />)}
         {phase && [
           'connecting', 'routing', 'reserved', 'understanding_request',
-          'searching_context', 'searching_documents', 'evaluating_evidence',
+          'searching_context', 'searching_documents', 'searching_repository',
+          'evaluating_evidence', 'running_code_checks',
           'preparing_answer', 'generating', 'verifying_sources', 'repairing',
           'responding',
         ].includes(phase) && <div className="thinking" role="status"><span />{
           phase === 'verifying_sources' ? 'Swico is checking the answer'
+            : phase === 'searching_repository' ? 'Swico is reading the repository'
+              : phase === 'running_code_checks' ? 'Swico is running safe code checks'
             : phase === 'repairing' ? 'Swico is improving the answer'
               : 'Swico is thinking'
         }</div>}
@@ -237,7 +240,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
     {message.status === 'streaming' && message.content && <span className="cursor" />}
     {!!message.sources?.length && <SourceCitations sources={message.sources} />}
     {message.quality && <ResponseQualityPanel quality={message.quality} />}
-    {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
+    {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', repository: 'Repository context used', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
     {message.status !== 'streaming' && <div className="answer-actions">
       {feedbackEnabled && message.status === 'complete' && <><button className={feedback === 'up' ? 'selected' : ''} aria-label="Good answer" title="Good answer" aria-pressed={feedback === 'up'} onClick={() => rate('up')}><ThumbsUp size={15} /></button>
         <button className={feedback === 'down' ? 'selected' : ''} aria-label="Bad answer" title="Bad answer" aria-pressed={feedback === 'down'} onClick={() => rate('down')}><ThumbsDown size={15} /></button></>}

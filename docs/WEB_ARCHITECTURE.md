@@ -6,8 +6,9 @@
 
 The existing FastAPI process conditionally mounts `backend/app/web_api/router.py` at `/api/web` when `WEB_APP_ENABLED=true`. Existing `/api/chat` and `/api/chat/stream` routes are unchanged. The web chat service uses the shared `AIProviderRouter`, `OpenAIProvider`, and `SarvamProvider`; it does not enter the mobile local-RAG or local-model pipeline.
 
-Phase 0/1 TRIAG-RAG foundations and Phase 2 temporary-document retrieval live
-under `backend/app/web_ai/`. The package is not a new website runtime. With the
+Phase 0/1 TRIAG-RAG foundations, Phase 2 temporary-document retrieval, Phase 3
+Answer Guard, and the disabled-by-default Phase 4 repository path live under
+`backend/app/web_ai/`. The package is not a new website runtime. With the
 safe defaults `WEB_TRIAG_ENABLED=false`, `WEB_TRIAG_SHADOW_MODE=true`,
 `WEB_RAG_HYBRID_ENABLED=false`, and `WEB_RAG_DENSE_ENABLED=false`, it is
 disabled.
@@ -59,6 +60,17 @@ provenance and idempotent embedding-stage linkage; `UsageCharge` remains the
 authoritative reservation and settlement record. Phase 3 uses
 `web_answer_check` for content-free quality results and `web_usage_stage` for
 generation, verifier, and repair accounting.
+
+Phase 4 adds a separate owner-scoped `POST /api/web/repositories` lifecycle.
+It accepts bounded ZIP snapshots without changing the normal document-upload
+allowlist. Raw source is held only in private Valkey until expiry. PostgreSQL
+stores content-free repository, file, symbol, and dependency metadata. A
+repository-aware request still enters `POST /api/web/chat/stream`, freezes its
+final provider messages in `request_coordinator.py`, calls `ai/router.py`, and
+returns the existing SSE stream. Repository-changing answers can be labelled
+`verified` only if every centrally required repository check ran and passed.
+Repository-aware chat requires the TRIAG, repository upload/index, Answer Guard,
+and verified-streaming flags together; partial enablement remains disabled.
 
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the

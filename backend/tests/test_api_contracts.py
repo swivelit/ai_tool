@@ -677,7 +677,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
     class Context:
         @staticmethod
         def get_current_revision():
-            return "b4e8c1d6a2f9"
+            return "d6f1a8c3e9b4"
 
     monkeypatch.setattr(
         MigrationContext, "configure",
@@ -701,7 +701,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
         SimpleNamespace(get_bind=lambda: EngineLike())
     )
     assert engine_status == {
-        "current": "b4e8c1d6a2f9", "head": "b4e8c1d6a2f9", "ok": True,
+        "current": "d6f1a8c3e9b4", "head": "d6f1a8c3e9b4", "ok": True,
     }
     assert configured_with[-1] is connection
     assert connection.closed is True
@@ -713,7 +713,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
             SimpleNamespace(get_bind=lambda: live_connection)
         )
         assert configured_with[-1] is live_connection
-        assert direct_status["head"] == "b4e8c1d6a2f9"
+        assert direct_status["head"] == "d6f1a8c3e9b4"
 
 
 def test_alembic_status_failure_is_publicly_safe(monkeypatch):
@@ -727,7 +727,7 @@ def test_alembic_status_failure_is_publicly_safe(monkeypatch):
         SimpleNamespace(get_bind=lambda: BrokenEngine())
     )
     assert status == {
-        "current": None, "head": "b4e8c1d6a2f9", "ok": False,
+        "current": None, "head": "d6f1a8c3e9b4", "ok": False,
         "error": "alembic_connection_failed",
     }
     assert secret not in json.dumps(status)

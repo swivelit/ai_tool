@@ -77,8 +77,12 @@ from ..database import SessionLocal, get_session
 from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
-    WebMessageFeedback, WebUsagePreferences,
+    WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
 )
+from ..web_ai.code_quality.repository_archive import (
+    ArchiveLimits, UnsafeRepositoryArchive,
+)
+from ..web_ai.settings import TriagSettings
 from ..observability import APP_RELEASE, get_request_id
 from ..openai_tracked import OpenAIBudgetExceededError
 from ..time_utils import utc_now
@@ -104,6 +108,12 @@ from .upload_store import (
     EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store,
     upload_ttl_seconds, utc_iso,
 )
+from .repository_service import (
+    create_repository_snapshot, invalidate_repository_index,
+)
+from .repository_store import (
+    get_repository_snapshot, repository_store_key,
+)
 from .voice_sessions import (
     VoiceSessionConflict, VoiceTicket, VoiceTicketStore,
 )
@@ -122,7 +132,7 @@ _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
-ALEMBIC_HEAD = "b4e8c1d6a2f9"
+ALEMBIC_HEAD = "d6f1a8c3e9b4"
 
 
 def _tickets() -> VoiceTicketStore:
@@ -2549,6 +2559,109 @@ async def upload_document(
     )
 
 
+@router.post("/repositories", status_code=201)
+async def upload_repository_snapshot(
+    file: UploadFile = File(...),
+    repository_id: UUID = Form(...),
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    settings = TriagSettings.from_environ()
+    if not settings.repository_upload_enabled:
+        await file.close()
+        return _temporary_error(
+            503, "repository_upload_disabled",
+            "Temporary repository uploads are unavailable.",
+        )
+    filename = str(file.filename or "")
+    if not filename.casefold().endswith(".zip"):
+        await file.close()
+        return _temporary_error(
+            415, "repository_archive_type",
+            "Repository snapshots must use the ZIP archive format.",
+        )
+    _rate_limit(
+        session, user_id=int(user.id), action="web_repository_upload",
+        limit=int(os.getenv("WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE", "3")),
+    )
+    session.commit()
+    archive = await file.read(settings.repository_max_archive_bytes + 1)
+    await file.close()
+    if len(archive) > settings.repository_max_archive_bytes:
+        return _temporary_error(
+            413, "repository_archive_too_large",
+            "The repository archive exceeds the configured size limit.",
+        )
+    try:
+        snapshot, index, created = create_repository_snapshot(
+            session,
+            store=get_upload_store(),
+            owner_user_id=int(user.id),
+            repository_id=str(repository_id),
+            archive=archive,
+            ttl_seconds=settings.repository_ttl_seconds,
+            limits=ArchiveLimits(
+                settings.repository_max_archive_bytes,
+                settings.repository_max_uncompressed_bytes,
+                settings.repository_max_files,
+                settings.repository_max_compression_ratio,
+            ),
+        )
+    except UnsafeRepositoryArchive as exc:
+        return _temporary_error(
+            422, str(exc), "The repository archive failed safety validation."
+        )
+    except UploadStoreUnavailable:
+        return _temporary_error(
+            503, "repository_cache_unavailable",
+            "Temporary repositories are unavailable.",
+        )
+    metadata = snapshot.safe_metadata()
+    metadata.update({
+        "status": "ready",
+        "languages": list(index.languages),
+        "frameworks": list(index.frameworks),
+        "symbol_count": len(index.symbols),
+    })
+    return JSONResponse(
+        status_code=201 if created else 200,
+        content=metadata,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.delete("/repositories/{repository_id}", status_code=204)
+def delete_repository_snapshot(
+    repository_id: UUID,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(select(WebCodeRepository).where(
+        WebCodeRepository.owner_user_id == int(user.id),
+        WebCodeRepository.repository_id == str(repository_id),
+        WebCodeRepository.status == "ready",
+    )).first()
+    if row is not None:
+        invalidate_repository_index(
+            session,
+            owner_user_id=int(user.id),
+            repository_id=str(repository_id),
+        )
+        session.commit()
+    try:
+        get_upload_store().delete_auxiliary(
+            repository_store_key(int(user.id), str(repository_id))
+        )
+    except UploadStoreUnavailable:
+        return _temporary_error(
+            503, "repository_cache_unavailable",
+            "Temporary repositories are unavailable.",
+        )
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
 @router.delete("/uploads/{upload_id}", status_code=204)
 def delete_upload(
     upload_id: str, session: Session = Depends(get_session),
@@ -3037,6 +3150,9 @@ async def chat_stream(
             request_id=str(payload.request_id), thread_id=str(payload.thread_id) if payload.thread_id else None,
             reply_language=resolved_reply_language,
             attachment_ids=[str(value) for value in payload.attachment_ids],
+            repository_id=(
+                str(payload.repository_id) if payload.repository_id else None
+            ),
             billing_exempt=billing_exempt,
             input_mode=payload.input_mode,
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
