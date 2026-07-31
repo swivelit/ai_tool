@@ -131,7 +131,7 @@ def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert body["backend_release"] == "208e3024abcd"
-    assert body["alembic_head"] == "3a7d9c2e5f10"
+    assert body["alembic_head"] == "b4e8c1d6a2f9"
     assert body["authentication"] == {
         "internal_test_user": True, "email_verified": True, "owned_email_matches": True,
     }

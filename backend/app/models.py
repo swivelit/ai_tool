@@ -480,6 +480,224 @@ class UsageCharge(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class WebRetrievalTrace(SQLModel, table=True):
+    """Content-free TRIAG planning/retrieval telemetry."""
+
+    __tablename__ = "web_retrieval_trace"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_web_retrieval_trace_user_idempotency",
+        ),
+        Index(
+            "ix_web_retrieval_trace_user_request",
+            "user_id",
+            "request_id",
+        ),
+        CheckConstraint(
+            "status IN ('planned', 'running', 'complete', 'skipped', 'failed')",
+            name="ck_web_retrieval_trace_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    thread_id: Optional[str] = Field(
+        default=None,
+        foreign_key="web_chat_thread.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
+    request_id: str = Field(max_length=64, index=True)
+    idempotency_key: str = Field(max_length=160)
+    policy_version: str = Field(max_length=24)
+    tier_id: str = Field(max_length=16)
+    status: str = Field(default="planned", max_length=16, index=True)
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebEvidenceItem(SQLModel, table=True):
+    """Evidence provenance only; excerpts and generated content are forbidden."""
+
+    __tablename__ = "web_evidence_item"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_web_evidence_item_user_idempotency",
+        ),
+        UniqueConstraint(
+            "trace_id",
+            "ordinal",
+            name="uq_web_evidence_item_trace_ordinal",
+        ),
+        Index(
+            "ix_web_evidence_item_user_request",
+            "user_id",
+            "request_id",
+        ),
+        CheckConstraint(
+            "status IN ('candidate', 'selected', 'rejected', 'consumed')",
+            name="ck_web_evidence_item_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    trace_id: str = Field(
+        foreign_key="web_retrieval_trace.id",
+        ondelete="CASCADE",
+        index=True,
+        max_length=36,
+    )
+    user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    request_id: str = Field(max_length=64, index=True)
+    idempotency_key: str = Field(max_length=160)
+    source_type: str = Field(max_length=32, index=True)
+    source_id: str = Field(max_length=160)
+    ordinal: int = Field(default=0)
+    estimated_tokens: int = Field(default=0)
+    status: str = Field(default="candidate", max_length=16, index=True)
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebAnswerCheck(SQLModel, table=True):
+    """Result metadata for future answer checks; no answer body is stored."""
+
+    __tablename__ = "web_answer_check"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_web_answer_check_user_idempotency",
+        ),
+        Index(
+            "ix_web_answer_check_user_request",
+            "user_id",
+            "request_id",
+        ),
+        CheckConstraint(
+            "status IN ('not_run', 'passed', 'failed', 'skipped', 'error')",
+            name="ck_web_answer_check_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    thread_id: Optional[str] = Field(
+        default=None,
+        foreign_key="web_chat_thread.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
+    request_id: str = Field(max_length=64, index=True)
+    assistant_message_id: Optional[str] = Field(
+        default=None,
+        foreign_key="web_chat_message.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
+    idempotency_key: str = Field(max_length=160)
+    status: str = Field(default="not_run", max_length=16, index=True)
+    passed: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebUsageStage(SQLModel, table=True):
+    """Idempotent future stage accounting; UsageCharge stays authoritative."""
+
+    __tablename__ = "web_usage_stage"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_web_usage_stage_user_idempotency",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "request_id",
+            "stage_name",
+            name="uq_web_usage_stage_user_request_stage",
+        ),
+        Index(
+            "ix_web_usage_stage_user_request",
+            "user_id",
+            "request_id",
+        ),
+        CheckConstraint(
+            "status IN ('planned', 'reserved', 'running', 'settled', 'released', 'skipped', 'failed')",
+            name="ck_web_usage_stage_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    thread_id: Optional[str] = Field(
+        default=None,
+        foreign_key="web_chat_thread.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
+    usage_charge_id: Optional[str] = Field(
+        default=None,
+        foreign_key="usage_charge.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
+    request_id: str = Field(max_length=64, index=True)
+    idempotency_key: str = Field(max_length=160)
+    stage_name: str = Field(max_length=32, index=True)
+    stage_order: int = Field(default=0)
+    status: str = Field(default="planned", max_length=16, index=True)
+    reserved_micros: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default="0"),
+    )
+    debited_micros: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default="0"),
+    )
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    settled_at: Optional[datetime] = None
+
+
 class WebUsagePreferences(SQLModel, table=True):
     __tablename__ = "web_usage_preferences"
     __table_args__ = (UniqueConstraint("user_id", name="uq_web_usage_preferences_user_id"),)

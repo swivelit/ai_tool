@@ -33,6 +33,16 @@ from ..models import (
     UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
     WebMemoryFact,
 )
+from ..web_ai.evidence.models import EvidencePack
+from ..web_ai.execution_plan import ExecutionPlan
+from ..web_ai.persistence import persist_shadow_plan
+from ..web_ai.settings import TriagConfigurationError, TriagSettings
+from ..web_ai.triage import (
+    TriageInput,
+    attachment_metadata_from_uploads,
+    build_execution_plan,
+    shadow_metadata,
+)
 from ..openai_tracked import OpenAIBudgetExceededError
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
@@ -195,6 +205,11 @@ class PreparedWebTurn:
     continuation_root_message_id: str | None = None
     continuation_segment_index: int = 0
     continuation_render_prefix: str = ""
+    execution_plan: ExecutionPlan | None = None
+    retrieval_context: EvidencePack | None = None
+    streaming_mode: str | None = None
+    planned_usage_stages: tuple[str, ...] = ()
+    triag_shadow_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1098,6 +1113,66 @@ def prepare_web_turn(
                 "cache_scope_reason": "continuation_control",
             })
 
+        execution_plan: ExecutionPlan | None = None
+        triag_shadow_metadata: dict[str, object] | None = None
+        try:
+            triag_settings = TriagSettings.from_environ()
+        except TriagConfigurationError:
+            # Startup validation reports variable names. A malformed optional
+            # shadow configuration must never alter the live turn.
+            logger.warning(
+                "web_triag_shadow_configuration_invalid",
+                extra={"request_id": request_id},
+            )
+        else:
+            if triag_settings.shadow_planning_enabled:
+                attachment_metadata = attachment_metadata_from_uploads(uploads)
+                history_text = "\n".join(
+                    value
+                    for turn in all_context
+                    for value in (
+                        str(turn.get("user") or ""),
+                        str(turn.get("assistant") or ""),
+                    )
+                    if value
+                )[:96_000]
+                document_text = "\n".join(
+                    str(chunk.text or "")
+                    for upload in uploads
+                    for chunk in upload.chunks
+                    if str(chunk.text or "").strip()
+                )[:96_000]
+                execution_plan = build_execution_plan(
+                    TriageInput(
+                        message=model_message,
+                        selected_tier=swico_tier,
+                        reply_language=reply_language,
+                        continuity=continuity,
+                        attachment_metadata=attachment_metadata,
+                        needs_cross_thread_memory=needs_memory,
+                        profile_available=False,
+                        history_available_tokens=(
+                            estimate_tokens(history_text) if history_text else 0
+                        ),
+                        document_available_tokens=(
+                            estimate_tokens(document_text) if document_text else 0
+                        ),
+                        previous_topic=previous_safe_metadata.get("topic"),
+                    ),
+                    settings=triag_settings,
+                )
+                triag_shadow_metadata = shadow_metadata(
+                    execution_plan, attachment_metadata
+                )
+                persist_shadow_plan(
+                    session,
+                    user_id=user_id,
+                    thread_id=thread.id,
+                    request_id=request_id,
+                    plan=execution_plan,
+                    metadata=triag_shadow_metadata,
+                )
+
         if explicit_memory_write_requested(model_message):
             memory_updated = False
             if not memory_deployment_available():
@@ -1227,6 +1302,15 @@ def prepare_web_turn(
                     if regenerate_target is not None else 1
                 ),
                 regeneration_cache_row_id=regeneration_cache_row_id,
+                execution_plan=execution_plan,
+                streaming_mode=(
+                    execution_plan.streaming_mode if execution_plan else None
+                ),
+                planned_usage_stages=(
+                    execution_plan.planned_usage_stages
+                    if execution_plan else ()
+                ),
+                triag_shadow_metadata=triag_shadow_metadata,
             )
 
         if (
@@ -1284,6 +1368,15 @@ def prepare_web_turn(
                         if regenerate_target is not None else 1
                     ),
                     regeneration_cache_row_id=regeneration_cache_row_id,
+                    execution_plan=execution_plan,
+                    streaming_mode=(
+                        execution_plan.streaming_mode if execution_plan else None
+                    ),
+                    planned_usage_stages=(
+                        execution_plan.planned_usage_stages
+                        if execution_plan else ()
+                    ),
+                    triag_shadow_metadata=triag_shadow_metadata,
                 )
 
         # Existing local routes remain ahead of profile/context selection,
@@ -1342,6 +1435,15 @@ def prepare_web_turn(
                     if regenerate_target is not None else 1
                 ),
                 regeneration_cache_row_id=regeneration_cache_row_id,
+                execution_plan=execution_plan,
+                streaming_mode=(
+                    execution_plan.streaming_mode if execution_plan else None
+                ),
+                planned_usage_stages=(
+                    execution_plan.planned_usage_stages
+                    if execution_plan else ()
+                ),
+                triag_shadow_metadata=triag_shadow_metadata,
             )
 
         if (
@@ -1390,6 +1492,15 @@ def prepare_web_turn(
                         if regenerate_target is not None else 1
                     ),
                     regeneration_cache_row_id=regeneration_cache_row_id,
+                    execution_plan=execution_plan,
+                    streaming_mode=(
+                        execution_plan.streaming_mode if execution_plan else None
+                    ),
+                    planned_usage_stages=(
+                        execution_plan.planned_usage_stages
+                        if execution_plan else ()
+                    ),
+                    triag_shadow_metadata=triag_shadow_metadata,
                 )
 
         profile_context = (
@@ -1518,6 +1629,15 @@ def prepare_web_turn(
                     if regenerate_target is not None else 1
                 ),
                 regeneration_cache_row_id=regeneration_cache_row_id,
+                execution_plan=execution_plan,
+                streaming_mode=(
+                    execution_plan.streaming_mode if execution_plan else None
+                ),
+                planned_usage_stages=(
+                    execution_plan.planned_usage_stages
+                    if execution_plan else ()
+                ),
+                triag_shadow_metadata=triag_shadow_metadata,
             )
 
         if enabled:
@@ -1697,6 +1817,14 @@ def prepare_web_turn(
             continuation_render_prefix=(
                 continuation_packet.render_prefix if continuation_packet else ""
             ),
+            execution_plan=execution_plan,
+            streaming_mode=(
+                execution_plan.streaming_mode if execution_plan else None
+            ),
+            planned_usage_stages=(
+                execution_plan.planned_usage_stages if execution_plan else ()
+            ),
+            triag_shadow_metadata=triag_shadow_metadata,
         )
 
 

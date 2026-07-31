@@ -102,9 +102,9 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread, WebConversationSummary, WebMemoryFact, WebMessageFeedback, WebUsagePeriodLock, WebUsagePreferences
+from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebAnswerCheck, WebChatMessage, WebChatThread, WebConversationSummary, WebEvidenceItem, WebMemoryFact, WebMessageFeedback, WebRetrievalTrace, WebUsagePeriodLock, WebUsagePreferences, WebUsageStage
 
-WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebMessageFeedback, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences]
+WEB_MODELS = [WebEvidenceItem, WebAnswerCheck, WebUsageStage, WebRetrievalTrace, ProcessedWebhook, WalletLedger, UsageCharge, WebMessageFeedback, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences]
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:

@@ -25,6 +25,12 @@ projects:
                 value: "true"
               - key: WEB_TURN_OPTIMIZER_ENABLED
                 value: "true"
+              - key: WEB_TRIAG_ENABLED
+                value: "false"
+              - key: WEB_TRIAG_SHADOW_MODE
+                value: "true"
+              - key: WEB_TRIAG_POLICY_VERSION
+                value: v1
               - key: WEB_SAME_THREAD_CONTEXT_MODE
                 value: adaptive
               - key: WEB_SWICO_BRAND_GUARD_ENABLED

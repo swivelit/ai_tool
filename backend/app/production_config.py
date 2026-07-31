@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from .database_url import is_postgres_database_url
 from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
 from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
+from .web_ai.settings import TriagConfigurationError, TriagSettings
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -89,6 +90,10 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("WEB_APP_ENABLED must be true")
     if _bool(env, "WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED", False) is None:
         errors.append("WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED must be a boolean")
+    try:
+        TriagSettings.from_environ(env)
+    except TriagConfigurationError as exc:
+        errors.extend(exc.errors)
 
     voice_recording = _bool(env, "WEB_VOICE_RECORDING_ENABLED", False)
     voice_reply = _bool(env, "WEB_VOICE_REPLY_ENABLED", False)

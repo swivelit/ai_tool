@@ -87,12 +87,16 @@ The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
 `swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
 the Valkey service, or billing cron jobs. No new Render resource is required;
-The single Alembic head `3a7d9c2e5f10` (which includes revision
-`f9c2d7a4e1b6`) must run before enabling message editing or
+The single Alembic head `b4e8c1d6a2f9` (which includes revisions
+`3a7d9c2e5f10` and `f9c2d7a4e1b6`) must run before deploying this release.
+The historical `f9c2d7a4e1b6` requirement still applies before enabling message editing or
 cross-thread memory:
 
 ```text
 WEB_TURN_OPTIMIZER_ENABLED=true
+WEB_TRIAG_ENABLED=false
+WEB_TRIAG_SHADOW_MODE=true
+WEB_TRIAG_POLICY_VERSION=v1
 WEB_SAME_THREAD_CONTEXT_MODE=adaptive
 WEB_SWICO_BRAND_GUARD_ENABLED=true
 WEB_CONTEXT_MAX_TURNS=2
@@ -253,8 +257,9 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. The current single
-head is `3a7d9c2e5f10`; it includes the additive message revision, per-user memory,
-and billing audit migrations without changing settled amounts. The earlier
+head is `b4e8c1d6a2f9`; it adds content-free Phase 1 TRIAG-RAG telemetry tables
+and includes the earlier additive message revision, per-user memory,
+feedback, and billing audit migrations without changing settled amounts. The earlier
 bucket migration backfills every historical wallet, ledger entry, payment order,
 and usage charge as Chat without changing an amount. Voice wallets are created
 idempotently with zero balance; existing funds are never copied. The Alembic

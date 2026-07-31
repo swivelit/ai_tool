@@ -136,6 +136,7 @@ from .ai.response_adapter import ai_response_to_pipeline
 from .audio_transcription import transcribe_audio_file
 from .ai.types import AIProviderResponse, AIRequest
 from .ai.usage import record_ai_usage_event
+from .web_ai.settings import TriagConfigurationError, TriagSettings
 
 
 bootstrap_observability()
@@ -1023,6 +1024,24 @@ def startup_runtime_services() -> None:
     RUNTIME_STATUS["status"] = "starting"
     RUNTIME_STATUS["services"] = {}
     RUNTIME_STATUS["errors"] = []
+
+    try:
+        triag_status = TriagSettings.from_environ().runtime_status
+    except TriagConfigurationError as exc:
+        _record_runtime_service(
+            "web_triag",
+            ok=False,
+            required=False,
+            detail="; ".join(exc.errors),
+        )
+    else:
+        _record_runtime_service(
+            "web_triag",
+            ok=True,
+            required=False,
+            detail=str(triag_status["status"]),
+            metadata=triag_status,
+        )
 
     if not _is_openai_configured():
         logger.warning("OPENAI_API_KEY is not set. OpenAI-dependent endpoints will return HTTP 503 until configured.")

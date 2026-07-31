@@ -34,6 +34,26 @@ Historical messages retain their `user` and `assistant` provider roles, and the
 same frozen message list drives prompt estimation, reservation, and provider
 invocation.
 
+`backend/app/web_ai/` now contains Phase 0/1 TRIAG-RAG contracts and
+provider-free shadow planning. It does not replace `WebRequestCoordinator`.
+The new dynamic allocator can assign zero tokens to irrelevant history,
+cross-thread memory, profile, or documents, but its output is telemetry only.
+The active `_apply_prompt_budget` behavior remains unchanged. Shadow mode
+persists only allowlisted scalar/count metadata in `web_retrieval_trace`; it
+does not persist messages, memory/profile text, attachment excerpts, generated
+code, secrets, credentials, environment values, or provider/model names.
+
+The safe backend defaults are:
+
+```text
+WEB_TRIAG_ENABLED=false
+WEB_TRIAG_SHADOW_MODE=true
+WEB_TRIAG_POLICY_VERSION=v1
+```
+
+Phase 2 is the earliest phase that may introduce retrieval execution or
+evidence assembly. It is not implemented or activated here.
+
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment
 text lives in the dedicated private Valkey and raw uploads are not retained.
