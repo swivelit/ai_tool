@@ -89,8 +89,8 @@ API service. Do not add them to a shared environment group, the static site,
 the Valkey service, or billing cron jobs. Phase 4 adds only the staging private
 validator declared in `render.staging.yaml`; do not create a production
 validator.
-The single Alembic head `d6f1a8c3e9b4` (which descends from
-`b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
+The single Alembic head `f2a7c9e4b1d6` (which descends from
+`d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
 The historical `f9c2d7a4e1b6` requirement still applies before enabling message editing or
 cross-thread memory:
@@ -107,6 +107,10 @@ WEB_RAG_MAX_CORRECTIVE_ROUNDS=1
 WEB_RAG_QUERY_EMBEDDING_CACHE_TTL_SECONDS=86400
 WEB_RAG_EMBEDDING_MODEL=text-embedding-3-small
 WEB_RAG_EMBEDDING_DIMENSIONS=1536
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
+WEB_RAG_TRIPLET_ENABLED=false
+WEB_RAG_HIERARCHY_ENABLED=false
+WEB_KNOWLEDGE_JOB_BATCH_SIZE=50
 WEB_RAG_LITE_CANDIDATE_LIMIT=12
 WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT=4
 WEB_RAG_LITE_EVIDENCE_TOKEN_CAP=1200
@@ -130,7 +134,7 @@ WEB_REPOSITORY_MAX_COMPRESSION_RATIO=100
 WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE=3
 WEB_RAG_REPOSITORY_INDEX_ENABLED=false
 WEB_PRO_CODE_VALIDATION_ENABLED=false
-WEB_CODE_VALIDATOR_URL=http://swico-code-validator-staging:10000
+WEB_CODE_VALIDATOR_URL=
 WEB_CODE_VALIDATOR_TIMEOUT_SECONDS=90
 WEB_SAME_THREAD_CONTEXT_MODE=adaptive
 WEB_SWICO_BRAND_GUARD_ENABLED=true
@@ -292,7 +296,7 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. The current single
-head is `d6f1a8c3e9b4`. Historical revision `b4e8c1d6a2f9` adds the
+head is `f2a7c9e4b1d6`. Historical revision `b4e8c1d6a2f9` adds the
 content-free Phase 1 TRIAG-RAG telemetry tables; the Phase 4 head adds
 temporary repository index metadata
 and includes the earlier additive message revision, per-user memory,
@@ -312,7 +316,11 @@ Valkey at `WEB_UPLOAD_CACHE_URL`. Staging adds one private validator process in
 the same region. It receives only its dedicated token and non-secret limits;
 it must not link any production environment group. Do not create or enable a
 production validator. No new database, Valkey, Cron Job, disk, object storage,
-or stored-audio facility is required.
+or stored-audio facility is required. The staging Blueprint declares five
+resources total: API, private Valkey, private validator, static website, and
+PostgreSQL. Phase 5 adds no sixth resource and does not start a dedicated
+knowledge worker; the four job types remain safe for a later separately gated
+worker. Production flags remain disabled until the staged rollout gates pass.
 
 ## Production temporary uploads and voice — exact dashboard steps
 

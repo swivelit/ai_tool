@@ -82,3 +82,35 @@ dedicated bearer token. It receives no API-provider, Firebase, database, email,
 payment, or Razorpay secrets. `static_only` is a healthy bounded capability.
 A 401, 403, 404, timeout, non-2xx or malformed response, or failed isolation
 self-check is unavailable and never falls back to weak execution.
+
+## Phase 5 knowledge operations
+
+The current additive head is `f2a7c9e4b1d6`. Inspect content-free counts only:
+
+```sql
+select status, count(*) from web_knowledge_document group by status;
+select embedding_status, count(*) from web_knowledge_chunk group by embedding_status;
+select job_type, status, count(*) from job
+where job_type in (
+  'web_knowledge_ingest', 'web_embedding_backfill',
+  'web_triplet_extract', 'web_hierarchy_build'
+) group by job_type, status;
+```
+
+Do not export raw chunks, Condition/Proof/Conclusion bodies, summary bodies,
+embedding JSON, or provider output. Source replacement invalidates chunks,
+embeddings, triplets, hierarchy nodes and owner-cache rows. A private-source
+turn has cache scope disabled and must never create a global cache entry.
+
+Embedding backfill is lexical-only without an injected provider and
+authoritative reservation. A paid attempt requires an owner/request-matched
+`UsageCharge` in `reserved`, an idempotent `knowledge_embedding` stage, then
+exact parent settlement. Disabled or failed derived work is healthy fallback.
+
+Cancellation sets the owner-scoped job to `cancelled`; handlers recheck that
+state between bounded units. Failed jobs persist only a static error code. A
+future Render worker must use the same database, carry no raw payloads, and
+remain disabled until accounting and cancellation gates pass.
+
+Rollback is flag-only: disable hierarchy, triplets, then persistent knowledge,
+or set `WEB_TRIAG_ENABLED=false`. Keep additive tables and fix forward.

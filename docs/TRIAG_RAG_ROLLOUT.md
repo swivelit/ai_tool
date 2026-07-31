@@ -11,6 +11,10 @@ WEB_TRIAG_POLICY_VERSION=v1
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
+WEB_RAG_TRIPLET_ENABLED=false
+WEB_RAG_HIERARCHY_ENABLED=false
+WEB_KNOWLEDGE_JOB_BATCH_SIZE=50
 WEB_ANSWER_GUARD_ENABLED=false
 WEB_VERIFIED_STREAMING_ENABLED=false
 WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
@@ -26,7 +30,7 @@ optional state.
 1. Deploy the code with `WEB_TRIAG_ENABLED=false`.
 2. Run `python -m alembic -c backend/alembic.ini upgrade head` through the
    existing Render pre-deploy migration owner. The single head must be
-   `d6f1a8c3e9b4`.
+   `f2a7c9e4b1d6`.
 3. Verify `/api/web/health`, authentication, a deterministic zero-charge turn,
    a provider-backed turn, reservation/settlement, cache behavior, and SSE.
 4. Leave production disabled. Shadow observation, if later approved, requires
@@ -65,3 +69,27 @@ triplets, hierarchy, persistent knowledge, and production rollout remain out
 of scope. Repository-aware chat additionally requires Answer Guard and
 verified streaming; otherwise the API reports the optional repository chat
 capability as disabled and retains the existing path.
+
+## Phase 5/6 staged gates
+
+Do not enable persistent knowledge merely because the migration is deployed.
+
+1. Migrate to `f2a7c9e4b1d6` and verify one head.
+2. Prove explicit approval and source-version invalidation.
+3. Prove owner isolation and that temporary uploads expire without knowledge
+   rows.
+4. Enable persistent knowledge for a bounded staging cohort while triplets and
+   hierarchy remain off.
+5. Prove lexical fallback with pgvector/provider unavailable and prove private
+   turns neither read nor write the global answer cache.
+6. Validate reservation, idempotent stage accounting, exact settlement and
+   cancellation before enabling an embedding worker.
+7. Enable hierarchy, then triplets, separately and compare evidence to raw
+   chunk anchors.
+8. Pass latency, retrieval-quality, privacy, billing, error-rate and rollback
+   gates before any production flag changes.
+
+Production retains all flags as `false` until approval. Production
+`WEB_CODE_VALIDATOR_URL` must be blank unless a separately isolated production
+validator is deliberately provisioned; it must never reference the staging
+validator.

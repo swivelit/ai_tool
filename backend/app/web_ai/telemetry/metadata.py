@@ -122,8 +122,13 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
     "status": frozenset(
         {
             "planned",
+            "reserved",
             "running",
             "complete",
+            "settled",
+            "released",
+            "disabled",
+            "cancelled",
             "skipped",
             "failed",
             "not_run",
@@ -149,7 +154,10 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_sources": frozenset(
-        {"history", "memory", "profile", "documents", "repository"}
+        {
+            "history", "memory", "profile", "documents", "repository",
+            "knowledge", "triplets", "hierarchy",
+        }
     ),
     "planned_usage_stages": frozenset(
         {
@@ -207,6 +215,10 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "owner_mismatch",
             "corrective_round",
             "repository_context_used",
+            "knowledge_lexical",
+            "knowledge_hybrid",
+            "triplet",
+            "hierarchy_raw_anchored",
         }
     ),
 }

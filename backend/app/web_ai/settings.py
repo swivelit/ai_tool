@@ -85,6 +85,10 @@ class TriagSettings:
     code_validator_url: str = ""
     code_validator_auth_token: str = ""
     code_validator_timeout_seconds: int = 90
+    persistent_knowledge_enabled: bool = False
+    rag_triplet_enabled: bool = False
+    rag_hierarchy_enabled: bool = False
+    knowledge_job_batch_size: int = 50
 
     @classmethod
     def from_environ(
@@ -119,6 +123,15 @@ class TriagSettings:
         )
         code_validation = _parse_bool(
             env, "WEB_PRO_CODE_VALIDATION_ENABLED", False, errors
+        )
+        persistent_knowledge = _parse_bool(
+            env, "WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED", False, errors
+        )
+        triplet = _parse_bool(
+            env, "WEB_RAG_TRIPLET_ENABLED", False, errors
+        )
+        hierarchy = _parse_bool(
+            env, "WEB_RAG_HIERARCHY_ENABLED", False, errors
         )
         verified_buffer_max = _parse_int(
             env,
@@ -179,6 +192,10 @@ class TriagSettings:
         validator_timeout = _parse_int(
             env, "WEB_CODE_VALIDATOR_TIMEOUT_SECONDS", 90, errors,
             minimum=1, maximum=300,
+        )
+        knowledge_job_batch_size = _parse_int(
+            env, "WEB_KNOWLEDGE_JOB_BATCH_SIZE", 50, errors,
+            minimum=1, maximum=200,
         )
         validator_url = str(env.get("WEB_CODE_VALIDATOR_URL", "") or "").strip()
         validator_token = str(
@@ -260,6 +277,10 @@ class TriagSettings:
             code_validator_url=validator_url,
             code_validator_auth_token=validator_token,
             code_validator_timeout_seconds=validator_timeout,
+            persistent_knowledge_enabled=persistent_knowledge,
+            rag_triplet_enabled=triplet,
+            rag_hierarchy_enabled=hierarchy,
+            knowledge_job_batch_size=knowledge_job_batch_size,
         )
 
     @property
@@ -308,6 +329,24 @@ class TriagSettings:
             self.repository_chat_runtime_enabled
             and self.pro_code_validation_enabled
             and bool(self.code_validator_url and self.code_validator_auth_token)
+        )
+
+    @property
+    def persistent_knowledge_runtime_enabled(self) -> bool:
+        return self.hybrid_runtime_enabled and self.persistent_knowledge_enabled
+
+    @property
+    def triplet_runtime_enabled(self) -> bool:
+        return (
+            self.persistent_knowledge_runtime_enabled
+            and self.rag_triplet_enabled
+        )
+
+    @property
+    def hierarchy_runtime_enabled(self) -> bool:
+        return (
+            self.persistent_knowledge_runtime_enabled
+            and self.rag_hierarchy_enabled
         )
 
     @property
@@ -369,5 +408,15 @@ class TriagSettings:
             ),
             "repository_validation": (
                 "enabled" if self.code_validation_runtime_enabled else "disabled"
+            ),
+            "persistent_knowledge": (
+                "enabled"
+                if self.persistent_knowledge_runtime_enabled else "disabled"
+            ),
+            "triplet_retrieval": (
+                "enabled" if self.triplet_runtime_enabled else "disabled"
+            ),
+            "hierarchical_retrieval": (
+                "enabled" if self.hierarchy_runtime_enabled else "disabled"
             ),
         }

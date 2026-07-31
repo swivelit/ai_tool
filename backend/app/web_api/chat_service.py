@@ -56,6 +56,9 @@ from ..web_ai.persistence import (
     persist_shadow_plan,
 )
 from ..web_ai.retrieval.runtime import execute_hybrid_retrieval
+from ..web_ai.retrieval.persistent_knowledge import (
+    owner_active_knowledge_tokens,
+)
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
 from ..web_ai.streaming_policy import select_streaming_policy
 from ..web_ai.tier_policy import tier_policy_for
@@ -1236,11 +1239,32 @@ def prepare_web_turn(
             and memory_enabled(session, user_id)
         ):
             needs_memory = True
+        persistent_knowledge_tokens = 0
+        try:
+            knowledge_settings = TriagSettings.from_environ()
+            if knowledge_settings.persistent_knowledge_runtime_enabled:
+                persistent_knowledge_tokens = owner_active_knowledge_tokens(
+                    session, user_id
+                )
+        except Exception:
+            persistent_knowledge_tokens = 0
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads) or repository_snapshot is not None,
             previous_topic=previous_safe_metadata.get("topic"),
         )
+        if persistent_knowledge_tokens > 0:
+            preliminary = replace(
+                preliminary,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason="private_knowledge_context",
+                metrics={
+                    **preliminary.metrics,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": "private_knowledge_context",
+                },
+            )
         if repository_snapshot is not None:
             preliminary = replace(
                 preliminary,
@@ -1357,6 +1381,9 @@ def prepare_web_turn(
                         ),
                         previous_topic=previous_safe_metadata.get("topic"),
                         repository_available=repository_snapshot is not None,
+                        persistent_knowledge_available_tokens=(
+                            persistent_knowledge_tokens
+                        ),
                     ),
                     settings=triag_settings,
                 )
@@ -2413,13 +2440,21 @@ def _execute_phase2_retrieval(
         not settings.hybrid_runtime_enabled
         or prepared.execution_plan is None
         or prepared.route.provider not in {"openai", "sarvam"}
-        or "documents" not in prepared.execution_plan.retrieval_sources
-        or not prepared.retrieval_uploads
-        or any(
+    ):
+        return
+    document_planned = bool(
+        "documents" in prepared.execution_plan.retrieval_sources
+        and prepared.retrieval_uploads
+        and not any(
             getattr(upload, "virtual_text_operation", None)
             for upload in prepared.retrieval_uploads
         )
-    ):
+    )
+    knowledge_planned = bool(
+        settings.persistent_knowledge_runtime_enabled
+        and "knowledge" in prepared.execution_plan.retrieval_sources
+    )
+    if not document_planned and not knowledge_planned:
         return
     policy = tier_policy_for(prepared.swico_tier)
     counters = {
@@ -2455,6 +2490,7 @@ def _execute_phase2_retrieval(
             store=get_upload_store(),
             embed=embed,
             dense_accounted=prepared.embedding_accounted,
+            knowledge_session_factory=SessionLocal,
             cancellation_signal=prepared.ai_request.metadata.get(
                 "cancellation_signal"
             ),
@@ -2547,7 +2583,7 @@ def _execute_phase2_retrieval(
                 "கிடைக்கவில்லை."
                 if prepared.reply_language == "ta"
                 else (
-                    "I couldn’t find enough support in the uploaded documents "
+                    "I couldn’t find enough support in the available private sources "
                     "to answer that reliably."
                 )
             )

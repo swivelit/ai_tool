@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Callable
+
+from sqlmodel import Session
 
 from ...web_api.upload_store import EphemeralUpload, EphemeralUploadStore
 from ..evidence.models import EvidencePack
 from ..evidence.pack_builder import build_evidence_pack
+from ..evidence.compressor import compress_runtime_text
 from ..execution_plan import ExecutionPlan
 from ..settings import TriagSettings
 from ..tier_policy import TierPolicy
@@ -14,8 +18,12 @@ from .dense import EmbeddingFunction, TemporaryDenseRetriever
 from .evaluator import evaluate_retrieval
 from .fusion import reciprocal_rank_fusion
 from .lexical import LexicalAttachmentRetriever
+from .hierarchical import HierarchicalRetriever
+from .models import RetrievalCandidate
+from .persistent_knowledge import PersistentKnowledgeRetriever
 from .registry import RetrievalRegistry
 from .reranker import select_by_marginal_value
+from .triplet import TripletRetriever
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,7 @@ def execute_hybrid_retrieval(
     store: EphemeralUploadStore,
     embed: EmbeddingFunction | None = None,
     dense_accounted: bool = False,
+    knowledge_session_factory: Callable[[], Session] | None = None,
     cancellation_signal: object | None = None,
 ) -> HybridRetrievalResult:
     retrievers: list[object] = [LexicalAttachmentRetriever()]
@@ -62,6 +71,41 @@ def execute_hybrid_retrieval(
         initial_statuses.extend(
             ("embedding_budget_unavailable", "lexical_fallback")
         )
+    if (
+        knowledge_session_factory is not None
+        and settings.persistent_knowledge_runtime_enabled
+        and policy.persistent_knowledge_allowed
+        and "knowledge" in plan.retrieval_sources
+    ):
+        query_embedding = None
+        if (
+            settings.rag_dense_enabled
+            and policy.dense_retrieval_allowed
+            and dense_accounted
+            and embed is not None
+        ):
+            def query_embedding(value: str) -> list[float]:
+                vectors = embed((value,))
+                return [float(item) for item in (vectors[0] if vectors else ())]
+        retrievers.append(
+            PersistentKnowledgeRetriever(
+                knowledge_session_factory,
+                query_embedding=query_embedding,
+                dense_accounted=dense_accounted,
+            )
+        )
+        if (
+            settings.triplet_runtime_enabled
+            and policy.triplet_retrieval_allowed
+            and "triplets" in plan.retrieval_sources
+        ):
+            retrievers.append(TripletRetriever(knowledge_session_factory))
+        if (
+            settings.hierarchy_runtime_enabled
+            and policy.hierarchical_retrieval_allowed
+            and "hierarchy" in plan.retrieval_sources
+        ):
+            retrievers.append(HierarchicalRetriever(knowledge_session_factory))
     registry = RetrievalRegistry(tuple(retrievers))  # type: ignore[arg-type]
     run = registry.execute(
         plan=plan,
@@ -79,6 +123,9 @@ def execute_hybrid_retrieval(
         deduplicated,
         item_limit=policy.evidence_item_limit,
         token_cap=policy.evidence_token_cap,
+    )
+    selected = _cap_knowledge_candidates(
+        selected, token_cap=policy.knowledge_token_cap
     )
     if settings.retrieval_evaluator_enabled:
         status, contradictions = evaluate_retrieval(selected)
@@ -130,6 +177,9 @@ def execute_hybrid_retrieval(
             item_limit=policy.evidence_item_limit,
             token_cap=policy.evidence_token_cap,
         )
+        selected = _cap_knowledge_candidates(
+            selected, token_cap=policy.knowledge_token_cap
+        )
         status, contradictions = evaluate_retrieval(selected)
         status_codes.extend(("corrective_round", *correction.status_codes))
     pack = build_evidence_pack(
@@ -146,3 +196,37 @@ def execute_hybrid_retrieval(
         candidate_count=len(deduplicated),
         corrective_rounds=corrective.completed_rounds,
     )
+
+
+def _cap_knowledge_candidates(
+    candidates: tuple[RetrievalCandidate, ...], *, token_cap: int
+) -> tuple[RetrievalCandidate, ...]:
+    """Apply the central per-tier private-knowledge cap before pack building."""
+
+    remaining = max(0, int(token_cap))
+    output: list[RetrievalCandidate] = []
+    for candidate in candidates:
+        source_kind = str(getattr(candidate, "source_kind", ""))
+        if source_kind not in {
+            "persistent_knowledge",
+            "knowledge_triplet",
+        }:
+            output.append(candidate)
+            continue
+        if remaining <= 0:
+            continue
+        runtime_text, tokens, _ = compress_runtime_text(
+            str(getattr(candidate, "runtime_text", "")), remaining
+        )
+        if not runtime_text:
+            continue
+        output.append(
+            replace(
+                candidate,
+                runtime_text=runtime_text,
+                token_count=tokens,
+                estimated_tokens=tokens,
+            )
+        )
+        remaining -= tokens
+    return tuple(output)

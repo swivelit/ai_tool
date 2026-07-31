@@ -29,6 +29,10 @@ class DBJobQueue:
         self.register("web_post_turn_distillation", _handle_web_post_turn_distillation)
         self.register("web_memory_embedding_backfill", _handle_web_memory_embedding_backfill)
         self.register("global_qa_embedding_backfill", _handle_global_qa_embedding_backfill)
+        self.register("web_knowledge_ingest", _handle_web_knowledge_ingest)
+        self.register("web_embedding_backfill", _handle_web_embedding_backfill)
+        self.register("web_triplet_extract", _handle_web_triplet_extract)
+        self.register("web_hierarchy_build", _handle_web_hierarchy_build)
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[str(job_type)] = handler
@@ -139,7 +143,17 @@ class DBJobQueue:
 
             try:
                 payload = json.loads(job.payload_json or "{}") if job.payload_json else {}
+                if job.job_type.startswith("web_") and job.job_type in {
+                    "web_knowledge_ingest",
+                    "web_embedding_backfill",
+                    "web_triplet_extract",
+                    "web_hierarchy_build",
+                }:
+                    payload["_job_id"] = job.id
                 result = handler(session, payload)
+                session.refresh(job)
+                if job.status == "cancelled":
+                    return True
                 job.status = "completed"
                 job.result_json = json.dumps(result or {}, ensure_ascii=False)
                 job.finished_at = utc_now()
@@ -164,7 +178,16 @@ class DBJobQueue:
                 job.attempts = int(job.attempts or 0) + 1
                 should_retry = job.attempts < int(job.max_attempts or 1)
                 job.status = "retrying" if should_retry else "failed"
-                job.error_message = str(exc)
+                job.error_message = (
+                    "knowledge_job_failed"
+                    if job.job_type in {
+                        "web_knowledge_ingest",
+                        "web_embedding_backfill",
+                        "web_triplet_extract",
+                        "web_hierarchy_build",
+                    }
+                    else str(exc)
+                )
                 job.updated_at = utc_now()
                 if should_retry:
                     job.run_at = utc_now() + timedelta(seconds=min(60, max(2, job.attempts * 2)))
@@ -214,6 +237,40 @@ def _handle_global_qa_embedding_backfill(
         after_id=max(0, int(payload.get("after_id") or 0)),
     )
     return {**result, "batch_size": batch_size}
+
+
+def _handle_web_knowledge_ingest(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .web_ai.knowledge_jobs import handle_knowledge_ingest
+
+    return handle_knowledge_ingest(session, payload)
+
+
+def _handle_web_embedding_backfill(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .web_ai.knowledge_jobs import handle_embedding_backfill
+
+    # No provider is implicitly constructed by the shared worker. A later
+    # dedicated worker must inject an accounted provider explicitly.
+    return handle_embedding_backfill(session, payload, provider=None)
+
+
+def _handle_web_triplet_extract(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .web_ai.knowledge_jobs import handle_triplet_extract
+
+    return handle_triplet_extract(session, payload)
+
+
+def _handle_web_hierarchy_build(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .web_ai.knowledge_jobs import handle_hierarchy_build
+
+    return handle_hierarchy_build(session, payload)
 
 
 def enqueue_memory_embedding_backfill(

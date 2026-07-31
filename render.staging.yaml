@@ -45,6 +45,14 @@ projects:
                 value: text-embedding-3-small
               - key: WEB_RAG_EMBEDDING_DIMENSIONS
                 value: "1536"
+              - key: WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED
+                value: "false"
+              - key: WEB_RAG_TRIPLET_ENABLED
+                value: "false"
+              - key: WEB_RAG_HIERARCHY_ENABLED
+                value: "false"
+              - key: WEB_KNOWLEDGE_JOB_BATCH_SIZE
+                value: "50"
               - key: WEB_RAG_LITE_CANDIDATE_LIMIT
                 value: "12"
               - key: WEB_RAG_LITE_EVIDENCE_ITEM_LIMIT

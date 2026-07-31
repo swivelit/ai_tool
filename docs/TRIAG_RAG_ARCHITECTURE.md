@@ -1,6 +1,6 @@
 # TRIAG-RAG architecture
 
-## Phase 0–3 scope
+## Phase 0–6 scope
 
 The Phase 0/1 implementation is a provider-free planning foundation under
 `backend/app/web_ai/`. It defines immutable execution, tier, retrieval,
@@ -100,3 +100,38 @@ repository-verified label when executable policy checks are required.
 
 Phase 4 does not add triplets, hierarchy, persistent knowledge, arbitrary
 commands, production activation, or AgentRuntime routing.
+
+## Phase 5 persistent knowledge
+
+Revision `f2a7c9e4b1d6`, descending from `d6f1a8c3e9b4`, adds
+`web_knowledge_document`, `web_knowledge_chunk`, `web_knowledge_triplet`, and
+`web_knowledge_node`. Every row is owner- and source-version-scoped. Raw chunks
+may enter PostgreSQL only through the explicit approval service; the temporary
+upload path remains Valkey-only and never calls that service automatically.
+
+Raw chunks are authoritative evidence. PostgreSQL `to_tsvector` retrieval has
+a deterministic lexical fallback. Accounted dense requests may use pgvector
+casts; missing vector support, reservation, embedding budget, or provider falls
+back to lexical retrieval. Triplets store Condition, Proof, Conclusion and the
+exact raw chunk ID. Hierarchy summaries route retrieval, but evidence receives
+anchored raw chunks rather than summaries alone.
+
+The retrieval registry admits persistent, triplet, and hierarchy retrievers
+only when both the immutable plan and central tier policy allow them. Lite has
+no persistent retrieval; Standard permits bounded raw/hierarchy retrieval; Pro
+additionally permits triplets. The shared evidence cap remains authoritative.
+
+The versioned job types are `web_knowledge_ingest`,
+`web_embedding_backfill`, `web_triplet_extract`, and
+`web_hierarchy_build`. Their payloads contain owner/document/version
+identifiers only. They are idempotent and cancellable. The shared worker does
+not construct an embedding provider: a later dedicated worker must inject one
+only after an authoritative reservation and `web_usage_stage` exist.
+
+## Phase 6 rollout boundary
+
+Phase 6 is readiness, not activation. All Phase 0–5 production flags remain
+false until migration, owner-isolation, privacy, billing, cancellation, cache,
+quality and rollback gates pass in staging. No website request uses
+`AgentRuntime`, no production validator points to staging, and no persistent
+knowledge enters the global answer cache.

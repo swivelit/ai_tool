@@ -32,8 +32,9 @@ def build_evidence_pack(
         if not text:
             continue
         label = f"S{len(items) + 1}"
-        source_label = dict(candidate.bounded_metadata).get(
-            "upload_name", "Uploaded document"
+        metadata = dict(candidate.bounded_metadata)
+        source_label = metadata.get(
+            "source_label", metadata.get("upload_name", "Uploaded document")
         )
         item = EvidenceItem(
             evidence_id=candidate.candidate_id,
@@ -52,7 +53,11 @@ def build_evidence_pack(
             safe_attributes=tuple(
                 (key, value)
                 for key, value in candidate.bounded_metadata
-                if key in {"upload_id", "upload_name", "chunk_index"}
+                if key in {
+                    "upload_id", "upload_name", "chunk_index",
+                    "document_id", "chunk_id", "raw_chunk_id",
+                    "source_version", "extraction_version", "cache_scope",
+                }
             ),
         )
         items.append(item)

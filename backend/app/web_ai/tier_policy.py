@@ -32,6 +32,11 @@ class TierPolicy:
     repository_validation_allowed: bool
     repository_contract_token_cap: int
     repository_required_validation_categories: tuple[str, ...]
+    persistent_knowledge_allowed: bool
+    triplet_retrieval_allowed: bool
+    hierarchical_retrieval_allowed: bool
+    knowledge_token_cap: int
+    hierarchy_summary_token_cap: int
     max_provider_calls: int = 4
 
     def __post_init__(self) -> None:
@@ -49,6 +54,8 @@ class TierPolicy:
             self.retrieval_round_limit,
             self.max_provider_calls,
             self.repository_contract_token_cap,
+            self.knowledge_token_cap,
+            self.hierarchy_summary_token_cap,
         )
         if any(value < 0 for value in numeric):
             raise ValueError("tier-policy ceilings must be non-negative")
@@ -67,6 +74,14 @@ class TierPolicy:
         if self.repository_contract_token_cap > self.max_prompt_tokens:
             raise ValueError(
                 "repository contract ceiling cannot exceed max_prompt_tokens"
+            )
+        if self.knowledge_token_cap > self.evidence_token_cap:
+            raise ValueError(
+                "knowledge ceiling cannot exceed the evidence ceiling"
+            )
+        if self.hierarchy_summary_token_cap > self.knowledge_token_cap:
+            raise ValueError(
+                "hierarchy ceiling cannot exceed the knowledge ceiling"
             )
         for source_limit in (
             self.max_history_tokens,
@@ -108,6 +123,11 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "repository_validation_allowed": False,
         "repository_contract_token_cap": 900,
         "repository_required_validation_categories": (),
+        "persistent_knowledge_allowed": False,
+        "triplet_retrieval_allowed": False,
+        "hierarchical_retrieval_allowed": False,
+        "knowledge_token_cap": 0,
+        "hierarchy_summary_token_cap": 0,
     },
     "standard": {
         "max_prompt_tokens": 6_500,
@@ -128,6 +148,11 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "repository_validation_allowed": False,
         "repository_contract_token_cap": 1_800,
         "repository_required_validation_categories": (),
+        "persistent_knowledge_allowed": True,
+        "triplet_retrieval_allowed": False,
+        "hierarchical_retrieval_allowed": True,
+        "knowledge_token_cap": 2_400,
+        "hierarchy_summary_token_cap": 512,
     },
     "pro": {
         "max_prompt_tokens": 12_000,
@@ -151,6 +176,11 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
             "syntax", "lint", "typecheck", "test", "api_schema",
             "migration", "authorization",
         ),
+        "persistent_knowledge_allowed": True,
+        "triplet_retrieval_allowed": True,
+        "hierarchical_retrieval_allowed": True,
+        "knowledge_token_cap": 4_800,
+        "hierarchy_summary_token_cap": 1_200,
     },
 }
 

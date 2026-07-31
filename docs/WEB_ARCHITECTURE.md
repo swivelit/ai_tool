@@ -7,7 +7,8 @@
 The existing FastAPI process conditionally mounts `backend/app/web_api/router.py` at `/api/web` when `WEB_APP_ENABLED=true`. Existing `/api/chat` and `/api/chat/stream` routes are unchanged. The web chat service uses the shared `AIProviderRouter`, `OpenAIProvider`, and `SarvamProvider`; it does not enter the mobile local-RAG or local-model pipeline.
 
 Phase 0/1 TRIAG-RAG foundations, Phase 2 temporary-document retrieval, Phase 3
-Answer Guard, and the disabled-by-default Phase 4 repository path live under
+Answer Guard, the disabled-by-default Phase 4 repository path, and Phase 5
+owner-approved persistent-knowledge foundations live under
 `backend/app/web_ai/`. The package is not a new website runtime. With the
 safe defaults `WEB_TRIAG_ENABLED=false`, `WEB_TRIAG_SHADOW_MODE=true`,
 `WEB_RAG_HYBRID_ENABLED=false`, and `WEB_RAG_DENSE_ENABLED=false`, it is
@@ -79,6 +80,15 @@ positively proven `executable` capability. The browser keeps repository metadata
 in memory, binds the ID to one Firebase owner and one thread, and clears it on
 account or thread changes. Repository source and IDs are not stored in browser
 storage.
+
+Phase 5 adds owner-scoped persistent documents, raw chunks, anchored
+Condition/Proof/Conclusion triplets and document/section/raw hierarchy nodes.
+Persistence is never inferred from an upload: a separate service call requires
+explicit owner approval. PostgreSQL FTS and optional accounted pgvector
+retrieval share the existing registry/evidence caps; lexical raw-chunk
+retrieval survives vector, provider and budget failure. Private-source turns
+disable the global cache. Phase 6 leaves this path and every earlier feature
+flag off in production until staged gates pass.
 
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the

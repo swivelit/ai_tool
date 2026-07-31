@@ -135,7 +135,7 @@ _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
-ALEMBIC_HEAD = "d6f1a8c3e9b4"
+ALEMBIC_HEAD = "f2a7c9e4b1d6"
 
 
 def _tickets() -> VoiceTicketStore:

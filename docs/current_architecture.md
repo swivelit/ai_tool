@@ -36,7 +36,8 @@ invocation.
 
 `backend/app/web_ai/` contains the Phase 0/1 foundation, Phase 2
 temporary-document hybrid retrieval, Phase 3 Answer Guard, and the Phase 4
-temporary repository contracts and retrieval implementation.
+temporary repository contracts and retrieval implementation. Phase 5 adds an
+explicitly approved, owner-scoped persistent-knowledge foundation.
 It does not replace
 `WebRequestCoordinator`: disabled and shadow modes retain the original path.
 The live Phase 2 path is entered only when TRIAG is non-shadow and
@@ -64,6 +65,9 @@ WEB_ANSWER_GUARD_REPAIR_ENABLED=false
 WEB_REPOSITORY_UPLOAD_ENABLED=false
 WEB_RAG_REPOSITORY_INDEX_ENABLED=false
 WEB_PRO_CODE_VALIDATION_ENABLED=false
+WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED=false
+WEB_RAG_TRIPLET_ENABLED=false
+WEB_RAG_HIERARCHY_ENABLED=false
 ```
 
 Phases 2 and 3 remain disabled by default. They add safe `sources` and
@@ -74,8 +78,10 @@ general uploader. Raw source remains owner-scoped in Valkey. Content-free
 repository paths, hashes, symbols, signatures, and dependency edges expire
 through the repository lifecycle. The private validator uses only server-owned
 check IDs and command templates and defaults to static-only when executable
-isolation cannot be proven. It does not add triplets, hierarchy, or persistent
-knowledge.
+isolation cannot be proven. Persistent raw chunks exist only after explicit
+approval, while temporary upload text/vectors continue to expire in Valkey.
+Triplets and hierarchy remain supplements anchored to raw chunks. Phase 6 is a
+disabled rollout gate, not production activation.
 
 The Phase 4.1 website reads distinct repository upload, chat, and validation
 capabilities from the authenticated bootstrap response. All remain disabled by

@@ -850,6 +850,205 @@ class WebCodeEdge(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class WebKnowledgeDocument(SQLModel, table=True):
+    """Owner-approved persistent knowledge source.
+
+    Temporary upload identifiers are never promoted by this model implicitly;
+    callers must use the explicit approval service.
+    """
+
+    __tablename__ = "web_knowledge_document"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "source_id", "source_version",
+            name="uq_web_knowledge_document_owner_source_version",
+        ),
+        UniqueConstraint(
+            "owner_user_id", "idempotency_key",
+            name="uq_web_knowledge_document_owner_idempotency",
+        ),
+        Index(
+            "ix_web_knowledge_document_owner_status",
+            "owner_user_id", "status", "updated_at",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'indexing', 'ready', 'invalidated', "
+            "'failed', 'deleted')",
+            name="ck_web_knowledge_document_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    source_id: str = Field(max_length=160, index=True)
+    source_version: str = Field(max_length=64, index=True)
+    idempotency_key: str = Field(max_length=160)
+    title: str = Field(max_length=256)
+    source_kind: str = Field(default="approved_document", max_length=32, index=True)
+    content_hash: str = Field(max_length=64, index=True)
+    approval_version: str = Field(default="v1", max_length=24)
+    status: str = Field(default="pending", max_length=16, index=True)
+    safe_metadata_json: str = Field(
+        default="{}",
+        sa_column=Column(Text, nullable=False, server_default="{}"),
+    )
+    approved_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+
+
+class WebKnowledgeChunk(SQLModel, table=True):
+    """Raw text that the owner explicitly approved for persistence."""
+
+    __tablename__ = "web_knowledge_chunk"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "source_version", "chunk_index",
+            name="uq_web_knowledge_chunk_document_version_index",
+        ),
+        Index(
+            "ix_web_knowledge_chunk_owner_document_status",
+            "owner_user_id", "document_id", "status",
+        ),
+        Index(
+            "ix_web_knowledge_chunk_owner_hash",
+            "owner_user_id", "content_hash",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'invalidated', 'failed', 'deleted')",
+            name="ck_web_knowledge_chunk_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    document_id: str = Field(
+        foreign_key="web_knowledge_document.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    source_version: str = Field(max_length=64, index=True)
+    chunk_index: int = Field(default=0)
+    content_text: str = Field(sa_column=Column(Text, nullable=False))
+    content_hash: str = Field(max_length=64, index=True)
+    token_count: int = Field(default=0)
+    source_locator: str = Field(max_length=512)
+    section_path: str = Field(default="", max_length=512)
+    embedding_json: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    embedding_model: Optional[str] = Field(default=None, max_length=128)
+    embedding_version: Optional[str] = Field(default=None, max_length=24)
+    embedding_dimensions: int = Field(default=0)
+    embedding_status: str = Field(default="missing", max_length=16, index=True)
+    status: str = Field(default="pending", max_length=16, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebKnowledgeTriplet(SQLModel, table=True):
+    """Condition/Proof/Conclusion supplement anchored to an exact raw chunk."""
+
+    __tablename__ = "web_knowledge_triplet"
+    __table_args__ = (
+        UniqueConstraint(
+            "chunk_id", "extraction_version", "content_hash",
+            name="uq_web_knowledge_triplet_chunk_version_hash",
+        ),
+        Index(
+            "ix_web_knowledge_triplet_owner_document_status",
+            "owner_user_id", "document_id", "status",
+        ),
+        CheckConstraint(
+            "status IN ('ready', 'invalidated', 'failed', 'deleted')",
+            name="ck_web_knowledge_triplet_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    document_id: str = Field(
+        foreign_key="web_knowledge_document.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    chunk_id: str = Field(
+        foreign_key="web_knowledge_chunk.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    source_version: str = Field(max_length=64, index=True)
+    condition_text: str = Field(sa_column=Column(Text, nullable=False))
+    proof_text: str = Field(sa_column=Column(Text, nullable=False))
+    conclusion_text: str = Field(sa_column=Column(Text, nullable=False))
+    extraction_version: str = Field(max_length=24, index=True)
+    confidence: float = Field(default=0.0)
+    content_hash: str = Field(max_length=64, index=True)
+    source_locator: str = Field(max_length=512)
+    status: str = Field(default="ready", max_length=16, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebKnowledgeNode(SQLModel, table=True):
+    """Bounded hierarchy: document summary -> section summary -> raw chunk."""
+
+    __tablename__ = "web_knowledge_node"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "source_version", "node_kind", "ordinal",
+            name="uq_web_knowledge_node_document_version_kind_ordinal",
+        ),
+        Index(
+            "ix_web_knowledge_node_owner_document_kind",
+            "owner_user_id", "document_id", "node_kind",
+        ),
+        CheckConstraint(
+            "node_kind IN ('document_summary', 'section_summary', 'raw_chunk')",
+            name="ck_web_knowledge_node_kind",
+        ),
+        CheckConstraint(
+            "status IN ('ready', 'invalidated', 'failed', 'deleted')",
+            name="ck_web_knowledge_node_status",
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    document_id: str = Field(
+        foreign_key="web_knowledge_document.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    parent_node_id: Optional[str] = Field(
+        default=None, foreign_key="web_knowledge_node.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    raw_chunk_id: Optional[str] = Field(
+        default=None, foreign_key="web_knowledge_chunk.id",
+        ondelete="CASCADE", index=True, max_length=36,
+    )
+    owner_user_id: int = Field(
+        foreign_key="user.id", ondelete="CASCADE", index=True
+    )
+    source_version: str = Field(max_length=64, index=True)
+    node_kind: str = Field(max_length=24, index=True)
+    title: str = Field(default="", max_length=256)
+    summary_text: str = Field(default="", sa_column=Column(Text, nullable=False))
+    token_count: int = Field(default=0)
+    depth: int = Field(default=0)
+    ordinal: int = Field(default=0)
+    content_hash: str = Field(max_length=64, index=True)
+    source_locator: str = Field(max_length=512)
+    status: str = Field(default="ready", max_length=16, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class WebUsagePreferences(SQLModel, table=True):
     __tablename__ = "web_usage_preferences"
     __table_args__ = (UniqueConstraint("user_id", name="uq_web_usage_preferences_user_id"),)

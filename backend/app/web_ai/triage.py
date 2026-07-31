@@ -41,6 +41,7 @@ class TriageInput:
     document_available_tokens: int = 0
     previous_topic: str | None = None
     repository_available: bool = False
+    persistent_knowledge_available_tokens: int = 0
 
 
 def _media_category(media_type: object) -> str:
@@ -137,8 +138,17 @@ def build_execution_plan(
         "profile": 0.7 if profile_relevant else 0.0,
         "documents": (
             1.0
-            if attachments.count > 0
-            and triage_input.document_available_tokens > 0
+            if (
+                (
+                    attachments.count > 0
+                    and triage_input.document_available_tokens > 0
+                )
+                or (
+                    triage_input.persistent_knowledge_available_tokens > 0
+                    and config.persistent_knowledge_runtime_enabled
+                    and policy.persistent_knowledge_allowed
+                )
+            )
             and not deterministic
             else 0.0
         ),
@@ -162,7 +172,13 @@ def build_execution_plan(
             "history": triage_input.history_available_tokens,
             "memory": triage_input.memory_available_tokens,
             "profile": triage_input.profile_available_tokens,
-            "documents": triage_input.document_available_tokens,
+            "documents": (
+                triage_input.document_available_tokens
+                + min(
+                    policy.knowledge_token_cap,
+                    triage_input.persistent_knowledge_available_tokens,
+                )
+            ),
         },
     )
     retrieval_sources = tuple(
@@ -177,10 +193,29 @@ def build_execution_plan(
     )
     if relevance["repository"] > 0:
         retrieval_sources = (*retrieval_sources, "repository")
+    knowledge_planned = bool(
+        triage_input.persistent_knowledge_available_tokens > 0
+        and config.persistent_knowledge_runtime_enabled
+        and policy.persistent_knowledge_allowed
+        and allocation.document_tokens > 0
+        and not deterministic
+    )
+    if knowledge_planned:
+        retrieval_sources = (*retrieval_sources, "knowledge")
+        if config.triplet_runtime_enabled and policy.triplet_retrieval_allowed:
+            retrieval_sources = (*retrieval_sources, "triplets")
+        if (
+            config.hierarchy_runtime_enabled
+            and policy.hierarchical_retrieval_allowed
+        ):
+            retrieval_sources = (*retrieval_sources, "hierarchy")
     dense_planned = bool(
         not deterministic
         and not blocked
-        and "documents" in retrieval_sources
+        and (
+            "documents" in retrieval_sources
+            or "knowledge" in retrieval_sources
+        )
         and config.dense_runtime_enabled
         and policy.dense_retrieval_allowed
     )
@@ -197,7 +232,10 @@ def build_execution_plan(
     )
     verifier_planned = bool(
         guard_planned
-        and "documents" in retrieval_sources
+        and (
+            "documents" in retrieval_sources
+            or "knowledge" in retrieval_sources
+        )
         and config.model_claim_verifier_enabled
         and policy.claim_verifier_allowed
     )
@@ -231,7 +269,7 @@ def build_execution_plan(
             policy.max_output_tokens, optimization.max_output_tokens
         ),
         expected_provider_calls=expected_calls,
-        cache_eligible=optimization.cache_eligible,
+        cache_eligible=optimization.cache_eligible and not knowledge_planned,
         deterministic=deterministic or blocked,
         streaming_mode=(
             "none"
@@ -241,6 +279,7 @@ def build_execution_plan(
             and config.verified_streaming_runtime_enabled
             and (
                 "documents" in retrieval_sources
+                or "knowledge" in retrieval_sources
                 or optimization.answer_class in {"detailed", "long_form"}
             )
             else "direct"
