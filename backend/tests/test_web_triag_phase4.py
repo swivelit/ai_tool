@@ -16,6 +16,7 @@ from sqlmodel import select
 
 from app.code_validator.main import app as validator_app
 from app.code_validator.isolation import detect_isolation_capabilities
+from app.code_validator.settings import ValidatorSettings
 from app.database import SessionLocal
 from app.models import (
     WebCodeEdge, WebCodeFile, WebCodeRepository, WebCodeSymbol,
@@ -290,6 +291,7 @@ def test_dedicated_repository_api_is_owner_scoped_and_persists_no_source(
     )
     assert response.status_code == 201
     assert response.json()["id"] == repository_id
+    assert response.json()["display_name"] == "repo.zip"
     with SessionLocal() as session:
         repository = session.exec(select(WebCodeRepository).where(
             WebCodeRepository.owner_user_id == owner.id,
@@ -367,12 +369,74 @@ def test_settings_default_off_and_validate_secret_without_exposing_value():
     assert settings.repository_upload_enabled is False
     assert settings.repository_index_enabled is False
     assert settings.pro_code_validation_enabled is False
+    assert settings.repository_rate_limit_per_minute == 3
     with pytest.raises(Exception) as caught:
         TriagSettings.from_environ({
             "WEB_PRO_CODE_VALIDATION_ENABLED": "true",
             "WEB_CODE_VALIDATOR_AUTH_TOKEN": "top-secret",
         })
     assert "top-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("value", ["0", "61", "not-a-number"])
+def test_repository_rate_limit_is_centrally_bounded(value):
+    with pytest.raises(Exception) as caught:
+        TriagSettings.from_environ({
+            "WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE": value,
+        })
+    assert "WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE" in str(caught.value)
+    assert value not in str(caught.value)
+
+
+@pytest.mark.parametrize(("name", "value"), [
+    ("CODE_VALIDATOR_NETWORK_ISOLATED", "maybe"),
+    ("CODE_VALIDATOR_TIMEOUT_SECONDS", "301"),
+    ("CODE_VALIDATOR_MAX_OUTPUT_BYTES", "1023"),
+])
+def test_validator_boolean_and_numeric_configuration_is_central(
+    name, value,
+):
+    with pytest.raises(Exception) as caught:
+        ValidatorSettings.from_environ({name: value})
+    assert name in str(caught.value)
+    assert value not in str(caught.value)
+
+
+def test_authenticated_bootstrap_exposes_only_safe_repository_capabilities(
+    client, monkeypatch,
+):
+    for name, value in {
+        "WEB_TRIAG_ENABLED": "true",
+        "WEB_TRIAG_SHADOW_MODE": "false",
+        "WEB_REPOSITORY_UPLOAD_ENABLED": "true",
+        "WEB_RAG_REPOSITORY_INDEX_ENABLED": "true",
+        "WEB_ANSWER_GUARD_ENABLED": "true",
+        "WEB_VERIFIED_STREAMING_ENABLED": "true",
+        "WEB_PRO_CODE_VALIDATION_ENABLED": "false",
+        "WEB_REPOSITORY_TTL_SECONDS": "3600",
+        "WEB_REPOSITORY_MAX_ARCHIVE_BYTES": "26214400",
+    }.items():
+        monkeypatch.setenv(name, value)
+    create_test_user("repo-bootstrap", "repo-bootstrap@example.com")
+    response = client.get(
+        "/api/web/bootstrap",
+        headers=auth_headers("repo-bootstrap", "repo-bootstrap@example.com"),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["features"]["web_repository_upload"] is True
+    assert payload["features"]["web_repository_chat"] is True
+    assert payload["features"]["web_repository_validation"] is False
+    assert payload["repositories"] == {
+        "ttl_seconds": 3600,
+        "max_archive_bytes": 26214400,
+        "validation_capability": "static_only",
+    }
+    serialized = json.dumps(payload).casefold()
+    assert "validator_url" not in serialized
+    assert "auth_token" not in serialized
+    assert "stdout" not in serialized
+    assert "stderr" not in serialized
 
 
 def test_validator_auth_rejects_command_injection(monkeypatch):

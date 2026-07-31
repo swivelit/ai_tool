@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { Composer } from './Composer'
-import type { ComposerAttachment, ReadyAttachment } from '../types'
+import type { ComposerAttachment, ComposerRepository, ReadyAttachment } from '../types'
 
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'', tier_selection_enabled:true, tiers:[
   { id:'lite' as const, label:'Swico Lite', description:'Fast', available:true, selected:true },
@@ -107,6 +107,63 @@ it('opens the Plus menu accessibly, uploads, restores focus, and hosts the tier 
   await userEvent.click(screen.getByRole('button', { name:/Swico Lite/ }))
   await userEvent.click(screen.getByRole('option', { name:/Balanced/ }))
   expect(onTierSelect).toHaveBeenCalledWith('standard')
+})
+
+it('shows repository upload only when enabled and accepts one ZIP', async () => {
+  const addRepository = vi.fn()
+  const { container, rerender } = render(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachmentsEnabled supportedExtensions={['.txt']}
+    repositoryUploadEnabled={false} addRepository={addRepository}
+  />)
+  await userEvent.click(screen.getByRole('button', { name:'Add to prompt' }))
+  expect(screen.queryByRole('menuitem', {
+    name:/Upload code repository/,
+  })).not.toBeInTheDocument()
+  fireEvent.keyDown(window, { key:'Escape' })
+  rerender(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachmentsEnabled supportedExtensions={['.txt']}
+    repositoryUploadEnabled addRepository={addRepository}
+  />)
+  await userEvent.click(screen.getByRole('button', { name:'Add to prompt' }))
+  await userEvent.click(screen.getByRole('menuitem', {
+    name:/Upload code repository/,
+  }))
+  const input = container.querySelector(
+    'input[aria-label="Upload code repository"]',
+  ) as HTMLInputElement
+  expect(input.accept).toBe('.zip')
+  const archive = new File(['archive'], 'swico.zip', {
+    type:'application/zip',
+  })
+  await userEvent.upload(input, archive)
+  expect(addRepository).toHaveBeenCalledWith(archive)
+})
+
+it('renders bounded repository lifecycle and static-only wording', () => {
+  const repository: ComposerRepository = {
+    id:'repo-1', display_name:'swico.zip', status:'uploading', progress:125,
+    languages:[], file_count:0, symbol_count:0,
+  }
+  const props = {
+    value:'fix it', setValue:vi.fn(), send:vi.fn(), stop:vi.fn(),
+    streaming:false, repositoryUploadEnabled:true,
+  }
+  const { rerender } = render(<Composer {...props} repository={repository} />)
+  expect(screen.getByText('Uploading repository… 100%')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
+  rerender(<Composer {...props} repository={{
+    ...repository, status:'ready', progress:100, languages:['Python'],
+    file_count:12, symbol_count:20,
+  }} repositoryChatEnabled repositoryValidationCapability="static_only" />)
+  expect(screen.getByText('Repository ready')).toBeInTheDocument()
+  expect(screen.getByText('Python · 12 files')).toBeInTheDocument()
+  expect(screen.getByText('Static checks only')).toBeInTheDocument()
+  rerender(<Composer {...props} repository={{
+    ...repository, status:'expired', progress:100,
+  }} />)
+  expect(screen.getByText('Repository expired')).toBeInTheDocument()
 })
 
 it('shows waveform only when empty and replaces it with Send for content', () => {

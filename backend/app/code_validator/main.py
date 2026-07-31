@@ -19,10 +19,14 @@ from ..web_ai.code_quality.repository_index import (
 )
 from .isolation import detect_isolation_capabilities
 from .runner import RunnerLimits, run_allowlisted_check
+from .settings import ValidatorSettings
 
 
 app = FastAPI(title="Swico Repository Validator", docs_url=None, redoc_url=None)
-_STARTUP_CAPABILITIES = detect_isolation_capabilities()
+_VALIDATOR_SETTINGS = ValidatorSettings.from_environ()
+_STARTUP_CAPABILITIES = detect_isolation_capabilities(
+    network_isolated=_VALIDATOR_SETTINGS.network_isolated,
+)
 _ALLOWED_CHECKS = frozenset({
     "python_ast", "python_compile", "python_lint", "python_typecheck",
     "python_pytest", "typescript_parse", "typescript_lint",
@@ -122,13 +126,8 @@ async def validate_repository(
                     check_id,
                     files=by_path,
                     limits=RunnerLimits(
-                        timeout_seconds=_bounded_environment_integer(
-                            "CODE_VALIDATOR_TIMEOUT_SECONDS", 90, 1, 300
-                        ),
-                        output_bytes=_bounded_environment_integer(
-                            "CODE_VALIDATOR_MAX_OUTPUT_BYTES",
-                            65_536, 1_024, 262_144,
-                        ),
+                        timeout_seconds=_VALIDATOR_SETTINGS.timeout_seconds,
+                        output_bytes=_VALIDATOR_SETTINGS.max_output_bytes,
                     ),
                     cancelled=cancelled.is_set,
                 ))
@@ -174,16 +173,6 @@ async def validate_repository(
         "checks": checks,
         "required_check_ids": payload.required_checks,
     }
-
-
-def _bounded_environment_integer(
-    name: str, default: int, minimum: int, maximum: int,
-) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    return min(maximum, max(minimum, value))
 
 
 def _python_ast_check(files: dict[str, str]) -> tuple[str, str]:

@@ -47,6 +47,34 @@ class RepositoryValidationClient:
         self.settings = settings
         self.transport = transport
 
+    def validation_capability_sync(self) -> str:
+        """Return only a proven public capability, failing closed to static-only."""
+
+        if not self.settings.base_url or not self.settings.auth_token:
+            return "static_only"
+        try:
+            with httpx.Client(
+                base_url=self.settings.base_url.rstrip("/"),
+                timeout=min(2, self.settings.timeout_seconds),
+            ) as client:
+                response = client.get(
+                    "/v1/isolation",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.auth_token}"
+                    },
+                )
+            if response.status_code != 200:
+                return "static_only"
+            payload = response.json()
+            if (
+                payload.get("isolation_level") == "executable"
+                and payload.get("executable_checks") is True
+            ):
+                return "executable"
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+        return "static_only"
+
     async def validate(
         self,
         *,

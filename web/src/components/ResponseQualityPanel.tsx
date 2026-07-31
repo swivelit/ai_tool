@@ -10,11 +10,28 @@ const LABELS: Record<ResponseQuality['status'], string> = {
 }
 
 export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) {
-  const warning = quality.status === 'unverified'
-    || quality.status === 'insufficient_evidence'
-  const Icon = quality.status === 'verified'
+  const repositoryChecks = quality.checks.filter(
+    check => check.type.startsWith('repository_'),
+  )
+  const repositoryVerified = quality.status === 'verified'
+    && repositoryChecks.some(
+      check => check.type === 'repository_validation'
+        && check.status === 'passed',
+    )
+    && repositoryChecks.every(check => check.status === 'passed')
+  const repositoryStaticOnly = repositoryChecks.some(
+    check => check.type === 'repository_syntax' && check.status === 'passed',
+  ) && repositoryChecks.some(check => ['skipped', 'error'].includes(check.status))
+  const displayedStatus = (
+    quality.status === 'verified' && repositoryChecks.some(
+      check => ['skipped', 'failed', 'error'].includes(check.status),
+    )
+  ) ? 'unverified' : quality.status
+  const warning = displayedStatus === 'unverified'
+    || displayedStatus === 'insufficient_evidence'
+  const Icon = displayedStatus === 'verified'
     ? ShieldCheck
-    : quality.status === 'grounded'
+    : displayedStatus === 'grounded'
       ? CheckCircle2
       : warning ? CircleAlert : Info
   const warningCount = quality.checks.filter(
@@ -41,10 +58,9 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
     }
     return []
   })
-  if (
-    quality.status === 'unverified'
-    && quality.checks.some(check => check.type.startsWith('repository_'))
-  ) {
+  if (repositoryStaticOnly) checkLabels.push('Static checks only')
+  if (repositoryVerified) checkLabels.push('Repository verified')
+  if (displayedStatus === 'unverified' && repositoryChecks.length > 0) {
     checkLabels.push('Not repository-verified')
   }
   return <section
@@ -52,7 +68,7 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
     aria-label="Response quality"
   >
     <Icon size={15} aria-hidden="true" />
-    <span>{LABELS[quality.status]}</span>
+    <span>{LABELS[displayedStatus]}</span>
     {warningCount > 0 && <small>
       {warningCount} {warningCount === 1 ? 'check needs' : 'checks need'} attention
     </small>}

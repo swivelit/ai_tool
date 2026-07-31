@@ -72,6 +72,14 @@ returns the existing SSE stream. Repository-changing answers can be labelled
 Repository-aware chat requires the TRIAG, repository upload/index, Answer Guard,
 and verified-streaming flags together; partial enablement remains disabled.
 
+Phase 4.1 adds authenticated website usability around that lifecycle. Bootstrap
+exposes only `web_repository_upload`, `web_repository_chat`,
+`web_repository_validation`, bounded TTL/archive limits, and a `static_only` or
+positively proven `executable` capability. The browser keeps repository metadata
+in memory, binds the ID to one Firebase owner and one thread, and clears it on
+account or thread changes. Repository source and IDs are not stored in browser
+storage.
+
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the
 immediately previous completed assistant message's safe `topic=swico` metadata,

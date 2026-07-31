@@ -34,8 +34,32 @@ it('renders safe repository check summaries without internal details', () => {
   expect(screen.getByText(/Typecheck passed/)).toBeInTheDocument()
   expect(screen.getByText(/Tests passed/)).toBeInTheDocument()
   expect(screen.getByText(/Validation unavailable/)).toBeInTheDocument()
+  expect(screen.getByText(/Static checks only/)).toBeInTheDocument()
   expect(screen.getByText(/Not repository-verified/)).toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(
     /openai|gpt-|sarvam|validator url|stdout|stderr/i,
   )
+})
+
+it('uses repository verified only when every repository check passed', () => {
+  const { rerender } = render(<ResponseQualityPanel quality={{
+    status:'verified', retrieval_status:'sufficient',
+    checks:[
+      { type:'repository_context', status:'passed' },
+      { type:'repository_syntax', status:'passed' },
+      { type:'repository_validation', status:'passed' },
+    ],
+  }} />)
+  expect(screen.getByText(/Repository verified/)).toBeInTheDocument()
+  rerender(<ResponseQualityPanel quality={{
+    status:'verified', retrieval_status:'sufficient',
+    checks:[
+      { type:'repository_context', status:'passed' },
+      { type:'repository_syntax', status:'passed' },
+      { type:'repository_validation', status:'skipped' },
+    ],
+  }} />)
+  expect(screen.queryByText(/Repository verified/)).not.toBeInTheDocument()
+  expect(screen.getByText('Could not fully verify')).toBeInTheDocument()
+  expect(screen.getByText(/Not repository-verified/)).toBeInTheDocument()
 })

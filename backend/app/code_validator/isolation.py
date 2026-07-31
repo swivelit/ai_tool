@@ -15,11 +15,16 @@ class IsolationCapabilities:
     reason_code: str
 
 
-def detect_isolation_capabilities() -> IsolationCapabilities:
+def detect_isolation_capabilities(
+    *, network_isolated: bool | None = None,
+) -> IsolationCapabilities:
     """Fail closed unless deployment positively attests all executable barriers."""
 
     proof = os.getenv("CODE_VALIDATOR_ISOLATION_PROOF", "").strip()
-    network = os.getenv("CODE_VALIDATOR_NETWORK_ISOLATED", "false").lower()
+    if network_isolated is None:
+        from .settings import ValidatorSettings
+
+        network_isolated = ValidatorSettings.from_environ().network_isolated
     non_root = hasattr(os, "geteuid") and os.geteuid() != 0
     proof_file = _verified_proof_file(
         os.getenv("CODE_VALIDATOR_ISOLATION_PROOF_FILE", "")
@@ -28,7 +33,7 @@ def detect_isolation_capabilities() -> IsolationCapabilities:
     if (
         platform.system() == "Linux"
         and proof == "linux-namespace-v1"
-        and network == "true"
+        and network_isolated
         and non_root
         and proof_file
         and kernel

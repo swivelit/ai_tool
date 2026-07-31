@@ -79,6 +79,7 @@ class TriagSettings:
     repository_max_uncompressed_bytes: int = 104_857_600
     repository_max_files: int = 5_000
     repository_max_compression_ratio: int = 100
+    repository_rate_limit_per_minute: int = 3
     repository_index_enabled: bool = False
     pro_code_validation_enabled: bool = False
     code_validator_url: str = ""
@@ -171,6 +172,10 @@ class TriagSettings:
             env, "WEB_REPOSITORY_MAX_COMPRESSION_RATIO", 100, errors,
             minimum=2, maximum=1_000,
         )
+        repository_rate_limit = _parse_int(
+            env, "WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE", 3, errors,
+            minimum=1, maximum=60,
+        )
         validator_timeout = _parse_int(
             env, "WEB_CODE_VALIDATOR_TIMEOUT_SECONDS", 90, errors,
             minimum=1, maximum=300,
@@ -249,6 +254,7 @@ class TriagSettings:
             repository_max_uncompressed_bytes=repository_uncompressed_bytes,
             repository_max_files=repository_max_files,
             repository_max_compression_ratio=repository_max_ratio,
+            repository_rate_limit_per_minute=repository_rate_limit,
             repository_index_enabled=repository_index,
             pro_code_validation_enabled=code_validation,
             code_validator_url=validator_url,

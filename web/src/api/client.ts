@@ -197,16 +197,47 @@ export async function deleteUpload(user: User, uploadId: string): Promise<void> 
 
 export async function uploadRepository(
   user: User, file: File, repositoryId: string,
+  onProgress?: (progress: number) => void,
 ): Promise<RepositorySnapshot> {
   const form = new FormData()
   form.append('file', file, file.name)
   form.append('repository_id', repositoryId)
-  const response = await authorizedFetch(user, '/api/web/repositories', {
-    method: 'POST', body: form,
+  const send = (token: string) => new Promise<{
+    status: number; body: unknown;
+  }>((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `${API_BASE}/api/web/repositories`)
+    request.setRequestHeader('Authorization', `Bearer ${token}`)
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) {
+        onProgress?.(Math.min(
+          99, Math.max(0, Math.round((event.loaded / event.total) * 100)),
+        ))
+      }
+    }
+    request.onerror = () => reject(new ApiNetworkError())
+    request.onabort = () => reject(new ApiNetworkError())
+    request.onload = () => {
+      let body: unknown = {}
+      try {
+        body = JSON.parse(request.responseText || '{}') as unknown
+      } catch {
+        body = {}
+      }
+      resolve({ status: request.status, body })
+    }
+    onProgress?.(0)
+    request.send(form)
   })
-  const body = await response.json().catch(() => ({})) as unknown
-  if (!response.ok) throw new ApiError(response.status, body)
-  return body as RepositorySnapshot
+  let result = await send(await user.getIdToken())
+  if (result.status === 401) {
+    result = await send(await user.getIdToken(true))
+  }
+  if (result.status < 200 || result.status >= 300) {
+    throw new ApiError(result.status, result.body)
+  }
+  onProgress?.(100)
+  return result.body as RepositorySnapshot
 }
 
 export async function deleteRepository(

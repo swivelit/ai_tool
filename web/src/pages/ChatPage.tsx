@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SearchResult, SwicoTier, Thread, Wallet, Wallets } from '../types'
-import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument, uploadVirtualText } from '../api/client'
+import type { AssistantSettings, ComposerAttachment, ComposerRepository, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, RepositorySnapshot, SearchResult, SwicoTier, Thread, Wallet, Wallets } from '../types'
+import { ApiError, SSEStreamError, apiJson, deleteRepository, deleteUpload, streamChat, uploadDocument, uploadRepository, uploadVirtualText } from '../api/client'
 import { chatErrorMessage, serviceCapacityMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
 import { useAuth } from '../auth/useAuth'
@@ -19,6 +19,33 @@ const SettingsModal = lazy(() => import('../components/SettingsModal').then(modu
 const VoiceMode = lazy(() => import('../components/VoiceMode').then(module => ({ default: module.VoiceMode })))
 
 type DialogState = { type: 'rename' | 'delete'; thread: Thread; value: string } | null
+type ActiveRepository = ComposerRepository & {
+  owner_uid: string;
+  thread_id: string | null;
+}
+
+function safeRepositoryFilename(value: string): string {
+  const basename = value.replaceAll('\\', '/').split('/').at(-1) ?? ''
+  const cleaned = [...basename].filter(character => {
+    const code = character.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim()
+  return cleaned.toLowerCase().endsWith('.zip')
+    ? cleaned.slice(0, 128)
+    : 'Repository.zip'
+}
+
+function repositoryUploadError(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return 'Repository upload failed. Please try again.'
+  }
+  if (error.status === 413) return 'The repository ZIP exceeds the upload limit.'
+  if (error.status === 415) return 'Select a ZIP archive for the code repository.'
+  if (error.status === 422) return 'The repository ZIP did not pass safety checks.'
+  if (error.status === 429) return 'Repository uploads are happening too quickly. Try again shortly.'
+  if (error.status === 503) return 'Repository uploads are temporarily unavailable.'
+  return 'Repository upload failed. Please try again.'
+}
 
 export function ChatPage() {
   const { user, signOut } = useAuth()
@@ -30,6 +57,7 @@ export function ChatPage() {
   const [longInputMode, setLongInputMode] = useState<LongInputMode>('analyze')
   const [draftVoiceTurnId, setDraftVoiceTurnId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [repository, setRepository] = useState<ActiveRepository | null>(null)
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
@@ -44,12 +72,25 @@ export function ChatPage() {
   const [tierSaving, setTierSaving] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
+  const removedRepositoryUploads = useRef(new Set<string>())
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
   const activeRef = useRef<string | null>(active)
+  const userUid = user?.uid ?? ''
+  const userUidRef = useRef(userUid)
   const streamScopeRef = useRef<{ requestId: string; initialThreadId: string | null; threadId: string | null } | null>(null)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
   useEffect(() => { activeRef.current = active }, [active])
+  useEffect(() => {
+    userUidRef.current = userUid
+    setRepository(value => value?.owner_uid === userUid ? value : null)
+  }, [userUid])
+  useEffect(() => {
+    setRepository(value => {
+      if (!value || value.thread_id === active) return value
+      return null
+    })
+  }, [active])
 
   const loadThreads = useCallback(async (reset = true) => {
     if (!user) return
@@ -180,6 +221,18 @@ export function ChatPage() {
     return () => window.clearInterval(timer)
   }, [attachments])
   useEffect(() => {
+    if (repository?.status !== 'ready' || !repository.expires_at) return
+    const updateExpiry = () => {
+      if (new Date(repository.expires_at!).getTime() <= Date.now()) {
+        setRepository(value => value?.id === repository.id
+          ? { ...value, status:'expired' } : value)
+      }
+    }
+    updateExpiry()
+    const timer = window.setInterval(updateExpiry, 1000)
+    return () => window.clearInterval(timer)
+  }, [repository?.expires_at, repository?.id, repository?.status])
+  useEffect(() => {
     const assistant = streamState.assistant
     if (!assistant) return
     const scope = streamScopeRef.current
@@ -221,7 +274,12 @@ export function ChatPage() {
     requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string },
   ) => {
     let selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
-    if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
+    if (
+      !user || !bootstrap || streaming
+      || (!text.trim() && !selectedAttachments.length)
+      || offline || attachments.some(item => item.status === 'uploading')
+      || repository?.status === 'uploading'
+    ) return
     const maxCharacters = bootstrap.uploads.long_input_enabled
       ? (bootstrap.uploads.long_input_max_chars ?? 64000) : 16000
     if (text.length > maxCharacters) {
@@ -270,6 +328,14 @@ export function ChatPage() {
     const regenerateUser = regenerateTarget
       ? messages.find(item => item.role === 'user' && item.request_id === regenerateTarget.request_id) : undefined
     const revisionTarget = editTarget ?? regenerateUser
+    const requestRepositoryId = (
+      bootstrap.features.web_repository_chat
+      && repository?.status === 'ready'
+      && repository.owner_uid === userUid
+      && repository.thread_id === threadId
+      && (!repository.expires_at
+        || new Date(repository.expires_at).getTime() > Date.now())
+    ) ? repository.id : null
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
     if (!existingUser && !revisionTarget && !requestOptions?.continueMessageId) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
@@ -287,6 +353,7 @@ export function ChatPage() {
         input_mode: origin.inputMode,
         ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
         ...(threadId ? { thread_id: threadId } : {}),
+        ...(requestRepositoryId ? { repository_id: requestRepositoryId } : {}),
         ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
         ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
         ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
@@ -306,6 +373,13 @@ export function ChatPage() {
             const stillViewingOrigin = activeRef.current === scope.initialThreadId
             scope.threadId = id
             if (stillViewingOrigin) {
+              setRepository(value => (
+                value
+                && value.owner_uid === userUid
+                && value.thread_id === scope.initialThreadId
+                  ? { ...value, thread_id:id }
+                  : value
+              ))
               activeRef.current = id
               setActive(id)
               setMessages(value => value.map(item => item.thread_id ? item : { ...item, thread_id:id }))
@@ -351,6 +425,9 @@ export function ChatPage() {
         if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
+        if (code === 'repository_expired' || code === 'repository_unavailable') {
+          setRepository(value => value ? { ...value, status:'expired' } : value)
+        }
         if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') {
           const body = caught.body as { error?: { credit_bucket?: string } } | undefined
           setBillingBucket(body?.error?.credit_bucket === 'voice' ? 'voice' : 'chat'); setBilling(true)
@@ -420,11 +497,11 @@ export function ChatPage() {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
     }, { regenerateMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); setAttachments([]); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); setAttachments([]); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
   const selectSearch = (result: SearchResult) => {
     if (!result.thread_id) return
-    setDraftVoiceTurnId(null); setAttachments([]); activeRef.current = result.thread_id
+    setDraftVoiceTurnId(null); setAttachments([]); setRepository(null); activeRef.current = result.thread_id
     setActive(result.thread_id); setHighlightMessageId(result.message_id)
     setDrawer(false); setError(''); setFocusKey(`search-${result.thread_id}`)
   }
@@ -483,6 +560,92 @@ export function ChatPage() {
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
   }
+  const addRepository = (file: File) => {
+    if (
+      !user || !bootstrap?.features.web_repository_upload
+      || !bootstrap.repositories
+    ) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Select a ZIP archive for the code repository.')
+      return
+    }
+    if (file.size <= 0) {
+      setError('The repository ZIP is empty.')
+      return
+    }
+    if (file.size > bootstrap.repositories.max_archive_bytes) {
+      setError('The repository ZIP exceeds the upload limit.')
+      return
+    }
+    const previous = repository
+    const repositoryId = crypto.randomUUID()
+    const ownerUid = userUid
+    const pending: ActiveRepository = {
+      id: repositoryId,
+      display_name: safeRepositoryFilename(file.name),
+      owner_uid: ownerUid,
+      thread_id: active,
+      status: 'uploading',
+      progress: 0,
+      languages: [],
+      file_count: 0,
+      symbol_count: 0,
+    }
+    setError('')
+    setRepository(pending)
+    void uploadRepository(user, file, repositoryId, progress => {
+      setRepository(value => value?.id === repositoryId
+        ? { ...value, progress:Math.min(100, Math.max(0, progress)) }
+        : value)
+    }).then((snapshot: RepositorySnapshot) => {
+      if (removedRepositoryUploads.current.delete(repositoryId)) {
+        void deleteRepository(user, snapshot.id).catch(() => undefined)
+        return
+      }
+      if (userUidRef.current !== ownerUid) return
+      setRepository(value => value?.id === repositoryId ? {
+        id: snapshot.id,
+        display_name: safeRepositoryFilename(
+          snapshot.display_name || pending.display_name,
+        ),
+        owner_uid: ownerUid,
+        thread_id: pending.thread_id,
+        status: 'ready',
+        progress: 100,
+        expires_at: snapshot.expires_at,
+        languages: snapshot.languages.slice(0, 8),
+        file_count: Math.max(0, snapshot.file_count),
+        symbol_count: Math.max(0, snapshot.symbol_count),
+      } : value)
+      if (previous && previous.owner_uid === ownerUid) {
+        void deleteRepository(user, previous.id).catch(() => {
+          setError('The replacement is ready, but the earlier temporary repository could not be cleared.')
+        })
+      }
+    }).catch(caught => {
+      if (userUidRef.current !== ownerUid) return
+      const message = repositoryUploadError(caught)
+      setError(message)
+      setRepository(value => value?.id !== repositoryId ? value
+        : previous ?? { ...pending, status:'error', error:message })
+    })
+  }
+  const removeRepository = () => {
+    const selected = repository
+    setRepository(null)
+    if (selected?.status === 'uploading') {
+      removedRepositoryUploads.current.add(selected.id)
+    }
+    if (
+      !user || !selected || selected.owner_uid !== userUid
+      || selected.status === 'error'
+    ) return
+    void deleteRepository(user, selected.id).catch(() => {
+      if (selected.status !== 'uploading') {
+        setError('The repository was removed locally, but its temporary cache could not be reached.')
+      }
+    })
+  }
   const runMutation = async (thread: Thread, action: 'rename' | 'archive' | 'delete', title?: string) => {
     if (!user) return
     if (action === 'rename') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ title }) })
@@ -527,7 +690,7 @@ export function ChatPage() {
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
-      searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
+      searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
@@ -538,6 +701,10 @@ export function ChatPage() {
         highlightMessageId={highlightMessageId} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        repository={repository}
+        repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}
+        repositoryChatEnabled={Boolean(bootstrap.features.web_repository_chat)}
+        repositoryValidationCapability={bootstrap.repositories?.validation_capability ?? 'static_only'}
         inlineThreshold={bootstrap.uploads.long_input_enabled ? bootstrap.uploads.long_input_inline_threshold_chars ?? 12000 : 16000}
         maxCharacters={bootstrap.uploads.long_input_enabled ? bootstrap.uploads.long_input_max_chars ?? 64000 : 16000}
         longInputMode={longInputMode} setLongInputMode={setLongInputMode}
@@ -546,13 +713,14 @@ export function ChatPage() {
         onRealtimeVoice={() => { voiceThreadRef.current = active; setVoiceMode(true) }}
         voiceResetKey={`${active ?? 'new-chat'}:${focusKey}`}
         onVoiceDraft={setDraftVoiceTurnId} onVoiceCancel={() => setDraftVoiceTurnId(null)} onComposerClear={() => setDraftVoiceTurnId(null)} onVoiceWallet={applyWallet}
-        supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
+        supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment}
+        addRepository={addRepository} removeRepository={removeRepository} />
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
     {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}
       tuning={bootstrap.voice_tuning} internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
       addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
-    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
+    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setRepository(null); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>
 }

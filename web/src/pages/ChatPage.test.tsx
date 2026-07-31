@@ -1,15 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadVirtualText } from '../api/client'
+import { ApiError, SSEStreamError, apiJson, deleteRepository, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadRepository, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
-const user = { getIdToken: vi.fn().mockResolvedValue('token') }
-vi.mock('../auth/useAuth', () => ({ useAuth: () => ({ user, signOut:vi.fn() }) }))
+const user = { uid:'firebase-owner', getIdToken: vi.fn().mockResolvedValue('token') }
+let currentUser = user
+const signOutMock = vi.fn()
+vi.mock('../auth/useAuth', () => ({
+  useAuth: () => ({ user:currentUser, signOut:signOutMock }),
+}))
 vi.mock('../api/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), uploadVirtualText:vi.fn(), deleteUpload:vi.fn(), transcribeAudio:vi.fn(), synthesizeAudio:vi.fn() }
+  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), uploadVirtualText:vi.fn(), uploadRepository:vi.fn(), deleteRepository:vi.fn(), deleteUpload:vi.fn(), transcribeAudio:vi.fn(), synthesizeAudio:vi.fn() }
 })
 
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
@@ -45,10 +49,14 @@ it('surfaces only allowlisted safe document confirmation errors', () => {
 })
 
 function mockApi() {
+  currentUser = user
+  signOutMock.mockReset()
   vi.mocked(apiJson).mockReset()
   vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
   vi.mocked(uploadDocument).mockReset()
   vi.mocked(uploadVirtualText).mockReset()
+  vi.mocked(uploadRepository).mockReset()
+  vi.mocked(deleteRepository).mockReset().mockResolvedValue(undefined)
   vi.mocked(deleteUpload).mockReset().mockResolvedValue(undefined)
   vi.mocked(transcribeAudio).mockReset()
   vi.mocked(synthesizeAudio).mockReset()
@@ -65,6 +73,35 @@ const uploaded = {
   created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),
   status:'ready' as const, warnings:[],
 }
+const repositoryBootstrap = {
+  ...bootstrap,
+  features:{
+    ...bootstrap.features,
+    web_message_edit:true,
+    web_repository_upload:true,
+    web_repository_chat:true,
+    web_repository_validation:false,
+  },
+  repositories:{
+    ttl_seconds:3600,
+    max_archive_bytes:26_214_400,
+    validation_capability:'static_only' as const,
+  },
+}
+
+const repositorySnapshot = (id: string, displayName = 'swico.zip') => ({
+  id,
+  display_name:displayName,
+  source_version:'source-version',
+  content_hash:'content-hash',
+  file_count:12,
+  symbol_count:30,
+  status:'ready' as const,
+  created_at:new Date().toISOString(),
+  expires_at:new Date(Date.now() + 3_600_000).toISOString(),
+  languages:['Python'],
+  frameworks:[],
+})
 
 it('continues without an optimistic control bubble and consumes the parent button', async () => {
   const thread = {
@@ -476,6 +513,264 @@ it('supports drag-and-drop and prevents send while an upload is pending', async 
   await userEvent.type(textbox, 'question')
   expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
   expect(streamChat).not.toHaveBeenCalled()
+})
+
+it('keeps repository upload hidden when bootstrap capability is disabled', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return {
+      ...bootstrap,
+      future_repository_capability:{ mode:'unknown' },
+    } as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', {
+    name:'Add to prompt',
+  }))
+  expect(screen.queryByRole('menuitem', {
+    name:/Upload code repository/,
+  })).not.toBeInTheDocument()
+})
+
+it('uploads, sends, replaces, and explicitly deletes a temporary repository without persistence', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, file, id, progress) => {
+      progress?.(67)
+      return repositorySnapshot(id, file.name)
+    },
+  )
+  const storage = vi.spyOn(Storage.prototype, 'setItem')
+  const { container } = render(<ChatPage />)
+  const uploadArchive = async (name: string) => {
+    await userEvent.click(await screen.findByRole('button', {
+      name:'Add to prompt',
+    }))
+    await userEvent.click(screen.getByRole('menuitem', {
+      name:/Upload code repository/,
+    }))
+    const file = new File(['PRIVATE SOURCE SHOULD NOT RENDER'], name, {
+      type:'application/zip',
+    })
+    await userEvent.upload(container.querySelector(
+      'input[aria-label="Upload code repository"]',
+    ) as HTMLInputElement, file)
+    return file
+  }
+  const firstFile = await uploadArchive('swico.zip')
+  expect(uploadRepository).toHaveBeenCalledWith(
+    user, firstFile, expect.stringMatching(/^[0-9a-f-]{36}$/),
+    expect.any(Function),
+  )
+  expect(await screen.findByText('Repository ready')).toBeInTheDocument()
+  expect(screen.getByText('Python · 12 files')).toBeInTheDocument()
+  expect(screen.getByText('Static checks only')).toBeInTheDocument()
+  expect(document.body).not.toHaveTextContent('PRIVATE SOURCE SHOULD NOT RENDER')
+  const firstId = vi.mocked(uploadRepository).mock.calls[0][2]
+
+  await userEvent.type(
+    screen.getByRole('textbox', { name:'Message Swico' }),
+    'Fix the repository',
+  )
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({
+    repository_id:firstId,
+    message:'Fix the repository',
+  })
+  expect(storage.mock.calls.flat().join(' ')).not.toContain(firstId)
+
+  const secondFile = await uploadArchive('replacement.zip')
+  await waitFor(() => expect(uploadRepository).toHaveBeenCalledTimes(2))
+  expect(secondFile.name).toBe('replacement.zip')
+  await waitFor(() => expect(deleteRepository).toHaveBeenCalledWith(
+    user, firstId,
+  ))
+  const secondId = vi.mocked(uploadRepository).mock.calls[1][2]
+  await userEvent.click(screen.getByRole('button', {
+    name:'Remove replacement.zip',
+  }))
+  await waitFor(() => expect(deleteRepository).toHaveBeenCalledWith(
+    user, secondId,
+  ))
+  expect(screen.queryByText('Repository ready')).not.toBeInTheDocument()
+  storage.mockRestore()
+})
+
+it('shows safe repository upload failure and expiry without leaking server details', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository)
+    .mockRejectedValueOnce(new ApiError(422, {
+      error:{ message:'SECRET_TOKEN raw/source.py' },
+    }))
+    .mockImplementationOnce(async (_user, _file, id) => ({
+      ...repositorySnapshot(id, 'expired.zip'),
+      expires_at:new Date(Date.now() - 1_000).toISOString(),
+    }))
+  const { container } = render(<ChatPage />)
+  const choose = async (name: string) => {
+    await userEvent.click(await screen.findByRole('button', {
+      name:'Add to prompt',
+    }))
+    await userEvent.click(screen.getByRole('menuitem', {
+      name:/Upload code repository/,
+    }))
+    await userEvent.upload(container.querySelector(
+      'input[aria-label="Upload code repository"]',
+    ) as HTMLInputElement, new File(['private'], name, {
+      type:'application/zip',
+    }))
+  }
+  await choose('unsafe.zip')
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'did not pass safety checks',
+  )
+  expect(document.body.textContent).not.toMatch(/SECRET_TOKEN|raw\/source\.py/)
+  await choose('expired.zip')
+  expect(await screen.findByText('Repository expired')).toBeInTheDocument()
+})
+
+it('clears repository state on logout and Firebase account change', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, _file, id) => repositorySnapshot(id),
+  )
+  const view = render(<ChatPage />)
+  const upload = async () => {
+    await userEvent.click(await screen.findByRole('button', {
+      name:'Add to prompt',
+    }))
+    await userEvent.click(screen.getByRole('menuitem', {
+      name:/Upload code repository/,
+    }))
+    await userEvent.upload(view.container.querySelector(
+      'input[aria-label="Upload code repository"]',
+    ) as HTMLInputElement, new File(['private'], 'account.zip', {
+      type:'application/zip',
+    }))
+    await screen.findByText('Repository ready')
+  }
+  await upload()
+  await userEvent.click(screen.getByRole('button', { name:/Hari/ }))
+  await userEvent.click(screen.getByRole('menuitem', { name:'Sign out' }))
+  expect(signOutMock).toHaveBeenCalledOnce()
+  expect(screen.queryByText('Repository ready')).not.toBeInTheDocument()
+
+  await upload()
+  currentUser = {
+    uid:'different-firebase-owner',
+    getIdToken:vi.fn().mockResolvedValue('other-token'),
+  }
+  view.rerender(<ChatPage />)
+  await waitFor(() => expect(
+    screen.queryByText('Repository ready'),
+  ).not.toBeInTheDocument())
+  currentUser = user
+})
+
+it('keeps the selected repository for edit, regenerate, and continue in one thread', async () => {
+  const thread = {
+    id:'repo-thread', title:'Repository work', archived_at:null,
+    created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+  }
+  const original = {
+    id:'repo-user', thread_id:thread.id, role:'user' as const,
+    content:'Fix this function', request_id:'repo-request',
+    tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0,
+    usage_source:null, charge_micros:0, status:'complete',
+    created_at:new Date().toISOString(), input_mode:'text' as const,
+    voice_turn_id:null, reply_language:'en' as const,
+  }
+  const answer = {
+    ...original, id:'repo-answer', role:'assistant' as const,
+    content:'Proposed fix.', tier:'pro' as const, tier_label:'Swico Pro',
+    input_tokens:10, output_tokens:10, usage_source:'actual' as const,
+    charge_micros:10, truncated:true, can_continue:true,
+  }
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads?')) {
+      return { items:[thread], has_more:false } as never
+    }
+    if (path.includes('/repo-thread/messages')) {
+      return { items:[original, answer] } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, _file, id) => repositorySnapshot(id),
+  )
+  const { container } = render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', {
+    name:'Repository work',
+  }))
+  await userEvent.click(screen.getByRole('button', { name:'Add to prompt' }))
+  await userEvent.click(screen.getByRole('menuitem', {
+    name:/Upload code repository/,
+  }))
+  await userEvent.upload(container.querySelector(
+    'input[aria-label="Upload code repository"]',
+  ) as HTMLInputElement, new File(['private'], 'swico.zip', {
+    type:'application/zip',
+  }))
+  await screen.findByText('Repository ready')
+  const repositoryId = vi.mocked(uploadRepository).mock.calls[0][2]
+
+  await userEvent.click(screen.getByRole('button', {
+    name:'Regenerate answer',
+  }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1))
+  await userEvent.click(screen.getByRole('button', { name:'Edit message' }))
+  const editor = screen.getByLabelText('Edit message')
+  await userEvent.clear(editor)
+  await userEvent.type(editor, 'Fix this function safely')
+  await userEvent.click(screen.getByRole('button', {
+    name:/Save and regenerate/,
+  }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  await userEvent.click(screen.getByRole('button', {
+    name:'Continue response',
+  }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(3))
+  for (const call of vi.mocked(streamChat).mock.calls) {
+    expect(call[1].repository_id).toBe(repositoryId)
+    expect(call[1].thread_id).toBe('repo-thread')
+  }
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toHaveProperty(
+    'regenerate_message_id', 'repo-answer',
+  )
+  expect(vi.mocked(streamChat).mock.calls[1][1]).toHaveProperty(
+    'edit_message_id', 'repo-user',
+  )
+  expect(vi.mocked(streamChat).mock.calls[2][1]).toHaveProperty(
+    'continue_message_id', 'repo-answer',
+  )
 })
 
 it('sends an edited transcript as dictation without automatic synthesis, then resets to text', async () => {

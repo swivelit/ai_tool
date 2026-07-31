@@ -77,6 +77,13 @@ check IDs and command templates and defaults to static-only when executable
 isolation cannot be proven. It does not add triplets, hierarchy, or persistent
 knowledge.
 
+The Phase 4.1 website reads distinct repository upload, chat, and validation
+capabilities from the authenticated bootstrap response. All remain disabled by
+default. Repository selection is ephemeral React state scoped to one
+authenticated owner and one thread. Explicit removal calls the owner-scoped
+delete endpoint; expiry or navigation clears the local selection while the
+server TTL remains authoritative.
+
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment
 text and temporary vectors live in the dedicated private Valkey under the

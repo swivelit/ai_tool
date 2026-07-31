@@ -25,6 +25,7 @@ from ..web_ai.code_quality.repository_index import (
 from .repository_store import (
     EphemeralRepositorySnapshot,
     put_repository_snapshot,
+    safe_repository_display_name,
 )
 from .upload_store import EphemeralUploadStore, expiration_iso, utc_iso
 
@@ -36,6 +37,7 @@ def create_repository_snapshot(
     owner_user_id: int,
     repository_id: str,
     archive: bytes,
+    display_name: str = "Repository.zip",
     ttl_seconds: int,
     limits: ArchiveLimits,
 ) -> tuple[EphemeralRepositorySnapshot, RepositoryIndex, bool]:
@@ -70,6 +72,7 @@ def create_repository_snapshot(
         created_at=utc_iso(),
         expires_at=expiration_iso(ttl_seconds),
         files=validated.files,
+        display_name=safe_repository_display_name(display_name),
     )
     put_repository_snapshot(store, snapshot, ttl_seconds=ttl_seconds)
     expires_at = datetime.fromisoformat(snapshot.expires_at.replace("Z", "+00:00"))

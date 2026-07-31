@@ -82,6 +82,9 @@ from ..models import (
 from ..web_ai.code_quality.repository_archive import (
     ArchiveLimits, UnsafeRepositoryArchive,
 )
+from ..web_ai.code_quality.validation_client import (
+    RepositoryValidationClient, ValidationClientSettings,
+)
 from ..web_ai.settings import TriagSettings
 from ..observability import APP_RELEASE, get_request_id
 from ..openai_tracked import OpenAIBudgetExceededError
@@ -598,6 +601,16 @@ def bootstrap(
     billing_exempt = is_internal_test_user(auth, user)
     swico_tier = selected_swico_tier(session, int(user.id))
     uploads = _uploads_public_config()
+    triag_settings = TriagSettings.from_environ()
+    validation_capability = "static_only"
+    if triag_settings.code_validation_runtime_enabled:
+        validation_capability = RepositoryValidationClient(
+            ValidationClientSettings(
+                base_url=triag_settings.code_validator_url,
+                auth_token=triag_settings.code_validator_auth_token,
+                timeout_seconds=triag_settings.code_validator_timeout_seconds,
+            )
+        ).validation_capability_sync()
     return {
         "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
         # `wallet` is the legacy Chat wallet and remains for mobile/web
@@ -623,11 +636,21 @@ def bootstrap(
             "web_answer_feedback": _env_enabled("WEB_ANSWER_FEEDBACK_ENABLED"),
             "web_content_search": _env_enabled("WEB_CONTENT_SEARCH_ENABLED"),
             "web_response_provenance": _env_enabled("WEB_RESPONSE_PROVENANCE_ENABLED"),
+            "web_repository_upload": triag_settings.repository_upload_enabled,
+            "web_repository_chat": triag_settings.repository_chat_runtime_enabled,
+            "web_repository_validation": (
+                triag_settings.code_validation_runtime_enabled
+            ),
         },
         "backend_release": _backend_release(),
         "voice_protocol_version": VOICE_PROTOCOL_VERSION,
         "voice_tuning": _voice_tuning(),
         "uploads": uploads,
+        "repositories": {
+            "ttl_seconds": triag_settings.repository_ttl_seconds,
+            "max_archive_bytes": triag_settings.repository_max_archive_bytes,
+            "validation_capability": validation_capability,
+        },
     }
 
 
@@ -2583,7 +2606,7 @@ async def upload_repository_snapshot(
         )
     _rate_limit(
         session, user_id=int(user.id), action="web_repository_upload",
-        limit=int(os.getenv("WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE", "3")),
+        limit=settings.repository_rate_limit_per_minute,
     )
     session.commit()
     archive = await file.read(settings.repository_max_archive_bytes + 1)
@@ -2600,6 +2623,7 @@ async def upload_repository_snapshot(
             owner_user_id=int(user.id),
             repository_id=str(repository_id),
             archive=archive,
+            display_name=filename,
             ttl_seconds=settings.repository_ttl_seconds,
             limits=ArchiveLimits(
                 settings.repository_max_archive_bytes,

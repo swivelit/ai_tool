@@ -42,6 +42,12 @@ Phase 4 adds a staging-only private validator service and the authenticated
 `/api/web/repositories` route. No static-site variable or production validator
 is required. The API flags remain false in the staging blueprint.
 
+Phase 4.1 requires no additional Render resource or public `VITE_*` variable.
+Once the existing backend flags are intentionally enabled, authenticated web
+clients discover repository upload/chat/validation through
+`/api/web/bootstrap`. Keep those flags false until the staged repository
+lifecycle and validator capability have been verified.
+
 ## Rollback
 
 Set `WEB_RAG_HYBRID_ENABLED=false` (or `WEB_TRIAG_ENABLED=false`) and restart

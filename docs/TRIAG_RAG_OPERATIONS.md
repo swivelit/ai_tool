@@ -68,6 +68,15 @@ their document-only rules. A missing Valkey record makes the repository
 unavailable even if content-free PostgreSQL index rows await expiry cleanup.
 Delete marks the repository expired and removes the owner-scoped cache key.
 
+Authenticated bootstrap publishes only repository feature booleans, TTL,
+maximum archive bytes, and the validator capability (`static_only` or
+`executable`). It never publishes validator connectivity or credentials.
+`WEB_REPOSITORY_RATE_LIMIT_PER_MINUTE` has default `3`, bounds `1..60`, and
+startup validation that reports the variable name without its value.
+The validator process likewise validates its network-isolation boolean,
+`CODE_VALIDATOR_TIMEOUT_SECONDS` (`1..300`), and
+`CODE_VALIDATOR_MAX_OUTPUT_BYTES` (`1024..262144`) before serving requests.
+
 The validator exposes only `/v1/isolation` and `/v1/validate`, protected by its
 dedicated bearer token. It receives no API-provider, Firebase, database, email,
 payment, or Razorpay secrets. `static_only` is a healthy bounded capability.

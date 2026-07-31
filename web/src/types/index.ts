@@ -26,6 +26,7 @@ export type PendingAttachment = {
 export type ReadyAttachment = AttachmentDisplay & { status: 'ready' }
 export type RepositorySnapshot = {
   id: string;
+  display_name: string;
   source_version: string;
   content_hash: string;
   file_count: number;
@@ -35,6 +36,17 @@ export type RepositorySnapshot = {
   expires_at: string;
   languages: string[];
   frameworks: string[];
+}
+export type ComposerRepository = {
+  id: string;
+  display_name: string;
+  status: 'uploading' | 'ready' | 'expired' | 'error';
+  progress: number;
+  expires_at?: string;
+  languages: string[];
+  file_count: number;
+  symbol_count: number;
+  error?: string;
 }
 export type ExpiredAttachment = AttachmentDisplay & { status: 'expired' | 'unavailable' }
 export type MessageAttachment = ReadyAttachment | ExpiredAttachment
@@ -106,6 +118,8 @@ export type Bootstrap = {
     web_realtime_voice: boolean; separate_voice_credits: boolean;
     web_message_edit?: boolean; web_cross_thread_memory?: boolean; web_long_input?: boolean;
     web_answer_feedback?: boolean; web_content_search?: boolean; web_response_provenance?: boolean;
+    web_repository_upload?: boolean; web_repository_chat?: boolean;
+    web_repository_validation?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;
@@ -115,6 +129,11 @@ export type Bootstrap = {
     max_files_per_message: number; max_total_bytes: number; supported_extensions: string[];
     long_input_enabled?: boolean; long_input_inline_threshold_chars?: number;
     long_input_max_chars?: number;
+  };
+  repositories?: {
+    ttl_seconds: number;
+    max_archive_bytes: number;
+    validation_capability: 'static_only' | 'executable';
   };
 }
 export type LongInputMode = 'summarize' | 'analyze' | 'ask_questions' | 'rewrite' | 'translate'

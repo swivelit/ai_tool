@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+from pathlib import PurePath
+import re
 
 from ..web_ai.code_quality.repository_index import (
     RepositorySourceFile,
@@ -13,6 +15,15 @@ from .upload_store import EphemeralUploadStore
 
 
 REPOSITORY_KEY_PREFIX = "swico:web-repository:v1:"
+_UNSAFE_DISPLAY_NAME = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def safe_repository_display_name(value: str) -> str:
+    basename = PurePath(str(value or "").replace("\\", "/")).name
+    cleaned = _UNSAFE_DISPLAY_NAME.sub("", basename).strip()
+    if not cleaned.casefold().endswith(".zip"):
+        return "Repository.zip"
+    return cleaned[:128] or "Repository.zip"
 
 
 @dataclass(frozen=True)
@@ -24,6 +35,7 @@ class EphemeralRepositorySnapshot:
     created_at: str
     expires_at: str
     files: tuple[RepositorySourceFile, ...]
+    display_name: str = "Repository.zip"
 
     def safe_metadata(self) -> dict[str, object]:
         return {
@@ -31,6 +43,7 @@ class EphemeralRepositorySnapshot:
             "source_version": self.source_version,
             "content_hash": self.content_hash,
             "file_count": len(self.files),
+            "display_name": self.display_name,
             "created_at": self.created_at,
             "expires_at": self.expires_at,
         }
@@ -90,6 +103,9 @@ def get_repository_snapshot(
             created_at=str(payload["created_at"]),
             expires_at=str(payload["expires_at"]),
             files=files,
+            display_name=safe_repository_display_name(
+                str(payload.get("display_name", "Repository.zip"))
+            ),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
