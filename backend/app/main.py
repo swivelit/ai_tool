@@ -141,6 +141,10 @@ from .web_ai.rollout import (
     RolloutConfigurationError,
     WebRolloutPolicy,
 )
+from .web_ai.rollout_metrics import (
+    RolloutReportConfigurationError,
+    RolloutReportSettings,
+)
 
 
 bootstrap_observability()
@@ -1062,6 +1066,25 @@ def startup_runtime_services() -> None:
             ok=True,
             required=False,
             detail="validated",
+        )
+
+    try:
+        rollout_report_settings = RolloutReportSettings.from_environ()
+    except RolloutReportConfigurationError as exc:
+        _record_runtime_service(
+            "web_rollout_report",
+            ok=False,
+            required=False,
+            detail="; ".join(exc.errors),
+        )
+    else:
+        _record_runtime_service(
+            "web_rollout_report",
+            ok=True,
+            required=False,
+            detail=(
+                "enabled" if rollout_report_settings.enabled else "disabled"
+            ),
         )
 
     if not _is_openai_configured():

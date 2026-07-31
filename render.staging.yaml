@@ -49,6 +49,14 @@ projects:
                 value: disabled
               - key: WEB_ROLLOUT_ANSWER_GUARD_PERCENT
                 value: "0"
+              - key: WEB_TRIAG_ROLLOUT_REPORT_ENABLED
+                value: "false"
+              - key: WEB_TRIAG_ROLLOUT_REPORT_DEFAULT_WINDOW_HOURS
+                value: "24"
+              - key: WEB_TRIAG_ROLLOUT_REPORT_MAX_WINDOW_HOURS
+                value: "168"
+              - key: WEB_TRIAG_ROLLOUT_ACCEPTANCE_MIN_SAMPLE
+                value: "20"
               - key: WEB_RAG_HYBRID_ENABLED
                 value: "false"
               - key: WEB_RAG_DENSE_ENABLED

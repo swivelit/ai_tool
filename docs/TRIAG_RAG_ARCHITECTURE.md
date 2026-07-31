@@ -172,3 +172,28 @@ and Phase 0–5 global flags remain disabled until owner-isolation, privacy,
 billing, cancellation, cache, quality, and rollback gates pass in staging. No
 website request uses `AgentRuntime`, no production validator points to
 staging, and no persistent knowledge enters the global answer cache.
+
+## Phase 6B observability and acceptance reports
+
+`backend/app/web_ai/rollout_metrics.py` is a read-only, content-free reporting
+layer over existing rollout decision metadata, retrieval traces, answer
+checks, usage stages, authoritative charges, completion status/timestamps and
+message feedback. It projects only identifiers needed for in-process joins and
+never returns those identifiers. No message body, source text, memory, email,
+Firebase UID, user ID, provider/model value, secret or excerpt is part of the
+report contract.
+
+Reports are grouped by rollout policy version, feature key, cohort, Swico tier
+and a bounded time window. The deterministic acceptance evaluator grades
+privacy, owner isolation, billing settlement, cancellation, error rate,
+latency, retrieval quality and answer quality independently as `pass`,
+`warning`, `fail` or `insufficient_sample`. Results are observational only:
+they cannot mutate configuration, change a cohort or enable a feature.
+
+The authenticated endpoint is
+`GET /api/web/admin/triag-rollout-report`. It requires a verified Firebase
+email that exactly matches the owned account and `ADMIN_EMAILS`; all other
+accounts receive the same non-disclosing response. Render Shell can produce
+the identical JSON contract with `backend/scripts/triag_rollout_report.py`.
+No aggregate table, migration, public UI, route change or new service is
+required.

@@ -92,6 +92,9 @@ validator.
 Phase 6A adds no Render resource and no `VITE_*` value. Add its nine
 backend-only rollout variables directly to the API service. Keep every mode
 `disabled` and every percentage `0` until a separately approved staged gate.
+Phase 6B likewise adds no resource or public variable. Add its four
+backend-only reporting variables with reporting disabled; enable it only for a
+bounded staging admin/Render Shell acceptance review.
 The single Alembic head `f2a7c9e4b1d6` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
@@ -112,6 +115,10 @@ WEB_ROLLOUT_REPOSITORY_MODE=disabled
 WEB_ROLLOUT_REPOSITORY_PERCENT=0
 WEB_ROLLOUT_ANSWER_GUARD_MODE=disabled
 WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
+WEB_TRIAG_ROLLOUT_REPORT_ENABLED=false
+WEB_TRIAG_ROLLOUT_REPORT_DEFAULT_WINDOW_HOURS=24
+WEB_TRIAG_ROLLOUT_REPORT_MAX_WINDOW_HOURS=168
+WEB_TRIAG_ROLLOUT_ACCEPTANCE_MIN_SAMPLE=20
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false

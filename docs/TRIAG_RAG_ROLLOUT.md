@@ -17,6 +17,10 @@ WEB_ROLLOUT_REPOSITORY_MODE=disabled
 WEB_ROLLOUT_REPOSITORY_PERCENT=0
 WEB_ROLLOUT_ANSWER_GUARD_MODE=disabled
 WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
+WEB_TRIAG_ROLLOUT_REPORT_ENABLED=false
+WEB_TRIAG_ROLLOUT_REPORT_DEFAULT_WINDOW_HOURS=24
+WEB_TRIAG_ROLLOUT_REPORT_MAX_WINDOW_HOURS=168
+WEB_TRIAG_ROLLOUT_ACCEPTANCE_MIN_SAMPLE=20
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
@@ -139,3 +143,21 @@ approved staging exercise:
 Roll back immediately by setting the affected rollout mode to `disabled`;
 the global feature flag is the second, harder kill switch. No database
 downgrade, static-site variable, new service, or route change is needed.
+
+## Phase 6B acceptance reporting
+
+Deploy reporting disabled. In staging, an operator may set
+`WEB_TRIAG_ROLLOUT_REPORT_ENABLED=true` without changing any rollout mode or
+global feature switch. Only verified, owned accounts in `ADMIN_EMAILS` may use
+the authenticated report endpoint. A Render Shell operator can run:
+
+```text
+cd backend
+.venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
+```
+
+Review every feature/cohort/tier group separately. A report is evidence for a
+human rollout decision, never an activation mechanism. `pass` does not change
+environment variables; `warning`, `fail` and `insufficient_sample` block
+automatic interpretation. Keep production report access disabled until the
+admin authorization and operational access review pass.

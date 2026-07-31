@@ -75,6 +75,24 @@ def is_internal_test_user(auth_user: AuthUser, user: User) -> bool:
     )
 
 
+def is_verified_admin_user(auth_user: AuthUser, user: User) -> bool:
+    """Require a verified token email, owned-email match, and ADMIN_EMAILS."""
+
+    token_email = _normalized_email(auth_user.email)
+    owned_email = _normalized_email(user.email)
+    allowed = {
+        _normalized_email(item)
+        for item in os.getenv("ADMIN_EMAILS", "").split(",")
+        if _normalized_email(item)
+    }
+    return bool(
+        auth_user.email_verified
+        and token_email
+        and token_email == owned_email
+        and token_email in allowed
+    )
+
+
 def normalize_app_env(value: str | None = None) -> str:
     raw = value
     if raw is None:

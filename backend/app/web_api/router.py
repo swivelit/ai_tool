@@ -23,7 +23,13 @@ from sqlalchemy import delete as sa_delete, or_, text, update as sa_update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
-from ..auth import AuthUser, get_current_user, get_owned_user, is_internal_test_user
+from ..auth import (
+    AuthUser,
+    get_current_user,
+    get_owned_user,
+    is_internal_test_user,
+    is_verified_admin_user,
+)
 from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
     UsageLimitReachedError,
@@ -94,6 +100,11 @@ from ..web_ai.rollout import (
     WebRolloutPolicy,
     effective_triag_settings,
     resolve_rollout_decision,
+)
+from ..web_ai.rollout_metrics import (
+    RolloutReportConfigurationError,
+    RolloutReportSettings,
+    build_rollout_report,
 )
 from ..web_ai.knowledge_jobs import enqueue_knowledge_job, cancel_knowledge_job
 from ..web_ai.retrieval.attachment import safe_locator, upload_content_hash
@@ -210,6 +221,15 @@ def _web_rollout(
         global_flags=RolloutGlobalFlags.from_settings(global_settings),
     )
     return decision, effective_triag_settings(global_settings, decision)
+
+
+def _rollout_report_settings() -> RolloutReportSettings:
+    try:
+        return RolloutReportSettings.from_environ()
+    except RolloutReportConfigurationError:
+        # Startup and production validation expose variable names. The request
+        # path fails closed without logging configuration values.
+        return RolloutReportSettings()
 
 
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -703,6 +723,34 @@ def bootstrap(
             "validation_capability": validation_capability,
         },
     }
+
+
+@router.get("/admin/triag-rollout-report")
+def triag_rollout_report(
+    response: Response,
+    window_hours: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = get_owned_user(session, auth)
+    settings = _rollout_report_settings()
+    if not settings.enabled or not is_verified_admin_user(auth, user):
+        raise HTTPException(status_code=404, detail="Not found")
+    resolved_window = (
+        settings.default_window_hours
+        if window_hours is None else int(window_hours)
+    )
+    if resolved_window > settings.max_window_hours:
+        raise HTTPException(
+            status_code=422,
+            detail="window_hours exceeds the configured reporting bound",
+        )
+    return build_rollout_report(
+        session,
+        window_hours=resolved_window,
+        settings=settings,
+    )
 
 
 @router.get("/voice/diagnostics")

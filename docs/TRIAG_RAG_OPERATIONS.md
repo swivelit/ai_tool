@@ -168,3 +168,41 @@ the hard kill switch, also turn off its existing global Phase 0–5 flag. The
 Knowledge Library cancellation button calls the existing owner-scoped cancel
 endpoint for pending/indexing documents; the UI displays status only and never
 an internal job ID.
+
+## Phase 6B reporting operations
+
+The optional `web_rollout_report` startup service reports `disabled` as a
+healthy state. Configuration bounds are:
+
+- default window: `1..168` hours;
+- maximum window: `1..720` hours;
+- minimum acceptance sample: `1..10000`.
+
+The default window must not exceed the maximum. Invalid configuration reports
+variable names only. The admin endpoint returns `Cache-Control: no-store` and
+requires a verified Firebase email, exact owned-email match and membership in
+`ADMIN_EMAILS`. Unverified, mismatched and ordinary accounts receive the same
+non-disclosing denial.
+
+For Render Shell:
+
+```text
+cd backend
+.venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
+```
+
+The endpoint and CLI call the same aggregator. Output contains bounded
+timestamps, enums, counts, rates, token/cost totals and latency percentiles.
+It contains no request/user identifiers, emails, content, filenames, source
+excerpts, commands, provider/model names or raw failure details. The billing
+gate flags unsettled final reservations, non-exempt debit/cost differences,
+settlement exceeding reservation, and disagreement between recorded paid
+stages and the authoritative parent cost.
+
+Acceptance thresholds are deterministic: errors warn above 2% and fail above
+5%; P95 latency warns above 8 seconds and fails above 15 seconds; poor
+retrieval warns above 10% and fails above 25%; unverified/insufficient answers
+warn above 5% and fail above 15%. Privacy, owner-isolation and settlement
+mismatches fail immediately. Missing bounded samples report
+`insufficient_sample`. Operators must still review the report and change
+Render settings manually; reporting never activates or disables a cohort.

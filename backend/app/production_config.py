@@ -13,6 +13,10 @@ from .web_ai.rollout import (
     RolloutConfigurationError,
     WebRolloutPolicy,
 )
+from .web_ai.rollout_metrics import (
+    RolloutReportConfigurationError,
+    RolloutReportSettings,
+)
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -101,6 +105,10 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     try:
         WebRolloutPolicy.from_environ(env)
     except RolloutConfigurationError as exc:
+        errors.extend(exc.errors)
+    try:
+        RolloutReportSettings.from_environ(env)
+    except RolloutReportConfigurationError as exc:
         errors.extend(exc.errors)
 
     voice_recording = _bool(env, "WEB_VOICE_RECORDING_ENABLED", False)
