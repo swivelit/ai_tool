@@ -64,6 +64,21 @@ _ALLOWED_KEYS = frozenset(
         "round_count",
         "dense_enabled",
         "embedding_call_count",
+        "quality_outcome",
+        "quality_checks",
+        "check_type",
+        "check_status",
+        "repair_attempted",
+        "verifier_used",
+        "attempt_number",
+        "stage_key",
+        "provider",
+        "model",
+        "native_cost_amount",
+        "native_cost_currency",
+        "micro_inr_cost",
+        "input_token_count",
+        "output_token_count",
     }
 )
 _ENUM_VALUES: dict[str, frozenset[str]] = {
@@ -101,7 +116,9 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
         }
     ),
     "answer_class": frozenset({"simple", "normal", "detailed", "long_form"}),
-    "streaming_mode": frozenset({"existing_sse", "none"}),
+    "streaming_mode": frozenset(
+        {"existing_sse", "direct", "verified_buffered", "none"}
+    ),
     "status": frozenset(
         {
             "planned",
@@ -117,13 +134,32 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_status": frozenset(
         {"sufficient", "ambiguous", "insufficient", "contradictory"}
     ),
+    "quality_outcome": frozenset(
+        {
+            "verified",
+            "grounded",
+            "best_effort",
+            "unverified",
+            "insufficient_evidence",
+        }
+    ),
+    "check_status": frozenset(
+        {"passed", "failed", "warning", "skipped", "error"}
+    ),
 }
 _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "retrieval_sources": frozenset(
         {"history", "memory", "profile", "documents"}
     ),
     "planned_usage_stages": frozenset(
-        {"embedding", "reservation", "generation", "settlement"}
+        {
+            "embedding",
+            "reservation",
+            "generation",
+            "verifier",
+            "repair",
+            "settlement",
+        }
     ),
     "attachment_media_categories": frozenset(
         {"text", "image", "audio", "video", "application", "other"}

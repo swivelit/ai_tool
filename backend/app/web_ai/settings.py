@@ -67,6 +67,11 @@ class TriagSettings:
     query_embedding_cache_ttl_seconds: int = 86_400
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1_536
+    answer_guard_enabled: bool = False
+    verified_streaming_enabled: bool = False
+    model_claim_verifier_enabled: bool = False
+    answer_repair_enabled: bool = False
+    verified_buffer_max_characters: int = 200_000
 
     @classmethod
     def from_environ(
@@ -80,6 +85,26 @@ class TriagSettings:
         dense = _parse_bool(env, "WEB_RAG_DENSE_ENABLED", False, errors)
         evaluator = _parse_bool(
             env, "WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED", False, errors
+        )
+        answer_guard = _parse_bool(
+            env, "WEB_ANSWER_GUARD_ENABLED", False, errors
+        )
+        verified_streaming = _parse_bool(
+            env, "WEB_VERIFIED_STREAMING_ENABLED", False, errors
+        )
+        model_verifier = _parse_bool(
+            env, "WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED", False, errors
+        )
+        answer_repair = _parse_bool(
+            env, "WEB_ANSWER_GUARD_REPAIR_ENABLED", False, errors
+        )
+        verified_buffer_max = _parse_int(
+            env,
+            "WEB_ANSWER_GUARD_MAX_BUFFER_CHARACTERS",
+            200_000,
+            errors,
+            minimum=1_000,
+            maximum=1_000_000,
         )
         max_corrective_rounds = _parse_int(
             env,
@@ -132,6 +157,11 @@ class TriagSettings:
             query_embedding_cache_ttl_seconds=query_cache_ttl,
             embedding_model=embedding_model,
             embedding_dimensions=embedding_dimensions,
+            answer_guard_enabled=answer_guard,
+            verified_streaming_enabled=verified_streaming,
+            model_claim_verifier_enabled=model_verifier,
+            answer_repair_enabled=answer_repair,
+            verified_buffer_max_characters=verified_buffer_max,
         )
 
     @property
@@ -145,6 +175,17 @@ class TriagSettings:
     @property
     def dense_runtime_enabled(self) -> bool:
         return self.hybrid_runtime_enabled and self.rag_dense_enabled
+
+    @property
+    def answer_guard_runtime_enabled(self) -> bool:
+        return self.enabled and not self.shadow_mode and self.answer_guard_enabled
+
+    @property
+    def verified_streaming_runtime_enabled(self) -> bool:
+        return (
+            self.answer_guard_runtime_enabled
+            and self.verified_streaming_enabled
+        )
 
     @property
     def runtime_status(self) -> dict[str, object]:
@@ -171,6 +212,26 @@ class TriagSettings:
                 "enabled"
                 if self.hybrid_runtime_enabled
                 and self.retrieval_evaluator_enabled
+                else "disabled"
+            ),
+            "answer_guard": (
+                "enabled" if self.answer_guard_runtime_enabled else "disabled"
+            ),
+            "verified_streaming": (
+                "enabled"
+                if self.verified_streaming_runtime_enabled
+                else "disabled"
+            ),
+            "model_claim_verifier": (
+                "enabled"
+                if self.answer_guard_runtime_enabled
+                and self.model_claim_verifier_enabled
+                else "disabled"
+            ),
+            "answer_repair": (
+                "enabled"
+                if self.answer_guard_runtime_enabled
+                and self.answer_repair_enabled
                 else "disabled"
             ),
         }

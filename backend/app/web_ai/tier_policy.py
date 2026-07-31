@@ -27,7 +27,8 @@ class TierPolicy:
     retrieval_round_limit: int
     dense_retrieval_allowed: bool
     corrective_retrieval_allowed: bool
-    max_provider_calls: int = 1
+    claim_verifier_allowed: bool
+    max_provider_calls: int = 4
 
     def __post_init__(self) -> None:
         numeric = (
@@ -50,7 +51,7 @@ class TierPolicy:
             raise ValueError("max_prompt_tokens is outside the supported bounds")
         if self.max_output_tokens > self.max_prompt_tokens:
             raise ValueError("max_output_tokens cannot exceed max_prompt_tokens")
-        if self.max_provider_calls > 2:
+        if self.max_provider_calls > 4:
             raise ValueError("max_provider_calls exceeds the safety bound")
         if self.query_variant_limit > 8 or self.retrieval_round_limit > 2:
             raise ValueError("retrieval limits exceed supported bounds")
@@ -93,6 +94,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "retrieval_round_limit": 1,
         "dense_retrieval_allowed": False,
         "corrective_retrieval_allowed": False,
+        "claim_verifier_allowed": False,
     },
     "standard": {
         "max_prompt_tokens": 6_500,
@@ -108,6 +110,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "retrieval_round_limit": 2,
         "dense_retrieval_allowed": True,
         "corrective_retrieval_allowed": True,
+        "claim_verifier_allowed": True,
     },
     "pro": {
         "max_prompt_tokens": 12_000,
@@ -123,6 +126,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "retrieval_round_limit": 2,
         "dense_retrieval_allowed": True,
         "corrective_retrieval_allowed": True,
+        "claim_verifier_allowed": True,
     },
 }
 

@@ -63,6 +63,16 @@ projects:
                 value: "12"
               - key: WEB_RAG_PRO_EVIDENCE_TOKEN_CAP
                 value: "6000"
+              - key: WEB_ANSWER_GUARD_ENABLED
+                value: "false"
+              - key: WEB_VERIFIED_STREAMING_ENABLED
+                value: "false"
+              - key: WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED
+                value: "false"
+              - key: WEB_ANSWER_GUARD_REPAIR_ENABLED
+                value: "false"
+              - key: WEB_ANSWER_GUARD_MAX_BUFFER_CHARACTERS
+                value: "200000"
               - key: WEB_SAME_THREAD_CONTEXT_MODE
                 value: adaptive
               - key: WEB_SWICO_BRAND_GUARD_ENABLED

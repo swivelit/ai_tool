@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, LongInputMode, ReadyAttachment, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -60,6 +60,32 @@ function normalizeSourcesEvent(event: SSEEvent): SSEEvent {
   return { event: 'sources', data: { sources } }
 }
 
+function normalizeQualityEvent(event: SSEEvent): SSEEvent {
+  if (event.event !== 'quality' || !event.data || typeof event.data !== 'object') return event
+  const data = event.data as Record<string, unknown>
+  const status = String(data.status ?? '')
+  const outcomes: QualityOutcome[] = ['verified', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence']
+  if (!outcomes.includes(status as QualityOutcome)) {
+    return { event: 'quality', data: null }
+  }
+  const allowedChecks: QualityCheckStatus[] = ['passed', 'failed', 'warning', 'skipped', 'error']
+  const checks = (Array.isArray(data.checks) ? data.checks : []).flatMap(value => {
+    if (!value || typeof value !== 'object') return []
+    const check = value as Record<string, unknown>
+    const type = String(check.type ?? '').slice(0, 64)
+    const checkStatus = String(check.status ?? '')
+    return type && allowedChecks.includes(checkStatus as QualityCheckStatus)
+      ? [{ type, status: checkStatus as QualityCheckStatus }] : []
+  })
+  const quality: ResponseQuality = {
+    status: status as QualityOutcome,
+    retrieval_status: typeof data.retrieval_status === 'string'
+      ? data.retrieval_status.slice(0, 32) : null,
+    checks: checks.slice(0, 24),
+  }
+  return { event: 'quality', data: quality }
+}
+
 export async function publicApiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {
@@ -106,7 +132,9 @@ export async function streamChat(
   let streamError: SSEStreamError | null = null
   let terminalEventReceived = false
   await consumeSSE(response, event => {
-    const normalizedEvent = normalizeSourcesEvent(event)
+    const normalizedEvent = normalizeQualityEvent(
+      normalizeSourcesEvent(event),
+    )
     onEvent(normalizedEvent)
     if (event.event === 'done') terminalEventReceived = true
     if (event.event === 'error') {

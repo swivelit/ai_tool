@@ -89,6 +89,31 @@ describe('streamChat terminal events', () => {
     expect(seen).toHaveBeenLastCalledWith({ event:'done', data:{} })
   })
 
+  it('normalizes quality events without retaining internal fields', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      'event: quality\ndata: {"status":"grounded","retrieval_status":"sufficient","checks":[{"type":"citation_validity","status":"passed"}],"provider":"hidden","model":"hidden"}\n\nevent: done\ndata: {}\n\n',
+      { status:200 },
+    ))
+    const seen = vi.fn()
+    const user = { getIdToken:vi.fn().mockResolvedValue('token') }
+
+    await streamChat(
+      user as never,
+      { request_id:'quality', message:'hello', input_mode:'text' },
+      seen,
+      new AbortController().signal,
+    )
+    expect(seen).toHaveBeenCalledWith({
+      event:'quality',
+      data:{
+        status:'grounded',
+        retrieval_status:'sufficient',
+        checks:[{ type:'citation_validity', status:'passed' }],
+      },
+    })
+    expect(JSON.stringify(seen.mock.calls)).not.toMatch(/hidden/)
+  })
+
   it('dispatches one synthetic retryable error before throwing on premature EOF', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       'event: delta\ndata: {"text":"Partial"}\n\n',

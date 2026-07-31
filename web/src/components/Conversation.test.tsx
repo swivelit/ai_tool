@@ -231,6 +231,15 @@ it('renders safe source labels and locators without provider names', () => {
   expect(document.body.textContent).not.toMatch(/openai|gpt-|sarvam/i)
 })
 
+it('renders persisted quality without provider or model details', () => {
+  render(<Conversation messages={[message('quality', { quality:{
+    status:'grounded', retrieval_status:'sufficient',
+    checks:[{ type:'citation_validity', status:'passed' }],
+  } })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByText('Sources checked')).toBeInTheDocument()
+  expect(document.body.textContent).not.toMatch(/openai|gpt-|sarvam|model/i)
+})
+
 it('labels historical messages without a tier simply as Swico', () => {
   render(<Conversation messages={[{ ...message('historical'), tier:null, tier_label:'Swico' }]} retry={vi.fn()} suggest={vi.fn()} />)
   fireEvent.click(screen.getByText('Details'))

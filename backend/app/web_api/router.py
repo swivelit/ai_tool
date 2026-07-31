@@ -458,6 +458,36 @@ def _serialize_message(
         )
         if isinstance(source, dict)
     ]
+    raw_quality = metadata.get("quality")
+    quality = None
+    if isinstance(raw_quality, dict):
+        quality_status = str(raw_quality.get("status") or "")
+        if quality_status in {
+            "verified", "grounded", "best_effort", "unverified",
+            "insufficient_evidence",
+        }:
+            quality_checks = []
+            for check in (
+                raw_quality.get("checks")
+                if isinstance(raw_quality.get("checks"), list) else []
+            ):
+                if not isinstance(check, dict):
+                    continue
+                check_type = str(check.get("type") or "")[:64]
+                check_status = str(check.get("status") or "")
+                if check_type and check_status in {
+                    "passed", "failed", "warning", "skipped", "error",
+                }:
+                    quality_checks.append({
+                        "type": check_type, "status": check_status,
+                    })
+            quality = {
+                "status": quality_status,
+                "retrieval_status": (
+                    str(raw_quality.get("retrieval_status") or "") or None
+                ),
+                "checks": quality_checks[:24],
+            }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
         "request_id": row.request_id, "tier": tier,
@@ -514,6 +544,7 @@ def _serialize_message(
             else []
         ),
         "sources": sources,
+        "quality": quality,
     }
 
 
@@ -3059,7 +3090,7 @@ async def chat_stream(
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
 
     async def events():
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         loop = asyncio.get_running_loop()
         started_at = time.monotonic()
         heartbeat_seconds = _bounded_float_env(
@@ -3074,11 +3105,23 @@ async def chat_stream(
         ownership = {"observed": False, "generator_closed": False}
 
         def delta(value: str) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, value)
+            loop.call_soon_threadsafe(
+                queue.put_nowait, ("delta", value)
+            )
+
+        def status(phase: str) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, ("status", phase)
+            )
 
         with _active_generations_lock:
             _active_generations[prepared.request_id] = (user_id, cancellation)
-        task = asyncio.create_task(asyncio.to_thread(execute_web_turn, prepared, on_delta=delta))
+        task = asyncio.create_task(asyncio.to_thread(
+            execute_web_turn,
+            prepared,
+            on_delta=delta,
+            on_status=status,
+        ))
 
         def unregister(done_task: asyncio.Task[Any]) -> None:
             with _active_generations_lock:
@@ -3126,9 +3169,14 @@ async def chat_stream(
                         0.01,
                         min(0.15, heartbeat_seconds - (loop.time() - last_event_at)),
                     )
-                    chunk = await asyncio.wait_for(queue.get(), timeout=remaining)
-                    visible_character_count += len(chunk)
-                    yield _sse("delta", {"text": chunk})
+                    event_name, value = await asyncio.wait_for(
+                        queue.get(), timeout=remaining
+                    )
+                    if event_name == "status":
+                        yield _sse("status", {"phase": value})
+                    else:
+                        visible_character_count += len(value)
+                        yield _sse("delta", {"text": value})
                     last_event_at = loop.time()
                 except asyncio.TimeoutError:
                     if await request.is_disconnected():
@@ -3140,9 +3188,12 @@ async def chat_stream(
                         last_event_at = loop.time()
                     continue
             while not queue.empty():
-                chunk = queue.get_nowait()
-                visible_character_count += len(chunk)
-                yield _sse("delta", {"text": chunk})
+                event_name, value = queue.get_nowait()
+                if event_name == "status":
+                    yield _sse("status", {"phase": value})
+                else:
+                    visible_character_count += len(value)
+                    yield _sse("delta", {"text": value})
                 last_event_at = loop.time()
             try:
                 completed = await task
@@ -3157,6 +3208,8 @@ async def chat_stream(
                     "sources",
                     {"sources": list(completed.message.sources)},
                 )
+            if completed.message.quality:
+                yield _sse("quality", completed.message.quality)
             yield _sse("usage", {
                 "tier": completed.message.swico_tier,
                 "tier_label": (
@@ -3201,6 +3254,7 @@ async def chat_stream(
                 ),
                 "memory_updated": bool(response.raw.get("memory_updated")),
                 "sources": list(completed.message.sources),
+                "quality": completed.message.quality,
             })
             outcome = "done"
         except asyncio.CancelledError:

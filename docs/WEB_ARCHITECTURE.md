@@ -25,6 +25,13 @@ tier-capped evidence pack. Each embedding stage must have an authoritative
 skipped and lexical retrieval continues. Safe S1/S2 labels and locators are
 emitted in `sources`; raw excerpts are never SSE or message metadata.
 
+Phase 3 adds an opt-in Answer Guard after retrieval. Direct mode retains
+ordinary low-risk streaming. Verified-buffered mode emits bounded status
+events while holding the provider draft in memory, runs structural, citation,
+evidence-support, contradiction and completeness checks, and emits only the
+accepted answer. Persisted quality metadata contains check types and statuses
+only. Answer Guard and verified streaming are disabled by default.
+
 ## Request flow
 
 1. Firebase verifies the user in the browser; the API verifies the bearer token with Firebase Admin and resolves the existing `User` row.
@@ -49,7 +56,9 @@ The TRIAG-RAG persistence tables are additive:
 `web_usage_stage`. Phase 1 writes only a content-free `web_retrieval_trace` in
 explicit shadow mode. Phase 2 uses the same tables for content-free evidence
 provenance and idempotent embedding-stage linkage; `UsageCharge` remains the
-authoritative reservation and settlement record.
+authoritative reservation and settlement record. Phase 3 uses
+`web_answer_check` for content-free quality results and `web_usage_stage` for
+generation, verifier, and repair accounting.
 
 The same optimizer contains a deterministic Swico Brand Guard. Explicit public
 product and identity questions, plus a bounded follow-up based only on the

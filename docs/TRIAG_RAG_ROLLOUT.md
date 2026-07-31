@@ -11,6 +11,10 @@ WEB_TRIAG_POLICY_VERSION=v1
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
+WEB_ANSWER_GUARD_ENABLED=false
+WEB_VERIFIED_STREAMING_ENABLED=false
+WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
+WEB_ANSWER_GUARD_REPAIR_ENABLED=false
 ```
 
 Do not add them to the static site, any `VITE_*` configuration, PostgreSQL,
@@ -30,6 +34,9 @@ optional state.
 5. A separately approved staging experiment may set shadow false and hybrid
    true. Dense additionally requires `WEB_RAG_DENSE_ENABLED=true`, a working
    upload Valkey, and embedding accounting. Enable the evaluator separately.
+6. Enable Answer Guard separately. Keep the model verifier and repair disabled
+   until stage reservation/settlement is validated. Verified streaming must not
+   be enabled without Answer Guard.
 
 No new Render resource, route, static-site variable, or production activation
 is required. The staging blueprint records the safe disabled defaults.
@@ -43,6 +50,6 @@ disable the feature.
 
 ## Phase boundary
 
-Answer Guard, repair generation, code execution, triplets, hierarchy, and
-persistent knowledge remain Phase 3+ work and must not be enabled through these
-flags.
+Repository execution, an isolated validator service, arbitrary commands,
+repository indexing, triplets, hierarchy, and persistent knowledge remain
+Phase 4+ work.

@@ -158,7 +158,30 @@ def build_execution_plan(
         and config.dense_runtime_enabled
         and policy.dense_retrieval_allowed
     )
-    expected_calls = 0 if deterministic or blocked else 1 + int(dense_planned)
+    guard_planned = bool(
+        not deterministic
+        and not blocked
+        and config.answer_guard_runtime_enabled
+    )
+    verifier_planned = bool(
+        guard_planned
+        and "documents" in retrieval_sources
+        and config.model_claim_verifier_enabled
+        and policy.claim_verifier_allowed
+    )
+    repair_planned = bool(
+        guard_planned and config.answer_repair_enabled
+    )
+    expected_calls = (
+        0
+        if deterministic or blocked
+        else (
+            1
+            + int(dense_planned)
+            + int(verifier_planned)
+            + int(repair_planned)
+        )
+    )
     reasons = (
         optimization.optimization_route,
         triage_input.continuity.reason,
@@ -178,14 +201,34 @@ def build_execution_plan(
         expected_provider_calls=expected_calls,
         cache_eligible=optimization.cache_eligible,
         deterministic=deterministic or blocked,
-        streaming_mode="none" if deterministic or blocked else "existing_sse",
+        streaming_mode=(
+            "none"
+            if deterministic or blocked
+            else "verified_buffered"
+            if guard_planned
+            and config.verified_streaming_runtime_enabled
+            and (
+                "documents" in retrieval_sources
+                or optimization.answer_class in {"detailed", "long_form"}
+            )
+            else "direct"
+            if guard_planned
+            else "existing_sse"
+        ),
         planned_usage_stages=(
             ()
             if expected_calls == 0
-            else (
-                ("embedding", "reservation", "generation", "settlement")
-                if dense_planned
-                else ("reservation", "generation", "settlement")
+            else tuple(
+                stage
+                for stage, included in (
+                    ("embedding", dense_planned),
+                    ("reservation", True),
+                    ("generation", True),
+                    ("verifier", verifier_planned),
+                    ("repair", repair_planned),
+                    ("settlement", True),
+                )
+                if included
             )
         ),
     )

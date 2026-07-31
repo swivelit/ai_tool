@@ -296,6 +296,9 @@ export function ChatPage() {
         if (event.event === 'sources' && (
           typeof event.data !== 'object' || event.data === null
         )) return
+        if (event.event === 'quality' && (
+          typeof event.data !== 'object' || event.data === null
+        )) return
         dispatchStream({ type: 'event', event })
         if (event.event === 'thread' && typeof event.data === 'object' && event.data) {
           const id = String((event.data as Record<string, unknown>).thread_id ?? '')

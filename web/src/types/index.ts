@@ -53,6 +53,7 @@ export type Message = {
   feedback_rating?: 'up' | 'down' | null;
   provenance?: ResponseProvenance[];
   sources?: SourceSummary[];
+  quality?: ResponseQuality | null;
 }
 export type ResponseProvenance = 'memory' | 'document' | 'cached_answer' | 'semantic_cache' | 'backend_tool' | 'web_search'
 export type SourceSummary = {
@@ -61,6 +62,13 @@ export type SourceSummary = {
   locator: string;
   confidence: number;
   source_kind: string;
+}
+export type QualityOutcome = 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
+export type QualityCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped' | 'error'
+export type ResponseQuality = {
+  status: QualityOutcome;
+  retrieval_status: string | null;
+  checks: Array<{ type: string; status: QualityCheckStatus }>;
 }
 export type SearchResult = {
   thread_id: string | null; message_id: string | null; snippet: string;
@@ -110,7 +118,7 @@ export type RealtimeVoiceSession = {
   playback_mode: RealtimeVoicePlaybackMode; selected_codec: RealtimeVoiceCodec;
   provider_sample_rate: number | null; media_source_allowed: boolean;
 }
-export type StreamEventName = 'thread' | 'status' | 'delta' | 'sources' | 'usage' | 'wallet' | 'done' | 'error'
+export type StreamEventName = 'thread' | 'status' | 'delta' | 'sources' | 'quality' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
 export type PaymentStatus = {
   credit_bucket?: CreditBucket;

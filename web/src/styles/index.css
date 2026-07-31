@@ -161,6 +161,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .source-citations li svg { flex: 0 0 auto; margin-top: 2px }
 .source-citations li span { display: grid; gap: 2px }
 .source-citations li small { color: var(--subtle) }
+.response-quality { display: flex; align-items: center; gap: 6px; width: fit-content; margin-top: 10px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--subtle); font-size: 12px }
+.response-quality.ok { color: var(--accent) }
+.response-quality.warning { color: var(--warning, #a16207) }
+.response-quality small { color: inherit; opacity: .8 }
 .message.search-highlight { animation: search-highlight 2.8s ease-out }
 @keyframes search-highlight { 0%, 35% { background: color-mix(in srgb, var(--accent) 12%, transparent); } 100% { background: transparent; } }
 .content-search-results { display: grid; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line) }

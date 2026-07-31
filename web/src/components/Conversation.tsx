@@ -7,6 +7,7 @@ import { ResponseToolbar } from './ResponseToolbar'
 import { PromptToolbar } from './PromptToolbar'
 import { continuationMarkdown } from '../continuationMarkdown'
 import { SourceCitations } from './SourceCitations'
+import { ResponseQualityPanel } from './ResponseQualityPanel'
 
 const BOTTOM_THRESHOLD_PX = 120
 
@@ -136,7 +137,16 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
           voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
           retryVoice={retryVoice} addCredits={addCredits} feedbackEnabled={feedbackEnabled}
           submitFeedback={submitFeedback} highlighted={message.id === highlightMessageId} />)}
-        {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
+        {phase && [
+          'connecting', 'routing', 'reserved', 'understanding_request',
+          'searching_context', 'searching_documents', 'evaluating_evidence',
+          'preparing_answer', 'generating', 'verifying_sources', 'repairing',
+          'responding',
+        ].includes(phase) && <div className="thinking" role="status"><span />{
+          phase === 'verifying_sources' ? 'Swico is checking the answer'
+            : phase === 'repairing' ? 'Swico is improving the answer'
+              : 'Swico is thinking'
+        }</div>}
       </div>
     </div>
     {showBottom && <button className="scroll-bottom" aria-label="Scroll to bottom" title="Scroll to bottom" onClick={scrollBottom}><ChevronDown size={19} /></button>}
@@ -226,6 +236,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
     {displayedContent ? <MarkdownMessage streaming={message.status === 'streaming'}>{displayedContent}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
     {!!message.sources?.length && <SourceCitations sources={message.sources} />}
+    {message.quality && <ResponseQualityPanel quality={message.quality} />}
     {!!message.provenance?.length && <div className="provenance-chips">{message.provenance.map(value => <span key={value}>{{ memory: 'Used memory', document: 'Used document', cached_answer: 'Cached answer', semantic_cache: 'Semantic cache', backend_tool: 'Backend tool', web_search: 'Web search' }[value]}</span>)}</div>}
     {message.status !== 'streaming' && <div className="answer-actions">
       {feedbackEnabled && message.status === 'complete' && <><button className={feedback === 'up' ? 'selected' : ''} aria-label="Good answer" title="Good answer" aria-pressed={feedback === 'up'} onClick={() => rate('up')}><ThumbsUp size={15} /></button>

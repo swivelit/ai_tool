@@ -54,3 +54,9 @@ If retrieval metadata appears unsafe, set `WEB_TRIAG_ENABLED=false`, restart the
 API, preserve the affected trace IDs for investigation, and follow the normal
 privacy incident process. If route, billing, cache, answer, or SSE behavior
 changes, treat it as a release-blocking invariant violation and disable TRIAG.
+
+For a Phase 3 incident, first disable repair, then the optional model verifier,
+then verified streaming. Setting `WEB_ANSWER_GUARD_ENABLED=false` restores the
+Phase 2 generation path. Inspect only the content-free `web_answer_check` and
+`web_usage_stage` fields; provider prompts, evidence excerpts, and repair
+prompts must never be stored there.

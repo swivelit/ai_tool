@@ -34,8 +34,9 @@ Historical messages retain their `user` and `assistant` provider roles, and the
 same frozen message list drives prompt estimation, reservation, and provider
 invocation.
 
-`backend/app/web_ai/` contains the Phase 0/1 foundation and the Phase 2
-temporary-document hybrid retrieval implementation. It does not replace
+`backend/app/web_ai/` contains the Phase 0/1 foundation, Phase 2
+temporary-document hybrid retrieval, and Phase 3 Answer Guard implementation.
+It does not replace
 `WebRequestCoordinator`: disabled and shadow modes retain the original path.
 The live Phase 2 path is entered only when TRIAG is non-shadow and
 `WEB_RAG_HYBRID_ENABLED=true`. It adapts the existing lexical attachment scorer,
@@ -55,12 +56,17 @@ WEB_TRIAG_POLICY_VERSION=v1
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
+WEB_ANSWER_GUARD_ENABLED=false
+WEB_VERIFIED_STREAMING_ENABLED=false
+WEB_ANSWER_GUARD_MODEL_VERIFIER_ENABLED=false
+WEB_ANSWER_GUARD_REPAIR_ENABLED=false
 ```
 
-Phase 2 remains disabled by default. It adds safe `sources` SSE/message
-metadata containing labels and locators only. It does not add Answer Guard,
-repair calls, repository execution, triplets, hierarchy, or persistent
-knowledge.
+Phases 2 and 3 remain disabled by default. They add safe `sources` and
+`quality` SSE/message metadata. Phase 3 can buffer a draft until deterministic
+checks finish and can optionally run one accounted verifier or repair call.
+It does not execute repository code or add a validator service, repository
+indexing, triplets, hierarchy, or persistent knowledge.
 
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment

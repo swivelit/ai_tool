@@ -80,6 +80,47 @@ describe('chatStreamReducer', () => {
     const state = chatStreamReducer(emptyStreamState, { type: 'event', event: { event: 'future', data: 'bad' } })
     expect(state).toBe(emptyStreamState)
   })
+  it('records quality events and restores quality from done', () => {
+    let state = chatStreamReducer(emptyStreamState, {
+      type:'start', requestId:'quality', threadId:'t1',
+      tier:'standard', tierLabel:'Swico Standard',
+    })
+    state = chatStreamReducer(state, { type:'event', event:{
+      event:'quality', data:{
+        status:'grounded', retrieval_status:'sufficient',
+        checks:[{ type:'citation_validity', status:'passed' }],
+        provider:'must-not-be-retained', model:'must-not-be-retained',
+      },
+    } })
+    expect(state.assistant?.quality).toEqual({
+      status:'grounded', retrieval_status:'sufficient',
+      checks:[{ type:'citation_validity', status:'passed' }],
+    })
+    state = chatStreamReducer(state, { type:'event', event:{
+      event:'done', data:{ message_id:'m1', quality:{
+        status:'verified', retrieval_status:null,
+        checks:[{ type:'structural', status:'passed' }],
+      } },
+    } })
+    expect(state.assistant?.quality?.status).toBe('verified')
+    expect(JSON.stringify(state.assistant?.quality)).not.toMatch(/provider|model/)
+  })
+  it('keeps verified-buffered text empty until a delta arrives', () => {
+    let state = chatStreamReducer(emptyStreamState, {
+      type:'start', requestId:'buffered', threadId:'t1',
+      tier:'standard', tierLabel:'Swico Standard',
+    })
+    for (const phase of ['generating', 'verifying_sources', 'repairing']) {
+      state = chatStreamReducer(state, {
+        type:'event', event:{ event:'status', data:{ phase } },
+      })
+      expect(state.assistant?.content).toBe('')
+    }
+    state = chatStreamReducer(state, {
+      type:'event', event:{ event:'delta', data:{ text:'Accepted answer' } },
+    })
+    expect(state.assistant?.content).toBe('Accepted answer')
+  })
   it('adds bounded source summaries and preserves them through done', () => {
     let state = chatStreamReducer(emptyStreamState, {
       type:'start', requestId:'sources', threadId:'t1',

@@ -1,4 +1,4 @@
-import type { Message, SSEEvent, SourceSummary, SwicoTier, Wallet } from './types'
+import type { Message, ResponseQuality, SSEEvent, SourceSummary, SwicoTier, Wallet } from './types'
 
 export type StreamState = {
   assistant: Message | null
@@ -41,6 +41,25 @@ function sources(data: unknown): SourceSummary[] {
   })
 }
 
+function quality(data: unknown): ResponseQuality | null {
+  const value = record(data)
+  const status = String(value.status ?? '')
+  if (!['verified', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence'].includes(status)) return null
+  const checks = (Array.isArray(value.checks) ? value.checks : []).flatMap(item => {
+    const check = record(item)
+    const type = String(check.type ?? '').slice(0, 64)
+    const checkStatus = String(check.status ?? '')
+    if (!type || !['passed', 'failed', 'warning', 'skipped', 'error'].includes(checkStatus)) return []
+    return [{ type, status: checkStatus as ResponseQuality['checks'][number]['status'] }]
+  })
+  return {
+    status: status as ResponseQuality['status'],
+    retrieval_status: typeof value.retrieval_status === 'string'
+      ? value.retrieval_status.slice(0, 32) : null,
+    checks: checks.slice(0, 24),
+  }
+}
+
 export function chatStreamReducer(state: StreamState, action: StreamAction): StreamState {
   if (action.type === 'reset') return emptyStreamState
   if (action.type === 'start') return {
@@ -78,6 +97,14 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         assistant: state.assistant ? {
           ...state.assistant,
           sources: sources(data.sources),
+        } : null,
+      }
+    case 'quality':
+      return {
+        ...state,
+        assistant: state.assistant ? {
+          ...state.assistant,
+          quality: quality(data),
         } : null,
       }
     case 'usage':
@@ -120,6 +147,9 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
           sources: Array.isArray(data.sources)
             ? sources(data.sources)
             : state.assistant.sources,
+          quality: data.quality
+            ? quality(data.quality)
+            : state.assistant.quality,
         } : null,
       }
     case 'error': {

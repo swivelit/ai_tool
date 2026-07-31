@@ -5,9 +5,15 @@ from typing import Mapping
 
 from sqlmodel import Session, select
 
-from ..models import WebEvidenceItem, WebRetrievalTrace, WebUsageStage
+from ..models import (
+    WebAnswerCheck,
+    WebEvidenceItem,
+    WebRetrievalTrace,
+    WebUsageStage,
+)
 from .evidence.models import EvidencePack
 from .execution_plan import ExecutionPlan
+from .generation.models import AnswerQualityResult
 from .telemetry.metadata import sanitize_metadata
 
 
@@ -185,3 +191,61 @@ def persist_retrieval_pack(
             )
         )
     return trace
+
+
+def persist_answer_quality(
+    session: Session,
+    *,
+    user_id: int,
+    thread_id: str | None,
+    request_id: str,
+    assistant_message_id: str | None,
+    result: AnswerQualityResult,
+) -> WebAnswerCheck:
+    """Idempotently persist content-free Answer Guard results."""
+
+    key = f"answer-check:{request_id}:phase3"
+    existing = session.exec(
+        select(WebAnswerCheck).where(
+            WebAnswerCheck.user_id == int(user_id),
+            WebAnswerCheck.idempotency_key == key,
+        )
+    ).first()
+    safe = sanitize_metadata(
+        {
+            "quality_outcome": result.status,
+            **(
+                {"retrieval_status": result.retrieval_status}
+                if result.retrieval_status else {}
+            ),
+            "quality_checks": [
+                {
+                    "check_type": check.check_type,
+                    "check_status": check.status,
+                }
+                for check in result.checks
+            ],
+            "repair_attempted": result.repair_attempted,
+            "verifier_used": result.verifier_used,
+        }
+    )
+    row = existing or WebAnswerCheck(
+        user_id=int(user_id),
+        thread_id=thread_id,
+        request_id=request_id,
+        idempotency_key=key,
+    )
+    row.assistant_message_id = assistant_message_id
+    row.status = (
+        "passed"
+        if result.status in {"verified", "grounded", "best_effort"}
+        else "skipped"
+        if result.status == "insufficient_evidence"
+        else "failed"
+    )
+    row.passed = result.passed
+    row.safe_metadata_json = json.dumps(
+        safe, sort_keys=True, separators=(",", ":")
+    )
+    session.add(row)
+    return row

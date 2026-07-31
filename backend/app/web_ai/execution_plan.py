@@ -12,7 +12,9 @@ PlanRoute = Literal[
     "provider_backed",
     "blocked",
 ]
-StreamingMode = Literal["existing_sse", "none"]
+StreamingMode = Literal[
+    "existing_sse", "direct", "verified_buffered", "none",
+]
 
 
 @dataclass(frozen=True)
@@ -35,8 +37,10 @@ class ExecutionPlan:
     planned_usage_stages: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.expected_provider_calls < 0 or self.expected_provider_calls > 2:
-            raise ValueError("expected_provider_calls is outside the Phase 1 bound")
+        if self.expected_provider_calls < 0 or self.expected_provider_calls > 4:
+            raise ValueError(
+                "expected_provider_calls is outside the TRIAG-RAG bound"
+            )
         if self.deterministic and self.expected_provider_calls:
             raise ValueError("deterministic plans cannot call a provider")
         if self.max_output_tokens < 0:
