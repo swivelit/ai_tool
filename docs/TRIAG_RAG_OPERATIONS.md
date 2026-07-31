@@ -384,6 +384,14 @@ recording provider cost, and the admin allowlist grants only the content-free
 audit. The account must have Swico Pro available and all four GA features. Do
 not run other tests or manual chats on it concurrently.
 
+Before starting the GitHub workflow, open the standalone production website in
+a new Incognito/private window and manually sign in with the dedicated account.
+Confirm that the workspace opens and the message composer is available, then
+sign out and close the private window. Do not paste browser errors, credentials,
+tokens, bootstrap bodies, or URLs into an issue or workflow artifact. This
+manual check catches Firebase credential, email-verification, and deployed
+login problems before enabling the writable run.
+
 In GitHub create an Environment named `production-triag`, add any required
 reviewers, and configure exactly these Environment secrets:
 
@@ -402,13 +410,61 @@ push or pull request.
 
 The six scenarios create temporary chats, one PDF upload, one approved
 Knowledge Library document, and one repository snapshot. Cleanup restores the
-previous Swico tier and deletes only resources proven absent from the initial
-account snapshot. It verifies thread and Knowledge deletion, removes the
-temporary upload and repository, and never deletes or changes historical
-billing records. Incomplete cleanup fails the job. Screenshots mask messages,
-answers, filenames, account UI and thread titles. The uploaded JSON summary and
-redacted failure trace contain scenario states, cleanup state, and request IDs
-only; retention is seven days.
+previous Swico tier only when the suite actually changed it and deletes only
+generated IDs recorded after the initial account snapshot. Thread discovery
+and verification run only after a scenario could create a thread. The suite
+never deletes pre-existing resources or changes historical billing records.
+Cleanup is `not_required` when authentication or initial snapshots fail before
+mutation, `complete` when all applicable cleanup passes, and `incomplete` only
+when a bounded cleanup reason is recorded. Logout failure is reported
+separately and never replaces the primary setup/scenario failure.
+
+The production test has a 20-minute Playwright timeout; the production GitHub
+command repeats that explicit timeout while the job remains bounded at 30
+minutes. Staging and production-readonly timeouts are unchanged. Screenshots
+mask messages, answers, filenames, account UI and thread titles. The uploaded
+schema-versioned JSON summary and redacted failure trace contain only bounded
+preflight/scenario/cleanup enums and request UUIDs; retention is seven days.
+
+Safe preflight reason codes are:
+
+```text
+login_form_unavailable
+firebase_login_rejected
+bootstrap_not_observed
+bootstrap_http_401
+bootstrap_http_403
+bootstrap_http_5xx
+authenticated_request_header_missing
+workspace_not_ready
+internal_account_required
+admin_audit_access_denied
+preflight_passed
+```
+
+The preflight waits at most 90 seconds, requires
+`wallet.billing_exempt=true`, and sends a fixed unknown request UUID to the
+content-free admin audit. Its expected privacy-safe 404 proves that the admin
+check was reached; 401/403 and all other statuses fail with
+`admin_audit_access_denied`. No chat, upload, repository, or Knowledge Library
+item is created until `preflight_passed`. Scenario failure codes are
+`deterministic_greeting_failed`, `supported_pdf_failed`,
+`unsupported_pdf_failed`, `knowledge_library_failed`,
+`repository_pro_failed`, and `cancellation_settlement_failed`. Cleanup reason
+codes are `thread_discovery_failed`, `thread_delete_failed`,
+`thread_verification_failed`, `knowledge_delete_failed`,
+`repository_delete_failed`, `upload_delete_failed`, `tier_restore_failed`, and
+`logout_failed`. Snapshot setup failures are `thread_snapshot_failed` and
+`knowledge_snapshot_failed`. Raw exception text is never written to the
+production-safe summary.
+
+After an authentication failure, correct the dedicated Firebase credential or
+verification state, confirm that its normalized email still appears in both
+`ADMIN_EMAILS` and `SWICO_INTERNAL_TEST_EMAILS`, repeat the Incognito sign-in
+check, sign out, and manually rerun the same `production-triag` workflow with
+the exact write confirmation. Do not reuse a failed job or bypass preflight.
+This harness fix requires no Render service, Render configuration, database
+migration, or public API change.
 
 The existing validator currently reports `static_only` with
 `executable_checks=false`. That is healthy for this suite. Repository results

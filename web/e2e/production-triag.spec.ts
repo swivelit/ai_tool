@@ -6,10 +6,25 @@ import {
   deleteGeneratedRepository,
   deleteGeneratedThread,
   deleteGeneratedUpload,
-  loginDeployed,
   logoutDeployed,
   type DeployedApi,
 } from '../src/testing/deployedSafety'
+import {
+  boundedCombinedFailure,
+  buildProductionTriagSummary,
+  loginProductionTriag,
+  PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
+  ProductionPreflightError,
+  resolveProductionCleanup,
+  type ProductionCleanup,
+  type ProductionCleanupReasonCode,
+  type ProductionPreflightReasonCode,
+  type ProductionPrimaryFailureReasonCode,
+  type ProductionSafeScenarioResult,
+  type ProductionSafeSummary,
+  type ProductionScenarioName,
+  type ProductionScenarioReasonCode,
+} from '../src/testing/productionTriagSafety'
 
 test.skip(
   process.env.PLAYWRIGHT_MODE !== 'production-triag',
@@ -64,26 +79,21 @@ type AuditResult = {
   cancellation_failure_count: number
   orphaned_active_reservation: boolean
 }
-type ScenarioName =
-  | 'deterministic_greeting'
-  | 'supported_pdf'
-  | 'unsupported_pdf'
-  | 'knowledge_library'
-  | 'repository_pro'
-  | 'cancellation_settlement'
-type SafeScenarioResult = {
-  scenario: ScenarioName
-  status: 'passed' | 'failed' | 'not_run'
-  request_ids: string[]
-}
-type SafeSummary = {
-  schema_version: 1
-  result: 'passed' | 'failed'
-  scenarios: SafeScenarioResult[]
-  cleanup: 'complete' | 'incomplete'
+type SetupReasonCode =
+  | Exclude<ProductionPreflightReasonCode, 'preflight_passed'>
+  | 'production_write_confirmation_missing'
+  | 'thread_snapshot_failed'
+  | 'knowledge_snapshot_failed'
+  | 'unexpected_harness_failure'
+
+class SafeHarnessError extends Error {
+  constructor(readonly reasonCode: SetupReasonCode) {
+    super(`Production TRIAG harness failed: ${reasonCode}`)
+    this.name = 'SafeHarnessError'
+  }
 }
 
-const scenarioNames: ScenarioName[] = [
+const scenarioNames: ProductionScenarioName[] = [
   'deterministic_greeting',
   'supported_pdf',
   'unsupported_pdf',
@@ -91,6 +101,17 @@ const scenarioNames: ScenarioName[] = [
   'repository_pro',
   'cancellation_settlement',
 ]
+
+const scenarioFailureReason: Record<
+  ProductionScenarioName, ProductionScenarioReasonCode
+> = {
+  deterministic_greeting:'deterministic_greeting_failed',
+  supported_pdf:'supported_pdf_failed',
+  unsupported_pdf:'unsupported_pdf_failed',
+  knowledge_library:'knowledge_library_failed',
+  repository_pro:'repository_pro_failed',
+  cancellation_settlement:'cancellation_settlement_failed',
+}
 
 function crc32(input: Buffer): number {
   let crc = 0xffffffff
@@ -257,7 +278,7 @@ async function pollAudit(
 async function safeScreenshot(
   page: Page,
   directory: string,
-  scenario: ScenarioName,
+  scenario: ProductionScenarioName,
 ): Promise<void> {
   await mkdir(directory, { recursive:true })
   await page.screenshot({
@@ -277,9 +298,7 @@ async function safeScreenshot(
 }
 
 test('safe automated production TRIAG acceptance', async ({ page }) => {
-  if (process.env.PRODUCTION_TRIAG_CONFIRMATION !== WRITE_CONFIRMATION) {
-    throw new Error('Exact production write confirmation is required')
-  }
+  test.setTimeout(PRODUCTION_TRIAG_TEST_TIMEOUT_MS)
   const artifactRoot = resolve(process.cwd(), 'test-results')
   const screenshotDirectory = resolve(
     artifactRoot, 'production-triag-screenshots',
@@ -290,34 +309,49 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   const safeTracePath = resolve(
     artifactRoot, 'production-triag-safe-trace.json',
   )
-  const safeResults = new Map<ScenarioName, SafeScenarioResult>(
+  const safeResults = new Map<
+    ProductionScenarioName, ProductionSafeScenarioResult
+  >(
     scenarioNames.map(scenario => [scenario, {
       scenario, status:'not_run', request_ids:[],
     }]),
   )
-  const requestIds = new Map<ScenarioName, string[]>()
-  const cleanupErrors: string[] = []
+  const requestIds = new Map<ProductionScenarioName, string[]>()
+  const cleanupErrors: ProductionCleanupReasonCode[] = []
   const originalThreadIds = new Set<string>()
   const originalKnowledgeIds = new Set<string>()
+  const generatedThreadIds = new Set<string>()
   const generatedKnowledgeIds = new Set<string>()
   const generatedRepositoryIds = new Set<string>()
   const generatedUploadIds = new Set<string>()
   let api: DeployedApi | null = null
-  let threadSnapshotCaptured = false
+  let authenticationSucceeded = false
+  let snapshotsCaptured = false
+  let productionMutationsBegan = false
+  let threadMutationPossible = false
   let originalTier: 'lite' | 'standard' | 'pro' | null = null
-  let cleanup: SafeSummary['cleanup'] = 'incomplete'
-  const scenarioFailures: ScenarioName[] = []
+  let tierChanged = false
+  let cleanup: ProductionCleanup = { status:'not_required', reason_codes:[] }
+  let preflight: ProductionSafeSummary['preflight'] = {
+    status:'failed', reason_code:'bootstrap_not_observed',
+  }
+  let primaryFailureReason: ProductionPrimaryFailureReasonCode = 'none'
   let uploadId: string | null = null
   const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const factualValue = `TRIAG-${runMarker}`
-  const recordRequest = (scenario: ScenarioName, requestId: string) => {
+  const recordRequest = (
+    scenario: ProductionScenarioName,
+    requestId: string,
+  ) => {
     const values = requestIds.get(scenario) ?? []
     requestIds.set(scenario, [...values, requestId])
   }
   const runScenario = async (
-    scenario: ScenarioName,
+    scenario: ProductionScenarioName,
     action: () => Promise<void>,
   ) => {
+    productionMutationsBegan = true
+    threadMutationPossible = true
     await test.step(scenario, async () => {
       try {
         await action()
@@ -327,22 +361,27 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           request_ids:requestIds.get(scenario) ?? [],
         })
       } catch {
-        scenarioFailures.push(scenario)
+        const reasonCode = scenarioFailureReason[scenario]
+        if (primaryFailureReason === 'none') primaryFailureReason = reasonCode
         safeResults.set(scenario, {
           scenario,
           status:'failed',
           request_ids:requestIds.get(scenario) ?? [],
+          reason_code:reasonCode,
         })
       } finally {
         try {
           await safeScreenshot(page, screenshotDirectory, scenario)
         } catch {
-          if (!scenarioFailures.includes(scenario)) {
-            scenarioFailures.push(scenario)
+          const current = safeResults.get(scenario)
+          if (current?.status === 'passed') {
+            const reasonCode = scenarioFailureReason[scenario]
+            if (primaryFailureReason === 'none') primaryFailureReason = reasonCode
             safeResults.set(scenario, {
               scenario,
               status:'failed',
               request_ids:requestIds.get(scenario) ?? [],
+              reason_code:reasonCode,
             })
           }
         }
@@ -351,40 +390,35 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   }
 
   try {
-    const authenticated = await loginDeployed<Bootstrap>(
+    if (process.env.PRODUCTION_TRIAG_CONFIRMATION !== WRITE_CONFIRMATION) {
+      throw new SafeHarnessError('production_write_confirmation_missing')
+    }
+    const authenticated = await loginProductionTriag<Bootstrap>(
       page, email, password,
     )
     api = authenticated.api
+    authenticationSucceeded = true
+    preflight = { status:'passed', reason_code:authenticated.reasonCode }
     originalTier = authenticated.bootstrap.assistant.tier
-    expect(
-      authenticated.bootstrap.wallet.billing_exempt,
-      'Production TRIAG requires the dedicated internal account',
-    ).toBe(true)
-    expect(authenticated.bootstrap.features).toMatchObject({
-      web_attachments:true,
-      web_knowledge_library:true,
-      web_repository_upload:true,
-      web_repository_chat:true,
-    })
     const initialThreads = await api.request<ThreadList>(
       'GET', '/api/web/threads?archived=false&limit=100&offset=0',
-    )
-    const initialKnowledge = await api.request<{ items: KnowledgeDocument[] }>(
-      'GET', '/api/web/knowledge',
-    )
+    ).catch(() => ({ status:0, data:null }))
     if (
       initialThreads.status !== 200
       || !initialThreads.data
       || initialThreads.data.has_more
     ) {
-      throw new Error('Production thread snapshot failed')
+      throw new SafeHarnessError('thread_snapshot_failed')
     }
+    const initialKnowledge = await api.request<{ items: KnowledgeDocument[] }>(
+      'GET', '/api/web/knowledge',
+    ).catch(() => ({ status:0, data:null }))
     if (initialKnowledge.status !== 200 || !initialKnowledge.data) {
-      throw new Error('Production knowledge snapshot failed')
+      throw new SafeHarnessError('knowledge_snapshot_failed')
     }
     initialThreads.data.items.forEach(item => originalThreadIds.add(item.id))
-    threadSnapshotCaptured = true
     initialKnowledge.data.items.forEach(item => originalKnowledgeIds.add(item.id))
+    snapshotsCaptured = true
 
     await runScenario('deterministic_greeting', async () => {
       const before = await api!.request<{
@@ -518,8 +552,18 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     await runScenario('repository_pro', async () => {
       await newChat(page)
       const tier = page.locator('.tier-selector-composer')
-      await tier.getByRole('button', { name:/Swico/ }).click()
-      await tier.getByRole('option', { name:/Swico Pro/ }).click()
+      if (originalTier !== 'pro') {
+        const tierResponse = page.waitForResponse(response => (
+          new URL(response.url()).pathname === '/api/web/settings/assistant'
+          && response.request().method() === 'PATCH'
+        ))
+        await tier.getByRole('button', { name:/Swico/ }).click()
+        await tier.getByRole('option', { name:/Swico Pro/ }).click()
+        if ((await tierResponse).status() !== 200) {
+          throw new Error('bounded scenario failure')
+        }
+        tierChanged = true
+      }
       await expect(tier.getByRole('button', { name:/Swico Pro/ }))
         .toBeVisible({ timeout:30_000 })
       const repositoryResponse = page.waitForResponse(response => (
@@ -589,13 +633,20 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           .toBe(cancelled!.charged_micro_inr_total)
       }
     })
-    expect(
-      scenarioFailures,
-      'Every production TRIAG scenario must pass',
-    ).toEqual([])
+  } catch (error) {
+    if (error instanceof ProductionPreflightError) {
+      preflight = { status:'failed', reason_code:error.reasonCode }
+      primaryFailureReason = error.reasonCode
+      authenticationSucceeded = error.authenticationSucceeded
+      api = error.api
+    } else if (error instanceof SafeHarnessError) {
+      primaryFailureReason = error.reasonCode
+    } else if (primaryFailureReason === 'none') {
+      primaryFailureReason = 'unexpected_harness_failure'
+    }
   } finally {
-    if (api) {
-      if (threadSnapshotCaptured) {
+    if (api && snapshotsCaptured && productionMutationsBegan) {
+      if (threadMutationPossible) {
         const currentThreads = await api.request<ThreadList>(
           'GET', '/api/web/threads?archived=false&limit=100&offset=0',
         ).catch(() => ({ status:0, data:null }))
@@ -605,11 +656,15 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           && !currentThreads.data.has_more
         ) {
           for (const thread of currentThreads.data.items) {
-            if (originalThreadIds.has(thread.id)) continue
+            if (!originalThreadIds.has(thread.id)) {
+              generatedThreadIds.add(thread.id)
+            }
+          }
+          for (const threadId of generatedThreadIds) {
             try {
-              await deleteGeneratedThread(api, thread.id, originalThreadIds)
+              await deleteGeneratedThread(api, threadId, originalThreadIds)
             } catch {
-              cleanupErrors.push('thread')
+              cleanupErrors.push('thread_delete_failed')
             }
           }
           const verifiedThreads = await api.request<ThreadList>(
@@ -624,12 +679,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             || verifiedThreads.data.has_more
             || verifiedIds.size !== originalThreadIds.size
             || [...originalThreadIds].some(id => !verifiedIds.has(id))
-          ) cleanupErrors.push('thread_verification')
+          ) cleanupErrors.push('thread_verification_failed')
         } else {
-          cleanupErrors.push('thread_snapshot')
+          cleanupErrors.push('thread_discovery_failed')
         }
-      } else {
-        cleanupErrors.push('thread_snapshot')
       }
       for (const documentId of generatedKnowledgeIds) {
         try {
@@ -637,24 +690,24 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             api, documentId, originalKnowledgeIds,
           )
         } catch {
-          cleanupErrors.push('knowledge')
+          cleanupErrors.push('knowledge_delete_failed')
         }
       }
       for (const repositoryId of generatedRepositoryIds) {
         try {
           await deleteGeneratedRepository(api, repositoryId)
         } catch {
-          cleanupErrors.push('repository')
+          cleanupErrors.push('repository_delete_failed')
         }
       }
       for (const uploadId of generatedUploadIds) {
         try {
           await deleteGeneratedUpload(api, uploadId)
         } catch {
-          cleanupErrors.push('upload')
+          cleanupErrors.push('upload_delete_failed')
         }
       }
-      if (originalTier) {
+      if (tierChanged && originalTier) {
         try {
           const restored = await api.request<{ tier: string }>(
             'PATCH', '/api/web/settings/assistant', { tier:originalTier },
@@ -666,37 +719,46 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             restored.status !== 200
             || verified.status !== 200
             || verified.data?.tier !== originalTier
-          ) cleanupErrors.push('tier')
+          ) cleanupErrors.push('tier_restore_failed')
         } catch {
-          cleanupErrors.push('tier')
+          cleanupErrors.push('tier_restore_failed')
         }
       }
-    } else {
-      cleanupErrors.push('authentication')
     }
-    try {
-      await logoutDeployed(page)
-    } catch {
-      cleanupErrors.push('logout')
-    }
-    cleanup = cleanupErrors.length === 0 ? 'complete' : 'incomplete'
-    const scenarios = scenarioNames.map(name => (
-      safeResults.get(name) ?? {
-        scenario:name, status:'not_run' as const, request_ids:[],
+    if (authenticationSucceeded) {
+      try {
+        await logoutDeployed(page)
+      } catch {
+        cleanupErrors.push('logout_failed')
       }
-    ))
-    const summary: SafeSummary = {
-      schema_version:1,
-      result: scenarios.every(item => item.status === 'passed')
-        && cleanup === 'complete' ? 'passed' : 'failed',
-      scenarios,
-      cleanup,
     }
-    await mkdir(artifactRoot, { recursive:true })
-    const serialized = `${JSON.stringify(summary, null, 2)}\n`
-    await writeFile(summaryPath, serialized, 'utf8')
-    await writeFile(safeTracePath, serialized, 'utf8')
-    expect(cleanupErrors, 'Production TRIAG cleanup must be complete')
-      .toEqual([])
+    cleanup = resolveProductionCleanup(
+      authenticationSucceeded,
+      productionMutationsBegan,
+      cleanupErrors,
+    )
+  }
+  const scenarios = scenarioNames.map(name => (
+    safeResults.get(name) ?? {
+      scenario:name, status:'not_run' as const, request_ids:[],
+    }
+  ))
+  const summary = buildProductionTriagSummary({
+    preflight,
+    scenarios,
+    cleanup,
+    primaryFailureReasonCode:primaryFailureReason,
+  })
+  await mkdir(artifactRoot, { recursive:true })
+  const serialized = `${JSON.stringify(summary, null, 2)}\n`
+  await writeFile(summaryPath, serialized, 'utf8')
+  await writeFile(safeTracePath, serialized, 'utf8')
+  if (primaryFailureReason !== 'none' || cleanup.status === 'incomplete') {
+    console.error(
+      'production-triag.spec.ts reason_code=%s cleanup_status=%s',
+      primaryFailureReason,
+      cleanup.status,
+    )
+    throw new Error(boundedCombinedFailure(primaryFailureReason, cleanup))
   }
 })

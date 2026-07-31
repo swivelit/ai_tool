@@ -89,7 +89,7 @@ jobs:
           esac
           set +e
           if [[ "$PLAYWRIGHT_MODE" == 'production-triag' ]]; then
-            npx playwright test "$test_file" --project=chromium --workers=1
+            npx playwright test "$test_file" --project=chromium --workers=1 --timeout=1200000
           else
             npx playwright test "$test_file" --project=chromium --project=mobile-chromium
           fi
@@ -151,11 +151,18 @@ jobs:
           if [[ "$MODE" == 'production-triag' && -f web/test-results/production-triag-summary.json ]]; then
             node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
           const summary = require('./web/test-results/production-triag-summary.json')
+          const preflight = summary.preflight || {}
+          const cleanup = summary.cleanup || {}
+          process.stdout.write('\n### Production TRIAG safe state\n\n')
+          process.stdout.write(`- preflight: ${preflight.status || 'unknown'}\n`)
+          process.stdout.write(`- preflight reason: ${preflight.reason_code || 'unknown'}\n`)
+          process.stdout.write(`- cleanup: ${cleanup.status || 'unknown'}\n`)
+          const cleanupReasons = Array.isArray(cleanup.reason_codes) ? cleanup.reason_codes : []
+          process.stdout.write(`- cleanup reasons: ${cleanupReasons.length ? cleanupReasons.join(', ') : 'none'}\n`)
           process.stdout.write('\n### Render log request IDs\n\n')
           for (const item of summary.scenarios || []) {
             const ids = Array.isArray(item.request_ids) ? item.request_ids : []
             process.stdout.write(`- ${item.scenario}: ${ids.length ? ids.join(', ') : 'none'}\n`)
           }
-          process.stdout.write(`- cleanup: ${summary.cleanup || 'unknown'}\n`)
           NODE
           fi

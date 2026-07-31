@@ -235,6 +235,12 @@ account for the suite, enable Swico Pro for it, and do not use it concurrently.
 Internal status prevents wallet debit; admin status grants the verified-admin
 content-free request audit. Neither status may be supplied by the browser.
 
+Immediately before a production-TRIAG run, open the standalone production web
+origin in a new Incognito/private window, manually sign in as the dedicated
+account, verify that the workspace and message composer open, sign out, and
+close the window. Keep credentials, browser errors, authorization values,
+bootstrap bodies, and complete URLs out of GitHub and Render artifacts.
+
 Create the GitHub Environment `production-triag`, optionally protect it with
 required reviewers, and add these Environment secrets:
 
@@ -252,17 +258,36 @@ workflow has no push or pull-request trigger.
 
 The suite masks sensitive UI in its named screenshots and uploads only those
 screenshots, a content-free JSON summary, and a redacted failure trace. These
-artifacts contain request IDs and bounded scenario/cleanup states, never
+schema-v2 artifacts contain request UUIDs and bounded preflight,
+scenario, and cleanup states, never
 credentials, authorization headers, messages, answers, document text,
 filenames, provider/model names, or wallet identifiers. Retention is seven
 days. Native Playwright traces are intentionally disabled for this writable
 mode because they capture bearer headers and DOM/network content.
 
-Cleanup runs in `finally`: it restores the account's original Swico tier,
-deletes only threads absent from the initial snapshot, deletes and verifies the
-generated Knowledge Library document, and removes the generated repository and
-temporary upload. It never deletes or modifies `UsageCharge`, wallet-ledger, or
-other historical billing records. Any incomplete cleanup fails the job.
+The production Playwright test and production-only command are each bounded at
+20 minutes; the GitHub job remains bounded at 30 minutes. Staging and
+production-readonly retain their existing timeouts. Before mutation, a
+90-second preflight reports one of `login_form_unavailable`,
+`firebase_login_rejected`, `bootstrap_not_observed`, `bootstrap_http_401`,
+`bootstrap_http_403`, `bootstrap_http_5xx`,
+`authenticated_request_header_missing`, `workspace_not_ready`,
+`internal_account_required`, `admin_audit_access_denied`, or
+`preflight_passed`. It requires a visible workspace,
+`wallet.billing_exempt=true`, and the expected privacy-safe 404 from the admin
+audit for a fixed unknown UUID. A 401/403 is denied. No production resource is
+created before this passes.
+
+Cleanup runs after preserving the primary bounded failure. It restores the
+account's original Swico tier only when the tier changed and deletes only
+recorded generated thread, Knowledge, repository, and upload IDs. It never
+deletes or modifies pre-existing resources, `UsageCharge`, wallet-ledger, or
+other historical billing records. Cleanup is `not_required` when preflight or
+initial snapshots fail before mutation, `complete` when every applicable action
+passes, and `incomplete` with bounded reason codes on a real cleanup failure.
+Logout failure is separate and cannot hide the primary failure. The GitHub job
+summary displays the safe preflight reason, cleanup state/reasons, and scenario
+request IDs.
 
 The validator's current `static_only` capability with
 `executable_checks=false` is expected. The repository scenario must not report
@@ -274,11 +299,17 @@ a time to correlate safe stream-terminal, retrieval, cancellation and billing
 events. Never search for or copy the test prompts, answers, uploaded content,
 account credentials, or authorization header.
 
-Required Render changes for this implementation are limited to the existing
-API service: deploy the code, ensure the dedicated email is present in both
-allowlists, and set all four `WEB_ROLLOUT_*_PERCENT` values to `0`. Do not add a
-service, change the database schema, request a Render API key, or create another
-rollout stage.
+If authentication fails, correct the dedicated Firebase credential or
+email-verification state, verify that the same normalized email remains in both
+`ADMIN_EMAILS` and `SWICO_INTERNAL_TEST_EMAILS`, repeat the Incognito check,
+sign out, then manually rerun `production-triag` with
+`I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION`. Do not bypass preflight.
+
+No Render service, environment-variable, rollout, migration, or public API
+change is required for this acceptance-harness fix. The existing
+`ADMIN_EMAILS`, `SWICO_INTERNAL_TEST_EMAILS`, GA rollout, worker, database, and
+validator prerequisites remain unchanged; no Render API key or additional
+service is needed.
 
 Rollback values are:
 
