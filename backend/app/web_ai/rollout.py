@@ -35,6 +35,12 @@ class RolloutMode(str, Enum):
     ALL_ELIGIBLE = "all_eligible"
 
 
+class RolloutExecution(str, Enum):
+    FALLBACK = "fallback"
+    SHADOW = "shadow"
+    LIVE = "live"
+
+
 @dataclass(frozen=True)
 class FeatureRolloutPolicy:
     feature_key: str
@@ -136,17 +142,22 @@ class RolloutGlobalFlags:
     knowledge_library: bool
     repository_chat: bool
     answer_guard: bool
+    triag_shadow: bool = False
 
     @classmethod
     def from_settings(cls, settings: TriagSettings) -> "RolloutGlobalFlags":
         return cls(
-            triag_hybrid=settings.hybrid_runtime_enabled,
+            triag_hybrid=(
+                settings.shadow_planning_enabled
+                or settings.hybrid_runtime_enabled
+            ),
             knowledge_library=settings.persistent_knowledge_runtime_enabled,
             repository_chat=settings.repository_chat_runtime_enabled,
             answer_guard=(
                 settings.answer_guard_runtime_enabled
                 and settings.verified_streaming_runtime_enabled
             ),
+            triag_shadow=settings.shadow_planning_enabled,
         )
 
     def enabled(self, feature_key: str) -> bool:
@@ -177,6 +188,7 @@ class WebRolloutDecision:
     knowledge_library: FeatureRolloutDecision
     repository_chat: FeatureRolloutDecision
     answer_guard: FeatureRolloutDecision
+    execution: RolloutExecution = RolloutExecution.FALLBACK
 
     @property
     def features(self) -> tuple[FeatureRolloutDecision, ...]:
@@ -194,6 +206,7 @@ class WebRolloutDecision:
     @property
     def safe_metadata(self) -> dict[str, object]:
         return sanitize_metadata({
+            "rollout_execution": self.execution.value,
             "rollout_decisions": [
                 item.safe_metadata for item in self.features
             ]
@@ -247,12 +260,29 @@ def resolve_rollout_decision(
         )
 
     decisions = {item.feature_key: resolve(item) for item in policy.features}
+    execution = RolloutExecution.FALLBACK
+    if any(item.enabled for item in decisions.values()):
+        execution = (
+            RolloutExecution.SHADOW
+            if global_flags.triag_shadow
+            and decisions["triag_hybrid"].enabled
+            and not any(
+                decisions[key].enabled
+                for key in (
+                    "knowledge_library",
+                    "repository_chat",
+                    "answer_guard",
+                )
+            )
+            else RolloutExecution.LIVE
+        )
     return WebRolloutDecision(
         policy_version=policy.policy_version,
         triag_hybrid=decisions["triag_hybrid"],
         knowledge_library=decisions["knowledge_library"],
         repository_chat=decisions["repository_chat"],
         answer_guard=decisions["answer_guard"],
+        execution=execution,
     )
 
 

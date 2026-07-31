@@ -60,7 +60,7 @@ from ..web_ai.retrieval.persistent_knowledge import (
     owner_active_knowledge_tokens,
 )
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
-from ..web_ai.rollout import WebRolloutDecision
+from ..web_ai.rollout import RolloutExecution, WebRolloutDecision
 from ..web_ai.streaming_policy import select_streaming_policy
 from ..web_ai.tier_policy import tier_policy_for
 from ..web_ai.token_allocator import DynamicTokenAllocator
@@ -330,7 +330,10 @@ def _rollout_cache_policy(
     optimization: WebTurnOptimization,
     rollout_decision: WebRolloutDecision | None,
 ) -> WebTurnOptimization:
-    if rollout_decision is None or not rollout_decision.any_enabled:
+    if (
+        rollout_decision is None
+        or rollout_decision.execution != RolloutExecution.LIVE
+    ):
         return optimization
     return replace(
         optimization,

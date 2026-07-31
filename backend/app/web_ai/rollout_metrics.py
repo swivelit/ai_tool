@@ -35,6 +35,7 @@ _COHORTS = frozenset({
     "percentage",
     "all_eligible",
 })
+_EXECUTIONS = frozenset({"fallback", "shadow", "live"})
 _TIERS = frozenset({"lite", "standard", "pro"})
 _RETRIEVAL_STATUSES = frozenset({
     "sufficient",
@@ -150,6 +151,7 @@ class RolloutGroupKey:
     policy_version: str
     feature_key: str
     cohort: str
+    execution: str
     swico_tier: str
 
 
@@ -199,11 +201,11 @@ def _percentile(values: Sequence[int], percentile: float) -> int:
 
 def _rollout_records(
     raw_metadata: str | None,
-) -> tuple[list[tuple[str, str, str, bool]], int]:
+) -> tuple[list[tuple[str, str, str, bool]], str, int]:
     metadata = _safe_json(raw_metadata)
     raw_records = metadata.get("rollout_decisions")
     if not isinstance(raw_records, list):
-        return [], 0
+        return [], "fallback", 0
     records: list[tuple[str, str, str, bool]] = []
     violations = 0
     for value in raw_records[:8]:
@@ -231,7 +233,18 @@ def _rollout_records(
         records.append((version, feature, cohort, enabled))
     if len(raw_records) > 8:
         violations += 1
-    return records, violations
+    raw_execution = metadata.get("rollout_execution")
+    if isinstance(raw_execution, str) and raw_execution in _EXECUTIONS:
+        execution = str(raw_execution)
+    else:
+        # Telemetry predating this field could not reach shadow through the
+        # rollout resolver, so its bounded classification is deterministic.
+        execution = (
+            "live" if any(record[3] for record in records) else "fallback"
+        )
+        if raw_execution is not None:
+            violations += 1
+    return records, execution, violations
 
 
 def _gate(
@@ -435,12 +448,13 @@ def build_rollout_report(
     request_ids: set[str] = set()
     for user_id, request_id, metadata_json, status, created_at in user_rows:
         request_key = (int(user_id), str(request_id))
-        records, privacy_violations = _rollout_records(metadata_json)
+        records, execution, privacy_violations = _rollout_records(metadata_json)
         if not records:
             continue
         request_ids.add(str(request_id))
         request_facts[request_key] = {
             "records": records,
+            "execution": execution,
             "privacy_violations": privacy_violations,
             "user_status": str(status or ""),
             "user_created_at": created_at,
@@ -673,6 +687,7 @@ def build_rollout_report(
                     version,
                     feature,
                     cohort,
+                    str(fact["execution"]),
                     str(fact["tier"]),
                 )
             ].append(group_fact)
@@ -887,6 +902,7 @@ def build_rollout_report(
             "policy_version": key.policy_version,
             "feature_key": key.feature_key,
             "rollout_cohort": key.cohort,
+            "rollout_execution": key.execution,
             "swico_tier": key.swico_tier,
             "metrics": metrics,
             "acceptance": {

@@ -103,6 +103,33 @@ backend-only rollout variables directly to the API service. Keep every mode
 Phase 6B likewise adds no resource or public variable. Add its four
 backend-only reporting variables with reporting disabled; enable it only for a
 bounded staging admin/Render Shell acceptance review.
+
+Do not activate live TRIAG during the initial Phase 6 staging deploy. Apply the
+backend-only environment changes to the existing API service in this order:
+
+1. Deploy the safe block below unchanged: TRIAG false, shadow true, every
+   rollout disabled/zero, reporting false and every live feature false.
+2. For an approved internal shadow observation, configure verified owned
+   `SWICO_INTERNAL_TEST_EMAILS`, then set `WEB_TRIAG_ENABLED=true` and
+   `WEB_ROLLOUT_TRIAG_MODE=internal_accounts` only. Keep shadow true,
+   TRIAG percent zero, other modes disabled, and hybrid/dense/knowledge/
+   repository/Answer Guard switches false.
+3. Verify included `shadow` and excluded `fallback` report groups and prove
+   cache, serialized prompt, provider route/calls, billing, answer, SSE and the
+   static frontend are unchanged. Optionally enable the report flag for this
+   bounded review; it is not an activation flag.
+4. Only after explicit approval, set `WEB_TRIAG_SHADOW_MODE=false` and
+   `WEB_RAG_HYBRID_ENABLED=true` for the same internal cohort. This is the first
+   live stage and must show `rollout_execution=live` plus global-cache
+   suppression before any additional feature is enabled.
+5. Gate dense retrieval, persistent knowledge, repository chat and Answer
+   Guard separately. Do not move to percentage or `all_eligible` until the
+   corresponding report and rollback gates pass.
+
+Rollback the cohort first with `WEB_ROLLOUT_TRIAG_MODE=disabled`; use
+`WEB_TRIAG_ENABLED=false` as the hard kill. No Render service, migration,
+static-site variable, provider call, frontend feature or route change belongs
+to this sequence.
 The dedicated knowledge-indexing patch adds only the private staging worker
 declared in `render.staging.yaml`. It does not add a production worker or a
 public variable. Keep its API and worker flags false until the staging billing,

@@ -56,7 +56,9 @@ version. A rollout mode never overrides a false global feature flag.
 3. Verify `/api/web/health`, authentication, a deterministic zero-charge turn,
    a provider-backed turn, reservation/settlement, cache behavior, and SSE.
 4. Leave production disabled. Shadow observation, if later approved, requires
-   both `WEB_TRIAG_ENABLED=true` and `WEB_TRIAG_SHADOW_MODE=true`.
+   `WEB_TRIAG_ENABLED=true`, `WEB_TRIAG_SHADOW_MODE=true`, and an included
+   cohort selected by `WEB_ROLLOUT_TRIAG_MODE`; the mode is not allowed to
+   bypass the `WEB_TRIAG_ENABLED` hard kill switch.
 5. A separately approved staging experiment may set shadow false and hybrid
    true. Dense additionally requires `WEB_RAG_DENSE_ENABLED=true`, a working
    upload Valkey, and embedding accounting. Enable the evaluator separately.
@@ -151,19 +153,41 @@ production worker until the staging gates above are approved.
 Deploy Phase 6A with all four rollout modes set to `disabled`. For the first
 approved staging exercise:
 
-1. Enable only the required Phase 0–5 global kill switches.
-2. Set the corresponding rollout to `internal_accounts` and configure only
-   verified accounts through the existing `SWICO_INTERNAL_TEST_EMAILS`.
-3. Verify bootstrap, endpoint authorization, the frozen chat decision,
-   content-free telemetry, cache suppression, cancellation, billing, and
-   rollback for that cohort.
-4. If percentage rollout is approved, set one bounded percentage without
-   changing the policy version during the observation period.
-5. Advance separately to `all_eligible` only after feature-specific gates pass.
+1. Deploy the code and reporting variables with every mode `disabled`, every
+   percentage `0`, `WEB_TRIAG_ENABLED=false`, shadow mode `true`, and all live
+   retrieval, knowledge, repository and Answer Guard flags false. Verify the
+   fallback path before changing any staging flag.
+2. Configure only verified, owned staging accounts in
+   `SWICO_INTERNAL_TEST_EMAILS`. For shadow observation set exactly
+   `WEB_TRIAG_ENABLED=true`, `WEB_TRIAG_SHADOW_MODE=true`, and
+   `WEB_ROLLOUT_TRIAG_MODE=internal_accounts`; keep
+   `WEB_ROLLOUT_TRIAG_PERCENT=0` and every other rollout mode and live feature
+   switch disabled.
+3. Verify included accounts create one idempotent execution plan and sanitized
+   shadow trace with `rollout_execution=shadow`. Verify excluded accounts have
+   `rollout_execution=fallback`, no plan, and the original fallback path.
+   Across a matched request, prove cache lookup/write eligibility, serialized
+   prompt, provider/model route and calls, reservation/debit/settlement, answer,
+   SSE and frontend behavior are identical. Any difference blocks live staging.
+4. Enable Phase 6B reporting only after the shadow invariants pass. Review the
+   `shadow` and `fallback` execution groups separately; reporting does not
+   activate a feature.
+5. Only after explicit live approval, change the same bounded staging cohort
+   to non-shadow TRIAG by setting `WEB_TRIAG_SHADOW_MODE=false` and
+   `WEB_RAG_HYBRID_ENABLED=true` while retaining
+   `WEB_ROLLOUT_TRIAG_MODE=internal_accounts`. Live controlled turns report
+   `rollout_execution=live` and suppress global cache. Keep dense retrieval,
+   persistent knowledge, repository chat and Answer Guard disabled until each
+   receives its own reviewed gate.
+6. If percentage rollout is approved, set one bounded percentage without
+   changing the policy version during the observation period. Advance
+   separately to `all_eligible` only after feature-specific gates pass.
 
 Roll back immediately by setting the affected rollout mode to `disabled`;
-the global feature flag is the second, harder kill switch. No database
-downgrade, static-site variable, new service, or route change is needed.
+then set `WEB_TRIAG_ENABLED=false` for the harder kill if required. Shadow
+rollback must not be implemented by changing cache, prompts, billing, SSE, the
+frontend, or the chat route. No database downgrade, static-site variable, new
+service, or route change is needed.
 
 ## Phase 6B acceptance reporting
 
@@ -177,7 +201,9 @@ cd backend
 .venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
 ```
 
-Review every feature/cohort/tier group separately. A report is evidence for a
+Review every feature/cohort/execution/tier group separately. The bounded
+execution value is only `fallback`, `shadow`, or `live`; it contains no
+identity, content, provider/model value, or secret. A report is evidence for a
 human rollout decision, never an activation mechanism. `pass` does not change
 environment variables; `warning`, `fail` and `insufficient_sample` block
 automatic interpretation. Keep production report access disabled until the

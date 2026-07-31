@@ -33,6 +33,7 @@ def _rollout_metadata(
     version: str = "v1",
     cohort: str = "percentage",
     enabled: bool = True,
+    execution: str = "live",
     unsafe: bool = False,
 ) -> str:
     records = [
@@ -51,6 +52,7 @@ def _rollout_metadata(
         )
     ]
     return json.dumps({
+        "rollout_execution": execution,
         "rollout_decisions": records,
         "attachments": [{"name": "private-customer-plan.pdf"}],
     })
@@ -65,6 +67,7 @@ def _insert_request(
     version: str = "v1",
     cohort: str = "percentage",
     enabled: bool = True,
+    execution: str = "live",
     tier: str = "standard",
     user_status: str = "complete",
     assistant_status: str = "complete",
@@ -96,6 +99,7 @@ def _insert_request(
                 version=version,
                 cohort=cohort,
                 enabled=enabled,
+                execution=execution,
                 unsafe=unsafe_rollout,
             ),
             created_at=created_at,
@@ -250,6 +254,7 @@ def test_policy_cohort_tier_groups_are_separate_and_sorted():
             item["policy_version"],
             item["feature_key"],
             item["rollout_cohort"],
+            item["rollout_execution"],
             item["swico_tier"],
         )
         for item in report["groups"]
@@ -259,7 +264,58 @@ def test_policy_cohort_tier_groups_are_separate_and_sorted():
     assert {item[2] for item in keys} == {
         "internal_accounts", "percentage"
     }
-    assert {item[3] for item in keys} == {"lite", "pro"}
+    assert {item[3] for item in keys} == {"live"}
+    assert {item[4] for item in keys} == {"lite", "pro"}
+
+
+def test_shadow_and_live_execution_are_content_free_separate_groups():
+    _insert_request(
+        uid="shadow-report",
+        email="shadow-report@example.com",
+        request_id="report-shadow-execution",
+        created_at=NOW - timedelta(hours=2),
+        execution="shadow",
+        cache_suppressed=False,
+    )
+    _insert_request(
+        uid="live-report",
+        email="live-report@example.com",
+        request_id="report-live-execution",
+        created_at=NOW - timedelta(hours=1),
+        execution="live",
+        cache_suppressed=True,
+    )
+    with SessionLocal() as session:
+        report = build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        )
+    triag_groups = [
+        group for group in report["groups"]
+        if group["feature_key"] == "triag_hybrid"
+    ]
+    assert {group["rollout_execution"] for group in triag_groups} == {
+        "shadow", "live"
+    }
+    shadow = next(
+        group for group in triag_groups
+        if group["rollout_execution"] == "shadow"
+    )
+    live = next(
+        group for group in triag_groups
+        if group["rollout_execution"] == "live"
+    )
+    assert shadow["metrics"]["cache_suppression_count"] == 0
+    assert live["metrics"]["cache_suppression_count"] == 1
+    rendered = json.dumps(report, sort_keys=True)
+    for forbidden in (
+        "shadow-report@example.com",
+        "live-report@example.com",
+        "report-shadow-execution",
+        "report-live-execution",
+        "private-provider",
+        "private-model",
+    ):
+        assert forbidden not in rendered
 
 
 def test_tokens_cost_feedback_failures_cancellation_and_mismatch_aggregate():
@@ -337,6 +393,7 @@ def test_disabled_rollout_is_counted_as_existing_fallback():
         created_at=NOW - timedelta(hours=1),
         cohort="disabled",
         enabled=False,
+        execution="fallback",
         provider_calls=0,
         cache_suppressed=False,
         with_charge=False,

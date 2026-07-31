@@ -34,7 +34,9 @@ after shadow enablement. These must remain identical:
 - final answer and visible SSE sequence.
 
 Only one owner-scoped `web_retrieval_trace` row should be new. Its
-`safe_metadata_json` must contain counts/flags/enums only.
+`safe_metadata_json` must contain counts/flags/enums only. An included Phase 6
+shadow request records `rollout_execution=shadow`; that label is observation,
+not authorization for hybrid retrieval or cache suppression.
 
 ## Database checks
 
@@ -188,22 +190,45 @@ or set `WEB_TRIAG_ENABLED=false`. Keep additive tables and fix forward.
 ## Phase 6A rollout operations
 
 For a cohort audit, inspect only the content-free rollout records attached to
-the owner-scoped request metadata. Every record contains exactly feature key,
-cohort, policy version, and enabled/disabled decision. Never export the
-surrounding message metadata or join it to email, message, memory, document, or
-repository content.
+the owner-scoped request metadata. Every feature record contains exactly
+feature key, cohort, policy version, and enabled/disabled decision. The sibling
+`rollout_execution` enum is exactly `fallback`, `shadow`, or `live`. Never
+export the surrounding message metadata or join it to email, message, memory,
+document, or repository content.
 
 The authenticated request resolves one immutable decision. Bootstrap and each
 gated endpoint resolve through the same policy; a chat request carries its
 decision through preparation, execution, streaming, and telemetry even if
 service configuration changes while it is running. Any live controlled
-feature disables global answer-cache lookup/write for that turn. An excluded
-user keeps the existing fallback and cache policy.
+feature disables global answer-cache lookup/write for that turn. Shadow is
+cohort-gated by `WEB_ROLLOUT_TRIAG_MODE` but still requires the hard switch
+`WEB_TRIAG_ENABLED=true`; it builds and persists only the content-free plan.
+It does not enable hybrid retrieval, Answer Guard, repository chat, persistent
+knowledge or live generation, and it does not alter global-cache eligibility
+or lookup. An excluded user keeps the existing fallback and cache policy.
 
 Use `internal_accounts` only with verified, owned accounts in
 `SWICO_INTERNAL_TEST_EMAILS`. An unverified or mismatched request email is not
 internal. Percentage cohorts are stable until either the owner ID, feature key,
 or `WEB_ROLLOUT_POLICY_VERSION` changes.
+
+Use this exact staging order:
+
+1. Start with every rollout mode disabled, every percentage zero,
+   `WEB_TRIAG_ENABLED=false`, shadow true, and all live feature flags false.
+2. Add verified owned internal accounts. Set only `WEB_TRIAG_ENABLED=true` and
+   `WEB_ROLLOUT_TRIAG_MODE=internal_accounts`; leave shadow true and every live
+   switch false.
+3. Compare included shadow requests against fallback for cache lookup/write,
+   prompt, route, calls, billing, answer and SSE. Confirm excluded requests do
+   not plan. Review only content-free `shadow` and `fallback` report groups.
+4. Enable reporting for a bounded review if approved; reporting never changes
+   a decision.
+5. After explicit live approval, set shadow false and hybrid true for the same
+   internal cohort. Confirm `live` reporting and global-cache suppression.
+6. Gate dense retrieval, knowledge, repository chat and Answer Guard
+   independently. Percentage and `all_eligible` follow only after their
+   feature-specific acceptance gates pass.
 
 To stop one rollout, set its mode to `disabled` and restart the API. To apply
 the hard kill switch, also turn off its existing global Phase 0–5 flag. The
@@ -233,7 +258,8 @@ cd backend
 .venv/bin/python scripts/triag_rollout_report.py --window-hours 24 --pretty
 ```
 
-The endpoint and CLI call the same aggregator. Output contains bounded
+The endpoint and CLI call the same aggregator. Groups include the bounded
+`fallback`/`shadow`/`live` execution enum and otherwise contain bounded
 timestamps, enums, counts, rates, token/cost totals and latency percentiles.
 It contains no request/user identifiers, emails, content, filenames, source
 excerpts, commands, provider/model names or raw failure details. The billing
