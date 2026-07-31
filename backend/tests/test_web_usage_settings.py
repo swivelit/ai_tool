@@ -116,18 +116,28 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
     assert body["by_tier"]["lite"]["debited_micros"] == 20_000
 
 
-def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(client):
+def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(
+    client, monkeypatch,
+):
     owner = create_test_user("usage-owner", "usage-owner@example.com")
     other = create_test_user("usage-other", "usage-other@example.com")
     _fund(int(owner.id))
-    now = datetime.now(timezone.utc)
-    _settled_charge(int(owner.id), "summary-actual", settled_at=now - timedelta(days=1))
+    now = datetime(2026, 8, 15, 6, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.web_api.usage_service.utc_now", lambda: now)
+    period_start, _ = monthly_period_bounds(owner.timezone, now)
+    actual_at = period_start + timedelta(hours=1)
+    estimated_at = period_start + timedelta(hours=2)
+    _settled_charge(int(owner.id), "summary-actual", settled_at=actual_at)
     _settled_charge(
-        int(owner.id), "summary-estimated", settled_at=now, provider="sarvam",
+        int(owner.id), "summary-estimated", settled_at=estimated_at,
+        provider="sarvam",
         model="sarvam-30b", source="estimated", debit=20_000,
         input_tokens=200, cached_tokens=50, output_tokens=80,
     )
-    _settled_charge(int(other.id), "summary-private", settled_at=now, debit=99_000)
+    _settled_charge(
+        int(other.id), "summary-private", settled_at=estimated_at,
+        debit=99_000,
+    )
     with SessionLocal() as session:
         session.add(UsageCharge(
             request_id="summary-released", user_id=int(owner.id), provider="openai",
@@ -159,6 +169,31 @@ def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(clien
     assert "pricing_snapshot" not in estimate
     assert estimate["range_min_tokens"] <= estimate["range_max_tokens"]
     assert "Estimated for Swico Lite" in estimate["explanation"]
+
+
+def test_usage_summary_current_month_handles_first_day_in_asia_kolkata(
+    client, monkeypatch,
+):
+    user = create_test_user("usage-first-day", "usage-first-day@example.com")
+    now = datetime(2026, 7, 31, 19, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.web_api.usage_service.utc_now", lambda: now)
+    period_start, period_end = monthly_period_bounds("Asia/Kolkata", now)
+    assert period_start == datetime(2026, 7, 31, 18, 30, tzinfo=timezone.utc)
+    assert period_end == datetime(2026, 8, 31, 18, 30, tzinfo=timezone.utc)
+    _settled_charge(
+        int(user.id), "first-day-inside", settled_at=period_start + timedelta(minutes=10),
+    )
+    _settled_charge(
+        int(user.id), "first-day-before", settled_at=period_start - timedelta(seconds=1),
+    )
+
+    response = client.get(
+        "/api/web/usage/summary?period=current_month",
+        headers=auth_headers("usage-first-day", "usage-first-day@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request_count"] == 1
 
 
 def test_profile_settings_are_owner_scoped_and_validated(client):

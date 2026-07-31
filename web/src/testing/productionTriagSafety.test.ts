@@ -8,8 +8,10 @@ import {
   buildProductionTriagSummary,
   loginObservationReasonCode,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
+  productionCapabilityReasonCode,
   resolveProductionCleanup,
-  workspaceReasonCode,
+  workspaceShellReasonCode,
+  type ProductionBootstrap,
   type ProductionSafeScenarioResult,
 } from './productionTriagSafety'
 
@@ -49,7 +51,60 @@ test('Firebase rejection, bearer absence, and workspace timeout map safely', () 
     .toBe('authenticated_request_header_missing')
   expect(authenticatedHeaderReasonCode('Bearer redacted'))
     .toBe('preflight_passed')
-  expect(workspaceReasonCode(false)).toBe('workspace_not_ready')
+  expect(workspaceShellReasonCode(false)).toBe('workspace_shell_not_ready')
+})
+
+const completeBootstrap: ProductionBootstrap = {
+  wallet:{ billing_exempt:true },
+  features:{
+    web_attachments:true,
+    web_knowledge_library:true,
+    web_repository_upload:true,
+    web_repository_chat:true,
+  },
+  repositories:{ validation_capability:'static_only' },
+  assistant:{ tier:'pro' },
+}
+
+test.each([
+  [undefined, 'workspace_capability_missing'],
+  [{ ...completeBootstrap, wallet:undefined }, 'workspace_capability_missing'],
+  [{
+    ...completeBootstrap,
+    features:{ ...completeBootstrap.features, web_attachments:false },
+  }, 'attachments_capability_missing'],
+  [{
+    ...completeBootstrap,
+    features:{ ...completeBootstrap.features, web_knowledge_library:false },
+  }, 'knowledge_library_capability_missing'],
+  [{
+    ...completeBootstrap,
+    features:{ ...completeBootstrap.features, web_repository_upload:false },
+  }, 'repository_upload_capability_missing'],
+  [{
+    ...completeBootstrap,
+    features:{ ...completeBootstrap.features, web_repository_chat:false },
+  }, 'repository_chat_capability_missing'],
+  [{
+    ...completeBootstrap,
+    repositories:{ validation_capability:undefined },
+  }, 'validator_capability_missing'],
+  [{
+    ...completeBootstrap,
+    assistant:{ tier:undefined },
+  }, 'assistant_tier_missing'],
+] as const)(
+  'missing production capability maps to %s safely',
+  (bootstrap, reasonCode) => {
+    expect(productionCapabilityReasonCode(
+      bootstrap as unknown as ProductionBootstrap,
+    )).toBe(reasonCode)
+  },
+)
+
+test('complete production capabilities pass preflight classification', () => {
+  expect(productionCapabilityReasonCode(completeBootstrap))
+    .toBe('preflight_passed')
 })
 
 test('admin unknown-request 404 authorizes preflight while 401/403 fail', () => {
@@ -127,4 +182,10 @@ test('staging and production-readonly commands retain their existing timeout beh
     resolve(process.cwd(), 'src/testing/deployedSafety.ts'), 'utf8',
   )
   expect(sharedSafety).toContain('export async function loginDeployed')
+  expect(sharedSafety).toContain('await waitForDeployedWorkspace(page)')
+  const loginHelper = sharedSafety.slice(
+    sharedSafety.indexOf('export async function loginDeployed'),
+    sharedSafety.indexOf('export async function logoutDeployed'),
+  )
+  expect(loginHelper).not.toContain("name:'Send message'")
 })

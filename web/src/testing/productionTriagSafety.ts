@@ -1,5 +1,8 @@
 import type { Page, Response } from '@playwright/test'
-import { AuthenticatedDeployedApi } from './deployedSafety'
+import {
+  AuthenticatedDeployedApi,
+  waitForDeployedWorkspace,
+} from './deployedSafety'
 
 export const PRODUCTION_TRIAG_TEST_TIMEOUT_MS = 20 * 60 * 1000
 export const PRODUCTION_TRIAG_AUTH_TIMEOUT_MS = 90 * 1000
@@ -13,7 +16,14 @@ export type ProductionPreflightReasonCode =
   | 'bootstrap_http_403'
   | 'bootstrap_http_5xx'
   | 'authenticated_request_header_missing'
-  | 'workspace_not_ready'
+  | 'workspace_shell_not_ready'
+  | 'workspace_capability_missing'
+  | 'attachments_capability_missing'
+  | 'knowledge_library_capability_missing'
+  | 'repository_upload_capability_missing'
+  | 'repository_chat_capability_missing'
+  | 'validator_capability_missing'
+  | 'assistant_tier_missing'
   | 'internal_account_required'
   | 'admin_audit_access_denied'
   | 'preflight_passed'
@@ -126,24 +136,41 @@ export function authenticatedHeaderReasonCode(
     ? 'preflight_passed' : 'authenticated_request_header_missing'
 }
 
-export function workspaceReasonCode(ready: boolean): ProductionPreflightReasonCode {
-  return ready ? 'preflight_passed' : 'workspace_not_ready'
+export function workspaceShellReasonCode(
+  ready: boolean,
+): ProductionPreflightReasonCode {
+  return ready ? 'preflight_passed' : 'workspace_shell_not_ready'
 }
 
-export function productionWorkspaceReady(
+export function productionCapabilityReasonCode(
   bootstrap: ProductionBootstrap | null | undefined,
-): boolean {
-  return Boolean(
-    bootstrap?.wallet
-    && bootstrap.features?.web_attachments
-    && bootstrap.features.web_knowledge_library
-    && bootstrap.features.web_repository_upload
-    && bootstrap.features.web_repository_chat
-    && ['static_only', 'executable'].includes(
-      bootstrap.repositories?.validation_capability,
-    )
-    && ['lite', 'standard', 'pro'].includes(bootstrap.assistant?.tier),
-  )
+): ProductionPreflightReasonCode {
+  if (
+    !bootstrap
+    || !bootstrap.wallet
+    || !bootstrap.features
+    || !bootstrap.repositories
+    || !bootstrap.assistant
+  ) return 'workspace_capability_missing'
+  if (bootstrap.features.web_attachments !== true) {
+    return 'attachments_capability_missing'
+  }
+  if (bootstrap.features.web_knowledge_library !== true) {
+    return 'knowledge_library_capability_missing'
+  }
+  if (bootstrap.features.web_repository_upload !== true) {
+    return 'repository_upload_capability_missing'
+  }
+  if (bootstrap.features.web_repository_chat !== true) {
+    return 'repository_chat_capability_missing'
+  }
+  if (!['static_only', 'executable'].includes(
+    bootstrap.repositories.validation_capability,
+  )) return 'validator_capability_missing'
+  if (!['lite', 'standard', 'pro'].includes(bootstrap.assistant.tier)) {
+    return 'assistant_tier_missing'
+  }
+  return 'preflight_passed'
 }
 
 export function resolveProductionCleanup(
@@ -327,17 +354,16 @@ export async function loginProductionTriag<TBootstrap extends ProductionBootstra
   try {
     bootstrap = await observation.response.json() as TBootstrap
   } catch {
-    fail('workspace_not_ready', true, api)
+    fail('workspace_capability_missing', true, api)
   }
   try {
-    await page.getByRole('button', { name:'Send message' }).waitFor({
-      state:'visible', timeout:remaining(deadline),
-    })
+    await waitForDeployedWorkspace(page, remaining(deadline))
   } catch {
-    fail('workspace_not_ready', true, api)
+    fail('workspace_shell_not_ready', true, api)
   }
-  if (!productionWorkspaceReady(bootstrap)) {
-    fail('workspace_not_ready', true, api)
+  const capabilityCode = productionCapabilityReasonCode(bootstrap)
+  if (capabilityCode !== 'preflight_passed') {
+    fail(capabilityCode, true, api)
   }
   if (bootstrap.wallet.billing_exempt !== true) {
     fail('internal_account_required', true, api)

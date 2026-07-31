@@ -169,7 +169,10 @@ it('renders bounded repository lifecycle and static-only wording', () => {
 it('shows waveform only when empty and replaces it with Send for content', () => {
   const props = { setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, realtimeVoiceEnabled:true }
   const { rerender } = render(<Composer {...props} value="" />)
+  expect(screen.getByTestId('composer')).toBeVisible()
+  expect(screen.getByRole('textbox', { name:'Message Swico' })).toBeEnabled()
   expect(screen.getByRole('button', { name:'Start real-time Voice Mode' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name:'Send message' })).not.toBeInTheDocument()
   rerender(<Composer {...props} value="draft" />)
   expect(screen.queryByRole('button', { name:'Start real-time Voice Mode' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Send message' })).toBeEnabled()

@@ -2,8 +2,46 @@ import {
   assertUsableTokenCredits, deleteGeneratedKnowledgeDocument,
   deleteGeneratedRepository, deleteGeneratedThread, deleteGeneratedUpload,
   productionRequestViolation, restoreProfile, restoreUsagePreferences,
+  waitForDeployedWorkspace,
   type ApiResult, type DeployedApi, type RestorableProfile, type RestorableUsagePreferences,
 } from './deployedSafety'
+import type { Page } from '@playwright/test'
+
+function workspacePage(options: {
+  composerVisible?: boolean
+  composerEnabled?: boolean
+  textboxVisible?: boolean
+  textboxEnabled?: boolean
+} = {}): Page {
+  const locator = (
+    visible: boolean,
+    enabled: boolean,
+  ) => ({
+    waitFor: vi.fn(() => visible
+      ? Promise.resolve() : Promise.reject(new Error('not visible'))),
+    isEnabled:vi.fn(() => Promise.resolve(enabled)),
+  })
+  const composer = locator(
+    options.composerVisible ?? true,
+    options.composerEnabled ?? true,
+  )
+  const textbox = locator(
+    options.textboxVisible ?? true,
+    options.textboxEnabled ?? true,
+  )
+  return {
+    getByTestId:vi.fn((testId: string) => {
+      if (testId !== 'composer') throw new Error('unexpected test id')
+      return composer
+    }),
+    getByRole:vi.fn((role: string, details?: { name?: string }) => {
+      if (role !== 'textbox' || details?.name !== 'Message Swico') {
+        throw new Error('conditional action queried')
+      }
+      return textbox
+    }),
+  } as unknown as Page
+}
 
 class FakeApi implements DeployedApi {
   profile: RestorableProfile = { name:'changed', place:null, timezone:'UTC', assistant_name:'Bot', reply_language:'en' }
@@ -87,4 +125,18 @@ test('production cleanup protects existing knowledge and removes generated resou
 
 test('empty token balance produces a clear preflight failure', () => {
   expect(() => assertUsableTokenCredits(0)).toThrow('supervised Razorpay Test Mode transaction')
+})
+
+test('empty composer stable markers are ready without a Send message button', async () => {
+  const page = workspacePage()
+  await expect(waitForDeployedWorkspace(page, 100)).resolves.toBeUndefined()
+  expect(page.getByTestId).toHaveBeenCalledWith('composer')
+  expect(page.getByRole).toHaveBeenCalledWith(
+    'textbox', { name:'Message Swico' },
+  )
+})
+
+test('missing composer fails deployed workspace readiness safely', async () => {
+  const page = workspacePage({ composerVisible:false })
+  await expect(waitForDeployedWorkspace(page, 100)).rejects.toThrow()
 })

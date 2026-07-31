@@ -271,12 +271,18 @@ production-readonly retain their existing timeouts. Before mutation, a
 90-second preflight reports one of `login_form_unavailable`,
 `firebase_login_rejected`, `bootstrap_not_observed`, `bootstrap_http_401`,
 `bootstrap_http_403`, `bootstrap_http_5xx`,
-`authenticated_request_header_missing`, `workspace_not_ready`,
-`internal_account_required`, `admin_audit_access_denied`, or
+`authenticated_request_header_missing`, `workspace_shell_not_ready`,
+`workspace_capability_missing`, `attachments_capability_missing`,
+`knowledge_library_capability_missing`, `repository_upload_capability_missing`,
+`repository_chat_capability_missing`, `validator_capability_missing`,
+`assistant_tier_missing`, `internal_account_required`,
+`admin_audit_access_denied`, or
 `preflight_passed`. It requires a visible workspace,
-`wallet.billing_exempt=true`, and the expected privacy-safe 404 from the admin
-audit for a fixed unknown UUID. A 401/403 is denied. No production resource is
-created before this passes.
+using the visible, enabled `Message Swico` textbox and visible composer rather
+than the conditional Send/Voice action. The check enters no text and makes no
+mutation. It then requires `wallet.billing_exempt=true` and the expected
+privacy-safe 404 from the admin audit for a fixed unknown UUID. A 401/403 is
+denied. No production resource is created before this passes.
 
 Cleanup runs after preserving the primary bounded failure. It restores the
 account's original Swico tier only when the tier changed and deletes only

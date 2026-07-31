@@ -37,6 +37,25 @@ export class AuthenticatedDeployedApi implements DeployedApi {
   }
 }
 
+export async function waitForDeployedWorkspace(
+  page: Page,
+  timeoutMilliseconds = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds
+  const timeout = () => Math.max(1, deadline - Date.now())
+  const composer = page.getByTestId('composer')
+  const textbox = page.getByRole('textbox', { name:'Message Swico' })
+  await Promise.all([
+    composer.waitFor({ state:'visible', timeout:timeout() }),
+    textbox.waitFor({ state:'visible', timeout:timeout() }),
+  ])
+  while (Date.now() < deadline) {
+    if (await composer.isEnabled() && await textbox.isEnabled()) return
+    await new Promise(resolveWait => setTimeout(resolveWait, 100))
+  }
+  throw new Error('Authenticated Swico workspace was not ready')
+}
+
 export async function loginDeployed<TBootstrap>(
   page: Page,
   email: string,
@@ -53,7 +72,7 @@ export async function loginDeployed<TBootstrap>(
   await page.getByLabel('Password', { exact:true }).fill(password)
   await page.getByRole('button', { name:'Sign in' }).click()
   const response = await bootstrapResponse
-  await page.getByRole('button', { name:'Send message' }).waitFor()
+  await waitForDeployedWorkspace(page)
   const authorization = (await response.request().allHeaders()).authorization
   if (!authorization?.startsWith('Bearer ')) {
     throw new Error('Authenticated Swico API request was not observed')

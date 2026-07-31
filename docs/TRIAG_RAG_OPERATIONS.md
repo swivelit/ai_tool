@@ -436,15 +436,25 @@ bootstrap_http_401
 bootstrap_http_403
 bootstrap_http_5xx
 authenticated_request_header_missing
-workspace_not_ready
+workspace_shell_not_ready
+workspace_capability_missing
+attachments_capability_missing
+knowledge_library_capability_missing
+repository_upload_capability_missing
+repository_chat_capability_missing
+validator_capability_missing
+assistant_tier_missing
 internal_account_required
 admin_audit_access_denied
 preflight_passed
 ```
 
-The preflight waits at most 90 seconds, requires
-`wallet.billing_exempt=true`, and sends a fixed unknown request UUID to the
-content-free admin audit. Its expected privacy-safe 404 proves that the admin
+The preflight waits at most 90 seconds and treats the visible, enabled
+`Message Swico` textbox inside the visible composer as the stable authenticated
+workspace marker. It does not depend on the conditional Send or Voice Mode
+button and does not type or mutate data. It then requires each scenario
+capability, `wallet.billing_exempt=true`, and sends a fixed unknown request UUID
+to the content-free admin audit. Its expected privacy-safe 404 proves that the admin
 check was reached; 401/403 and all other statuses fail with
 `admin_audit_access_denied`. No chat, upload, repository, or Knowledge Library
 item is created until `preflight_passed`. Scenario failure codes are
