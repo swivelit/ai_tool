@@ -1253,6 +1253,147 @@ def test_accepted_pre_worker_cancellation_is_queued_and_releases_once():
     }
 
 
+def test_cancelled_error_releases_with_cancellation_reason_and_reraises():
+    from app.web_ai.request_audit import build_request_audit
+
+    user = create_test_user(
+        "task-cancelled", "task-cancelled@example.com"
+    )
+    _fund(int(user.id))
+    request_id = "task-cancelled-before-provider-usage"
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain database indexes",
+        request_id=request_id,
+        thread_id=None,
+        reply_language="en",
+    )
+
+    class Provider:
+        def stream_complete(self, _request, _route, _on_delta):
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        execute_web_turn(
+            prepared,
+            providers={"openai": Provider(), "sarvam": Provider()},
+            on_delta=lambda _value: None,
+        )
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "user",
+        )).one()
+        audit = build_request_audit(session, request_ids=[request_id])
+
+        assert charge.status == "released"
+        assert json.loads(charge.pricing_snapshot_json)[
+            "release_reason"
+        ] == "cancelled_before_provider_usage"
+        assert user_message.status == "retryable"
+        assert audit is not None
+        assert audit[0]["cancellation_state"] == "cancelled"
+        assert audit[0]["cancellation_failure_origin"] == "none"
+
+
+def test_unexpected_error_after_cancellation_request_uses_cancel_reason():
+    from app.web_ai.request_audit import build_request_audit
+
+    user = create_test_user(
+        "requested-cancel", "requested-cancel@example.com"
+    )
+    _fund(int(user.id))
+    request_id = "requested-cancel-before-provider-usage"
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain database indexes",
+        request_id=request_id,
+        thread_id=None,
+        reply_language="en",
+    )
+
+    class Signal:
+        cancelled = False
+
+    signal = Signal()
+    prepared.ai_request.metadata["cancellation_signal"] = signal
+
+    class Provider:
+        def stream_complete(self, _request, _route, _on_delta):
+            signal.cancelled = True
+            raise RuntimeError("provider stopped during cancellation")
+
+    with pytest.raises(RuntimeError, match="provider stopped during cancellation"):
+        execute_web_turn(
+            prepared,
+            providers={"openai": Provider(), "sarvam": Provider()},
+            on_delta=lambda _value: None,
+        )
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        audit = build_request_audit(session, request_ids=[request_id])
+
+        assert json.loads(charge.pricing_snapshot_json)[
+            "release_reason"
+        ] == "cancelled_before_provider_usage"
+        assert audit is not None
+        assert audit[0]["cancellation_state"] == "cancelled"
+
+
+def test_unexpected_error_without_cancellation_uses_default_release_reason():
+    from app.web_ai.request_audit import build_request_audit
+
+    user = create_test_user(
+        "provider-failed", "provider-failed@example.com"
+    )
+    _fund(int(user.id))
+    request_id = "provider-failed-without-cancellation"
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain database indexes",
+        request_id=request_id,
+        thread_id=None,
+        reply_language="en",
+    )
+
+    class Provider:
+        def stream_complete(self, _request, _route, _on_delta):
+            raise RuntimeError("unexpected provider failure")
+
+    with pytest.raises(RuntimeError, match="unexpected provider failure"):
+        execute_web_turn(
+            prepared,
+            providers={"openai": Provider(), "sarvam": Provider()},
+            on_delta=lambda _value: None,
+        )
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "user",
+        )).one()
+        audit = build_request_audit(session, request_ids=[request_id])
+
+        assert charge.status == "released"
+        assert json.loads(charge.pricing_snapshot_json)[
+            "release_reason"
+        ] == "provider_failed_or_cancelled"
+        assert user_message.status == "retryable"
+        assert audit is not None
+        assert audit[0]["cancellation_state"] == "failed"
+        assert audit[0]["cancellation_failure_origin"] == "message_status"
+
+
 def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):
     user = create_test_user(); _fund(int(user.id))
     monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", lambda *args, **kwargs: (_ for _ in ()).throw(GenerationCancelled()))

@@ -86,12 +86,6 @@ def evaluate_retrieval(
     ]
     if high:
         return "sufficient", ()
-    if len(candidates) == 1:
-        return (
-            ("ambiguous", ())
-            if support_scores[0] >= 0.25
-            else ("insufficient", ())
-        )
     if len(candidates) >= 2:
         return "ambiguous", ()
     return "insufficient", ()

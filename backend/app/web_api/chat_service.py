@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from decimal import Decimal
 import json
@@ -4250,7 +4251,13 @@ def execute_web_turn(
             _release_continuation_claim(session, prepared)
             session.commit()
         raise
+    except asyncio.CancelledError:
+        _release_pre_provider_cancellation(prepared)
+        raise
     except BaseException:
+        if _generation_cancellation_requested(prepared):
+            _release_pre_provider_cancellation(prepared)
+            raise
         with SessionLocal() as session:
             if prepared.billing_exempt:
                 release_billing_exempt_usage(session, prepared.request_id)

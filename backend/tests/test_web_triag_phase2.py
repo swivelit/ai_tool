@@ -430,7 +430,7 @@ def test_fusion_is_repeatable_and_deduplication_is_stable():
         ((), "insufficient"),
         ((_candidate("very-weak", "alpha", score=0.07),), "insufficient"),
         ((_candidate("a", "alpha", score=0.2),), "insufficient"),
-        ((_candidate("weak", "alpha", score=0.3),), "ambiguous"),
+        ((_candidate("weak", "alpha", score=0.3),), "insufficient"),
         (
             (
                 _candidate("a", "alpha", score=0.3),
@@ -450,6 +450,16 @@ def test_fusion_is_repeatable_and_deduplication_is_stable():
 )
 def test_retrieval_status_evaluation(candidates, expected):
     assert evaluate_retrieval(candidates)[0] == expected
+
+
+def test_lone_knowledge_candidate_clearing_metadata_threshold_is_sufficient():
+    candidate = replace(
+        _candidate("knowledge", "owner knowledge", score=0.1),
+        source_kind="knowledge_chunk",
+        metadata_score=0.5,
+    )
+
+    assert evaluate_retrieval((candidate,))[0] == "sufficient"
 
 
 def test_corrective_round_is_bounded_to_one():
