@@ -249,7 +249,9 @@ class TemporaryDenseRetriever:
         for index, vector in enumerate(vectors):
             if vector is None:
                 continue
-            similarity = (_cosine(query_vector, vector) + 1.0) / 2.0
+            # Cosine zero means no positive semantic relevance. Shifting the
+            # range would incorrectly turn an orthogonal match into 0.5.
+            similarity = max(0.0, _cosine(query_vector, vector))
             results.append(
                 candidate_from_chunk(
                     upload=upload,

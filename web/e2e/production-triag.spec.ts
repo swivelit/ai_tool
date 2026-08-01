@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import {
@@ -16,6 +17,7 @@ import {
   boundedCombinedFailure,
   buildProductionTriagSummary,
   GreetingHarnessError,
+  hasVisibleInsufficientEvidenceResponse,
   FreshChatHarnessError,
   isProductionRequestId,
   loginProductionTriag,
@@ -498,9 +500,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   let uploadId: string | null = null
   let uploadReady = false
   let rolloutReport: ProductionSafeSummary['rollout_report']
-  const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
-  const unsupportedMarker = `ABSENT-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
-  const factualValue = `TRIAG-${runMarker}`
+  const runMarker = randomUUID()
+  const supportedMarker = randomUUID()
+  const unsupportedMarker = randomUUID()
+  const factualValue = `TRIAG-${supportedMarker}`
   const recordRequest = (
     scenario: ProductionScenarioName,
     requestId: string,
@@ -738,7 +741,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       uploadReady = true
       const sent = await sendMessage(
         page,
-        `Using only the attached PDF, what is the acceptance fact? ${runMarker}`,
+        `Using only the attached PDF, what is the acceptance fact? ${supportedMarker}`,
         {
           failureCodes:{
             requestNotObserved:'supported_pdf_chat_request_not_observed',
@@ -800,11 +803,14 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       if (result.quality_status !== 'insufficient_evidence') {
         scenarioFailure('unsupported_pdf_quality_invalid')
       }
+      let visibleResponse: string | null = null
       try {
-        await expect(sent.assistant).toContainText(
-          /not enough|does not (?:contain|provide|state)|is not (?:in|provided)|cannot (?:find|determine)/i,
-        )
+        visibleResponse = await sent.assistant.locator('.message-body')
+          .textContent()
       } catch {
+        scenarioFailure('unsupported_pdf_refusal_not_visible')
+      }
+      if (!hasVisibleInsufficientEvidenceResponse(visibleResponse)) {
         scenarioFailure('unsupported_pdf_refusal_not_visible')
       }
     })
@@ -1307,11 +1313,18 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   await writeFile(summaryPath, serialized, 'utf8')
   await writeFile(safeTracePath, serialized, 'utf8')
   if (primaryFailureReason !== 'none' || cleanup.status === 'incomplete') {
+    const primaryFailureSubreason = scenarios.find(item => (
+      item.status === 'failed'
+      && item.reason_code === primaryFailureReason
+    ))?.subreason_code
     console.error(
-      'production-triag.spec.ts reason_code=%s cleanup_status=%s',
+      'production-triag.spec.ts reason_code=%s subreason_code=%s cleanup_status=%s',
       primaryFailureReason,
+      primaryFailureSubreason ?? 'none',
       cleanup.status,
     )
-    throw new Error(boundedCombinedFailure(primaryFailureReason, cleanup))
+    throw new Error(boundedCombinedFailure(
+      primaryFailureReason, cleanup, primaryFailureSubreason,
+    ))
   }
 })

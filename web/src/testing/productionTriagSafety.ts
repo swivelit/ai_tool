@@ -761,10 +761,22 @@ export function resolveProductionCleanup(
 export function boundedCombinedFailure(
   primaryReasonCode: ProductionPrimaryFailureReasonCode,
   cleanup: ProductionCleanup,
+  primarySubreasonCode?: ProductionScenarioSubreasonCode,
 ): string {
   const cleanupCodes = cleanup.reason_codes.length > 0
     ? cleanup.reason_codes.join(',') : 'none'
-  return `production_triag_failed primary=${primaryReasonCode} cleanup_status=${cleanup.status} cleanup=${cleanupCodes}`
+  const subreasonCode = primarySubreasonCode ?? 'none'
+  return `production_triag_failed primary=${primaryReasonCode} subreason=${subreasonCode} cleanup_status=${cleanup.status} cleanup=${cleanupCodes}`
+}
+
+export function hasVisibleInsufficientEvidenceResponse(
+  messageBody: string | null | undefined,
+): boolean {
+  const normalized = String(messageBody ?? '')
+    .replaceAll('‘', "'")
+    .replaceAll('’', "'")
+  return /not enough|couldn't find enough support|does not (?:contain|provide|state)|is not (?:in|provided)|cannot (?:find|determine)/i
+    .test(normalized)
 }
 
 export function buildProductionTriagSummary(input: {

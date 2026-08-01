@@ -7,6 +7,7 @@ from .models import RetrievalCandidate
 
 
 _NEGATION = re.compile(r"\b(no|not|never|without|cannot|can't|doesn't|isn't)\b", re.I)
+_SEMANTIC_SUFFICIENCY_THRESHOLD = 0.70
 
 
 def evaluate_retrieval(
@@ -64,7 +65,7 @@ def evaluate_retrieval(
             candidates, support_scores, query_coverage, strict=True,
         )
         if (
-            item.semantic_score >= 0.45
+            item.semantic_score >= _SEMANTIC_SUFFICIENCY_THRESHOLD
             or item.metadata_score >= 0.45
             or (item.lexical_score >= 0.45 and coverage >= 0.45)
         )

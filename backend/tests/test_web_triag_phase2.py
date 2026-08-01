@@ -232,6 +232,59 @@ def test_dense_chunk_embeddings_and_query_embedding_are_reused():
     assert calls[2] == ("largest",)
 
 
+def _dense_result_for_vectors(
+    *, query_vector: list[float], document_vector: list[float]
+):
+    store = InProcessEphemeralUploadStore()
+    upload = _upload(chunks=("A semantically represented document.",))
+    store.put(upload)
+
+    def embed(values):
+        return [
+            query_vector if value == "paraphrased query" else document_vector
+            for value in values
+        ]
+
+    retriever = TemporaryDenseRetriever(
+        store=store,
+        embed=embed,
+        model="embedding-test",
+        dimensions=2,
+        query_cache_ttl_seconds=60,
+    )
+    return retriever.retrieve(
+        query="paraphrased query",
+        uploads=[upload],
+        owner_user_id=1,
+        limit=1,
+    )
+
+
+def test_dense_orthogonal_vectors_are_zero_and_insufficient():
+    candidates = _dense_result_for_vectors(
+        query_vector=[1.0, 0.0], document_vector=[0.0, 1.0]
+    )
+    assert candidates[0].semantic_score == pytest.approx(0.0)
+    assert evaluate_retrieval(candidates)[0] == "insufficient"
+
+
+def test_dense_weak_positive_similarity_is_insufficient():
+    candidates = _dense_result_for_vectors(
+        query_vector=[1.0, 0.0], document_vector=[0.6, 0.8]
+    )
+    assert candidates[0].semantic_score == pytest.approx(0.6)
+    assert evaluate_retrieval(candidates)[0] == "insufficient"
+
+
+def test_dense_only_related_paraphrase_remains_sufficient():
+    candidates = _dense_result_for_vectors(
+        query_vector=[1.0, 0.0], document_vector=[0.8, 0.6]
+    )
+    assert candidates[0].lexical_score == 0.0
+    assert candidates[0].semantic_score == pytest.approx(0.8)
+    assert evaluate_retrieval(candidates)[0] == "sufficient"
+
+
 def test_embedding_failure_falls_back_lexically():
     store = InProcessEphemeralUploadStore()
     upload = _upload()
@@ -741,7 +794,8 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
     monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
     monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
-    monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
+    monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "true")
+    monkeypatch.setenv("WEB_RAG_EMBEDDING_DIMENSIONS", "64")
     monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response", lambda *args: None
@@ -751,12 +805,27 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
         "phase2-insufficient-user", "phase2-insufficient@example.com"
     )
     _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(
+            WebUsagePreferences(
+                user_id=int(user.id), assistant_tier="standard"
+            )
+        )
+        session.commit()
     upload = _upload(
         upload_id="unrelated-upload",
         owner=int(user.id),
-        chunks=("A recipe for sourdough bread.",),
+        chunks=("Acceptance fact: TRIAG-acceptance-only-1234.",),
     )
     get_upload_store().put(upload)
+
+    def embed(values):
+        return [
+            ([0.0, 1.0] + ([0.0] * 62))
+            if "Acceptance fact" in value
+            else ([1.0, 0.0] + ([0.0] * 62))
+            for value in values
+        ]
 
     class Provider:
         def complete(self, request, route):
@@ -775,8 +844,10 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
     )
     completed = execute_web_turn(
         prepared,
-        providers={prepared.route.provider: Provider()},
+        providers={prepared.route.provider: Provider(), "embedding": embed},
     )
+    assert prepared.retrieval_context is not None
+    assert prepared.retrieval_context.retrieval_status == "insufficient"
     assert "couldn’t find enough support" in completed.message.content
     assert completed.message.quality is not None
     assert completed.message.quality["status"] == "insufficient_evidence"

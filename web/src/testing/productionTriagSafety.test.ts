@@ -17,6 +17,7 @@ import {
   freshChatStateReason,
   GreetingHarnessError,
   greetingAuditSubreason,
+  hasVisibleInsufficientEvidenceResponse,
   loginObservationReasonCode,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   productionCapabilityReasonCode,
@@ -158,9 +159,10 @@ test('combined failure preserves primary and real cleanup failures', () => {
     'thread_delete_verification_failure',
   ])
   const combined = boundedCombinedFailure(
-    'supported_pdf_failed', failedCleanup,
+    'unsupported_pdf_failed', failedCleanup, 'unsupported_pdf_quality_invalid',
   )
-  expect(combined).toContain('primary=supported_pdf_failed')
+  expect(combined).toContain('primary=unsupported_pdf_failed')
+  expect(combined).toContain('subreason=unsupported_pdf_quality_invalid')
   expect(combined).toContain('cleanup=thread_delete_verification_failure')
 
   const greetingCombined = boundedCombinedFailure(
@@ -169,6 +171,21 @@ test('combined failure preserves primary and real cleanup failures', () => {
   )
   expect(greetingCombined).toContain('primary=deterministic_greeting_failed')
   expect(greetingCombined).toContain('cleanup=thread_delete_http_failure')
+})
+
+test('visible insufficient-evidence wording normalizes apostrophes safely', () => {
+  expect(hasVisibleInsufficientEvidenceResponse(
+    "I couldn't find enough support in the attached source.",
+  )).toBe(true)
+  expect(hasVisibleInsufficientEvidenceResponse(
+    'I couldn’t find enough support in the attached source.',
+  )).toBe(true)
+  expect(hasVisibleInsufficientEvidenceResponse(
+    'The attached source does not state that fact.',
+  )).toBe(true)
+  expect(hasVisibleInsufficientEvidenceResponse(
+    'Sources Acceptance fact: redacted',
+  )).toBe(false)
 })
 
 test('isolated greeting payload has no previous thread, attachments, or repository', () => {
@@ -785,6 +802,23 @@ test('supported PDF captures all upload statuses and UUID before later checks', 
   expect(supported.indexOf("recordRequest('supported_pdf', requestId)"))
     .toBeLessThan(supported.indexOf('supported_pdf_sources_not_visible'))
   expect(supported).toContain('supported_pdf_audit_not_ready')
+})
+
+test('PDF scenarios use independent UUID markers and body-only refusal checks', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain('const supportedMarker = randomUUID()')
+  expect(spec).toContain('const unsupportedMarker = randomUUID()')
+  expect(spec).not.toContain('const unsupportedMarker = `ABSENT-${Date.now()}')
+  const unsupported = spec.slice(
+    spec.indexOf("await runScenario('unsupported_pdf'"),
+    spec.indexOf("await runScenario('knowledge_library'"),
+  )
+  expect(unsupported).toContain("result.quality_status !== 'insufficient_evidence'")
+  expect(unsupported).toContain("sent.assistant.locator('.message-body')")
+  expect(unsupported).toContain('hasVisibleInsufficientEvidenceResponse')
+  expect(unsupported).not.toContain('expect(sent.assistant).toContainText')
 })
 
 test('PDF prerequisite skips only dependent scenarios while independent ones run', () => {
