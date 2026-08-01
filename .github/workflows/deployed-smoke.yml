@@ -164,8 +164,9 @@ jobs:
             const ids = Array.isArray(item.request_ids) ? item.request_ids : []
             const reason = item.reason_code || 'none'
             const subreason = item.subreason_code || 'none'
+            const freshChatStrategy = item.fresh_chat_strategy || 'none'
             const prerequisite = item.prerequisite_reason_code || 'none'
-            process.stdout.write(`- ${item.scenario}: status=${item.status || 'unknown'}, reason=${reason}, subreason=${subreason}, prerequisite=${prerequisite}, request_ids=${ids.length ? ids.join(', ') : 'none'}\n`)
+            process.stdout.write(`- ${item.scenario}: status=${item.status || 'unknown'}, reason=${reason}, subreason=${subreason}, fresh_chat_strategy=${freshChatStrategy}, prerequisite=${prerequisite}, request_ids=${ids.length ? ids.join(', ') : 'none'}\n`)
           }
           NODE
           fi

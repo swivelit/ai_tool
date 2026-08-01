@@ -64,8 +64,10 @@ export type ProductionScenarioReasonCode =
   | 'cancellation_settlement_failed'
 
 export type FreshChatReasonCode =
-  | 'fresh_chat_button_unavailable'
-  | 'fresh_chat_click_failed'
+  | 'fresh_chat_button_click_failed'
+  | 'fresh_chat_sidebar_open_failed'
+  | 'fresh_chat_shortcut_failed'
+  | 'fresh_chat_navigation_unavailable'
   | 'fresh_chat_shell_not_ready'
   | 'fresh_chat_composer_not_ready'
   | 'fresh_chat_textbox_not_empty'
@@ -73,6 +75,12 @@ export type FreshChatReasonCode =
   | 'fresh_chat_attachments_not_cleared'
   | 'fresh_chat_repository_not_cleared'
   | 'fresh_chat_state_timeout'
+
+export type FreshChatStrategy =
+  | 'already_ready'
+  | 'direct_button'
+  | 'sidebar_button'
+  | 'keyboard_shortcut'
 
 export type GreetingSubreasonCode =
   | FreshChatReasonCode
@@ -108,6 +116,7 @@ export type ProductionSafeScenarioResult = {
   request_ids: string[]
   reason_code?: ProductionScenarioReasonCode
   subreason_code?: GreetingSubreasonCode
+  fresh_chat_strategy?: FreshChatStrategy
   prerequisite_reason_code?: ProductionPrerequisiteReasonCode
 }
 
@@ -176,9 +185,12 @@ export type FreshChatState = {
 }
 
 export type FreshChatProbe = {
-  prepareNewChatButton(timeoutMilliseconds: number): Promise<boolean>
-  clickNewChat(): Promise<void>
   readState(): Promise<FreshChatState>
+  tryDirectButton(): Promise<'clicked' | 'unavailable' | 'failed'>
+  trySidebarButton(
+    timeoutMilliseconds: number,
+  ): Promise<'clicked' | 'unavailable' | 'open_failed' | 'click_failed'>
+  tryKeyboardShortcut(): Promise<'pressed' | 'unavailable' | 'failed'>
 }
 
 export function freshChatStateReason(
@@ -210,22 +222,41 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
   const composerContainer = composer.locator('..')
   const textbox = composer.getByRole('textbox', { name:'Message Swico' })
   return {
-    async prepareNewChatButton(timeoutMilliseconds) {
+    async tryDirectButton() {
+      if (!await button.isVisible()) return 'unavailable'
       try {
-        if (!await button.isVisible()) {
-          const trigger = page.getByRole('button', { name:'Open sidebar' })
-          if (await trigger.isVisible()) await trigger.click()
-        }
+        await button.click({ timeout:5_000 })
+        return 'clicked'
+      } catch {
+        return 'failed'
+      }
+    },
+    async trySidebarButton(timeoutMilliseconds) {
+      const trigger = page.getByRole('button', { name:'Open sidebar' })
+      if (!await trigger.isVisible()) return 'unavailable'
+      try {
+        await trigger.click({ timeout:5_000 })
         await button.waitFor({
           state:'visible', timeout:Math.min(5_000, timeoutMilliseconds),
         })
-        return true
       } catch {
-        return false
+        return 'open_failed'
+      }
+      try {
+        await button.click({ timeout:5_000 })
+        return 'clicked'
+      } catch {
+        return 'click_failed'
       }
     },
-    async clickNewChat() {
-      await button.click({ timeout:5_000 })
+    async tryKeyboardShortcut() {
+      if (page.isClosed()) return 'unavailable'
+      try {
+        await page.keyboard.press('Control+Shift+O')
+        return 'pressed'
+      } catch {
+        return 'failed'
+      }
     },
     async readState() {
       return {
@@ -249,6 +280,36 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
   }
 }
 
+type FreshChatNavigationResult =
+  | { strategy: Exclude<FreshChatStrategy, 'already_ready'> }
+  | { reasonCode: FreshChatReasonCode }
+
+async function navigateToFreshChat(
+  probe: FreshChatProbe,
+  timeoutMilliseconds: number,
+): Promise<FreshChatNavigationResult> {
+  let fallbackReason: FreshChatReasonCode =
+    'fresh_chat_navigation_unavailable'
+  const direct = await probe.tryDirectButton()
+  if (direct === 'clicked') return { strategy:'direct_button' }
+  if (direct === 'failed') fallbackReason = 'fresh_chat_button_click_failed'
+
+  const sidebar = await probe.trySidebarButton(timeoutMilliseconds)
+  if (sidebar === 'clicked') return { strategy:'sidebar_button' }
+  if (sidebar === 'open_failed') {
+    fallbackReason = 'fresh_chat_sidebar_open_failed'
+  } else if (sidebar === 'click_failed') {
+    fallbackReason = 'fresh_chat_button_click_failed'
+  }
+
+  const shortcut = await probe.tryKeyboardShortcut()
+  if (shortcut === 'pressed') return { strategy:'keyboard_shortcut' }
+  if (shortcut === 'failed') {
+    return { reasonCode:'fresh_chat_shortcut_failed' }
+  }
+  return { reasonCode:fallbackReason }
+}
+
 export async function stabilizeFreshChat(
   probe: FreshChatProbe,
   options: {
@@ -256,7 +317,7 @@ export async function stabilizeFreshChat(
     pollMilliseconds?: number
     retryClickAfterMilliseconds?: number
   } = {},
-): Promise<void> {
+): Promise<FreshChatStrategy> {
   const timeoutMilliseconds = Math.min(
     45_000, Math.max(1, options.timeoutMilliseconds ?? 45_000),
   )
@@ -267,31 +328,36 @@ export async function stabilizeFreshChat(
     options.retryClickAfterMilliseconds ?? 15_000,
     Math.max(1, Math.floor(timeoutMilliseconds / 2)),
   )
-  if (!await probe.prepareNewChatButton(Math.max(1, deadline - Date.now()))) {
-    throw new GreetingHarnessError('fresh_chat_button_unavailable')
-  }
   try {
-    await probe.clickNewChat()
+    if (!freshChatStateReason(await probe.readState())) return 'already_ready'
   } catch {
-    throw new GreetingHarnessError('fresh_chat_click_failed')
+    // Navigation may restore a shell that is still transitioning.
   }
-  let retriedClick = false
+  let navigationAttempts = 0
+  let lastStrategy: Exclude<FreshChatStrategy, 'already_ready'> | null = null
   let lastReason: FreshChatReasonCode = 'fresh_chat_state_timeout'
   while (Date.now() < deadline) {
+    if (navigationAttempts === 0 || (
+      navigationAttempts === 1 && Date.now() >= retryAt
+    )) {
+      const navigation = await navigateToFreshChat(
+        probe, Math.max(1, deadline - Date.now()),
+      )
+      navigationAttempts += 1
+      if ('reasonCode' in navigation) {
+        if (!lastStrategy) {
+          throw new GreetingHarnessError(navigation.reasonCode)
+        }
+      } else {
+        lastStrategy = navigation.strategy
+      }
+    }
     try {
       const reasonCode = freshChatStateReason(await probe.readState())
-      if (!reasonCode) return
+      if (!reasonCode) return lastStrategy ?? 'already_ready'
       lastReason = reasonCode
     } catch {
       lastReason = 'fresh_chat_state_timeout'
-    }
-    if (!retriedClick && Date.now() >= retryAt) {
-      try {
-        await probe.clickNewChat()
-      } catch {
-        throw new GreetingHarnessError('fresh_chat_click_failed')
-      }
-      retriedClick = true
     }
     await new Promise(resolveWait => setTimeout(
       resolveWait,
@@ -487,6 +553,8 @@ export function buildProductionTriagSummary(input: {
       ? { reason_code:item.reason_code } : {}),
     ...(item.status === 'failed' && item.subreason_code
       ? { subreason_code:item.subreason_code } : {}),
+    ...(item.fresh_chat_strategy
+      ? { fresh_chat_strategy:item.fresh_chat_strategy } : {}),
     ...(item.status === 'not_run' && item.prerequisite_reason_code
       ? { prerequisite_reason_code:item.prerequisite_reason_code } : {}),
   }))

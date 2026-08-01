@@ -32,6 +32,7 @@ import {
   type ProductionSafeSummary,
   type ProductionScenarioName,
   type ProductionScenarioReasonCode,
+  type FreshChatStrategy,
 } from '../src/testing/productionTriagSafety'
 
 test.skip(
@@ -215,8 +216,8 @@ async function openSidebar(page: Page): Promise<void> {
   if (await trigger.isVisible()) await trigger.click()
 }
 
-async function newChat(page: Page): Promise<void> {
-  await stabilizeFreshChat(playwrightFreshChatProbe(page))
+async function newChat(page: Page): Promise<FreshChatStrategy> {
+  return stabilizeFreshChat(playwrightFreshChatProbe(page))
 }
 
 async function sendMessage(
@@ -383,6 +384,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   }
   let primaryFailureReason: ProductionPrimaryFailureReasonCode = 'none'
   let uploadId: string | null = null
+  let greetingFreshChatStrategy: FreshChatStrategy | null = null
   const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const factualValue = `TRIAG-${runMarker}`
   const recordRequest = (
@@ -405,6 +407,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           scenario,
           status:'passed',
           request_ids:requestIds.get(scenario) ?? [],
+          ...(scenario === 'deterministic_greeting'
+            && greetingFreshChatStrategy
+            ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
         })
       } catch (error) {
         const reasonCode = scenarioFailureReason[scenario]
@@ -417,6 +422,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           ...(scenario === 'deterministic_greeting'
             && error instanceof GreetingHarnessError
             ? { subreason_code:error.reasonCode } : {}),
+          ...(scenario === 'deterministic_greeting'
+            && greetingFreshChatStrategy
+            ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
         })
       } finally {
         try {
@@ -431,6 +439,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
               status:'failed',
               request_ids:requestIds.get(scenario) ?? [],
               reason_code:reasonCode,
+              ...(scenario === 'deterministic_greeting'
+                && greetingFreshChatStrategy
+                ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
             })
           }
         }
@@ -470,7 +481,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     snapshotsCaptured = true
 
     await runScenario('deterministic_greeting', async () => {
-      await newChat(page)
+      greetingFreshChatStrategy = await newChat(page)
       await safeScreenshot(
         page, screenshotDirectory, 'fresh_chat_ready',
       )

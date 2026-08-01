@@ -41,6 +41,7 @@ test('production test and GitHub command use matching 20-minute timeouts', () =>
   )
   expect(workflow).toContain('timeout-minutes: 30')
   expect(workflow).toContain('subreason=${subreason}')
+  expect(workflow).toContain('fresh_chat_strategy=${freshChatStrategy}')
   expect(workflow).toContain('prerequisite=${prerequisite}')
 })
 
@@ -194,19 +195,31 @@ const readyFreshChatState: FreshChatState = {
 }
 
 function freshChatProbe(options: {
-  buttonAvailable?: boolean
-  clickError?: boolean
   states?: Array<FreshChatState | Error>
-} = {}): FreshChatProbe & { clicks: ReturnType<typeof vi.fn> } {
+  direct?: 'clicked' | 'unavailable' | 'failed'
+  sidebar?: 'clicked' | 'unavailable' | 'open_failed' | 'click_failed'
+  shortcut?: 'pressed' | 'unavailable' | 'failed'
+} = {}): FreshChatProbe & {
+  directCalls: ReturnType<typeof vi.fn>
+  sidebarCalls: ReturnType<typeof vi.fn>
+  shortcutCalls: ReturnType<typeof vi.fn>
+} {
   const states = options.states ?? [readyFreshChatState]
   let stateIndex = 0
-  const clicks = vi.fn(async () => {
-    if (options.clickError) throw new Error('private click error')
-  })
+  const directCalls = vi.fn(async () => options.direct ?? 'clicked' as const)
+  const sidebarCalls = vi.fn(async () => (
+    options.sidebar ?? 'unavailable' as const
+  ))
+  const shortcutCalls = vi.fn(async () => (
+    options.shortcut ?? 'unavailable' as const
+  ))
   return {
-    clicks,
-    prepareNewChatButton:vi.fn(async () => options.buttonAvailable ?? true),
-    clickNewChat:clicks,
+    directCalls,
+    sidebarCalls,
+    shortcutCalls,
+    tryDirectButton:directCalls,
+    trySidebarButton:sidebarCalls,
+    tryKeyboardShortcut:shortcutCalls,
     readState:vi.fn(async () => {
       const state = states[Math.min(stateIndex, states.length - 1)]
       stateIndex += 1
@@ -216,29 +229,69 @@ function freshChatProbe(options: {
   }
 }
 
-test('visible heading, empty textbox, and empty conversation pass fresh chat', async () => {
-  const probe = freshChatProbe()
+test('already fresh workspace needs no New chat button or navigation', async () => {
+  const probe = freshChatProbe({
+    direct:'unavailable', sidebar:'unavailable', shortcut:'unavailable',
+  })
   await expect(stabilizeFreshChat(probe, {
     timeoutMilliseconds:20, pollMilliseconds:1,
-  })).resolves.toBeUndefined()
-  expect(probe.clicks).toHaveBeenCalledTimes(1)
+  })).resolves.toBe('already_ready')
+  expect(probe.directCalls).not.toHaveBeenCalled()
+  expect(probe.sidebarCalls).not.toHaveBeenCalled()
+  expect(probe.shortcutCalls).not.toHaveBeenCalled()
 })
 
 test('temporarily stale old message is polled until cleared', async () => {
   const probe = freshChatProbe({ states:[
+    { ...readyFreshChatState, messageCount:1 },
     { ...readyFreshChatState, messageCount:1 },
     readyFreshChatState,
   ] })
   await expect(stabilizeFreshChat(probe, {
     timeoutMilliseconds:30, pollMilliseconds:1,
     retryClickAfterMilliseconds:20,
-  })).resolves.toBeUndefined()
-  expect(probe.readState).toHaveBeenCalledTimes(2)
-  expect(probe.clicks).toHaveBeenCalledTimes(1)
+  })).resolves.toBe('direct_button')
+  expect(probe.readState).toHaveBeenCalledTimes(3)
+  expect(probe.directCalls).toHaveBeenCalledTimes(1)
 })
 
-test('fresh-chat stabilization retries its click at most once', async () => {
+test('visible direct New chat button succeeds with direct strategy', async () => {
   const probe = freshChatProbe({ states:[
+    { ...readyFreshChatState, messageCount:1 }, readyFreshChatState,
+  ] })
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('direct_button')
+  expect(probe.directCalls).toHaveBeenCalledTimes(1)
+  expect(probe.sidebarCalls).not.toHaveBeenCalled()
+  expect(probe.shortcutCalls).not.toHaveBeenCalled()
+})
+
+test('sidebar button and keyboard shortcut are layered fallbacks', async () => {
+  const stale = { ...readyFreshChatState, messageCount:1 }
+  const sidebarProbe = freshChatProbe({
+    states:[stale, readyFreshChatState],
+    direct:'unavailable', sidebar:'clicked', shortcut:'unavailable',
+  })
+  await expect(stabilizeFreshChat(sidebarProbe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('sidebar_button')
+  expect(sidebarProbe.sidebarCalls).toHaveBeenCalledTimes(1)
+  expect(sidebarProbe.shortcutCalls).not.toHaveBeenCalled()
+
+  const shortcutProbe = freshChatProbe({
+    states:[stale, readyFreshChatState],
+    direct:'unavailable', sidebar:'unavailable', shortcut:'pressed',
+  })
+  await expect(stabilizeFreshChat(shortcutProbe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('keyboard_shortcut')
+  expect(shortcutProbe.shortcutCalls).toHaveBeenCalledTimes(1)
+})
+
+test('fresh-chat stabilization retries navigation at most once', async () => {
+  const probe = freshChatProbe({ states:[
+    { ...readyFreshChatState, messageCount:1 },
     { ...readyFreshChatState, messageCount:1 },
   ] })
   await expect(stabilizeFreshChat(probe, {
@@ -247,19 +300,57 @@ test('fresh-chat stabilization retries its click at most once', async () => {
   })).rejects.toMatchObject({
     reasonCode:'fresh_chat_messages_not_cleared',
   })
-  expect(probe.clicks).toHaveBeenCalledTimes(2)
+  expect(probe.directCalls).toHaveBeenCalledTimes(2)
 })
 
-test('missing New chat button and failed click map safely', async () => {
+test('keyboard and unavailable navigation failures map safely', async () => {
+  const stale = { ...readyFreshChatState, messageCount:1 }
   await expect(stabilizeFreshChat(freshChatProbe({
-    buttonAvailable:false,
+    states:[stale], direct:'unavailable', sidebar:'unavailable',
+    shortcut:'failed',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
-    reasonCode:'fresh_chat_button_unavailable',
+    reasonCode:'fresh_chat_shortcut_failed',
   })
   await expect(stabilizeFreshChat(freshChatProbe({
-    clickError:true,
+    states:[stale], direct:'unavailable', sidebar:'unavailable',
+    shortcut:'unavailable',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
-    reasonCode:'fresh_chat_click_failed',
+    reasonCode:'fresh_chat_navigation_unavailable',
+  })
+})
+
+test('button and sidebar failures retain bounded navigation distinctions', async () => {
+  const stale = { ...readyFreshChatState, messageCount:1 }
+  await expect(stabilizeFreshChat(freshChatProbe({
+    states:[stale], direct:'failed', sidebar:'unavailable',
+    shortcut:'unavailable',
+  }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_button_click_failed',
+  })
+  await expect(stabilizeFreshChat(freshChatProbe({
+    states:[stale], direct:'unavailable', sidebar:'open_failed',
+    shortcut:'unavailable',
+  }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_sidebar_open_failed',
+  })
+})
+
+test('final failure distinguishes navigation failure from state failure', async () => {
+  const stale = { ...readyFreshChatState, attachmentCount:1 }
+  await expect(stabilizeFreshChat(freshChatProbe({
+    states:[stale], direct:'unavailable', sidebar:'unavailable',
+    shortcut:'unavailable',
+  }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_navigation_unavailable',
+  })
+  await expect(stabilizeFreshChat(freshChatProbe({
+    states:[stale], direct:'clicked', sidebar:'unavailable',
+    shortcut:'unavailable',
+  }), {
+    timeoutMilliseconds:5, pollMilliseconds:1,
+    retryClickAfterMilliseconds:2,
+  })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_attachments_not_cleared',
   })
 })
 
@@ -273,6 +364,24 @@ test.each([
   expect(freshChatStateReason(state)).toBe(reasonCode)
   expect(freshChatStateReason(state)).not.toBe('greeting_payload_not_isolated')
 })
+
+test.each([
+  [{ textboxEmpty:false }, 'fresh_chat_textbox_not_empty'],
+  [{ attachmentCount:1 }, 'fresh_chat_attachments_not_cleared'],
+  [{ repositoryCount:1 }, 'fresh_chat_repository_not_cleared'],
+] as const)(
+  'verified navigation does not waive fresh workspace failure %s',
+  async (change, reasonCode) => {
+    const stale = { ...readyFreshChatState, ...change }
+    await expect(stabilizeFreshChat(freshChatProbe({
+      states:[stale], direct:'clicked', sidebar:'unavailable',
+      shortcut:'unavailable',
+    }), {
+      timeoutMilliseconds:5, pollMilliseconds:1,
+      retryClickAfterMilliseconds:2,
+    })).rejects.toMatchObject({ reasonCode })
+  },
+)
 
 test('fresh-chat shell and composer failures remain distinct from payload isolation', () => {
   expect(freshChatStateReason({
@@ -354,6 +463,8 @@ test('greeting starts fresh and captures its request before rendering waits', ()
   expect(safety).toContain("page.getByTestId('conversation')")
   expect(safety).toContain("conversation.locator('article.message')")
   expect(safety).toContain("const composerContainer = composer.locator('..')")
+  expect(safety).toContain("page.keyboard.press('Control+Shift+O')")
+  expect(safety).not.toContain('fresh_chat_button_unavailable')
 })
 
 test('request ID survives assistant rendering failure in the safe summary', () => {
@@ -394,7 +505,8 @@ test('request UUID is retained before captured payload isolation fails', () => {
 
 test('all bounded greeting subreasons are retained without private detail', () => {
   const reasons: GreetingSubreasonCode[] = [
-    'fresh_chat_button_unavailable', 'fresh_chat_click_failed',
+    'fresh_chat_button_click_failed', 'fresh_chat_sidebar_open_failed',
+    'fresh_chat_shortcut_failed', 'fresh_chat_navigation_unavailable',
     'fresh_chat_shell_not_ready', 'fresh_chat_composer_not_ready',
     'fresh_chat_textbox_not_empty', 'fresh_chat_messages_not_cleared',
     'fresh_chat_attachments_not_cleared',
@@ -464,6 +576,7 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
     request_ids:[],
     reason_code:'deterministic_greeting_failed',
     subreason_code:'fresh_chat_messages_not_cleared',
+    fresh_chat_strategy:'keyboard_shortcut',
     selector_error:'private DOM text',
     message:'private greeting',
     token:'private-token',
@@ -478,6 +591,7 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
   expect(summary.scenarios[0].request_ids).toEqual([requestId])
   expect(summary.scenarios[1]).toMatchObject({
     request_ids:[], subreason_code:'fresh_chat_messages_not_cleared',
+    fresh_chat_strategy:'keyboard_shortcut',
   })
   for (const forbidden of [
     'person@example.test', 'secret-password', 'secret-token', 'raw message',
