@@ -1301,30 +1301,48 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       scenario:name, status:'not_run' as const, request_ids:[],
     }
   ))
+  const firstFailedScenario = scenarios.find(item => item.status === 'failed')
+  const scenarioReasonCodes = new Set<ProductionPrimaryFailureReasonCode>(
+    Object.values(scenarioFailureReason),
+  )
+  const priorityFailureReason = (
+    primaryFailureReason !== 'none'
+    && primaryFailureReason !== 'unexpected_harness_failure'
+    && !scenarioReasonCodes.has(primaryFailureReason)
+  ) ? primaryFailureReason : null
+  const resolvedPrimaryFailureReason: ProductionPrimaryFailureReasonCode = (
+    priorityFailureReason
+    ?? firstFailedScenario?.reason_code
+    ?? (primaryFailureReason === 'unexpected_harness_failure'
+      ? 'unexpected_harness_failure' : 'none')
+  )
+  const primaryFailureSubreason = (
+    firstFailedScenario?.reason_code === resolvedPrimaryFailureReason
+      ? firstFailedScenario.subreason_code : undefined
+  )
   const summary = buildProductionTriagSummary({
     preflight,
     scenarios,
     cleanup,
-    primaryFailureReasonCode:primaryFailureReason,
+    primaryFailureReasonCode:resolvedPrimaryFailureReason,
     rolloutReport,
   })
   await mkdir(artifactRoot, { recursive:true })
   const serialized = `${JSON.stringify(summary, null, 2)}\n`
   await writeFile(summaryPath, serialized, 'utf8')
   await writeFile(safeTracePath, serialized, 'utf8')
-  if (primaryFailureReason !== 'none' || cleanup.status === 'incomplete') {
-    const primaryFailureSubreason = scenarios.find(item => (
-      item.status === 'failed'
-      && item.reason_code === primaryFailureReason
-    ))?.subreason_code
+  if (
+    resolvedPrimaryFailureReason !== 'none'
+    || cleanup.status === 'incomplete'
+  ) {
     console.error(
       'production-triag.spec.ts reason_code=%s subreason_code=%s cleanup_status=%s',
-      primaryFailureReason,
+      resolvedPrimaryFailureReason,
       primaryFailureSubreason ?? 'none',
       cleanup.status,
     )
     throw new Error(boundedCombinedFailure(
-      primaryFailureReason, cleanup, primaryFailureSubreason,
+      resolvedPrimaryFailureReason, cleanup, primaryFailureSubreason,
     ))
   }
 })

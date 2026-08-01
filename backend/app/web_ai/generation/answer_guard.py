@@ -9,6 +9,7 @@ from ..evidence.models import EvidencePack
 from .claim_verifier import (
     citation_ids,
     deterministic_evidence_support,
+    factual_sections,
     optional_model_claim_check,
 )
 from .models import (
@@ -215,20 +216,10 @@ def _citation_validity(answer: str, evidence: EvidencePack) -> QualityCheck:
 
 
 def _citation_coverage(answer: str) -> QualityCheck:
-    factual_sections = []
-    in_fence = False
-    for section in re.split(r"\n{2,}", str(answer or "")):
-        if section.strip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        plain = _HEADING.sub("", section).strip()
-        if (
-            not in_fence
-            and len(plain.split()) >= 7
-            and re.search(r"[A-Za-z\u0B80-\u0BFF]", plain)
-        ):
-            factual_sections.append(plain)
-    missing = [section for section in factual_sections if not citation_ids(section)]
+    missing = [
+        section for section in factual_sections(answer)
+        if not citation_ids(section)
+    ]
     return QualityCheck(
         "citation_coverage", "failed" if missing else "passed",
         "uncited_factual_section" if missing else "",

@@ -160,6 +160,14 @@ jobs:
           const cleanupReasons = Array.isArray(cleanup.reason_codes) ? cleanup.reason_codes : []
           process.stdout.write(`- cleanup reasons: ${cleanupReasons.length ? cleanupReasons.join(', ') : 'none'}\n`)
           process.stdout.write('\n### Render log request IDs\n\n')
+          const compactCounts = value => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
+            return Object.entries(value)
+              .filter(([key, count]) => key && Number.isFinite(count))
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, count]) => `${key}=${count}`)
+              .join('|')
+          }
           for (const item of summary.scenarios || []) {
             const ids = Array.isArray(item.request_ids) ? item.request_ids : []
             const reason = item.reason_code || 'none'
@@ -167,7 +175,35 @@ jobs:
             const freshChatStrategy = item.fresh_chat_strategy || 'none'
             const freshChatReason = item.fresh_chat_reason_code || 'none'
             const prerequisite = item.prerequisite_reason_code || 'none'
-            process.stdout.write(`- ${item.scenario}: status=${item.status || 'unknown'}, reason=${reason}, subreason=${subreason}, fresh_chat_reason=${freshChatReason}, fresh_chat_strategy=${freshChatStrategy}, prerequisite=${prerequisite}, request_ids=${ids.length ? ids.join(', ') : 'none'}\n`)
+            const fields = [
+              `status=${item.status || 'unknown'}`,
+              `reason=${reason}`,
+              `subreason=${subreason}`,
+              `fresh_chat_reason=${freshChatReason}`,
+              `fresh_chat_strategy=${freshChatStrategy}`,
+              `prerequisite=${prerequisite}`,
+              `request_ids=${ids.length ? ids.join(', ') : 'none'}`,
+            ]
+            for (const name of [
+              'selected_tier',
+              'retrieval_status',
+              'quality_status',
+              'repository_validation_mode',
+              'phase2_fallback_reason_code',
+              'cancellation_attempt_http_result',
+              'cancellation_observed_audit_state',
+            ]) {
+              if (item[name] !== undefined && item[name] !== null) {
+                fields.push(`${name}=${item[name]}`)
+              }
+            }
+            for (const name of [
+              'source_kind_counts', 'answer_check_status_counts',
+            ]) {
+              const counts = compactCounts(item[name])
+              if (counts) fields.push(`${name}=${counts}`)
+            }
+            process.stdout.write(`- ${item.scenario}: ${fields.join(', ')}\n`)
           }
           NODE
           fi

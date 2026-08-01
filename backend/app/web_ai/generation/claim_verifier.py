@@ -10,6 +10,7 @@ from .models import QualityCheck
 
 _WORD = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
 _CITATION = re.compile(r"\[(S[1-9][0-9]*)\]")
+_HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _STOP = {
     "about", "after", "also", "and", "are", "because", "been", "before",
     "but", "can", "could", "for", "from", "has", "have", "into", "its",
@@ -20,6 +21,23 @@ _STOP = {
 
 def citation_ids(answer: str) -> tuple[str, ...]:
     return tuple(_CITATION.findall(str(answer or "")))
+
+
+def factual_sections(answer: str) -> tuple[str, ...]:
+    sections: list[str] = []
+    in_fence = False
+    for section in re.split(r"\n{2,}", str(answer or "")):
+        if section.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        plain = _HEADING.sub("", section).strip()
+        if (
+            not in_fence
+            and len(plain.split()) >= 7
+            and re.search(r"[A-Za-z\u0B80-\u0BFF]", plain)
+        ):
+            sections.append(plain)
+    return tuple(sections)
 
 
 def deterministic_evidence_support(
@@ -48,6 +66,10 @@ def deterministic_evidence_support(
             supported_sections += 1
     if cited_sections and cited_sections == supported_sections:
         return QualityCheck("evidence_support", "passed")
+    if not cited_sections and not factual_sections(answer):
+        return QualityCheck(
+            "evidence_support", "skipped", "no_cited_sections"
+        )
     return QualityCheck(
         "evidence_support",
         "failed",

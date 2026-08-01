@@ -54,6 +54,7 @@ from app.web_api.repository_store import (
     put_repository_snapshot,
 )
 from app.web_api.upload_store import InProcessEphemeralUploadStore
+from app.web_api.chat_service import _resolved_repository_validation_mode
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -646,6 +647,97 @@ def test_repository_validation_unavailable_is_explicit_and_unverified():
     assert any(
         item.check_type == "repository_validation"
         and item.status == "failed"
+        for item in result.checks
+    )
+
+
+def _runtime_validation_settings() -> TriagSettings:
+    return TriagSettings(
+        enabled=True,
+        shadow_mode=False,
+        repository_upload_enabled=True,
+        repository_index_enabled=True,
+        answer_guard_enabled=True,
+        verified_streaming_enabled=True,
+        pro_code_validation_enabled=True,
+        code_validator_url="https://validator.test",
+        code_validator_auth_token="x" * 32,
+    )
+
+
+def test_repository_review_uses_advertised_static_only_mode_without_validation(
+    monkeypatch,
+):
+    calls = 0
+
+    def capability(_client):
+        nonlocal calls
+        calls += 1
+        return "static_only"
+
+    monkeypatch.setattr(
+        "app.web_api.chat_service._repository_validation_capability_cache",
+        None,
+    )
+    monkeypatch.setattr(
+        RepositoryValidationClient,
+        "validation_capability_sync",
+        capability,
+    )
+    settings = _runtime_validation_settings()
+    mode = _resolved_repository_validation_mode(
+        settings, repository_context_used=True
+    )
+    cached_mode = _resolved_repository_validation_mode(
+        settings, repository_context_used=True
+    )
+    result = AnswerGuard().check(
+        "This repository uses a compact service layout.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Review this repository architecture.",
+            verified_buffered=True,
+            repository_context_used=True,
+            repository_validation_mode=mode,
+        ),
+    )
+    assert result.repository_validation_mode == "static_only"
+    assert cached_mode == "static_only"
+    assert calls == 1
+    assert not any(
+        item.check_type == "repository_validation"
+        for item in result.checks
+    )
+
+
+def test_repository_review_marks_unavailable_when_capability_resolution_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.web_api.chat_service._repository_validation_capability_cache",
+        None,
+    )
+    monkeypatch.setattr(
+        RepositoryValidationClient,
+        "validation_capability_sync",
+        lambda _client: (_ for _ in ()).throw(RuntimeError("private")),
+    )
+    mode = _resolved_repository_validation_mode(
+        _runtime_validation_settings(), repository_context_used=True
+    )
+    result = AnswerGuard().check(
+        "This repository uses a compact service layout.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Review this repository architecture.",
+            verified_buffered=True,
+            repository_context_used=True,
+            repository_validation_mode=mode,
+        ),
+    )
+    assert result.repository_validation_mode == "unavailable"
+    assert not any(
+        item.check_type == "repository_validation"
         for item in result.checks
     )
 

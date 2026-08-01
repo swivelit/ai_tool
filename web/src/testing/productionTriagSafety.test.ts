@@ -58,6 +58,27 @@ test('production test and GitHub command use matching 20-minute timeouts', () =>
   expect(workflow).toContain('prerequisite=${prerequisite}')
 })
 
+test('job summary surfaces only present content-free TRIAG diagnostics', () => {
+  const workflow = readFileSync(
+    resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',
+  )
+  for (const field of [
+    'selected_tier',
+    'retrieval_status',
+    'quality_status',
+    'repository_validation_mode',
+    'phase2_fallback_reason_code',
+    'cancellation_attempt_http_result',
+    'cancellation_observed_audit_state',
+    'source_kind_counts',
+    'answer_check_status_counts',
+  ]) expect(workflow).toContain(field)
+  expect(workflow).toContain(
+    'item[name] !== undefined && item[name] !== null',
+  )
+  expect(workflow).toContain(".map(([key, count]) => `${key}=${count}`)")
+})
+
 test('bootstrap status maps to bounded production preflight reasons', () => {
   expect(bootstrapReasonCode(200)).toBe('preflight_passed')
   expect(bootstrapReasonCode(401)).toBe('bootstrap_http_401')
@@ -993,6 +1014,47 @@ test('safe summary preserves the pre-cleanup content-free rollout report', () =>
   )
   expect(spec.indexOf("'GET', '/api/web/admin/triag-rollout-report'"))
     .toBeLessThan(spec.indexOf('deleteGeneratedThread('))
+})
+
+test('scenario primary failure comes from the first failed ordered summary entry', () => {
+  const scenarios: ProductionSafeScenarioResult[] = [
+    {
+      scenario:'deterministic_greeting', status:'passed', request_ids:[],
+    },
+    {
+      scenario:'supported_pdf', status:'passed', request_ids:[],
+    },
+    {
+      scenario:'unsupported_pdf', status:'passed', request_ids:[],
+    },
+    {
+      scenario:'knowledge_library', status:'failed', request_ids:[],
+      reason_code:'knowledge_library_failed',
+      subreason_code:'knowledge_library_quality_invalid',
+    },
+    {
+      scenario:'repository_pro', status:'failed', request_ids:[],
+      reason_code:'repository_pro_failed',
+      subreason_code:'repository_quality_invalid',
+    },
+  ]
+  const firstFailedScenario = scenarios.find(item => item.status === 'failed')
+  expect(firstFailedScenario?.reason_code).toBe('knowledge_library_failed')
+  expect(firstFailedScenario?.subreason_code)
+    .toBe('knowledge_library_quality_invalid')
+
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    "const firstFailedScenario = scenarios.find(item => item.status === 'failed')",
+  )
+  expect(spec).toContain(
+    'primaryFailureReasonCode:resolvedPrimaryFailureReason',
+  )
+  expect(spec).toContain(
+    'firstFailedScenario?.reason_code === resolvedPrimaryFailureReason',
+  )
 })
 
 test('staging and production-readonly commands retain their existing timeout behavior', () => {

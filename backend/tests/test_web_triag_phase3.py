@@ -245,6 +245,58 @@ def test_grounded_and_contradiction_warning_outcomes():
     )
 
 
+def test_short_uncited_evidence_answer_skips_support_and_is_grounded():
+    result = AnswerGuard().check(
+        "Saturn has icy rings.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Name Saturn's notable feature.",
+            evidence_pack=_pack(),
+            verified_buffered=True,
+        ),
+    )
+    checks = {item.check_type: item for item in result.checks}
+    assert checks["citation_coverage"].status == "passed"
+    assert checks["evidence_support"].status == "skipped"
+    assert checks["evidence_support"].reason_code == "no_cited_sections"
+    assert result.status == "grounded"
+
+
+def test_long_uncited_factual_answer_remains_unverified():
+    result = AnswerGuard().check(
+        "Saturn has prominent rings composed of many pieces of frozen ice.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Explain Saturn's notable feature.",
+            evidence_pack=_pack(),
+            verified_buffered=True,
+        ),
+    )
+    checks = {item.check_type: item for item in result.checks}
+    assert checks["citation_coverage"].status == "failed"
+    assert checks["evidence_support"].status == "failed"
+    assert result.status == "unverified"
+
+
+def test_cited_but_unsupported_answer_remains_unverified():
+    result = AnswerGuard().check(
+        "Mercury orbits quickly near a blazing stellar surface [S1].",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Explain Mercury.",
+            evidence_pack=_pack(),
+            verified_buffered=True,
+        ),
+    )
+    checks = {item.check_type: item for item in result.checks}
+    assert checks["citation_coverage"].status == "passed"
+    assert checks["evidence_support"].status == "failed"
+    assert checks["evidence_support"].reason_code == (
+        "unsupported_cited_section"
+    )
+    assert result.status == "unverified"
+
+
 def test_repository_change_is_never_repository_verified_in_phase3():
     result = AnswerGuard().check(
         "I changed the requested file.",

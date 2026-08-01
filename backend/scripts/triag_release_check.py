@@ -259,6 +259,14 @@ def build_release_report(
             if triag_settings is not None else "invalid"
         ),
     ))
+    checks.append(_check(
+        "runtime_flags",
+        True,
+        runtime_status=(
+            triag_settings.runtime_status
+            if triag_settings is not None else {"status": "invalid"}
+        ),
+    ))
 
     release_state: TriagReleaseState | None = None
     try:

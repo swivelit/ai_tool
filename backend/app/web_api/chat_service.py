@@ -5,6 +5,8 @@ from decimal import Decimal
 import json
 import logging
 import os
+from threading import Lock
+from time import monotonic
 from typing import Any, Callable, Literal
 
 from sqlalchemy import text as sql_text
@@ -47,7 +49,9 @@ from ..web_ai.evidence.pack_builder import cap_evidence_pack, evidence_prompt
 from ..web_ai.execution_plan import ExecutionPlan
 from ..web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from ..web_ai.generation.generator import VerifiedGenerator
-from ..web_ai.generation.models import AnswerQualityResult
+from ..web_ai.generation.models import (
+    AnswerQualityResult, RepositoryValidationMode,
+)
 from ..web_ai.generation.repair import build_repair_request
 from ..web_ai.persistence import (
     get_or_create_usage_stage,
@@ -126,6 +130,63 @@ from .web_memory import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_REPOSITORY_VALIDATION_CAPABILITY_TTL_SECONDS = 30.0
+_repository_validation_capability_cache: tuple[
+    tuple[str, str, int], float, str,
+] | None = None
+_repository_validation_capability_lock = Lock()
+
+
+def _cached_repository_validation_capability(
+    settings: TriagSettings,
+) -> str:
+    global _repository_validation_capability_cache
+    key = (
+        settings.code_validator_url,
+        settings.code_validator_auth_token,
+        settings.code_validator_timeout_seconds,
+    )
+    now = monotonic()
+    with _repository_validation_capability_lock:
+        cached = _repository_validation_capability_cache
+        if (
+            cached is not None
+            and cached[0] == key
+            and now - cached[1]
+            < _REPOSITORY_VALIDATION_CAPABILITY_TTL_SECONDS
+        ):
+            return cached[2]
+        capability = RepositoryValidationClient(
+            ValidationClientSettings(
+                base_url=settings.code_validator_url,
+                auth_token=settings.code_validator_auth_token,
+                timeout_seconds=settings.code_validator_timeout_seconds,
+            )
+        ).validation_capability_sync()
+        _repository_validation_capability_cache = (key, now, capability)
+        return capability
+
+
+def _resolved_repository_validation_mode(
+    settings: TriagSettings,
+    *,
+    repository_context_used: bool,
+) -> RepositoryValidationMode | None:
+    if not repository_context_used:
+        return None
+    if not settings.code_validation_runtime_enabled:
+        return "static_only"
+    try:
+        capability = _cached_repository_validation_capability(settings)
+    except Exception:
+        return "unavailable"
+    if capability == "executable":
+        return "executable"
+    if capability == "static_only":
+        return "static_only"
+    return "unavailable"
 
 
 def _parse_verifier_status(value: object) -> bool:
@@ -3405,11 +3466,11 @@ def execute_web_turn(
                     ).claim_verifier_allowed
                 ),
                 repository_context_used=prepared.repository_contract is not None,
-                repository_validation_mode=(
-                    "static_only"
-                    if prepared.repository_contract is not None
-                    and not phase3_settings.code_validation_runtime_enabled
-                    else None
+                repository_validation_mode=_resolved_repository_validation_mode(
+                    phase3_settings,
+                    repository_context_used=(
+                        prepared.repository_contract is not None
+                    ),
                 ),
             )
             guard = AnswerGuard()
