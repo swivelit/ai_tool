@@ -7,6 +7,7 @@ import pytest
 from sqlmodel import select
 
 from app.ai.types import AIProviderResponse
+from app.billing.errors import BillingError
 from app.billing.service import create_usage_reservation
 from app.database import SessionLocal
 from app.models import (
@@ -590,7 +591,7 @@ def test_unrelated_pro_request_with_saved_knowledge_calls_provider(monkeypatch):
     _fund(int(user.id))
     with SessionLocal() as session:
         session.add(WebUsagePreferences(
-            user_id=int(user.id), assistant_tier="pro"
+            user_id=int(user.id), assistant_tier="standard"
         ))
         session.commit()
     calls = 0
@@ -632,6 +633,118 @@ def test_unrelated_pro_request_with_saved_knowledge_calls_provider(monkeypatch):
     assert prepared.execution_plan is not None
     assert "knowledge" not in prepared.execution_plan.retrieval_sources
     assert prepared.retrieval_context is None
+
+
+def _enable_knowledge_dense(monkeypatch):
+    for name, value in {
+        "APP_ENV": "test",
+        "WEB_TRIAG_ENABLED": "true",
+        "WEB_TRIAG_SHADOW_MODE": "false",
+        "WEB_RAG_HYBRID_ENABLED": "true",
+        "WEB_RAG_DENSE_ENABLED": "true",
+        "WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+def _knowledge_turn_user(suffix: str):
+    user = create_test_user(
+        f"knowledge-embedding-{suffix}",
+        f"knowledge-embedding-{suffix}@example.com",
+    )
+    _approve(int(user.id), source=f"knowledge-embedding-{suffix}")
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(
+            user_id=int(user.id), assistant_tier="standard"
+        ))
+        session.commit()
+    return user
+
+
+def test_knowledge_only_turn_reserves_embedding_stage(monkeypatch):
+    _enable_knowledge_dense(monkeypatch)
+    user = _knowledge_turn_user("reserved")
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="From my Knowledge Library, explain the coolant rule.",
+        request_id="knowledge-only-embedding-reserved",
+        thread_id=None,
+        reply_language="en",
+    )
+    assert prepared.retrieval_uploads == ()
+    assert prepared.execution_plan is not None
+    assert "knowledge" in prepared.execution_plan.retrieval_sources
+    assert "embedding" in prepared.execution_plan.planned_usage_stages
+    assert prepared.embedding_accounted is True
+    with SessionLocal() as session:
+        stage = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "knowledge-only-embedding-reserved",
+            WebUsageStage.stage_name == "embedding",
+        )).one()
+        assert stage.status == "reserved"
+        assert stage.usage_charge_id is not None
+
+
+def test_knowledge_only_embedding_billing_error_skips_stage(monkeypatch):
+    _enable_knowledge_dense(monkeypatch)
+    user = _knowledge_turn_user("billing-error")
+
+    def reserve(*args, **kwargs):
+        if str(kwargs.get("request_id") or "").endswith(":embedding"):
+            raise BillingError("embedding reservation unavailable")
+        return create_usage_reservation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation", reserve
+    )
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="From my Knowledge Library, explain the coolant rule.",
+        request_id="knowledge-only-embedding-skipped",
+        thread_id=None,
+        reply_language="en",
+    )
+    assert prepared.execution_plan is not None
+    assert "knowledge" in prepared.execution_plan.retrieval_sources
+    assert prepared.embedding_accounted is False
+    with SessionLocal() as session:
+        stage = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "knowledge-only-embedding-skipped",
+            WebUsageStage.stage_name == "embedding",
+        )).one()
+        assert stage.status == "skipped"
+        assert "embedding_budget_unavailable" in stage.safe_metadata_json
+
+
+def test_turn_without_uploads_or_knowledge_reserves_no_embedding(monkeypatch):
+    _enable_knowledge_dense(monkeypatch)
+    user = create_test_user(
+        "embedding-not-planned", "embedding-not-planned@example.com"
+    )
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(
+            user_id=int(user.id), assistant_tier="pro"
+        ))
+        session.commit()
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain how mutex fairness works in a general system.",
+        request_id="embedding-not-planned",
+        thread_id=None,
+        reply_language="en",
+    )
+    assert prepared.execution_plan is not None
+    assert "knowledge" not in prepared.execution_plan.retrieval_sources
+    assert "documents" not in prepared.execution_plan.retrieval_sources
+    assert prepared.embedding_accounted is False
+    with SessionLocal() as session:
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "embedding-not-planned",
+            WebUsageStage.stage_name == "embedding",
+        )).all()
+        assert stages == []
 
 
 def test_knowledge_job_batch_configuration_is_bounded_without_value_leak():

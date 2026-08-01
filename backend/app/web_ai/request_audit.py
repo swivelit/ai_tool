@@ -91,6 +91,9 @@ _PHASE2_FALLBACK_REASONS = frozenset({
     "phase2_persistence_failed",
     "phase2_unknown_failure",
 })
+_CANCELLATION_FAILURE_ORIGINS = frozenset({
+    "message_status", "charge_status", "stage_status", "trace_status", "none",
+})
 
 
 def _bounded_count(value: object) -> int:
@@ -332,12 +335,30 @@ def build_request_audit(
         cancelled = (
             "cancelled" in message_statuses or cancelled_before_usage
         )
-        failed = bool(
-            any(value in {"failed", "retryable"} for value in message_statuses)
-            or any(str(row[0]) == "failed" for row in charge_rows)
-            or any(str(row[1]) == "failed" for row in stage_rows)
-            or any(str(row[0]) == "failed" for row in trace_rows)
+        message_failed = any(
+            value == "failed"
+            or (value == "retryable" and not cancelled_before_usage)
+            for value in message_statuses
         )
+        charge_failed = any(
+            str(row[0]) == "failed" for row in charge_rows
+        )
+        stage_failed = any(
+            str(row[1]) == "failed" for row in stage_rows
+        )
+        trace_failed = any(
+            str(row[0]) == "failed" for row in trace_rows
+        )
+        cancellation_failure_origin = (
+            "message_status" if message_failed else
+            "charge_status" if charge_failed else
+            "stage_status" if stage_failed else
+            "trace_status" if trace_failed else
+            "none"
+        )
+        if cancellation_failure_origin not in _CANCELLATION_FAILURE_ORIGINS:
+            cancellation_failure_origin = "none"
+        failed = cancellation_failure_origin != "none"
         complete = bool(
             any(
                 str(role) == "assistant" and str(status) == "complete"
@@ -406,6 +427,7 @@ def build_request_audit(
             "repository_validation_mode": repository_validation_mode,
             "phase2_fallback_reason_code": phase2_fallback_reason_code,
             "cancellation_state": cancellation_state,
+            "cancellation_failure_origin": cancellation_failure_origin,
             "cancellation_failure_count": cancellation_failure_count,
             "orphaned_active_reservation": active_reservation,
         })

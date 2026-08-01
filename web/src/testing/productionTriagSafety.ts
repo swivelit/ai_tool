@@ -241,11 +241,13 @@ export type ProductionSafeScenarioResult = {
   phase2_fallback_reason_code?: string | null
   cancellation_attempt_http_result?: 'http_200' | 'http_non_200' | 'not_observed'
   cancellation_observed_audit_state?: 'not_started' | 'active' | 'cancelled' | 'complete' | 'failed'
+  cancellation_failure_origin?: 'message_status' | 'charge_status' | 'stage_status' | 'trace_status' | 'none'
 }
 
 export type ProductionSafeSummary = {
   schema_version: 3
   result: 'passed' | 'failed'
+  backend_release?: string
   preflight: {
     status: 'passed' | 'failed'
     reason_code: ProductionPreflightReasonCode
@@ -261,6 +263,7 @@ export type ProductionSafeSummary = {
 }
 
 export type ProductionBootstrap = {
+  backend_release?: string
   wallet: { billing_exempt?: boolean }
   features: {
     web_attachments: boolean
@@ -784,6 +787,7 @@ export function buildProductionTriagSummary(input: {
   scenarios: ProductionSafeScenarioResult[]
   cleanup: ProductionCleanup
   primaryFailureReasonCode: ProductionPrimaryFailureReasonCode
+  backendRelease?: unknown
   rolloutReport?: ProductionSafeSummary['rollout_report']
 }): ProductionSafeSummary {
   const phase2FallbackReasons = [
@@ -879,12 +883,21 @@ export function buildProductionTriagSummary(input: {
       'not_started', 'active', 'cancelled', 'complete', 'failed',
     ].includes(item.cancellation_observed_audit_state ?? '')
       ? { cancellation_observed_audit_state:item.cancellation_observed_audit_state } : {}),
+    ...([
+      'message_status', 'charge_status', 'stage_status', 'trace_status', 'none',
+    ].includes(item.cancellation_failure_origin ?? '')
+      ? { cancellation_failure_origin:item.cancellation_failure_origin } : {}),
   }))
+  const backendRelease = (
+    typeof input.backendRelease === 'string'
+    && /^[A-Za-z0-9]{1,12}$/.test(input.backendRelease)
+  ) ? input.backendRelease : undefined
   return {
     schema_version:3,
     result:input.primaryFailureReasonCode === 'none'
       && scenarios.every(item => item.status === 'passed')
       && input.cleanup.status === 'complete' ? 'passed' : 'failed',
+    ...(backendRelease ? { backend_release:backendRelease } : {}),
     preflight:{
       status:input.preflight.status,
       reason_code:input.preflight.reason_code,

@@ -2335,19 +2335,34 @@ def prepare_web_turn(
         embedding_request_id: str | None = None
         embedding_reserved_micros = 0
         embedding_accounted = False
+        attachment_embedding_planned = bool(
+            uploads
+            and not any(upload.virtual_text_operation for upload in uploads)
+        )
+        knowledge_embedding_planned = bool(
+            execution_plan is not None
+            and active_triag_settings.persistent_knowledge_runtime_enabled
+            and any(
+                source in execution_plan.retrieval_sources
+                for source in ("knowledge", "triplets")
+            )
+        )
         if (
             active_triag_settings.dense_runtime_enabled
             and execution_plan is not None
             and "embedding" in execution_plan.planned_usage_stages
-            and uploads
-            and not any(upload.virtual_text_operation for upload in uploads)
+            and (
+                attachment_embedding_planned or knowledge_embedding_planned
+            )
         ):
             embedding_request_id = f"{request_id}:embedding"
-            embedding_tokens = estimate_tokens(model_message) + sum(
-                estimate_tokens(str(chunk.text or ""))
-                for upload in uploads
-                for chunk in upload.chunks
-            )
+            embedding_tokens = estimate_tokens(model_message)
+            if uploads:
+                embedding_tokens += sum(
+                    estimate_tokens(str(chunk.text or ""))
+                    for upload in uploads
+                    for chunk in upload.chunks
+                )
             embedding_reserve = reserve_price(
                 "openai",
                 active_triag_settings.embedding_model,
@@ -3287,12 +3302,14 @@ def _release_pre_provider_cancellation(prepared: PreparedWebTurn) -> None:
                 session,
                 prepared.request_id,
                 reason="cancelled_before_provider_usage",
+                annotate_terminal=True,
             )
         else:
             release_usage_reservation(
                 session,
                 prepared.request_id,
                 reason="cancelled_before_provider_usage",
+                annotate_terminal=True,
             )
         user_message = session.exec(select(WebChatMessage).where(
             WebChatMessage.user_id == prepared.user_id,

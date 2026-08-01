@@ -422,21 +422,23 @@ def settle_billing_exempt_usage(
 
 
 def release_billing_exempt_usage(
-    session: Session, request_id: str, *, reason: str = "provider_failed_or_cancelled",
+    session: Session, request_id: str, *,
+    reason: str = "provider_failed_or_cancelled",
+    annotate_terminal: bool = False,
 ) -> UsageCharge | None:
     charge = session.exec(
         select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
     ).first()
-    if charge is None or charge.status != "exempt_pending":
+    if charge is None:
+        return None
+    if charge.status != "exempt_pending":
+        if annotate_terminal and charge.status in {
+            "billing_exempt", "released", "settled", "failed",
+        }:
+            _annotate_release_reason(charge, reason)
+            session.add(charge)
         return charge
-    try:
-        snapshot = json.loads(charge.pricing_snapshot_json or "{}")
-    except (TypeError, ValueError):
-        snapshot = {}
-    snapshot["release_reason"] = reason
-    charge.pricing_snapshot_json = json.dumps(
-        snapshot, sort_keys=True, separators=(",", ":")
-    )
+    _annotate_release_reason(charge, reason)
     charge.status = "released"
     charge.settled_at = utc_now()
     session.add(charge)
@@ -555,10 +557,17 @@ def settle_usage_reservation(
 
 
 def release_usage_reservation(
-    session: Session, request_id: str, *, reason: str = "provider_failed_or_cancelled"
+    session: Session, request_id: str, *,
+    reason: str = "provider_failed_or_cancelled",
+    annotate_terminal: bool = False,
 ) -> UsageCharge | None:
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
-    if charge is None or charge.status in {"released", "settled", "failed"}:
+    if charge is None:
+        return None
+    if charge.status in {"released", "settled", "billing_exempt", "failed"}:
+        if annotate_terminal:
+            _annotate_release_reason(charge, reason)
+            session.add(charge)
         return charge
     wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     reservation_attempt = _reservation_attempt(charge)
@@ -568,23 +577,8 @@ def release_usage_reservation(
     session.add(wallet)
     charge.status = "released"
     charge.settled_at = utc_now()
-    bounded_reason = str(reason or "")[:80]
-    if (
-        not bounded_reason
-        or any(
-            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
-            for character in bounded_reason
-        )
-    ):
-        bounded_reason = "provider_failed_or_cancelled"
-    try:
-        snapshot = json.loads(charge.pricing_snapshot_json or "{}")
-    except (TypeError, ValueError):
-        snapshot = {}
-    snapshot["release_reason"] = bounded_reason
-    charge.pricing_snapshot_json = json.dumps(
-        snapshot, sort_keys=True, separators=(",", ":")
-    )
+    bounded_reason = _bounded_release_reason(reason)
+    _annotate_release_reason(charge, bounded_reason)
     session.add(charge)
     _ledger(
         session, wallet, entry_type="reservation_release", amount_micros=int(charge.reserved_micros),
@@ -593,6 +587,32 @@ def release_usage_reservation(
         metadata={"reason": bounded_reason, "attempt": reservation_attempt},
     )
     return charge
+
+
+def _bounded_release_reason(reason: str) -> str:
+    bounded = str(reason or "")[:80]
+    if (
+        not bounded
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in bounded
+        )
+    ):
+        return "provider_failed_or_cancelled"
+    return bounded
+
+
+def _annotate_release_reason(charge: UsageCharge, reason: str) -> None:
+    try:
+        snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    if snapshot.get("release_reason"):
+        return
+    snapshot["release_reason"] = _bounded_release_reason(reason)
+    charge.pricing_snapshot_json = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":")
+    )
 
 
 def _reservation_attempt(charge: UsageCharge) -> int:

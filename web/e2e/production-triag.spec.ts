@@ -54,6 +54,7 @@ const email = process.env.E2E_TEST_EMAIL ?? ''
 const password = process.env.E2E_TEST_PASSWORD ?? ''
 
 type Bootstrap = {
+  backend_release?: string
   wallet: { available_micros: number; billing_exempt?: boolean }
   features: {
     web_attachments: boolean
@@ -98,6 +99,7 @@ type AuditResult = {
   repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null
   phase2_fallback_reason_code: string | null
   cancellation_state: string
+  cancellation_failure_origin: 'message_status' | 'charge_status' | 'stage_status' | 'trace_status' | 'none'
   cancellation_failure_count: number
   orphaned_active_reservation: boolean
 }
@@ -114,6 +116,7 @@ type ScenarioDiagnostics = Pick<ProductionSafeScenarioResult,
   | 'phase2_fallback_reason_code'
   | 'cancellation_attempt_http_result'
   | 'cancellation_observed_audit_state'
+  | 'cancellation_failure_origin'
 >
 type SetupReasonCode =
   | Exclude<ProductionPreflightReasonCode, 'preflight_passed'>
@@ -499,6 +502,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   let primaryFailureReason: ProductionPrimaryFailureReasonCode = 'none'
   let uploadId: string | null = null
   let uploadReady = false
+  let backendRelease: unknown
   let rolloutReport: ProductionSafeSummary['rollout_report']
   const runMarker = randomUUID()
   const supportedMarker = randomUUID()
@@ -528,6 +532,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       last_terminal_charge_status:audit.last_terminal_charge_status,
       repository_validation_mode:audit.repository_validation_mode,
       phase2_fallback_reason_code:audit.phase2_fallback_reason_code,
+      cancellation_failure_origin:audit.cancellation_failure_origin,
     })
   }
   const runScenario = async (
@@ -603,6 +608,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     api = authenticated.api
     authenticationSucceeded = true
     preflight = { status:'passed', reason_code:authenticated.reasonCode }
+    backendRelease = authenticated.bootstrap.backend_release
     originalTier = authenticated.bootstrap.assistant.tier
     const initialThreads = await api.request<ThreadList>(
       'GET', '/api/web/threads?archived=false&limit=100&offset=0',
@@ -1325,6 +1331,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     scenarios,
     cleanup,
     primaryFailureReasonCode:resolvedPrimaryFailureReason,
+    backendRelease,
     rolloutReport,
   })
   await mkdir(artifactRoot, { recursive:true })

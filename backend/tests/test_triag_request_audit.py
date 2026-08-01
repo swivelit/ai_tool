@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlmodel import select
 
 from app.auth import AuthUser, get_current_user
+from app.billing.service import release_usage_reservation
 from app.database import SessionLocal
 from app.main import app
 from app.models import (
@@ -51,6 +52,7 @@ EXPECTED_RESULT_KEYS = {
     "repository_validation_mode",
     "phase2_fallback_reason_code",
     "cancellation_state",
+    "cancellation_failure_origin",
     "cancellation_failure_count",
     "orphaned_active_reservation",
 }
@@ -268,6 +270,7 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "repository_validation_mode": None,
         "phase2_fallback_reason_code": None,
         "cancellation_state": "complete",
+        "cancellation_failure_origin": "none",
         "cancellation_failure_count": 0,
         "orphaned_active_reservation": False,
     }
@@ -304,13 +307,22 @@ def test_request_audit_reports_clean_pre_provider_cancellation(
         charge = session.exec(select(UsageCharge).where(
             UsageCharge.request_id == REQUEST_ID
         )).one()
-        charge.status = "released"
-        charge.debited_micros = 0
-        charge.pricing_snapshot_json = json.dumps({
-            "release_reason": "cancelled_before_provider_usage",
-            "secret": SECRET_CONTENT,
-        })
-        session.add(charge)
+        original_status = charge.status
+        original_debit = charge.debited_micros
+        original_settled_at = charge.settled_at
+        release_usage_reservation(
+            session,
+            REQUEST_ID,
+            reason="cancelled_before_provider_usage",
+            annotate_terminal=True,
+        )
+        session.flush()
+        assert charge.status == original_status
+        assert charge.debited_micros == original_debit
+        assert charge.settled_at == original_settled_at
+        assert json.loads(charge.pricing_snapshot_json)[
+            "release_reason"
+        ] == "cancelled_before_provider_usage"
         stage = session.exec(select(WebUsageStage).where(
             WebUsageStage.request_id == REQUEST_ID
         )).one()
@@ -338,7 +350,59 @@ def test_request_audit_reports_clean_pre_provider_cancellation(
     assert response.status_code == 200
     result = response.json()["results"][0]
     assert result["cancellation_state"] == "cancelled"
+    assert result["cancellation_failure_origin"] == "none"
     assert result["cancellation_failure_count"] == 0
     assert result["orphaned_active_reservation"] is False
     assert result["duplicate_settlement_indicator"] is False
     assert SECRET_CONTENT not in response.text
+
+
+def test_request_audit_retryable_without_cancellation_reason_is_failed(
+    client, monkeypatch
+):
+    _seed_request()
+    with SessionLocal() as session:
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == REQUEST_ID,
+            WebChatMessage.role == "user",
+        )).one()
+        user_message.status = "retryable"
+        session.add(user_message)
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == REQUEST_ID,
+            WebChatMessage.role == "assistant",
+        )).one()
+        session.delete(assistant)
+        session.commit()
+    response = client.post(
+        "/api/web/admin/triag-request-audit",
+        headers=_configure_admin(monkeypatch),
+        json={"request_ids": [REQUEST_ID]},
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["cancellation_state"] == "failed"
+    assert result["cancellation_failure_origin"] == "message_status"
+
+
+def test_request_audit_cancelled_assistant_remains_cancelled(
+    client, monkeypatch
+):
+    _seed_request()
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == REQUEST_ID,
+            WebChatMessage.role == "assistant",
+        )).one()
+        assistant.status = "cancelled"
+        session.add(assistant)
+        session.commit()
+    response = client.post(
+        "/api/web/admin/triag-request-audit",
+        headers=_configure_admin(monkeypatch),
+        json={"request_ids": [REQUEST_ID]},
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["cancellation_state"] == "cancelled"
+    assert result["cancellation_failure_origin"] == "none"

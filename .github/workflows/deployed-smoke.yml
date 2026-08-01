@@ -156,6 +156,7 @@ jobs:
           process.stdout.write('\n### Production TRIAG safe state\n\n')
           process.stdout.write(`- preflight: ${preflight.status || 'unknown'}\n`)
           process.stdout.write(`- preflight reason: ${preflight.reason_code || 'unknown'}\n`)
+          process.stdout.write(`- backend release: ${summary.backend_release || 'unknown'}\n`)
           process.stdout.write(`- cleanup: ${cleanup.status || 'unknown'}\n`)
           const cleanupReasons = Array.isArray(cleanup.reason_codes) ? cleanup.reason_codes : []
           process.stdout.write(`- cleanup reasons: ${cleanupReasons.length ? cleanupReasons.join(', ') : 'none'}\n`)
@@ -192,6 +193,7 @@ jobs:
               'phase2_fallback_reason_code',
               'cancellation_attempt_http_result',
               'cancellation_observed_audit_state',
+              'cancellation_failure_origin',
             ]) {
               if (item[name] !== undefined && item[name] !== null) {
                 fields.push(`${name}=${item[name]}`)
