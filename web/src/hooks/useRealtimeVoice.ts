@@ -101,15 +101,25 @@ const CLOSE_ERRORS: Record<number, VoiceError> = {
   4429:{ code:'voice_rate_limit', message:'Too many Voice Mode starts. Wait a moment, then try again.' },
   4450:{ code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' },
   4451:{ code:'insufficient_voice_credit', message:'Add Voice credits to continue Voice Mode.', credit_bucket:'voice' },
-  4460:{ code:'sarvam_authentication_failed', message:'Voice provider authentication failed. Please contact support.' },
-  4461:{ code:'sarvam_quota_exhausted', message:'Voice provider quota is exhausted. Please try again later.' },
-  4462:{ code:'sarvam_temporarily_unavailable', message:'Voice provider is temporarily unavailable. Try again with a fresh session.' },
-  4463:{ code:'sarvam_protocol_error', message:'Voice provider protocol is incompatible. Please try again later.' },
+  4460:{ code:'voice_authentication_failed', message:'Voice provider authentication failed. Please contact support.' },
+  4461:{ code:'voice_quota_exhausted', message:'Voice provider quota is exhausted. Please try again later.' },
+  4462:{ code:'voice_temporarily_unavailable', message:'Voice provider is temporarily unavailable. Try again with a fresh session.' },
+  4463:{ code:'voice_protocol_error', message:'Voice provider protocol is incompatible. Please try again later.' },
   4470:{ code:'voice_idle_timeout', message:'Voice Mode ended after being idle. Try again to start a fresh session.' },
   4471:{ code:'voice_maximum_duration', message:'Voice Mode reached its maximum duration. Start a fresh session to continue.' },
   4472:{ code:'voice_network_interrupted', message:'The Voice connection was interrupted. Check your network and try again.' },
   4500:{ code:'voice_internal_failure', message:'Voice Mode stopped safely. Try again with a fresh session.' },
 }
+
+const CLIENT_ERRORS = new Map(
+  Object.values(CLOSE_ERRORS).map(error => [error.code, error]),
+)
+CLIENT_ERRORS.set('invalid_audio_chunk', {
+  code:'voice_audio_rejected', message:'Audio chunk rejected.',
+})
+CLIENT_ERRORS.set('voice_ticket_store_unavailable', {
+  code:'voice_ticket_store_unavailable', message:'Voice Mode is temporarily unavailable.',
+})
 
 let activeOwner: symbol | null = null
 
@@ -124,9 +134,14 @@ function apiVoiceError(caught: ApiError): VoiceError | null {
   const bucket = value.credit_bucket === 'chat' || value.credit_bucket === 'voice' ? value.credit_bucket : undefined
   const retryAfter = typeof value.retry_after_seconds === 'number' && Number.isFinite(value.retry_after_seconds)
     ? Math.max(0, Math.floor(value.retry_after_seconds)) : undefined
-  const message = String(value.message || 'Voice Mode could not start.')
+  const rawCode = String(value.code || '')
+  const clientError = CLIENT_ERRORS.get(rawCode)
+  const code = clientError?.code ?? 'voice_start_failed'
+  const message = clientError
+    ? String(value.message || clientError.message)
+    : 'Voice Mode could not start.'
   return {
-    code:String(value.code || 'voice_start_failed'),
+    code,
     message:retryAfter === undefined ? message : `${message} Try again in ${retryAfter} seconds.`,
     ...(bucket ? { credit_bucket:bucket } : {}),
     ...(retryAfter === undefined ? {} : { retry_after_seconds:retryAfter }),
@@ -674,8 +689,15 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
         rememberError({ code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' })
         return
       }
-      const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
-      rememberError({ code:String(message.code ?? 'voice_internal_failure'), message:String(message.message ?? 'Voice Mode stopped safely.'), ...(bucket ? { credit_bucket:bucket } : {}) })
+      const clientError = CLIENT_ERRORS.get(String(message.code ?? ''))
+      if (clientError) {
+        const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
+        rememberError({
+          ...clientError,
+          message:String(message.message || clientError.message),
+          ...(bucket ? { credit_bucket:bucket } : {}),
+        })
+      }
     } else if (message.type === 'session.closed') { readyForAudio.current = false; setCannotHear(false); setPhase('closed') }
   }, [appendAudio, collectDiagnostics, completeProviderAudio, playBackchannel, rememberError, setupPlayback, stopPlayback])
 

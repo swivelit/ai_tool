@@ -488,6 +488,6 @@ it('keeps assistant text visible with accessible voice controls and credit recov
   rerender(<Conversation {...props} voiceStates={{ voice:{ status:'error', error:'Not enough Voice credits to play this reply', insufficientCredits:true } }} />)
   expect(screen.getByText('Not enough Voice credits to play this reply')).toBeInTheDocument()
   expect(screen.getByText('Answer voice')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name:'Add credits' }))
+  fireEvent.click(screen.getByRole('button', { name:'Top up' }))
   expect(addCredits).toHaveBeenCalled()
 })

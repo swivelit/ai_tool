@@ -411,7 +411,7 @@ it('opens billing when the API reports insufficient credit', async () => {
   render(<ChatPage />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
-  expect(await screen.findByRole('dialog', { name:'Add credits' })).toBeInTheDocument()
+  expect(await screen.findByRole('dialog', { name:'Top up' })).toBeInTheDocument()
 })
 
 it('applies the released wallet and delays Retry for service capacity', async () => {
@@ -459,7 +459,7 @@ it('applies the released wallet and delays Retry for service capacity', async ()
   expect(screen.getByText('Keep my prompt visible')).toBeInTheDocument()
   expect(screen.getByText('≈ 1.2K tokens')).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Retry answer' })).toBeDisabled()
-  expect(screen.queryByRole('dialog', { name:/Add credits/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog', { name:/Top up/i })).not.toBeInTheDocument()
 })
 
 it('queues an early stop until the streaming request is accepted', async () => {

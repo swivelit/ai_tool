@@ -179,9 +179,9 @@ export function BillingModal({ user, config, initialBucket = 'chat', close, refr
     : 'Choose an amount'
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
     <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
-      <button ref={closeRef} className="modal-close icon-button" aria-label="Close add credits" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
-      <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><h2 id="billing-title">Add credits</h2>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
-      <div className="billing-tabs" role="tablist" aria-label="Billing"><button role="tab" aria-selected={tab === 'topup'} className={tab === 'topup' ? 'active' : ''} onClick={() => setTab('topup')}>Add credits</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Payment history</button></div>
+      <button ref={closeRef} className="modal-close icon-button" aria-label="Close top-up" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
+      <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><h2 id="billing-title">Top up</h2>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
+      <div className="billing-tabs" role="tablist" aria-label="Billing"><button role="tab" aria-selected={tab === 'topup'} className={tab === 'topup' ? 'active' : ''} onClick={() => setTab('topup')}>Top up</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Payment history</button></div>
       {tab === 'history' ? <div className="billing-history" aria-live="polite">
         {historyState === 'loading' && <p>Loading payment history…</p>}
         {historyState === 'error' && <p role="alert">Payment history could not be loaded.</p>}

@@ -37,7 +37,7 @@ async function json(route: Route, body: unknown, status = 200) {
 async function installBackend(page: Page, initial?: Partial<MockState>) {
   const state: MockState = {
     wallet: 0,
-    pendingGross: 1000,
+    pendingGross: 1500,
     orderFails: false,
     monthlyUsed: 0,
     hardLimit: null,
@@ -60,8 +60,8 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/bootstrap') return json(route, {
       user: { id: 1, name: state.profile.name, email: state.profile.email, reply_language: state.profile.reply_language },
       wallet: { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 1, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) },
-      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, custom_topup_enabled:true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [
-        { gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500, token_estimate:tokenEstimate() },
+      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, custom_topup_enabled:true, min_topup_paise: 1500, max_topup_paise: 50000, packages: [
+        { gross_amount_paise: 1500, credited_amount_micros: 7_500_000, platform_share_paise: 750, token_estimate:tokenEstimate() },
         { gross_amount_paise: 29900, credited_amount_micros: 149_500_000, platform_share_paise: 14950, token_estimate:{ ...tokenEstimate(860_000), range_min_tokens:358_000, range_max_tokens:2_100_000 } },
       ] },
       assistant: { tier:'lite', tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
@@ -224,16 +224,16 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await signIn(page)
   await page.getByLabel('Message Swico').fill('hello')
   await page.getByRole('button', { name: 'Send message' }).click()
-  const billingDialog = page.getByRole('dialog', { name: 'Add credits' })
+  const billingDialog = page.getByRole('dialog', { name: 'Top up' })
   await expect(billingDialog).toBeVisible()
   await expect(page.getByText('Test Mode')).toBeVisible()
-  const packageCard = billingDialog.getByRole('button', { name:'Pay ₹10, estimated 25K to 180K tokens' })
+  const packageCard = billingDialog.getByRole('button', { name:'Pay ₹15, estimated 25K to 180K tokens' })
   await expect(billingDialog.locator('.packages button')).toHaveCount(3)
   await expect(billingDialog.getByRole('button', { name:'Pay ₹299, estimated 358K to 2.1M tokens' })).toBeVisible()
   await expect(billingDialog.getByRole('button', { name:'Enter a custom payment amount' })).toBeVisible()
-  await expect(packageCard).toContainText('Pay ₹10')
+  await expect(packageCard).toContainText('Pay ₹15')
   await expect(packageCard).toContainText('25K–180K tokens')
-  await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹10 for Chat credits')
+  await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹15 for Chat credits')
   await expect(billingDialog.locator('.package-summary')).toContainText('25K–180K tokens')
   await expect(billingDialog).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
   await expect(billingDialog).not.toContainText(/5\.00|Equivalent to ₹/)
@@ -241,9 +241,9 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await billingDialog.getByLabel('Custom amount').fill('75')
   await expect(billingDialog.getByRole('button', { name:'Pay ₹75 for Chat credits' })).toBeEnabled()
   await packageCard.click()
-  await page.getByRole('button', { name: 'Pay ₹10 for Chat credits' }).click()
-  await expect.poll(() => state.wallet).toBe(5_000_000)
-  await expect(page.getByRole('dialog', { name: 'Add credits' })).toBeHidden()
+  await page.getByRole('button', { name: 'Pay ₹15 for Chat credits' }).click()
+  await expect.poll(() => state.wallet).toBe(7_500_000)
+  await expect(page.getByRole('dialog', { name: 'Top up' })).toBeHidden()
   await expect(page.getByText('≈ 60K tokens')).toBeVisible()
 
   await page.getByLabel('Message Swico').fill('தமிழில் பதில்')
@@ -538,7 +538,7 @@ test('order failure is safe and primary views have no critical accessibility vio
   }
   await page.getByRole('button', { name: /Add token credits/ }).click()
   state.orderFails = true
-  await page.getByRole('button', { name: 'Pay ₹10 for Chat credits' }).click()
+  await page.getByRole('button', { name: 'Pay ₹15 for Chat credits' }).click()
   await expect(page.getByRole('status')).toContainText('Order creation failed safely')
   expect(state.wallet).toBe(0)
   const results = await new AxeBuilder({ page }).analyze()

@@ -165,7 +165,7 @@ it('shows Unlimited without a fictitious range or top-up controls', async () => 
   expect(screen.getAllByText('Unlimited').length).toBeGreaterThanOrEqual(2)
   expect(screen.getAllByRole('progressbar')).toHaveLength(4)
   expect(screen.queryByText(/estimated token range/i)).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name:'Add credits' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:'Top up' })).not.toBeInTheDocument()
   expect(screen.queryByRole('group', { name:'Estimated monthly token limit' })).not.toBeInTheDocument()
 })
 

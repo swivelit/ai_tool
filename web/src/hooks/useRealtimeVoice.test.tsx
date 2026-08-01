@@ -306,6 +306,46 @@ it('maps known application close codes without replacing an earlier server error
 })
 
 it.each([
+  [4460, 'sarvam_authentication_failed', 'voice_authentication_failed', 'Voice provider authentication failed. Please contact support.'],
+  [4461, 'sarvam_quota_exhausted', 'voice_quota_exhausted', 'Voice provider quota is exhausted. Please try again later.'],
+  [4462, 'sarvam_temporarily_unavailable', 'voice_temporarily_unavailable', 'Voice provider is temporarily unavailable. Try again with a fresh session.'],
+  [4463, 'sarvam_protocol_error', 'voice_protocol_error', 'Voice provider protocol is incompatible. Please try again later.'],
+] as const)('maps close code %s to a provider-neutral client error', async (
+  closeCode, rawServerCode, clientCode, userMessage,
+) => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket(`provider-close-${closeCode}`))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  const socket = FakeWebSocket.instances[0]
+
+  act(() => socket.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'error', code:rawServerCode,
+    message:`Raw ${rawServerCode} server detail`,
+  }) })))
+  expect(result.current.errorCode).toBe('')
+  expect(result.current.error).toBe('')
+
+  act(() => socket.dispatchEvent(new CloseEvent('close', {
+    code:closeCode, reason:rawServerCode,
+  })))
+  await waitFor(() => expect(result.current.errorCode).toBe(clientCode))
+  expect(result.current.error).toBe(userMessage)
+  expect(`${result.current.errorCode} ${result.current.error}`).not.toMatch(/sarvam/i)
+})
+
+it('does not expose an unknown provider-specific ticket error', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockRejectedValue(new ApiError(503, { error:{
+    code:'sarvam_private_failure', message:'Sarvam private failure detail.',
+  } }))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(result.current.errorCode).toBe('voice_start_failed'))
+  expect(result.current.error).toBe('Voice Mode could not start.')
+  expect(`${result.current.errorCode} ${result.current.error}`).not.toMatch(/sarvam/i)
+})
+
+it.each([
   [402, 'insufficient_voice_credit', 'voice', 'Add Voice credits to start Voice Mode.'],
   [503, 'voice_ticket_store_unavailable', null, 'Voice Mode is temporarily unavailable.'],
   [409, 'voice_session_active', null, 'Another Voice Mode session may already be active. Try again in 42 seconds.'],
