@@ -62,7 +62,8 @@ export function SwicoTierSelector({ assistant, disabled = false, saving = false,
     }
   }
 
-  return <div ref={rootRef} className={`tier-selector tier-selector-${context}`}>
+  return <div ref={rootRef} className={`tier-selector tier-selector-${context}`}
+    data-selected-tier={assistant.tier}>
     <button ref={triggerRef} type="button" className="product-selector" aria-haspopup="listbox" aria-expanded={open}
       aria-controls={`${id}-options`} disabled={unavailable} onClick={() => open ? close(true) : openMenu()}
       onKeyDown={event => {
@@ -73,7 +74,8 @@ export function SwicoTierSelector({ assistant, disabled = false, saving = false,
     </button>
     {open && <div id={`${id}-options`} className="tier-options" role="listbox" aria-label="Swico modes" onKeyDown={menuKeyDown}>
       {assistant.tiers.map((item, index) => <button key={item.id} ref={element => { optionRefs.current[index] = element }}
-        type="button" role="option" aria-selected={item.id === assistant.tier} disabled={!item.available || saving}
+        type="button" role="option" data-tier-id={item.id}
+        aria-selected={item.id === assistant.tier} disabled={!item.available || saving}
         onClick={() => {
           close(true)
           if (item.id !== assistant.tier) {

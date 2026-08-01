@@ -39,6 +39,7 @@ from app.web_ai.code_quality.result_parser import (
 from app.web_ai.code_quality.validation_client import (
     RepositoryValidationClient,
     ValidationClientSettings,
+    unavailable_result,
 )
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.persistence import get_or_create_usage_stage
@@ -594,6 +595,7 @@ def test_repository_answer_never_verified_when_required_checks_skipped():
         ),
     )
     assert result.status == "unverified"
+    assert result.repository_validation_mode == "static_only"
     assert any(
         item.check_type == "repository_validation"
         and item.status == "failed"
@@ -621,8 +623,31 @@ def test_repository_verified_only_when_declared_required_checks_pass():
         ),
     )
     assert result.status == "verified"
+    assert result.repository_validation_mode == "executable"
     encoded = json.dumps(result.safe_summary)
     assert "Implemented" not in encoded
+
+
+def test_repository_validation_unavailable_is_explicit_and_unverified():
+    result = AnswerGuard().check(
+        "Implemented the requested repository change.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Implement this change in the repository files.",
+            verified_buffered=True,
+            repository_context_used=True,
+            repository_validation=unavailable_result(
+                "validator_unavailable"
+            ),
+        ),
+    )
+    assert result.status == "unverified"
+    assert result.repository_validation_mode == "unavailable"
+    assert any(
+        item.check_type == "repository_validation"
+        and item.status == "failed"
+        for item in result.checks
+    )
 
 
 def test_repository_validation_stage_is_owner_scoped_and_idempotent():

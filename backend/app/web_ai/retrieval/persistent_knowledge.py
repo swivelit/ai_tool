@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -20,6 +19,7 @@ from ...models import (
     WebKnowledgeTriplet,
 )
 from ...time_utils import utc_now
+from ...web_api.attachment_context import calibrated_query_coverage
 from ...web_api.upload_store import EphemeralUpload
 from ..telemetry.metadata import sanitize_metadata
 from .models import RetrievalCandidate
@@ -318,12 +318,7 @@ def _tokens(value: str) -> list[str]:
 
 
 def _lexical_score(query: str, body: str) -> float:
-    query_terms = Counter(_tokens(query))
-    if not query_terms:
-        return 0.0
-    body_terms = Counter(_tokens(body))
-    matched = sum(min(count, body_terms.get(term, 0)) for term, count in query_terms.items())
-    return min(1.0, matched / max(1, sum(query_terms.values())))
+    return calibrated_query_coverage(query, body)
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -421,6 +416,7 @@ class PersistentKnowledgeRetriever:
                     runtime_text=row.content_text,
                     token_count=row.token_count,
                     lexical_score=fts_scores.get(row.id, 0.0),
+                    query_coverage=_lexical_score(query, row.content_text),
                     semantic_score=semantic.get(row.id, 0.0),
                     metadata_score=0.1,
                     fused_score=max(

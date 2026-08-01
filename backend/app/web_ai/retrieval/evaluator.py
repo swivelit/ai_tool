@@ -16,6 +16,13 @@ def evaluate_retrieval(
         max(item.lexical_score, item.semantic_score, item.metadata_score)
         for item in candidates
     ]
+    query_coverage = [
+        (
+            item.query_coverage
+            if item.query_coverage is not None else item.lexical_score
+        )
+        for item in candidates
+    ]
     if not candidates or max(support_scores, default=0) < 0.08:
         return "insufficient", ()
     contradiction_keys: dict[str, set[bool]] = {}
@@ -51,7 +58,17 @@ def evaluate_retrieval(
         return "contradictory", tuple(
             f"conflict_{index + 1}" for index, _ in enumerate(contradictory[:16])
         )
-    high = [score for score in support_scores if score >= 0.45]
+    high = [
+        score
+        for item, score, coverage in zip(
+            candidates, support_scores, query_coverage, strict=True,
+        )
+        if (
+            item.semantic_score >= 0.45
+            or item.metadata_score >= 0.45
+            or (item.lexical_score >= 0.45 and coverage >= 0.45)
+        )
+    ]
     if high:
         return "sufficient", ()
     if len(candidates) >= 2:

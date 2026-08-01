@@ -217,6 +217,13 @@ def _safe_quality_summary(value: object) -> dict[str, object] | None:
         "status": status,
         "retrieval_status": retrieval_status or None,
         "checks": checks[:24],
+        "repository_validation_mode": (
+            str(value.get("repository_validation_mode"))
+            if value.get("repository_validation_mode") in {
+                "static_only", "executable", "unavailable",
+            }
+            else None
+        ),
     }
 
 
@@ -2599,18 +2606,7 @@ def _execute_phase2_retrieval(
     embed = _phase2_embedding_vectors(
         prepared, settings, providers, counters
     )
-    original_attachment_context = prepared.ai_request.metadata.get(
-        "attachment_prompt_context"
-    )
-    original_provider_messages = prepared.ai_request.metadata.get(
-        "provider_messages"
-    )
-    original_serialized_prompt = prepared.ai_request.metadata.get(
-        "serialized_provider_prompt"
-    )
-    original_estimated_tokens = prepared.ai_request.metadata.get(
-        "estimated_prompt_tokens"
-    )
+    stage = "hybrid_retrieval"
     try:
         result = execute_hybrid_retrieval(
             plan=prepared.execution_plan,
@@ -2628,6 +2624,7 @@ def _execute_phase2_retrieval(
                 "cancellation_signal"
             ),
         )
+        stage = "token_allocation"
         allocation = DynamicTokenAllocator(policy).allocate(
             fixed_tokens=estimate_tokens(prepared.ai_request.message) + 320,
             relevance={
@@ -2739,6 +2736,7 @@ def _execute_phase2_retrieval(
                     "completion_status": "complete",
                 },
             )
+        stage = "prompt_rebuild"
         evidence_context = evidence_prompt(pack)
         if prepared.repository_contract is not None:
             evidence_context = "\n\n".join((
@@ -2764,6 +2762,7 @@ def _execute_phase2_retrieval(
         prepared.ai_request.metadata["estimated_prompt_tokens"] = (
             estimate_tokens(serialized)
         )
+        stage = "persistence"
         with SessionLocal() as session:
             persist_retrieval_pack(
                 session,
@@ -2776,26 +2775,152 @@ def _execute_phase2_retrieval(
                 candidate_count=result.candidate_count,
             )
             session.commit()
-    except Exception:
-        # The existing lexical attachment prompt prepared by the coordinator
-        # remains intact unless the Phase 2 prompt was fully rebuilt.
+    except GenerationCancelled:
+        raise
+    except Exception as exc:
+        reason_code = {
+            "hybrid_retrieval": "phase2_hybrid_retrieval_failed",
+            "token_allocation": "phase2_token_allocation_failed",
+            "prompt_rebuild": "phase2_prompt_rebuild_failed",
+            "persistence": "phase2_persistence_failed",
+        }.get(stage, "phase2_unknown_failure")
+        fallback_candidate_count = 0
+        try:
+            fallback = execute_hybrid_retrieval(
+                plan=prepared.execution_plan,
+                policy=policy,
+                settings=replace(settings, rag_dense_enabled=False),
+                owner_user_id=prepared.user_id,
+                request_id=prepared.request_id,
+                query=prepared.ai_request.message,
+                uploads=list(prepared.retrieval_uploads),
+                store=get_upload_store(),
+                embed=None,
+                dense_accounted=False,
+                knowledge_session_factory=SessionLocal,
+                cancellation_signal=prepared.ai_request.metadata.get(
+                    "cancellation_signal"
+                ),
+            )
+            fallback_candidate_count = fallback.candidate_count
+            pack = replace(
+                cap_evidence_pack(fallback.pack, policy.evidence_token_cap),
+                status_codes=tuple(dict.fromkeys((
+                    *fallback.pack.status_codes,
+                    "lexical_fallback",
+                    reason_code,
+                ))),
+            )
+        except GenerationCancelled:
+            raise
+        except Exception:
+            pack = EvidencePack(
+                owner_user_id=prepared.user_id,
+                request_id=prepared.request_id,
+                retrieval_status="insufficient",
+                status_codes=("lexical_fallback", reason_code),
+            )
+        prepared.retrieval_context = pack
+        if pack.retrieval_status == "insufficient":
+            prepared.precomputed_response = AIProviderResponse(
+                text=(
+                    "பதிவேற்றிய ஆவணங்களில் இந்தக் கேள்விக்குப் போதுமான ஆதாரம் "
+                    "கிடைக்கவில்லை."
+                    if prepared.reply_language == "ta" else
+                    "I couldn’t find enough support in the available private "
+                    "sources to answer that reliably."
+                ),
+                provider="backend_tool",
+                model=None,
+                route="retrieval_insufficient",
+                reason="insufficient_temporary_document_evidence",
+                language=prepared.reply_language,
+                intent="document",
+                raw={
+                    "deterministic": True,
+                    "zero_charge": True,
+                    "provider_attempts": 0,
+                    "provider_calls_with_usage": 0,
+                    "fallback_attempted": True,
+                    "cache_hit": False,
+                    "finish_reason": "stop",
+                    "completion_status": "complete",
+                },
+            )
+        fallback_context = evidence_prompt(pack)
+        if prepared.repository_contract is not None:
+            fallback_context = "\n\n".join((
+                prepared.repository_contract.prompt_contract(
+                    policy.repository_contract_token_cap
+                ),
+                fallback_context,
+            ))
         prepared.ai_request.metadata["attachment_prompt_context"] = (
-            original_attachment_context
+            fallback_context
         )
-        prepared.ai_request.metadata["provider_messages"] = (
-            original_provider_messages
-        )
-        prepared.ai_request.metadata["serialized_provider_prompt"] = (
-            original_serialized_prompt
-        )
-        prepared.ai_request.metadata["estimated_prompt_tokens"] = (
-            original_estimated_tokens
-        )
+        prepared.ai_request.metadata.pop("provider_messages", None)
+        prepared.ai_request.metadata.pop("serialized_provider_prompt", None)
+        try:
+            messages = _hard_budget_provider_messages(
+                prepared.ai_request,
+                prepared.route,
+                prompt_maximum=policy.max_prompt_tokens,
+            )
+            serialized = serialize_provider_messages(messages)
+            prepared.provider_messages = messages
+            prepared.ai_request.metadata["provider_messages"] = messages
+            prepared.ai_request.metadata["serialized_provider_prompt"] = (
+                serialized
+            )
+            prepared.ai_request.metadata["estimated_prompt_tokens"] = (
+                estimate_tokens(serialized)
+            )
+        except Exception:
+            prepared.precomputed_response = AIProviderResponse(
+                text=(
+                    "I couldn’t find enough support in the available private "
+                    "sources to answer that reliably."
+                ),
+                provider="backend_tool",
+                model=None,
+                route="retrieval_insufficient",
+                reason="insufficient_temporary_document_evidence",
+                language=prepared.reply_language,
+                intent="document",
+                raw={
+                    "deterministic": True,
+                    "zero_charge": True,
+                    "provider_attempts": 0,
+                    "provider_calls_with_usage": 0,
+                    "fallback_attempted": True,
+                    "cache_hit": False,
+                    "finish_reason": "stop",
+                    "completion_status": "complete",
+                },
+            )
+        try:
+            with SessionLocal() as session:
+                persist_retrieval_pack(
+                    session,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_id,
+                    request_id=prepared.request_id,
+                    policy_version=prepared.execution_plan.policy_version,
+                    tier_id=prepared.execution_plan.tier_id,
+                    pack=pack,
+                    candidate_count=fallback_candidate_count,
+                )
+                session.commit()
+        except Exception:
+            pass
         logger.warning(
             "web_phase2_retrieval_fallback",
             extra={
                 "request_id": prepared.request_id,
                 "status": "lexical_fallback",
+                "stage": stage,
+                "reason_code": reason_code,
+                "exception_class": type(exc).__name__[:80],
             },
         )
     finally:
@@ -2975,6 +3100,40 @@ def _aggregate_phase3_prices(
     )
 
 
+def _generation_cancellation_requested(prepared: PreparedWebTurn) -> bool:
+    signal = prepared.ai_request.metadata.get("cancellation_signal")
+    if signal is None:
+        return False
+    cancelled = getattr(signal, "cancelled", False)
+    return bool(cancelled() if callable(cancelled) else cancelled)
+
+
+def _release_pre_provider_cancellation(prepared: PreparedWebTurn) -> None:
+    with SessionLocal() as session:
+        if prepared.billing_exempt:
+            release_billing_exempt_usage(
+                session,
+                prepared.request_id,
+                reason="cancelled_before_provider_usage",
+            )
+        else:
+            release_usage_reservation(
+                session,
+                prepared.request_id,
+                reason="cancelled_before_provider_usage",
+            )
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.user_id == prepared.user_id,
+            WebChatMessage.request_id == prepared.request_id,
+            WebChatMessage.role == "user",
+        )).first()
+        if user_message:
+            user_message.status = "retryable"
+            session.add(user_message)
+        _release_continuation_claim(session, prepared)
+        session.commit()
+
+
 def execute_web_turn(
     prepared: PreparedWebTurn,
     *,
@@ -3046,7 +3205,17 @@ def execute_web_turn(
             on_status("searching_documents")
         if prepared.repository_contract is not None:
             on_status("searching_repository")
-    _execute_phase2_retrieval(prepared, providers=provider_map)
+    if _generation_cancellation_requested(prepared):
+        _release_pre_provider_cancellation(prepared)
+        raise GenerationCancelled()
+    try:
+        _execute_phase2_retrieval(prepared, providers=provider_map)
+    except GenerationCancelled:
+        _release_pre_provider_cancellation(prepared)
+        raise
+    if _generation_cancellation_requested(prepared):
+        _release_pre_provider_cancellation(prepared)
+        raise GenerationCancelled()
     if (
         on_status and guard_enabled
         and prepared.retrieval_context is not None
@@ -3059,6 +3228,8 @@ def execute_web_turn(
     phase3_prices: list[tuple[str, PriceResult, int, int]] = []
     prepared.phase3_stage_prices = phase3_prices
     try:
+        if _generation_cancellation_requested(prepared):
+            raise GenerationCancelled()
         if prepared.precomputed_response is not None:
             response = prepared.precomputed_response
             if guard_enabled:
@@ -3123,6 +3294,12 @@ def execute_web_turn(
                     ).claim_verifier_allowed
                 ),
                 repository_context_used=prepared.repository_contract is not None,
+                repository_validation_mode=(
+                    "static_only"
+                    if prepared.repository_contract is not None
+                    and not phase3_settings.code_validation_runtime_enabled
+                    else None
+                ),
             )
             guard = AnswerGuard()
             repository_validation_attempts = 0
@@ -3440,8 +3617,11 @@ def execute_web_turn(
                             attempt_number=max(1, repository_validation_attempts),
                         )
                     else:
-                        prepared.repository_validation = unavailable_result(
-                            "validator_disabled"
+                        prepared.repository_validation = RepositoryValidationResult(
+                            status="static_only",
+                            isolation_level="static_only",
+                            checks=(),
+                            required_check_ids=(),
                         )
                         _phase3_stage(
                             prepared,
@@ -3630,27 +3810,7 @@ def execute_web_turn(
         if exc.response is not None:
             response = exc.response
         else:
-            with SessionLocal() as session:
-                if prepared.billing_exempt:
-                    release_billing_exempt_usage(
-                        session, prepared.request_id,
-                        reason="cancelled_before_provider_usage",
-                    )
-                else:
-                    release_usage_reservation(
-                        session, prepared.request_id,
-                        reason="cancelled_before_provider_usage",
-                    )
-                user_message = session.exec(select(WebChatMessage).where(
-                    WebChatMessage.user_id == prepared.user_id,
-                    WebChatMessage.request_id == prepared.request_id,
-                    WebChatMessage.role == "user",
-                )).first()
-                if user_message:
-                    user_message.status = "retryable"
-                    session.add(user_message)
-                _release_continuation_claim(session, prepared)
-                session.commit()
+            _release_pre_provider_cancellation(prepared)
             raise
     except OpenAIBudgetExceededError as exc:
         with SessionLocal() as session:

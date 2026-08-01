@@ -114,6 +114,7 @@ export type QualityCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped' | '
 export type ResponseQuality = {
   status: QualityOutcome;
   retrieval_status: string | null;
+  repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null;
   checks: Array<{ type: string; status: QualityCheckStatus }>;
 }
 export type SearchResult = {

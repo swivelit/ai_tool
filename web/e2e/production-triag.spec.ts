@@ -89,10 +89,24 @@ type AuditResult = {
   retrieval_status: string
   quality_status: string
   answer_check_status_counts: Record<string, number>
+  selected_tier: 'lite' | 'standard' | 'pro' | 'not_run'
+  repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null
+  phase2_fallback_reason_code: string | null
   cancellation_state: string
   cancellation_failure_count: number
   orphaned_active_reservation: boolean
 }
+type ScenarioDiagnostics = Pick<ProductionSafeScenarioResult,
+  | 'selected_tier'
+  | 'retrieval_status'
+  | 'quality_status'
+  | 'source_kind_counts'
+  | 'answer_check_status_counts'
+  | 'repository_validation_mode'
+  | 'phase2_fallback_reason_code'
+  | 'cancellation_attempt_http_result'
+  | 'cancellation_observed_audit_state'
+>
 type SetupReasonCode =
   | Exclude<ProductionPreflightReasonCode, 'preflight_passed'>
   | 'production_write_confirmation_missing'
@@ -237,6 +251,44 @@ function scenarioFailure(
   reasonCode: ProductionScenarioSubreasonCode,
 ): never {
   throw new ProductionScenarioHarnessError(reasonCode)
+}
+
+async function selectProductionTier(
+  page: Page,
+  api: DeployedApi,
+  target: 'standard' | 'pro',
+  failureCode: ProductionScenarioSubreasonCode,
+): Promise<void> {
+  const selector = page.locator('.tier-selector-composer')
+  try {
+    const current = await selector.getAttribute('data-selected-tier', {
+      timeout:5_000,
+    })
+    let responseStatus: number
+    if (current === target) {
+      responseStatus = (await api.request(
+        'PATCH', '/api/web/settings/assistant', { tier:target },
+      )).status
+    } else {
+      const responsePromise = page.waitForResponse(response => (
+        new URL(response.url()).pathname === '/api/web/settings/assistant'
+        && response.request().method() === 'PATCH'
+      ), { timeout:30_000 })
+      await selector.getByRole('button').click({ timeout:5_000 })
+      await selector.locator(`[data-tier-id="${target}"]`).click({
+        timeout:5_000,
+      })
+      responseStatus = (await responsePromise).status()
+    }
+    if (responseStatus !== 200) scenarioFailure(failureCode)
+    await expect(selector).toHaveAttribute('data-selected-tier', target, {
+      timeout:30_000,
+    })
+    await expect(selector.getByRole('button')).toBeVisible({ timeout:5_000 })
+  } catch (error) {
+    if (error instanceof ProductionScenarioHarnessError) throw error
+    scenarioFailure(failureCode)
+  }
 }
 
 async function sendMessage(
@@ -403,6 +455,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   )
   const requestIds = new Map<ProductionScenarioName, string[]>()
   const freshChatStrategies = new Map<ProductionScenarioName, FreshChatStrategy>()
+  const scenarioDiagnostics = new Map<
+    ProductionScenarioName, Partial<ScenarioDiagnostics>
+  >()
   const cleanupErrors: ProductionCleanupReasonCode[] = []
   const originalThreadIds = new Set<string>()
   const originalKnowledgeIds = new Set<string>()
@@ -416,7 +471,6 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   let productionMutationsBegan = false
   let threadMutationPossible = false
   let originalTier: 'lite' | 'standard' | 'pro' | null = null
-  let tierChanged = false
   let cleanup: ProductionCleanup = { status:'not_required', reason_codes:[] }
   let preflight: ProductionSafeSummary['preflight'] = {
     status:'failed', reason_code:'bootstrap_not_observed',
@@ -425,6 +479,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   let uploadId: string | null = null
   let uploadReady = false
   const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+  const unsupportedMarker = `ABSENT-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const factualValue = `TRIAG-${runMarker}`
   const recordRequest = (
     scenario: ProductionScenarioName,
@@ -432,6 +487,22 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   ) => {
     const values = requestIds.get(scenario) ?? []
     requestIds.set(scenario, [...values, requestId])
+  }
+  const recordAuditDiagnostics = (
+    scenario: ProductionScenarioName,
+    audit: AuditResult,
+  ) => {
+    scenarioDiagnostics.set(scenario, {
+      ...scenarioDiagnostics.get(scenario),
+      ...(audit.selected_tier === 'not_run'
+        ? {} : { selected_tier:audit.selected_tier }),
+      retrieval_status:audit.retrieval_status as ScenarioDiagnostics['retrieval_status'],
+      quality_status:audit.quality_status as ScenarioDiagnostics['quality_status'],
+      source_kind_counts:audit.source_kind_counts,
+      answer_check_status_counts:audit.answer_check_status_counts,
+      repository_validation_mode:audit.repository_validation_mode,
+      phase2_fallback_reason_code:audit.phase2_fallback_reason_code,
+    })
   }
   const runScenario = async (
     scenario: ProductionScenarioName,
@@ -448,6 +519,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           request_ids:requestIds.get(scenario) ?? [],
           ...(freshChatStrategies.has(scenario)
             ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
+          ...scenarioDiagnostics.get(scenario),
         })
       } catch (error) {
         const reasonCode = scenarioFailureReason[scenario]
@@ -469,6 +541,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             ? { fresh_chat_reason_code:scenarioError.freshChatReasonCode } : {}),
           ...(freshChatStrategy
             ? { fresh_chat_strategy:freshChatStrategy } : {}),
+          ...scenarioDiagnostics.get(scenario),
         })
       } finally {
         try {
@@ -486,6 +559,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
               subreason_code:'scenario_artifact_capture_failed',
               ...(freshChatStrategies.has(scenario)
                 ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
+              ...scenarioDiagnostics.get(scenario),
             })
           }
         }
@@ -569,6 +643,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         api!, sent.requestId,
         { timeoutMilliseconds:30_000, intervalMilliseconds:500 },
       )
+      recordAuditDiagnostics('deterministic_greeting', result)
       assertGreetingAudit(result)
       let after: { available_micros: number } | null = null
       try {
@@ -594,6 +669,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           page, 'supported_pdf_fresh_chat_failed',
         ),
       )
+      await selectProductionTier(
+        page, api!, 'standard', 'supported_pdf_tier_selection_failed',
+      )
+      scenarioDiagnostics.set('supported_pdf', { selected_tier:'standard' })
       const uploadInput = page.getByLabel('Upload files')
       if (await uploadInput.count() !== 1) {
         scenarioFailure('supported_pdf_upload_input_missing')
@@ -649,15 +728,16 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           },
         },
       )
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'supported_pdf_audit_not_ready',
+      )
+      recordAuditDiagnostics('supported_pdf', result)
       try {
         await expect(sent.assistant.getByRole('region', { name:'Sources' }))
           .toBeVisible({ timeout:30_000 })
       } catch {
         scenarioFailure('supported_pdf_sources_not_visible')
       }
-      const result = await pollTerminalScenarioAudit(
-        api!, sent.requestId, 'supported_pdf_audit_not_ready',
-      )
       if ((result.source_kind_counts.temporary_upload ?? 0) <= 0) {
         scenarioFailure('supported_pdf_document_source_missing')
       }
@@ -671,9 +751,13 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
 
     if (uploadReady && uploadId) {
     await runScenario('unsupported_pdf', async () => {
+      await selectProductionTier(
+        page, api!, 'standard', 'unsupported_pdf_tier_selection_failed',
+      )
+      scenarioDiagnostics.set('unsupported_pdf', { selected_tier:'standard' })
       const sent = await sendMessage(
         page,
-        `Using only the attached PDF, what launch city is stated? Do not use outside knowledge. ${runMarker}`,
+        `Using only the attached PDF, what launch city is stated? Do not use outside knowledge. ${unsupportedMarker}`,
         {
           failureCodes:{
             requestNotObserved:'unsupported_pdf_chat_request_not_observed',
@@ -689,6 +773,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       const result = await pollTerminalScenarioAudit(
         api!, sent.requestId, 'unsupported_pdf_audit_not_ready',
       )
+      recordAuditDiagnostics('unsupported_pdf', result)
       if (result.quality_status !== 'insufficient_evidence') {
         scenarioFailure('unsupported_pdf_quality_invalid')
       }
@@ -702,6 +787,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     })
 
     await runScenario('knowledge_library', async () => {
+      await selectProductionTier(
+        page, api!, 'standard', 'knowledge_library_tier_selection_failed',
+      )
+      scenarioDiagnostics.set('knowledge_library', { selected_tier:'standard' })
       await openSidebar(page)
       await page.locator('.account-button').click()
       await page.getByRole('menuitem', { name:'Settings' }).click()
@@ -769,6 +858,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       const result = await pollTerminalScenarioAudit(
         api!, sent.requestId, 'knowledge_library_audit_not_ready',
       )
+      recordAuditDiagnostics('knowledge_library', result)
       const knowledgeSources = (
         (result.source_kind_counts.persistent_knowledge ?? 0)
         + (result.source_kind_counts.approved_document ?? 0)
@@ -800,26 +890,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           page, 'repository_fresh_chat_failed',
         ),
       )
-      const tier = page.locator('.tier-selector-composer')
-      try {
-        if (originalTier !== 'pro') {
-          const tierResponse = page.waitForResponse(response => (
-            new URL(response.url()).pathname === '/api/web/settings/assistant'
-            && response.request().method() === 'PATCH'
-          ), { timeout:30_000 }).catch(() => null)
-          await tier.getByRole('button', { name:/Swico/ }).click()
-          await tier.getByRole('option', { name:/Swico Pro/ }).click()
-          if ((await tierResponse)?.status() !== 200) {
-            scenarioFailure('repository_tier_selection_failed')
-          }
-          tierChanged = true
-        }
-        await expect(tier.getByRole('button', { name:/Swico Pro/ }))
-          .toBeVisible({ timeout:30_000 })
-      } catch (error) {
-        if (error instanceof ProductionScenarioHarnessError) throw error
-        scenarioFailure('repository_tier_selection_failed')
-      }
+      await selectProductionTier(
+        page, api!, 'pro', 'repository_tier_selection_failed',
+      )
+      scenarioDiagnostics.set('repository_pro', { selected_tier:'pro' })
       const repositoryInput = page.getByLabel('Upload code repository')
       if (await repositoryInput.count() !== 1) {
         scenarioFailure('repository_upload_input_missing')
@@ -879,6 +953,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           },
         },
       )
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'repository_audit_not_ready',
+      )
+      recordAuditDiagnostics('repository_pro', result)
       try {
         await expect(sent.assistant.getByRole('region', {
           name:'Response quality',
@@ -894,9 +972,6 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       } catch {
         scenarioFailure('repository_static_only_label_missing')
       }
-      const result = await pollTerminalScenarioAudit(
-        api!, sent.requestId, 'repository_audit_not_ready',
-      )
       if ((result.source_kind_counts.repository ?? 0) <= 0) {
         scenarioFailure('repository_source_missing')
       }
@@ -929,12 +1004,24 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             },
           },
         )
-        const stop = page.getByRole('button', { name:'Stop generation' })
-        if (!await stop.isVisible()) {
-          scenarioFailure('cancellation_stop_button_unavailable')
-        }
+        const stop = page.getByTestId('stop-generation-button')
         try {
+          await expect(stop).toHaveAttribute(
+            'data-cancellation-ready', 'true', { timeout:30_000 },
+          )
+          const cancellationResponse = page.waitForResponse(response => (
+            new URL(response.url()).pathname
+              === `/api/web/chat/requests/${sent.requestId}/cancel`
+            && response.request().method() === 'POST'
+          ), { timeout:30_000 }).catch(() => null)
           await stop.click()
+          const observed = await cancellationResponse
+          scenarioDiagnostics.set('cancellation_settlement', {
+            ...scenarioDiagnostics.get('cancellation_settlement'),
+            cancellation_attempt_http_result:observed
+              ? observed.status() === 200 ? 'http_200' : 'http_non_200'
+              : 'not_observed',
+          })
         } catch {
           scenarioFailure('cancellation_stop_button_unavailable')
         }
@@ -949,6 +1036,12 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         } catch {
           scenarioFailure('cancellation_audit_not_ready')
         }
+        recordAuditDiagnostics('cancellation_settlement', result)
+        scenarioDiagnostics.set('cancellation_settlement', {
+          ...scenarioDiagnostics.get('cancellation_settlement'),
+          cancellation_observed_audit_state:
+            result.cancellation_state as ScenarioDiagnostics['cancellation_observed_audit_state'],
+        })
         if (result.cancellation_state === 'cancelled') {
           cancelled = result
           break
@@ -1062,7 +1155,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           cleanupErrors.push('upload_delete_failed')
         }
       }
-      if (tierChanged && originalTier) {
+      if (originalTier) {
         try {
           const restored = await api.request<{ tier: string }>(
             'PATCH', '/api/web/settings/assistant', { tier:originalTier },

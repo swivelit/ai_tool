@@ -43,6 +43,7 @@ def candidate_from_chunk(
     chunk_index: int,
     lexical_score: float = 0.0,
     semantic_score: float = 0.0,
+    query_coverage: float | None = None,
     rank: int = 0,
 ) -> RetrievalCandidate:
     upload_hash = upload_content_hash(upload)
@@ -58,6 +59,10 @@ def candidate_from_chunk(
         token_count=token_count(chunk.text),
         lexical_score=max(0.0, min(1.0, lexical_score)),
         semantic_score=max(0.0, min(1.0, semantic_score)),
+        query_coverage=(
+            max(0.0, min(1.0, query_coverage))
+            if query_coverage is not None else None
+        ),
         fused_score=max(0.0, min(1.0, score)),
         content_hash=content_hash,
         bounded_metadata=(

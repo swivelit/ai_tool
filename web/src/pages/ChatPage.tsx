@@ -68,6 +68,7 @@ export function ChatPage() {
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
+  const [cancellationReady, setCancellationReady] = useState(false)
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
   const [tierSaving, setTierSaving] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
@@ -79,6 +80,9 @@ export function ChatPage() {
   const userUid = user?.uid ?? ''
   const userUidRef = useRef(userUid)
   const streamScopeRef = useRef<{ requestId: string; initialThreadId: string | null; threadId: string | null } | null>(null)
+  const cancellationReadyRef = useRef(false)
+  const queuedStopRef = useRef(false)
+  const cancellationSentRef = useRef(false)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
@@ -125,6 +129,35 @@ export function ChatPage() {
   const applyWallet = useCallback((wallet: Wallet) => {
     setBootstrap(value => value ? { ...value, wallet } : value)
   }, [])
+  const requestServerCancellation = useCallback(async (
+    targetRequestId: string,
+    targetController: AbortController,
+  ) => {
+    if (!user || cancellationSentRef.current) return
+    cancellationSentRef.current = true
+    try {
+      const result = await apiJson<{ status: string }>(
+        user,
+        `/api/web/chat/requests/${targetRequestId}/cancel`,
+        { method:'POST' },
+      )
+      if (result.status === 'stopped') {
+        await refreshWallet().catch(() => undefined)
+        targetController.abort()
+      } else if (result.status === 'cancelling') {
+        setError(
+          'Cancellation was requested. Swico is finishing the usage record safely.',
+        )
+      } else {
+        setError('Swico had already completed this response.')
+      }
+    } catch {
+      cancellationSentRef.current = false
+      setError(
+        'Cancellation could not be confirmed. The stream will remain open until usage settlement finishes.',
+      )
+    }
+  }, [refreshWallet, user])
   const voiceReply = useVoiceReply({
     user, scopeKey: active ?? 'new-chat',
     enabled: Boolean(bootstrap?.features.web_voice_reply && bootstrap?.features.web_voice_billing),
@@ -343,6 +376,10 @@ export function ChatPage() {
       setMessages(value => [...value, optimistic])
     }
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
+    cancellationReadyRef.current = false
+    queuedStopRef.current = false
+    cancellationSentRef.current = false
+    setCancellationReady(false)
     dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '', tier: bootstrap.assistant.tier, tierLabel: bootstrap.assistant.tier_label })
     const abort = new AbortController(); setController(abort)
     try {
@@ -400,6 +437,12 @@ export function ChatPage() {
         // Dictation is an input convenience only. Manual speaker playback remains
         // available from completed messages, but is never auto-generated here.
       }, abort.signal, () => {
+        cancellationReadyRef.current = true
+        setCancellationReady(true)
+        if (queuedStopRef.current) {
+          queuedStopRef.current = false
+          void requestServerCancellation(nextRequestId, abort)
+        }
         if (!revisionTarget) return
         const replacement: Message = {
           ...revisionTarget, id: `pending-${nextRequestId}`, content: providerText,
@@ -439,19 +482,22 @@ export function ChatPage() {
       if (requestOptions?.continueMessageId && threadId) {
         await loadMessages(threadId)
       }
-    } finally { setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
+    } finally {
+      cancellationReadyRef.current = false
+      queuedStopRef.current = false
+      setCancellationReady(false)
+      setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`)
+    }
   }
 
   const stop = () => {
     if (!user || !requestId || !controller) return
     setError('Stopping generation safely…')
-    void apiJson<{ status: string }>(user, `/api/web/chat/requests/${requestId}/cancel`, { method: 'POST' })
-      .then(async result => {
-        if (result.status === 'stopped') { await refreshWallet().catch(() => undefined); controller.abort() }
-        else if (result.status === 'cancelling') setError('Cancellation was requested. Swico is finishing the usage record safely.')
-        else setError('Swico had already completed this response.')
-      })
-      .catch(() => setError('Cancellation could not be confirmed. The stream will remain open until usage settlement finishes.'))
+    if (!cancellationReadyRef.current) {
+      queuedStopRef.current = true
+      return
+    }
+    void requestServerCancellation(requestId, controller)
   }
   const retry = (message: Message) => {
     const original = message.role === 'user' ? message : messages.find(item => item.role === 'user' && item.request_id === message.request_id)
@@ -699,7 +745,7 @@ export function ChatPage() {
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}
         highlightMessageId={highlightMessageId} />
-      <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
+      <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}

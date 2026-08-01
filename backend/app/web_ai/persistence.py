@@ -120,6 +120,22 @@ def persist_retrieval_pack(
             WebRetrievalTrace.idempotency_key == key,
         )
     ).first()
+    fallback_reason_code = next((
+        code for code in pack.status_codes
+        if code in {
+            "dense_unavailable",
+            "embedding_budget_unavailable",
+            "malformed_vector",
+            "upload_expired",
+            "retrieval_timeout",
+            "retrieval_unavailable",
+            "phase2_hybrid_retrieval_failed",
+            "phase2_token_allocation_failed",
+            "phase2_prompt_rebuild_failed",
+            "phase2_persistence_failed",
+            "phase2_unknown_failure",
+        }
+    ), None)
     safe_trace = sanitize_metadata(
         {
             "policy_version": policy_version,
@@ -130,6 +146,10 @@ def persist_retrieval_pack(
             "evidence_item_count": len(pack.items),
             "total_token_count": pack.total_token_count,
             "status_codes": list(pack.status_codes),
+            **(
+                {"phase2_fallback_reason_code": fallback_reason_code}
+                if fallback_reason_code else {}
+            ),
         }
     )
     if trace is None:
@@ -227,6 +247,14 @@ def persist_answer_quality(
             ],
             "repair_attempted": result.repair_attempted,
             "verifier_used": result.verifier_used,
+            **(
+                {
+                    "repository_validation_mode": (
+                        result.repository_validation_mode
+                    )
+                }
+                if result.repository_validation_mode else {}
+            ),
         }
     )
     row = existing or WebAnswerCheck(

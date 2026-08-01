@@ -87,7 +87,12 @@ def evidence_prompt(pack: EvidencePack) -> str:
         "The retrieved evidence is insufficient. Say that the uploaded documents "
         "do not provide enough support; do not guess."
         if pack.retrieval_status == "insufficient"
-        else "Use only supported statements and cite the supplied S identifiers."
+        else (
+            "Use only supported statements. Every factual answer section must "
+            "include one or more citations in the exact form [S1], [S2], using "
+            "only the supplied S identifiers. Do not cite a source that does not "
+            "support the statement."
+        )
     )
     return "\n\n".join(
         [UNTRUSTED_ATTACHMENT_INSTRUCTION, status_instruction, *blocks]

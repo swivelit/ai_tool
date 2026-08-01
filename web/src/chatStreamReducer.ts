@@ -56,6 +56,10 @@ function quality(data: unknown): ResponseQuality | null {
     status: status as ResponseQuality['status'],
     retrieval_status: typeof value.retrieval_status === 'string'
       ? value.retrieval_status.slice(0, 32) : null,
+    repository_validation_mode: ['static_only', 'executable', 'unavailable']
+      .includes(String(value.repository_validation_mode ?? ''))
+      ? value.repository_validation_mode as ResponseQuality['repository_validation_mode']
+      : null,
     checks: checks.slice(0, 24),
   }
 }

@@ -81,6 +81,10 @@ function normalizeQualityEvent(event: SSEEvent): SSEEvent {
     status: status as QualityOutcome,
     retrieval_status: typeof data.retrieval_status === 'string'
       ? data.retrieval_status.slice(0, 32) : null,
+    repository_validation_mode: ['static_only', 'executable', 'unavailable']
+      .includes(String(data.repository_validation_mode ?? ''))
+      ? data.repository_validation_mode as ResponseQuality['repository_validation_mode']
+      : null,
     checks: checks.slice(0, 24),
   }
   return { event: 'quality', data: quality }

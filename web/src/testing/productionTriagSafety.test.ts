@@ -708,6 +708,7 @@ test('all bounded greeting subreasons are retained without private detail', () =
 test('scenario-wide PDF, repository, and cancellation subreasons stay bounded', () => {
   const reasons: ProductionScenarioSubreasonCode[] = [
     'supported_pdf_fresh_chat_failed',
+    'supported_pdf_tier_selection_failed',
     'supported_pdf_upload_input_missing',
     'supported_pdf_upload_request_not_observed',
     'supported_pdf_upload_http_4xx',
@@ -724,6 +725,8 @@ test('scenario-wide PDF, repository, and cancellation subreasons stay bounded', 
     'supported_pdf_document_source_missing',
     'supported_pdf_retrieval_not_sufficient',
     'supported_pdf_quality_not_grounded',
+    'unsupported_pdf_tier_selection_failed',
+    'knowledge_library_tier_selection_failed',
     'repository_fresh_chat_failed',
     'repository_tier_selection_failed',
     'repository_upload_input_missing',
@@ -810,6 +813,27 @@ test('content scenarios poll terminal audits instead of immediate audit reads', 
   }
 })
 
+test('production scenarios select and verify deterministic tiers and restore the original', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  const segment = (start: string, end: string) => spec.slice(
+    spec.indexOf(start), spec.indexOf(end),
+  )
+  for (const [start, end, tier, reason] of [
+    ["await runScenario('supported_pdf'", "await runScenario('unsupported_pdf'", 'standard', 'supported_pdf_tier_selection_failed'],
+    ["await runScenario('unsupported_pdf'", "await runScenario('knowledge_library'", 'standard', 'unsupported_pdf_tier_selection_failed'],
+    ["await runScenario('knowledge_library'", "await runScenario('repository_pro'", 'standard', 'knowledge_library_tier_selection_failed'],
+    ["await runScenario('repository_pro'", "await runScenario('cancellation_settlement'", 'pro', 'repository_tier_selection_failed'],
+  ] as const) {
+    const scenario = segment(start, end)
+    expect(scenario).toContain(`api!, '${tier}', '${reason}'`)
+  }
+  expect(spec).toContain("'/api/web/settings/assistant'")
+  expect(spec).toContain("verified.data?.tier !== originalTier")
+  expect(spec).not.toContain('tierChanged')
+})
+
 test('baseline failure prevents dependent production mutation scenarios', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
@@ -874,6 +898,36 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
   ]) {
     expect(serialized).not.toContain(forbidden)
   }
+})
+
+test('safe summary retains only allowlisted content-free diagnostics', () => {
+  const summary = buildProductionTriagSummary({
+    preflight:{ status:'passed', reason_code:'preflight_passed' },
+    scenarios:[{
+      scenario:'repository_pro', status:'passed', request_ids:[requestId],
+      selected_tier:'pro', retrieval_status:'sufficient',
+      quality_status:'verified', source_kind_counts:{ repository:2, secret:9 },
+      answer_check_status_counts:{ passed:3, unexpected:4 },
+      repository_validation_mode:'static_only',
+      phase2_fallback_reason_code:'dense_unavailable',
+      cancellation_attempt_http_result:'http_200',
+      cancellation_observed_audit_state:'cancelled',
+    }],
+    cleanup:{ status:'complete', reason_codes:[] },
+    primaryFailureReasonCode:'none',
+  })
+  expect(summary.schema_version).toBe(3)
+  expect(summary.scenarios[0]).toMatchObject({
+    selected_tier:'pro', retrieval_status:'sufficient', quality_status:'verified',
+    source_kind_counts:{ repository:2 },
+    answer_check_status_counts:{ passed:3 },
+    repository_validation_mode:'static_only',
+    phase2_fallback_reason_code:'dense_unavailable',
+    cancellation_attempt_http_result:'http_200',
+    cancellation_observed_audit_state:'cancelled',
+  })
+  expect(JSON.stringify(summary)).not.toContain('secret')
+  expect(JSON.stringify(summary)).not.toContain('unexpected')
 })
 
 test('staging and production-readonly commands retain their existing timeout behavior', () => {

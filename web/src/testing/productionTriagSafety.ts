@@ -135,6 +135,7 @@ export type ProductionScenarioSubreasonCode =
   | 'greeting_duplicate_settlement'
   | 'greeting_harness_failure'
   | 'supported_pdf_fresh_chat_failed'
+  | 'supported_pdf_tier_selection_failed'
   | 'supported_pdf_upload_input_missing'
   | 'supported_pdf_upload_request_not_observed'
   | 'supported_pdf_upload_http_4xx'
@@ -153,6 +154,7 @@ export type ProductionScenarioSubreasonCode =
   | 'supported_pdf_quality_not_grounded'
   | 'supported_pdf_harness_failure'
   | 'unsupported_pdf_chat_request_not_observed'
+  | 'unsupported_pdf_tier_selection_failed'
   | 'unsupported_pdf_request_id_missing'
   | 'unsupported_pdf_assistant_not_visible'
   | 'unsupported_pdf_assistant_not_complete'
@@ -161,6 +163,7 @@ export type ProductionScenarioSubreasonCode =
   | 'unsupported_pdf_refusal_not_visible'
   | 'unsupported_pdf_harness_failure'
   | 'knowledge_library_setup_failed'
+  | 'knowledge_library_tier_selection_failed'
   | 'knowledge_library_indexing_failed'
   | 'knowledge_library_fresh_chat_failed'
   | 'knowledge_library_chat_request_not_observed'
@@ -225,10 +228,19 @@ export type ProductionSafeScenarioResult = {
   fresh_chat_strategy?: FreshChatStrategy
   fresh_chat_reason_code?: FreshChatReasonCode
   prerequisite_reason_code?: ProductionPrerequisiteReasonCode
+  selected_tier?: 'lite' | 'standard' | 'pro'
+  retrieval_status?: 'not_run' | 'sufficient' | 'ambiguous' | 'insufficient' | 'contradictory'
+  quality_status?: 'not_run' | 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
+  source_kind_counts?: Record<string, number>
+  answer_check_status_counts?: Record<string, number>
+  repository_validation_mode?: 'static_only' | 'executable' | 'unavailable' | null
+  phase2_fallback_reason_code?: string | null
+  cancellation_attempt_http_result?: 'http_200' | 'http_non_200' | 'not_observed'
+  cancellation_observed_audit_state?: 'not_started' | 'active' | 'cancelled' | 'complete' | 'failed'
 }
 
 export type ProductionSafeSummary = {
-  schema_version: 2
+  schema_version: 3
   result: 'passed' | 'failed'
   preflight: {
     status: 'passed' | 'failed'
@@ -752,6 +764,25 @@ export function buildProductionTriagSummary(input: {
   cleanup: ProductionCleanup
   primaryFailureReasonCode: ProductionPrimaryFailureReasonCode
 }): ProductionSafeSummary {
+  const phase2FallbackReasons = [
+    'dense_unavailable', 'embedding_budget_unavailable', 'malformed_vector',
+    'upload_expired', 'retrieval_timeout', 'retrieval_unavailable',
+    'phase2_hybrid_retrieval_failed', 'phase2_token_allocation_failed',
+    'phase2_prompt_rebuild_failed', 'phase2_persistence_failed',
+    'phase2_unknown_failure',
+  ] as const
+  const boundedCounts = (
+    values: Record<string, number> | undefined,
+    allowed: readonly string[],
+  ): Record<string, number> | undefined => {
+    if (!values) return undefined
+    const output = Object.fromEntries(allowed.flatMap(key => {
+      const value = values[key]
+      return Number.isInteger(value) && value >= 0 && value <= 1_000_000
+        ? [[key, value]] : []
+    }))
+    return Object.keys(output).length > 0 ? output : undefined
+  }
   const scenarios = input.scenarios.map(item => ({
     scenario:item.scenario,
     status:item.status,
@@ -766,9 +797,51 @@ export function buildProductionTriagSummary(input: {
       ? { fresh_chat_reason_code:item.fresh_chat_reason_code } : {}),
     ...(item.status === 'not_run' && item.prerequisite_reason_code
       ? { prerequisite_reason_code:item.prerequisite_reason_code } : {}),
+    ...(['lite', 'standard', 'pro'].includes(item.selected_tier ?? '')
+      ? { selected_tier:item.selected_tier } : {}),
+    ...([
+      'not_run', 'sufficient', 'ambiguous', 'insufficient', 'contradictory',
+    ].includes(item.retrieval_status ?? '')
+      ? { retrieval_status:item.retrieval_status } : {}),
+    ...([
+      'not_run', 'verified', 'grounded', 'best_effort', 'unverified',
+      'insufficient_evidence',
+    ].includes(item.quality_status ?? '')
+      ? { quality_status:item.quality_status } : {}),
+    ...(boundedCounts(item.source_kind_counts, [
+      'temporary_upload', 'persistent_knowledge', 'approved_document',
+      'knowledge_triplet', 'repository', 'memory', 'profile', 'history',
+      'global_qa', 'other',
+    ]) ? { source_kind_counts:boundedCounts(item.source_kind_counts, [
+      'temporary_upload', 'persistent_knowledge', 'approved_document',
+      'knowledge_triplet', 'repository', 'memory', 'profile', 'history',
+      'global_qa', 'other',
+    ]) } : {}),
+    ...(boundedCounts(item.answer_check_status_counts, [
+      'not_run', 'passed', 'failed', 'skipped', 'error', 'other',
+    ]) ? { answer_check_status_counts:boundedCounts(
+      item.answer_check_status_counts,
+      ['not_run', 'passed', 'failed', 'skipped', 'error', 'other'],
+    ) } : {}),
+    ...([
+      'static_only', 'executable', 'unavailable',
+    ].includes(item.repository_validation_mode ?? '')
+      ? { repository_validation_mode:item.repository_validation_mode } : {}),
+    ...(phase2FallbackReasons.includes(
+      item.phase2_fallback_reason_code as typeof phase2FallbackReasons[number],
+    )
+      ? { phase2_fallback_reason_code:item.phase2_fallback_reason_code } : {}),
+    ...([
+      'http_200', 'http_non_200', 'not_observed',
+    ].includes(item.cancellation_attempt_http_result ?? '')
+      ? { cancellation_attempt_http_result:item.cancellation_attempt_http_result } : {}),
+    ...([
+      'not_started', 'active', 'cancelled', 'complete', 'failed',
+    ].includes(item.cancellation_observed_audit_state ?? '')
+      ? { cancellation_observed_audit_state:item.cancellation_observed_audit_state } : {}),
   }))
   return {
-    schema_version:2,
+    schema_version:3,
     result:input.primaryFailureReasonCode === 'none'
       && scenarios.every(item => item.status === 'passed')
       && input.cleanup.status === 'complete' ? 'passed' : 'failed',

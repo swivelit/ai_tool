@@ -52,6 +52,7 @@ _ALLOWED_KEYS = frozenset(
         "shadow_mode",
         "status",
         "retrieval_status",
+        "phase2_fallback_reason_code",
         "candidate_count",
         "evidence_item_count",
         "total_token_count",
@@ -65,6 +66,7 @@ _ALLOWED_KEYS = frozenset(
         "dense_enabled",
         "embedding_call_count",
         "quality_outcome",
+        "repository_validation_mode",
         "quality_checks",
         "check_type",
         "check_status",
@@ -153,6 +155,24 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
             "best_effort",
             "unverified",
             "insufficient_evidence",
+        }
+    ),
+    "repository_validation_mode": frozenset(
+        {"static_only", "executable", "unavailable"}
+    ),
+    "phase2_fallback_reason_code": frozenset(
+        {
+            "dense_unavailable",
+            "embedding_budget_unavailable",
+            "malformed_vector",
+            "upload_expired",
+            "retrieval_timeout",
+            "retrieval_unavailable",
+            "phase2_hybrid_retrieval_failed",
+            "phase2_token_allocation_failed",
+            "phase2_prompt_rebuild_failed",
+            "phase2_persistence_failed",
+            "phase2_unknown_failure",
         }
     ),
     "check_status": frozenset(
@@ -247,6 +267,11 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "knowledge_embedding_attempt_indeterminate",
             "knowledge_embedding_stage_unavailable",
             "malformed_embedding_result",
+            "phase2_hybrid_retrieval_failed",
+            "phase2_token_allocation_failed",
+            "phase2_prompt_rebuild_failed",
+            "phase2_persistence_failed",
+            "phase2_unknown_failure",
         }
     ),
 }

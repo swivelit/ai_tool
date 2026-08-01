@@ -13,15 +13,14 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
   const repositoryChecks = quality.checks.filter(
     check => check.type.startsWith('repository_'),
   )
-  const repositoryVerified = quality.status === 'verified'
+  const repositoryVerified = quality.repository_validation_mode === 'executable'
+    && quality.status === 'verified'
     && repositoryChecks.some(
       check => check.type === 'repository_validation'
         && check.status === 'passed',
     )
     && repositoryChecks.every(check => check.status === 'passed')
-  const repositoryStaticOnly = repositoryChecks.some(
-    check => check.type === 'repository_syntax' && check.status === 'passed',
-  ) && repositoryChecks.some(check => ['skipped', 'error'].includes(check.status))
+  const repositoryStaticOnly = quality.repository_validation_mode === 'static_only'
   const displayedStatus = (
     quality.status === 'verified' && repositoryChecks.some(
       check => ['skipped', 'failed', 'error'].includes(check.status),
@@ -50,15 +49,12 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
     if (check.type === 'repository_test' && check.status === 'passed') {
       return ['Tests passed']
     }
-    if (
-      check.type.startsWith('repository_')
-      && ['skipped', 'error'].includes(check.status)
-    ) {
-      return ['Validation unavailable']
-    }
     return []
   })
   if (repositoryStaticOnly) checkLabels.push('Static checks only')
+  if (quality.repository_validation_mode === 'unavailable') {
+    checkLabels.push('Validation unavailable')
+  }
   if (repositoryVerified) checkLabels.push('Repository verified')
   if (displayedStatus === 'unverified' && repositoryChecks.length > 0) {
     checkLabels.push('Not repository-verified')

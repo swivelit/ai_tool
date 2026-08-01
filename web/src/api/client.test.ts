@@ -108,6 +108,7 @@ describe('streamChat terminal events', () => {
       data:{
         status:'grounded',
         retrieval_status:'sufficient',
+        repository_validation_mode:null,
         checks:[{ type:'citation_validity', status:'passed' }],
       },
     })

@@ -11,7 +11,9 @@ from .claim_verifier import (
     deterministic_evidence_support,
     optional_model_claim_check,
 )
-from .models import AnswerQualityResult, QualityCheck
+from .models import (
+    AnswerQualityResult, QualityCheck, RepositoryValidationMode,
+)
 from .quality_gate import build_quality_result
 from ..code_quality.result_parser import RepositoryValidationResult
 
@@ -34,6 +36,7 @@ class AnswerGuardContext:
     repository_validation: RepositoryValidationResult | None = None
     repository_change_required: bool | None = None
     repository_context_used: bool = False
+    repository_validation_mode: RepositoryValidationMode | None = None
 
     @property
     def repository_validation_required(self) -> bool:
@@ -159,7 +162,21 @@ class AnswerGuard:
             verifier_used=bool(
                 evidence and context.model_verifier_allowed and model_verifier
             ),
+            repository_validation_mode=_repository_validation_mode(context),
         )
+
+
+def _repository_validation_mode(
+    context: AnswerGuardContext,
+) -> RepositoryValidationMode | None:
+    validation = context.repository_validation
+    if validation is None:
+        return context.repository_validation_mode
+    if validation.isolation_level == "executable":
+        return "executable"
+    if validation.isolation_level == "static_only":
+        return "static_only"
+    return "unavailable"
 
 
 def _repetition_check(answer: str) -> QualityCheck:

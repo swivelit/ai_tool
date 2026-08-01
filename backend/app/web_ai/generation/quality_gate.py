@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from .models import AnswerQualityResult, QualityCheck, QualityOutcome
+from .models import (
+    AnswerQualityResult, QualityCheck, QualityOutcome,
+    RepositoryValidationMode,
+)
 
 
 def quality_outcome(
@@ -38,6 +41,7 @@ def build_quality_result(
     insufficient_evidence: bool = False,
     repair_attempted: bool = False,
     verifier_used: bool = False,
+    repository_validation_mode: RepositoryValidationMode | None = None,
 ) -> AnswerQualityResult:
     return AnswerQualityResult(
         status=quality_outcome(
@@ -52,4 +56,5 @@ def build_quality_result(
         retrieval_status=retrieval_status,
         repair_attempted=repair_attempted,
         verifier_used=verifier_used,
+        repository_validation_mode=repository_validation_mode,
     )

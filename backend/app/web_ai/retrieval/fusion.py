@@ -33,13 +33,25 @@ def reciprocal_rank_fusion(
                     semantic_score=max(existing.semantic_score, item.semantic_score),
                     metadata_score=max(existing.metadata_score, item.metadata_score),
                 )
-    maximum = max(totals.values(), default=1.0)
     ordered_keys = sorted(totals, key=lambda key: (-totals[key], key))
     return tuple(
         replace(
             by_hash[key],
-            fused_score=totals[key] / maximum,
-            score=totals[key] / maximum,
+            # RRF determines order; the strongest absolute retrieval signal
+            # remains the confidence. A one-item result therefore cannot
+            # become 1.0 merely because it ranked first.
+            fused_score=max(
+                by_hash[key].lexical_score,
+                by_hash[key].semantic_score,
+                by_hash[key].metadata_score,
+                min(1.0, totals[key]),
+            ),
+            score=max(
+                by_hash[key].lexical_score,
+                by_hash[key].semantic_score,
+                by_hash[key].metadata_score,
+                min(1.0, totals[key]),
+            ),
             rank=rank,
         )
         for rank, key in enumerate(ordered_keys[: max(0, int(limit))])

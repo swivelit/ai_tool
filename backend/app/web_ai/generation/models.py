@@ -13,6 +13,9 @@ QualityOutcome = Literal[
     "insufficient_evidence",
 ]
 QualityCheckStatus = Literal["passed", "failed", "warning", "skipped", "error"]
+RepositoryValidationMode = Literal[
+    "static_only", "executable", "unavailable"
+]
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class AnswerQualityResult:
     retrieval_status: str = ""
     repair_attempted: bool = False
     verifier_used: bool = False
+    repository_validation_mode: RepositoryValidationMode | None = None
 
     @property
     def passed(self) -> bool:
@@ -54,6 +58,7 @@ class AnswerQualityResult:
             "status": self.status,
             "retrieval_status": self.retrieval_status or None,
             "checks": [check.safe_summary for check in self.checks],
+            "repository_validation_mode": self.repository_validation_mode,
         }
 
 

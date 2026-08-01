@@ -1170,6 +1170,72 @@ def test_closed_sse_generator_observes_worker_exception_and_cleans_active_reques
         assert user_message.status == "retryable"
 
 
+def test_accepted_pre_worker_cancellation_is_queued_and_releases_once():
+    from fastapi import Request
+
+    from app.auth import AuthUser
+    from app.web_ai.request_audit import build_request_audit
+    from app.web_api.router import (
+        _pending_generation_cancellations,
+        cancel_chat_request,
+        chat_stream,
+    )
+    from app.web_api.schemas import WebChatRequest
+
+    user = create_test_user(
+        "queued-cancel", "queued-cancel@example.com"
+    )
+    _fund(int(user.id))
+    request_id = "7319ef7a-1883-4d4b-9862-fabb6fa78cc9"
+    auth = AuthUser(
+        firebase_uid="queued-cancel",
+        email="queued-cancel@example.com",
+        email_verified=True,
+    )
+
+    async def exercise() -> dict[str, object]:
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        response = await chat_stream(
+            WebChatRequest(
+                request_id=request_id,
+                message="Explain database indexes in detail",
+            ),
+            Request({
+                "type": "http",
+                "method": "POST",
+                "path": "/api/web/chat/stream",
+                "headers": [],
+            }, receive=receive),
+            auth,
+        )
+        with SessionLocal() as session:
+            cancellation = await cancel_chat_request(
+                request_id, session=session, auth=auth
+            )
+        assert cancellation["status"] == "cancelling"
+        assert _pending_generation_cancellations[request_id] == int(user.id)
+        async for _chunk in response.body_iterator:
+            pass
+        return cancellation
+
+    asyncio.run(exercise())
+    assert request_id not in _pending_generation_cancellations
+    with SessionLocal() as session:
+        charges = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).all()
+        audit = build_request_audit(session, request_ids=[request_id])
+        assert len(charges) == 1
+        assert charges[0].status == "released"
+        assert charges[0].debited_micros == 0
+        assert audit is not None
+        assert audit[0]["cancellation_state"] == "cancelled"
+        assert audit[0]["duplicate_settlement_indicator"] is False
+        assert audit[0]["orphaned_active_reservation"] is False
+
+
 def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):
     user = create_test_user(); _fund(int(user.id))
     monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", lambda *args, **kwargs: (_ for _ in ()).throw(GenerationCancelled()))
@@ -1186,15 +1252,27 @@ def test_cancellation_after_partial_output_settles_usage(client, monkeypatch):
     user = create_test_user(); _fund(int(user.id))
     def partial(self, request, route, on_delta):
         on_delta("Partial")
-        raise GenerationCancelled(AIProviderResponse(text="Partial", provider="openai", model=route.model, route=route.route, reason=route.reason, language="en", intent=route.intent, input_tokens=100, output_tokens=12, raw={"usage_actual":False,"cancelled":True}))
+        raise GenerationCancelled(AIProviderResponse(text="Partial", provider="openai", model=route.model, route=route.route, reason=route.reason, language="en", intent=route.intent, input_tokens=100, output_tokens=12, raw={"usage_actual":True,"cancelled":True,"provider_calls_with_usage":1}))
     monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", partial)
     request_id = "f51aa637-0dde-44f2-b352-e5aaf5c56469"
     response = client.post("/api/web/chat/stream", headers=auth_headers("test-uid"), json={"request_id":request_id,"message":"Explain database indexes"})
     assert response.status_code == 200 and '"cancelled": true' in response.text and "Partial" in response.text
     with SessionLocal() as session:
-        charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
-        assert charge.status == "settled" and charge.debited_micros > 0 and charge.usage_source == "estimated"
+        from app.web_ai.request_audit import build_request_audit
+
+        charges = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).all()
+        assert len(charges) == 1
+        charge = charges[0]
+        assert charge.status == "settled" and charge.debited_micros > 0
+        assert charge.usage_source == "actual"
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+        audit = build_request_audit(session, request_ids=[request_id])
+        assert audit is not None
+        assert audit[0]["cancellation_state"] == "cancelled"
+        assert audit[0]["duplicate_settlement_indicator"] is False
+        assert audit[0]["orphaned_active_reservation"] is False
 
 
 def _temporary_upload(user_id: int, *, name: str = "report.pdf", text: str = "Secret quarterly revenue was 42.") -> EphemeralUpload:
@@ -1314,6 +1392,100 @@ def test_attachment_context_affects_reservation_but_only_metadata_is_persisted(c
     assert public_user["attachments"][0]["status"] == "ready"
     assert "chunks" not in json.dumps(public_user)
     assert "Secret quarterly" not in json.dumps(public_user)
+
+
+def test_structured_document_sources_survive_sse_done_and_persistence(
+    client, monkeypatch,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
+    monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
+    monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
+    monkeypatch.setenv("WEB_ROLLOUT_TRIAG_MODE", "all_eligible")
+    monkeypatch.setenv("WEB_ROLLOUT_ANSWER_GUARD_MODE", "all_eligible")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    user = create_test_user(
+        "structured-sources", "structured-sources@example.com"
+    )
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(
+            user_id=int(user.id), assistant_tier="standard"
+        ))
+        session.commit()
+    upload = _temporary_upload(
+        int(user.id),
+        name="acceptance.pdf",
+        text="Acceptance fact: TRIAG-source-lifecycle-42.",
+    )
+
+    def response(route):
+        return AIProviderResponse(
+            text="The acceptance fact is TRIAG-source-lifecycle-42 [S1].",
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=40,
+            output_tokens=12,
+            raw={
+                "usage_actual": True,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 1,
+                "finish_reason": "stop",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.complete",
+        lambda self, request, route: response(route),
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        lambda self, request, route, on_delta: response(route),
+    )
+    request_id = "72000000-0000-4000-8000-000000000042"
+    headers = auth_headers(
+        "structured-sources", "structured-sources@example.com"
+    )
+    streamed = client.post(
+        "/api/web/chat/stream",
+        headers=headers,
+        json={
+            "request_id": request_id,
+            "message": "What is the acceptance fact? source lifecycle 42",
+            "attachment_ids": [upload.id],
+        },
+    )
+    assert streamed.status_code == 200
+    source_events = _sse_events(streamed, "sources")
+    done_events = _sse_events(streamed, "done")
+    assert source_events and source_events[0]["sources"]
+    assert done_events and done_events[0]["sources"] == source_events[0]["sources"]
+    assert source_events[0]["sources"][0]["source_kind"] == "temporary_upload"
+
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+        persisted_sources = json.loads(assistant.metadata_json)["sources"]
+        thread_id = assistant.thread_id
+    assert persisted_sources == source_events[0]["sources"]
+    restored = client.get(
+        f"/api/web/threads/{thread_id}/messages", headers=headers
+    ).json()["items"]
+    restored_assistant = next(
+        item for item in restored if item["role"] == "assistant"
+    )
+    assert restored_assistant["sources"] == source_events[0]["sources"]
 
 
 def test_attachment_only_message_and_idempotent_replay_do_not_double_charge(client, monkeypatch):

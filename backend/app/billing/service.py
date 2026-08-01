@@ -568,12 +568,29 @@ def release_usage_reservation(
     session.add(wallet)
     charge.status = "released"
     charge.settled_at = utc_now()
+    bounded_reason = str(reason or "")[:80]
+    if (
+        not bounded_reason
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in bounded_reason
+        )
+    ):
+        bounded_reason = "provider_failed_or_cancelled"
+    try:
+        snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot["release_reason"] = bounded_reason
+    charge.pricing_snapshot_json = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":")
+    )
     session.add(charge)
     _ledger(
         session, wallet, entry_type="reservation_release", amount_micros=int(charge.reserved_micros),
         reference_type="usage_charge", reference_id=charge.id,
         idempotency_key=f"usage-release:{request_id}:attempt:{reservation_attempt}",
-        metadata={"reason": reason, "attempt": reservation_attempt},
+        metadata={"reason": bounded_reason, "attempt": reservation_attempt},
     )
     return charge
 

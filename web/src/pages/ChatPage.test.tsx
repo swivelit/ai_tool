@@ -462,13 +462,45 @@ it('applies the released wallet and delays Retry for service capacity', async ()
   expect(screen.queryByRole('dialog', { name:/Add credits/i })).not.toBeInTheDocument()
 })
 
-it('shows stop generation and sends a cooperative cancellation request', async () => {
-  mockApi(); vi.mocked(streamChat).mockImplementation(() => new Promise(() => undefined))
+it('queues an early stop until the streaming request is accepted', async () => {
+  mockApi()
+  let accepted: (() => void) | undefined
+  vi.mocked(streamChat).mockImplementation(
+    (_user, _payload, _onEvent, _signal, onAccepted) => {
+      accepted = onAccepted
+      return new Promise(() => undefined)
+    },
+  )
   render(<ChatPage />); const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'long answer'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(screen.getByRole('button', { name:'Swico Lite' })).toBeDisabled()
-  await userEvent.click(await screen.findByRole('button', { name:'Stop generation' }))
+  const stop = await screen.findByRole('button', { name:'Stop generation' })
+  expect(stop).toHaveAttribute('data-cancellation-ready', 'false')
+  await userEvent.click(stop)
+  expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes('/cancel'))).toBe(false)
+  await act(async () => { accepted?.() })
   await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes('/cancel'))).toBe(true))
+})
+
+it('exposes readiness and cancels exactly once after acceptance', async () => {
+  mockApi()
+  vi.mocked(streamChat).mockImplementation(
+    async (_user, _payload, _onEvent, _signal, onAccepted) => {
+      onAccepted?.()
+      await new Promise(() => undefined)
+    },
+  )
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'accepted long answer')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  const stop = await screen.findByRole('button', { name:'Stop generation' })
+  await waitFor(() => expect(stop).toHaveAttribute('data-cancellation-ready', 'true'))
+  await userEvent.click(stop)
+  await userEvent.click(stop)
+  await waitFor(() => expect(
+    vi.mocked(apiJson).mock.calls.filter(call => String(call[1]).includes('/cancel')),
+  ).toHaveLength(1))
 })
 
 it('shows usage-limit reset metadata without opening add-credit checkout', async () => {

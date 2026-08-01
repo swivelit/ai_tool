@@ -28,6 +28,15 @@ _FULL_TEXT_ACTIONS = {
     "translate": "translate",
 }
 
+_QUERY_CONTEXT_TERMS = {
+    "about", "and", "are", "attached", "attachment", "can", "could",
+    "determine", "do", "document", "does", "file", "find", "for", "from",
+    "has", "have", "is", "knowledge", "library", "my", "not", "only",
+    "outside", "pdf", "please", "provide", "say", "source", "sources",
+    "state", "stated", "states", "tell", "that", "the", "this", "use",
+    "using", "was", "were", "what", "where", "which", "with", "would",
+}
+
 
 @dataclass(frozen=True)
 class RankedChunk:
@@ -44,7 +53,7 @@ def rank_attachment_chunks(
 ) -> list[RankedChunk]:
     """Return the existing lexical ranking without formatting prompt text."""
 
-    question_tokens = _tokens(question)
+    question_tokens = _query_terms(question)
     all_chunks = [chunk for upload in uploads for chunk in upload.chunks]
     document_frequency = Counter(
         token for chunk in all_chunks for token in _tokens(chunk.text)
@@ -54,21 +63,21 @@ def rank_attachment_chunks(
         for chunk_index, chunk in enumerate(upload.chunks):
             chunk_tokens = _tokens(chunk.text)
             overlap_terms = question_tokens & chunk_tokens
-            lexical = sum(
-                math.log((len(all_chunks) + 1) / (document_frequency[token] + 1))
-                + 1.0
+            matched_weight = sum(
+                math.log(
+                    (len(all_chunks) + 1)
+                    / (document_frequency[token] + 1)
+                ) + 1.0
                 for token in overlap_terms
             )
-            phrase = (
-                2.5
-                if question.strip().lower()
-                and question.strip().lower() in chunk.text.lower()
-                else 0.0
+            total_weight = sum(
+                math.log(
+                    (len(all_chunks) + 1)
+                    / (document_frequency.get(token, 0) + 1)
+                ) + 1.0
+                for token in question_tokens
             )
-            length_normalizer = 1.0 + max(0, len(chunk_tokens) - 120) / 600
-            overlap = (
-                (lexical + phrase) / length_normalizer if question_tokens else 0.0
-            )
+            overlap = matched_weight / total_weight if total_weight else 0.0
             label = f"[{upload.name}, {chunk.source}]"
             ranked.append(
                 RankedChunk(
@@ -88,6 +97,22 @@ def _tokens(value: str) -> set[str]:
         for token in re.findall(r"[\w\u0B80-\u0BFF]+", str(value or "").lower(), flags=re.UNICODE)
         if len(token) > 1
     }
+
+
+def _query_terms(value: str) -> set[str]:
+    return {
+        token for token in _tokens(value)
+        if token not in _QUERY_CONTEXT_TERMS
+    }
+
+
+def calibrated_query_coverage(query: str, text: str) -> float:
+    """Return absolute query coverage that stays calibrated for one result."""
+
+    query_terms = _query_terms(query)
+    if not query_terms:
+        return 0.0
+    return len(query_terms & _tokens(text)) / len(query_terms)
 
 
 def attachment_prompt_max_chars() -> int:

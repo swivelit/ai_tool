@@ -66,6 +66,23 @@ _ACTIVE_STAGE_STATUSES = frozenset({"reserved", "running"})
 _TERMINAL_CHARGE_STATUSES = frozenset({
     "settled", "billing_exempt", "released", "failed",
 })
+_TIERS = frozenset({"lite", "standard", "pro"})
+_REPOSITORY_VALIDATION_MODES = frozenset({
+    "static_only", "executable", "unavailable",
+})
+_PHASE2_FALLBACK_REASONS = frozenset({
+    "dense_unavailable",
+    "embedding_budget_unavailable",
+    "malformed_vector",
+    "upload_expired",
+    "retrieval_timeout",
+    "retrieval_unavailable",
+    "phase2_hybrid_retrieval_failed",
+    "phase2_token_allocation_failed",
+    "phase2_prompt_rebuild_failed",
+    "phase2_persistence_failed",
+    "phase2_unknown_failure",
+})
 
 
 def _bounded_count(value: object) -> int:
@@ -135,6 +152,7 @@ def build_request_audit(
     traces = list(session.exec(select(
         WebRetrievalTrace.request_id,
         WebRetrievalTrace.status,
+        WebRetrievalTrace.tier_id,
         WebRetrievalTrace.safe_metadata_json,
         WebRetrievalTrace.updated_at,
     ).where(WebRetrievalTrace.request_id.in_(request_ids))).all())
@@ -152,6 +170,7 @@ def build_request_audit(
         WebChatMessage.request_id,
         WebChatMessage.role,
         WebChatMessage.status,
+        WebChatMessage.swico_tier,
         WebChatMessage.metadata_json,
         WebChatMessage.created_at,
     ).where(WebChatMessage.request_id.in_(request_ids))).all())
@@ -223,9 +242,14 @@ def build_request_audit(
         provider_calls_from_messages = 0
         retrieval_status = "not_run"
         quality_status = "not_run"
+        selected_tier = "not_run"
+        repository_validation_mode: str | None = None
+        phase2_fallback_reason_code: str | None = None
         message_statuses: list[str] = []
-        for role, status, metadata_json, _created_at in message_rows:
+        for role, status, tier, metadata_json, _created_at in message_rows:
             message_statuses.append(str(status or ""))
+            if tier in _TIERS:
+                selected_tier = str(tier)
             if str(role) != "assistant":
                 continue
             metadata = _safe_json(str(metadata_json or "{}"))
@@ -243,15 +267,24 @@ def build_request_audit(
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
+                candidate_mode = quality.get("repository_validation_mode")
+                if candidate_mode in _REPOSITORY_VALIDATION_MODES:
+                    repository_validation_mode = str(candidate_mode)
 
-        for _status, metadata_json, _updated_at in sorted(
-            trace_rows, key=lambda row: row[2]
+        for _status, tier, metadata_json, _updated_at in sorted(
+            trace_rows, key=lambda row: row[3]
         ):
-            candidate = _safe_json(str(metadata_json or "{}")).get(
-                "retrieval_status"
-            )
+            if tier in _TIERS:
+                selected_tier = str(tier)
+            trace_metadata = _safe_json(str(metadata_json or "{}"))
+            candidate = trace_metadata.get("retrieval_status")
             if candidate in _RETRIEVAL_STATUSES:
                 retrieval_status = str(candidate)
+            candidate_fallback = trace_metadata.get(
+                "phase2_fallback_reason_code"
+            )
+            if candidate_fallback in _PHASE2_FALLBACK_REASONS:
+                phase2_fallback_reason_code = str(candidate_fallback)
         for _status, metadata_json, _updated_at in sorted(
             check_rows, key=lambda row: row[2]
         ):
@@ -260,6 +293,11 @@ def build_request_audit(
             )
             if candidate in _QUALITY_STATUSES:
                 quality_status = str(candidate)
+            candidate_mode = _safe_json(
+                str(metadata_json or "{}")
+            ).get("repository_validation_mode")
+            if candidate_mode in _REPOSITORY_VALIDATION_MODES:
+                repository_validation_mode = str(candidate_mode)
 
         cancelled_before_usage = any(
             _safe_json(str(row[4] or "{}")).get("release_reason")
@@ -278,7 +316,7 @@ def build_request_audit(
         complete = bool(
             any(
                 str(role) == "assistant" and str(status) == "complete"
-                for role, status, _metadata, _created in message_rows
+                for role, status, _tier, _metadata, _created in message_rows
             )
             or any(
                 str(row[0]) in _TERMINAL_CHARGE_STATUSES
@@ -334,6 +372,9 @@ def build_request_audit(
             "answer_check_status_counts": _bounded_counts(
                 (row[0] for row in check_rows), _ANSWER_CHECK_STATUSES
             ),
+            "selected_tier": selected_tier,
+            "repository_validation_mode": repository_validation_mode,
+            "phase2_fallback_reason_code": phase2_fallback_reason_code,
             "cancellation_state": cancellation_state,
             "cancellation_failure_count": cancellation_failure_count,
             "orphaned_active_reservation": active_reservation,

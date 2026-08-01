@@ -25,6 +25,9 @@ from app.web_ai.knowledge_jobs import (
     enqueue_knowledge_job,
     handle_embedding_backfill,
 )
+from app.web_ai.evidence.pack_builder import build_evidence_pack
+from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
+from app.web_ai.retrieval.evaluator import evaluate_retrieval
 from app.web_ai.retrieval.hierarchical import build_hierarchy_for_document
 from app.web_ai.retrieval.persistent_knowledge import (
     ApprovedKnowledgeChunk,
@@ -118,6 +121,77 @@ def test_persistence_requires_explicit_approval_and_owner_isolation():
     assert owned and all(item.owner_user_id == first.id for item in owned)
     assert foreign == ()
     assert all(dict(item.bounded_metadata)["cache_scope"] == "private" for item in owned)
+
+
+def test_approved_knowledge_is_grounded_only_with_supported_citation():
+    user = create_test_user(
+        "knowledge-grounded", "knowledge-grounded@example.com"
+    )
+    _approve(
+        int(user.id),
+        text="Acceptance fact: TRIAG-library-acceptance-42.",
+    )
+    retriever = PersistentKnowledgeRetriever(SessionLocal)
+    supported = retriever.retrieve(
+        query="What is the acceptance fact? library acceptance 42",
+        uploads=[],
+        owner_user_id=int(user.id),
+        limit=3,
+    )
+    supported_status, contradictions = evaluate_retrieval(supported)
+    assert supported_status == "sufficient"
+    pack = build_evidence_pack(
+        owner_user_id=int(user.id),
+        request_id="knowledge-grounded-request",
+        candidates=supported,
+        status=supported_status,
+        contradictions=contradictions,
+        status_codes=("knowledge_lexical",),
+        token_cap=512,
+    )
+    result = AnswerGuard().check(
+        "The acceptance fact is TRIAG-library-acceptance-42 [S1].",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="State the acceptance fact.",
+            evidence_pack=pack,
+            verified_buffered=True,
+        ),
+    )
+    assert result.status == "grounded"
+    assert all(
+        check.status not in {"failed", "error"} for check in result.checks
+    )
+
+    unsupported = retriever.retrieve(
+        query="What is the absent launch city? nonce-not-in-library",
+        uploads=[],
+        owner_user_id=int(user.id),
+        limit=3,
+    )
+    unsupported_status, unsupported_contradictions = evaluate_retrieval(
+        unsupported
+    )
+    assert unsupported_status == "insufficient"
+    unsupported_pack = build_evidence_pack(
+        owner_user_id=int(user.id),
+        request_id="knowledge-unsupported-request",
+        candidates=unsupported,
+        status=unsupported_status,
+        contradictions=unsupported_contradictions,
+        status_codes=("knowledge_lexical",),
+        token_cap=512,
+    )
+    unsupported_quality = AnswerGuard().check(
+        "The saved sources do not provide a supported launch city.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="State the launch city.",
+            evidence_pack=unsupported_pack,
+            verified_buffered=True,
+        ),
+    )
+    assert unsupported_quality.status == "insufficient_evidence"
 
 
 def test_temporary_upload_raw_text_never_creates_persistent_rows():

@@ -33,6 +33,7 @@ export function Composer({
   setValue,
   send,
   stop,
+  cancellationReady = false,
   streaming,
   disabled,
   focusKey = '',
@@ -67,6 +68,7 @@ export function Composer({
 }: {
   user?: User | null;
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
+  cancellationReady?: boolean;
   streaming: boolean; disabled?: boolean; focusKey?: string;
   attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
   repository?: ComposerRepository | null; repositoryUploadEnabled?: boolean;
@@ -311,7 +313,10 @@ export function Composer({
         <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
         {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || repositoryUploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
         {streaming
-          ? <button className="send stop" type="button" aria-label="Stop generation" title="Stop generation" onClick={stop}><Square size={15} fill="currentColor" /></button>
+          ? <button className="send stop" type="button" aria-label="Stop generation"
+            title="Stop generation" data-testid="stop-generation-button"
+            data-cancellation-ready={cancellationReady ? 'true' : 'false'}
+            onClick={stop}><Square size={15} fill="currentColor" /></button>
           : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
             : <button className="voice-mode-button" type="button"
               aria-label="Start real-time Voice Mode"

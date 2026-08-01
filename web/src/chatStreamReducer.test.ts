@@ -88,21 +88,25 @@ describe('chatStreamReducer', () => {
     state = chatStreamReducer(state, { type:'event', event:{
       event:'quality', data:{
         status:'grounded', retrieval_status:'sufficient',
+        repository_validation_mode:'static_only',
         checks:[{ type:'citation_validity', status:'passed' }],
         provider:'must-not-be-retained', model:'must-not-be-retained',
       },
     } })
     expect(state.assistant?.quality).toEqual({
       status:'grounded', retrieval_status:'sufficient',
+      repository_validation_mode:'static_only',
       checks:[{ type:'citation_validity', status:'passed' }],
     })
     state = chatStreamReducer(state, { type:'event', event:{
       event:'done', data:{ message_id:'m1', quality:{
         status:'verified', retrieval_status:null,
+        repository_validation_mode:'executable',
         checks:[{ type:'structural', status:'passed' }],
       } },
     } })
     expect(state.assistant?.quality?.status).toBe('verified')
+    expect(state.assistant?.quality?.repository_validation_mode).toBe('executable')
     expect(JSON.stringify(state.assistant?.quality)).not.toMatch(/provider|model/)
   })
   it('keeps verified-buffered text empty until a delta arrives', () => {
@@ -139,6 +143,8 @@ describe('chatStreamReducer', () => {
       id:'S1', label:'guide.pdf', locator:'guide.pdf — page 2',
       confidence:0.91, source_kind:'temporary_upload',
     }])
+    const temporaryId = state.assistant?.id
+    expect(temporaryId).toBe('stream-sources')
     state = chatStreamReducer(state, {
       type:'event', event:{ event:'future-v2', data:{ ignored:true } },
     })
@@ -147,5 +153,7 @@ describe('chatStreamReducer', () => {
       type:'event', event:{ event:'done', data:{ message_id:'m1' } },
     })
     expect(state.assistant?.sources?.[0].id).toBe('S1')
+    expect(state.assistant?.id).toBe('m1')
+    expect(state.assistant?.id).not.toBe(temporaryId)
   })
 })

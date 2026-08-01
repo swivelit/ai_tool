@@ -244,6 +244,7 @@ it('renders safe source labels and locators without provider names', () => {
 it('renders persisted quality without provider or model details', () => {
   render(<Conversation messages={[message('quality', { quality:{
     status:'grounded', retrieval_status:'sufficient',
+    repository_validation_mode:null,
     checks:[{ type:'citation_validity', status:'passed' }],
   } })]} retry={vi.fn()} suggest={vi.fn()} />)
   expect(screen.getByText('Sources checked')).toBeInTheDocument()

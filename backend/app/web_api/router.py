@@ -174,6 +174,7 @@ from .adaptive_endpointing import (
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
+_pending_generation_cancellations: dict[str, int] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
@@ -577,6 +578,13 @@ def _serialize_message(
                     str(raw_quality.get("retrieval_status") or "") or None
                 ),
                 "checks": quality_checks[:24],
+                "repository_validation_mode": (
+                    str(raw_quality.get("repository_validation_mode"))
+                    if raw_quality.get("repository_validation_mode") in {
+                        "static_only", "executable", "unavailable",
+                    }
+                    else None
+                ),
             }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
@@ -3752,6 +3760,11 @@ async def chat_stream(
 
         with _active_generations_lock:
             _active_generations[prepared.request_id] = (user_id, cancellation)
+            pending_owner = _pending_generation_cancellations.pop(
+                prepared.request_id, None
+            )
+        if pending_owner == user_id:
+            cancellation.cancel()
         task = asyncio.create_task(asyncio.to_thread(
             execute_web_turn,
             prepared,
@@ -3762,6 +3775,9 @@ async def chat_stream(
         def unregister(done_task: asyncio.Task[Any]) -> None:
             with _active_generations_lock:
                 _active_generations.pop(prepared.request_id, None)
+                _pending_generation_cancellations.pop(
+                    prepared.request_id, None
+                )
             if not ownership["generator_closed"] or ownership["observed"]:
                 return
             ownership["observed"] = True
@@ -4044,8 +4060,17 @@ async def cancel_chat_request(
     )).first()
     if charge is None:
         raise HTTPException(404, "Generation request not found")
+    queued = False
     with _active_generations_lock:
         active = _active_generations.get(request_id)
+        if (
+            active is None
+            and charge.status in {"reserving", "reserved", "exempt_pending"}
+        ):
+            _pending_generation_cancellations[request_id] = int(user.id)
+            queued = True
+    if queued:
+        return {"status": "cancelling", "request_id": request_id}
     if active and active[0] == int(user.id):
         active[1].cancel()
         deadline = asyncio.get_running_loop().time() + float(os.getenv("WEB_CANCELLATION_WAIT_SECONDS", "10"))

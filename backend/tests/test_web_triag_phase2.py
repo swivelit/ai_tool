@@ -29,6 +29,7 @@ from app.web_ai.retrieval.dense import (
 )
 from app.web_ai.retrieval.evaluator import evaluate_retrieval
 from app.web_ai.retrieval.fusion import reciprocal_rank_fusion
+from app.web_ai.retrieval.lexical import LexicalAttachmentRetriever
 from app.web_ai.retrieval.models import RetrievalCandidate
 from app.web_ai.retrieval.runtime import execute_hybrid_retrieval
 from app.web_ai.settings import TriagSettings
@@ -261,6 +262,43 @@ def test_embedding_failure_falls_back_lexically():
     assert result.pack.items
     assert "dense_unavailable" in result.pack.status_codes
     assert "lexical_fallback" in result.pack.status_codes
+
+
+def test_acceptance_fact_coverage_is_sufficient_but_absent_city_is_not():
+    upload = _upload(chunks=(
+        "Acceptance fact: TRIAG-acceptance-1234.",
+    ))
+    retriever = LexicalAttachmentRetriever()
+    supported = retriever.retrieve(
+        query=(
+            "Using only the attached PDF, what is the acceptance fact? "
+            "acceptance-1234"
+        ),
+        uploads=[upload], owner_user_id=1, limit=5,
+    )
+    unsupported = retriever.retrieve(
+        query=(
+            "Using only the attached PDF, what launch city is stated? "
+            "unsupported-9876"
+        ),
+        uploads=[upload], owner_user_id=1, limit=5,
+    )
+    assert evaluate_retrieval(supported)[0] == "sufficient"
+    assert evaluate_retrieval(unsupported)[0] == "insufficient"
+
+
+def test_one_candidate_weak_overlap_is_not_normalized_to_one():
+    upload = _upload(chunks=("One shared token appears here.",))
+    candidates = LexicalAttachmentRetriever().retrieve(
+        query="shared launch city", uploads=[upload],
+        owner_user_id=1, limit=5,
+    )
+    assert len(candidates) == 1
+    assert 0 < candidates[0].lexical_score < 0.45
+    assert candidates[0].query_coverage == candidates[0].lexical_score
+    assert evaluate_retrieval(candidates)[0] == "insufficient"
+    fused = reciprocal_rank_fusion((candidates,), limit=1)
+    assert fused[0].fused_score < 1.0
 
 
 def test_no_embedding_call_without_accounted_stage():
@@ -508,6 +546,97 @@ def test_live_hybrid_lexical_path_freezes_messages_and_persists_safe_sources(
             for item in evidence
         )
         assert charge.status == "settled"
+
+
+def test_unknown_phase2_failure_uses_structured_lexical_sources_and_safe_telemetry(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
+    monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    reset_upload_store_for_tests()
+    user = create_test_user(
+        "phase2-fallback-user", "phase2-fallback@example.com"
+    )
+    _fund(int(user.id))
+    upload = _upload(upload_id="fallback-upload", owner=int(user.id))
+    get_upload_store().put(upload)
+    calls = 0
+    private_exception = (
+        "private provider message with Saturn has prominent rings and API key"
+    )
+
+    def fail_once_then_lexical(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError(private_exception)
+        return execute_hybrid_retrieval(**kwargs)
+
+    monkeypatch.setattr(
+        "app.web_api.chat_service.execute_hybrid_retrieval",
+        fail_once_then_lexical,
+    )
+
+    class Provider:
+        def complete(self, request, route):
+            return AIProviderResponse(
+                text="Saturn has prominent rings [S1].",
+                provider=route.provider,
+                model=route.model,
+                route=route.route,
+                reason=route.reason,
+                language="en",
+                intent=route.intent,
+                input_tokens=30,
+                output_tokens=10,
+                raw={
+                    "usage_actual": True,
+                    "provider_attempts": 1,
+                    "provider_calls_with_usage": 1,
+                    "finish_reason": "stop",
+                },
+            )
+
+    caplog.set_level("WARNING", logger="app.web_api.chat_service")
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Which attached planet has prominent rings?",
+        request_id="phase2-fallback-request",
+        thread_id=None,
+        reply_language="en",
+        attachment_ids=[upload.id],
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider: Provider()}
+    )
+    assert calls == 2
+    assert prepared.retrieval_context is not None
+    assert "lexical_fallback" in prepared.retrieval_context.status_codes
+    assert "phase2_hybrid_retrieval_failed" in (
+        prepared.retrieval_context.status_codes
+    )
+    assert completed.message.sources
+    assert completed.message.sources[0]["id"] == "S1"
+    with SessionLocal() as session:
+        trace = session.exec(select(WebRetrievalTrace).where(
+            WebRetrievalTrace.request_id == "phase2-fallback-request"
+        )).one()
+        persisted = trace.safe_metadata_json
+    assert "phase2_hybrid_retrieval_failed" in persisted
+    assert private_exception not in persisted
+    assert private_exception not in caplog.text
+    fallback_records = [
+        record for record in caplog.records
+        if record.getMessage() == "web_phase2_retrieval_fallback"
+    ]
+    assert len(fallback_records) == 1
+    assert fallback_records[0].exception_class == "RuntimeError"
 
 
 def test_live_dense_calls_have_reserved_and_settled_usage_stage(monkeypatch):

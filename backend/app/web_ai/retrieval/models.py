@@ -28,6 +28,7 @@ class RetrievalCandidate:
     bounded_metadata: SafeMetadata = ()
     rank: int = 0
     reason_codes: tuple[str, ...] = ()
+    query_coverage: float | None = None
     # Compatibility names retained for Phase 1 callers.
     source_type: str = ""
     source_id: str = ""
@@ -57,6 +58,11 @@ class RetrievalCandidate:
         )
         if any(not 0.0 <= value <= 1.0 for value in scores):
             raise ValueError("retrieval scores must be between zero and one")
+        if (
+            self.query_coverage is not None
+            and not 0.0 <= self.query_coverage <= 1.0
+        ):
+            raise ValueError("query coverage must be between zero and one")
         if self.token_count < 0 or self.rank < 0:
             raise ValueError("token count and rank must be non-negative")
         if len(self.bounded_metadata) > 16:
@@ -81,5 +87,9 @@ class RetrievalCandidate:
             "content_hash": self.content_hash,
             "rank": self.rank,
             "reason_codes": list(self.reason_codes),
+            "query_coverage": (
+                round(self.query_coverage, 6)
+                if self.query_coverage is not None else None
+            ),
             "metadata": dict(self.bounded_metadata),
         }

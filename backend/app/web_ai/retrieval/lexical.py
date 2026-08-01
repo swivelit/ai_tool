@@ -32,12 +32,12 @@ class LexicalAttachmentRetriever:
         )
         positive = [item for item in ordered if item.score > 0]
         chosen = (positive or ordered[:1])[: max(0, int(limit))]
-        maximum = max((item.score for item in chosen), default=1.0) or 1.0
         return tuple(
             candidate_from_chunk(
                 upload=owned[item.upload_index],
                 chunk_index=item.chunk_index,
-                lexical_score=item.score / maximum,
+                lexical_score=max(0.0, min(1.0, item.score)),
+                query_coverage=max(0.0, min(1.0, item.score)),
                 rank=rank,
             )
             for rank, item in enumerate(chosen)
