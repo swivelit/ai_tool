@@ -95,6 +95,40 @@ def test_reminder_uses_backend_tool_without_model():
     assert route.model is None
 
 
+def test_web_validated_pdf_question_uses_selected_provider_tier(monkeypatch):
+    monkeypatch.delenv("OPENAI_MODEL_STANDARD", raising=False)
+    request = _request("Using only the attached PDF, what is the acceptance fact?")
+    request.metadata.update({
+        "client_surface": "web",
+        "swico_tier": "standard",
+        "user_tier": "paid",
+        "validated_attachment_count": 1,
+        "validated_attachment_chunks_present": True,
+    })
+
+    route = AIProviderRouter().select_route(request)
+
+    assert route.provider == "openai"
+    assert route.intent == "document"
+    assert route.metadata["swico_tier"] == "standard"
+    assert route.metadata["web_attachment_qa"] is True
+
+
+def test_web_pdf_tools_without_validated_attachments_stay_provider_free():
+    for message, intent in (
+        ("Create a PDF", "document"),
+        ("Find and open my PDF", "file_retrieval"),
+    ):
+        request = _request(message)
+        request.metadata.update({
+            "client_surface": "web",
+            "swico_tier": "standard",
+        })
+        route = AIProviderRouter().select_route(request)
+        assert route.provider == "backend_tool"
+        assert route.intent == intent
+
+
 def test_voice_tool_workflows_route_to_backend_tool_without_model():
     cases = [
         ("client follow up note save பண்ணு", "note"),

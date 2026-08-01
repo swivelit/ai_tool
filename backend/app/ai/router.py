@@ -70,7 +70,13 @@ class AIProviderRouter:
                     metadata=intent_metadata,
                 )
 
-        if intent.route == "backend_tool":
+        web_attachment_qa = bool(
+            request.metadata.get("client_surface") == "web"
+            and intent.intent in {"document", "file_retrieval"}
+            and int(request.metadata.get("validated_attachment_count") or 0) > 0
+            and bool(request.metadata.get("validated_attachment_chunks_present"))
+        )
+        if intent.route == "backend_tool" and not web_attachment_qa:
             return AIRoute(
                 provider="backend_tool",
                 model=None,
@@ -81,6 +87,9 @@ class AIProviderRouter:
                 max_output_tokens=0,
                 metadata=intent_metadata,
             )
+
+        if web_attachment_qa:
+            intent_metadata["web_attachment_qa"] = True
 
         swico_tier = str(request.metadata.get("swico_tier") or "").strip().lower()
         if request.metadata.get("client_surface") == "web" and swico_tier:

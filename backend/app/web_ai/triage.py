@@ -42,6 +42,32 @@ class TriageInput:
     previous_topic: str | None = None
     repository_available: bool = False
     persistent_knowledge_available_tokens: int = 0
+    persistent_knowledge_contextual_followup: bool = False
+    persistent_knowledge_lexical_relevance: float = 0.0
+
+
+_EXPLICIT_KNOWLEDGE_REFERENCE = re.compile(
+    r"\b(?:knowledge\s+library|saved\s+(?:documents?|docs?|files?)|"
+    r"my\s+(?:saved\s+)?(?:documents?|docs?|files?|handbook|manual|notes?))\b",
+    re.IGNORECASE,
+)
+
+
+def persistent_knowledge_is_relevant(triage_input: TriageInput) -> bool:
+    """Bound persistent retrieval to explicit, contextual, or lexical relevance."""
+
+    if triage_input.persistent_knowledge_available_tokens <= 0:
+        return False
+    if _EXPLICIT_KNOWLEDGE_REFERENCE.search(triage_input.message):
+        return True
+    if (
+        triage_input.continuity.use_context
+        and triage_input.persistent_knowledge_contextual_followup
+    ):
+        return True
+    return max(
+        0.0, min(1.0, float(triage_input.persistent_knowledge_lexical_relevance))
+    ) >= 0.34
 
 
 def _media_category(media_type: object) -> str:
@@ -78,6 +104,9 @@ def build_execution_plan(
     config = settings or TriagSettings.from_environ()
     policy = tier_policy_for(triage_input.selected_tier)
     attachments = triage_input.attachment_metadata
+    persistent_knowledge_relevant = persistent_knowledge_is_relevant(
+        triage_input
+    )
     intent_decision = classify_intent_with_metadata(triage_input.message)
     optimization = optimize_web_turn(
         triage_input.message,
@@ -145,6 +174,7 @@ def build_execution_plan(
                 )
                 or (
                     triage_input.persistent_knowledge_available_tokens > 0
+                    and persistent_knowledge_relevant
                     and config.persistent_knowledge_runtime_enabled
                     and policy.persistent_knowledge_allowed
                 )
@@ -176,7 +206,10 @@ def build_execution_plan(
                 triage_input.document_available_tokens
                 + min(
                     policy.knowledge_token_cap,
-                    triage_input.persistent_knowledge_available_tokens,
+                    (
+                        triage_input.persistent_knowledge_available_tokens
+                        if persistent_knowledge_relevant else 0
+                    ),
                 )
             ),
         },
@@ -195,6 +228,7 @@ def build_execution_plan(
         retrieval_sources = (*retrieval_sources, "repository")
     knowledge_planned = bool(
         triage_input.persistent_knowledge_available_tokens > 0
+        and persistent_knowledge_relevant
         and config.persistent_knowledge_runtime_enabled
         and policy.persistent_knowledge_allowed
         and allocation.document_tokens > 0

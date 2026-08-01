@@ -6,6 +6,7 @@ import json
 import pytest
 from sqlmodel import select
 
+from app.ai.types import AIProviderResponse
 from app.billing.service import create_usage_reservation
 from app.database import SessionLocal
 from app.models import (
@@ -17,6 +18,7 @@ from app.models import (
     WebKnowledgeDocument,
     WebKnowledgeNode,
     WebKnowledgeTriplet,
+    WebUsagePreferences,
     WebUsageStage,
 )
 from app.web_ai.knowledge_jobs import (
@@ -40,6 +42,7 @@ from app.web_ai.settings import TriagConfigurationError, TriagSettings
 from app.web_ai.tier_policy import tier_policy_for
 from app.web_ai.triage import TriageInput, build_execution_plan
 from app.web_api.conversation_continuity import SameThreadContinuityDecision
+from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.upload_store import (
     EphemeralUpload,
     ExtractedChunk,
@@ -48,6 +51,7 @@ from app.web_api.upload_store import (
     utc_iso,
 )
 from tests.conftest import create_test_user
+from tests.test_web_chat_api import _fund
 
 
 def _approve(
@@ -539,6 +543,95 @@ def test_flags_are_disabled_and_private_plan_is_not_global_cacheable():
     assert "knowledge" in plan.retrieval_sources
     assert plan.cache_eligible is False
     assert tier_policy_for("lite").persistent_knowledge_allowed is False
+
+
+def test_unrelated_pro_request_does_not_plan_private_knowledge():
+    live = TriagSettings.from_environ({
+        "WEB_TRIAG_ENABLED": "true",
+        "WEB_TRIAG_SHADOW_MODE": "false",
+        "WEB_RAG_HYBRID_ENABLED": "true",
+        "WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED": "true",
+    })
+    plan = build_execution_plan(
+        TriageInput(
+            message=(
+                "Debug this architecture and perform a Pro technical review "
+                "of its concurrency and cancellation races."
+            ),
+            selected_tier="pro",
+            reply_language="en",
+            continuity=SameThreadContinuityDecision(
+                mode="explicit_only", use_context=False,
+                reason="standalone", confidence=1.0,
+                preferred_turn_count=0,
+            ),
+            persistent_knowledge_available_tokens=500,
+            persistent_knowledge_lexical_relevance=0.0,
+        ),
+        settings=live,
+    )
+    assert plan.deterministic is False
+    assert plan.token_allocation.document_tokens == 0
+    assert "knowledge" not in plan.retrieval_sources
+    assert "documents" not in plan.retrieval_sources
+
+
+def test_unrelated_pro_request_with_saved_knowledge_calls_provider(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
+    monkeypatch.setenv("WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    user = create_test_user("knowledge-unrelated", "knowledge-u@example.com")
+    _approve(int(user.id))
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(
+            user_id=int(user.id), assistant_tier="pro"
+        ))
+        session.commit()
+    calls = 0
+
+    class Provider:
+        def complete(self, request, route):
+            nonlocal calls
+            calls += 1
+            return AIProviderResponse(
+                text="Technical review completed.",
+                provider=route.provider,
+                model=route.model,
+                route=route.route,
+                reason=route.reason,
+                language="en",
+                intent=route.intent,
+                input_tokens=12,
+                output_tokens=5,
+                raw={"usage_actual": True, "finish_reason": "stop"},
+            )
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message=(
+            "Debug this architecture and review its concurrency cancellation "
+            "races."
+        ),
+        request_id="knowledge-unrelated-provider-request",
+        thread_id=None,
+        reply_language="en",
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider: Provider()}
+    )
+    assert calls == 1
+    assert completed.message.content == "Technical review completed."
+    assert prepared.optimization is not None
+    assert prepared.optimization.cache_eligible is False
+    assert prepared.execution_plan is not None
+    assert "knowledge" not in prepared.execution_plan.retrieval_sources
+    assert prepared.retrieval_context is None
 
 
 def test_knowledge_job_batch_configuration_is_bounded_without_value_leak():

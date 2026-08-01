@@ -63,6 +63,14 @@ _ACTIVE_CHARGE_STATUSES = frozenset({
     "reserving", "reserved", "exempt_pending",
 })
 _ACTIVE_STAGE_STATUSES = frozenset({"reserved", "running"})
+_USAGE_STAGE_STATUSES = frozenset({
+    "planned", "reserved", "running", "settled", "released", "skipped",
+    "failed",
+})
+_USAGE_STAGE_NAMES = frozenset({
+    "embedding", "generation", "verifier", "repository_validation", "repair",
+    "knowledge_embedding", "knowledge_triplet_extract",
+})
 _TERMINAL_CHARGE_STATUSES = frozenset({
     "settled", "billing_exempt", "released", "failed",
 })
@@ -138,6 +146,7 @@ def build_request_audit(
         UsageCharge.debited_micros,
         UsageCharge.settled_at,
         UsageCharge.pricing_snapshot_json,
+        UsageCharge.created_at,
     ).where(UsageCharge.request_id.in_(request_ids))).all())
     stages = list(session.exec(select(
         WebUsageStage.request_id,
@@ -229,6 +238,22 @@ def build_request_audit(
         active_reservation = bool(
             any(str(row[0]) in _ACTIVE_CHARGE_STATUSES for row in charge_rows)
             or any(str(row[1]) in _ACTIVE_STAGE_STATUSES for row in stage_rows)
+        )
+        active_usage_stage_names = sorted({
+            str(row[0])
+            for row in stage_rows
+            if (
+                str(row[0]) in _USAGE_STAGE_NAMES
+                and str(row[1]) in _ACTIVE_STAGE_STATUSES
+            )
+        })
+        terminal_charges = [
+            row for row in charge_rows
+            if str(row[0]) in _TERMINAL_CHARGE_STATUSES
+        ]
+        last_terminal_charge_status = (
+            str(max(terminal_charges, key=lambda row: row[5])[0])
+            if terminal_charges else None
         )
 
         provider_calls_from_stages = sum(
@@ -355,6 +380,11 @@ def build_request_audit(
             "charge_status_counts": _bounded_counts(
                 charge_statuses, _CHARGE_STATUSES
             ),
+            "usage_stage_status_counts": _bounded_counts(
+                (row[1] for row in stage_rows), _USAGE_STAGE_STATUSES
+            ),
+            "active_usage_stage_names": active_usage_stage_names[:16],
+            "last_terminal_charge_status": last_terminal_charge_status,
             "paid_usage_stage_count": min(
                 _COUNT_MAX,
                 sum(

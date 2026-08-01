@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
-from ..ai.providers.base import GenerationCancelled
+from ..ai.providers.base import GenerationCancelled, GenerationIncomplete
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
@@ -58,6 +58,7 @@ from ..web_ai.persistence import (
 from ..web_ai.retrieval.runtime import execute_hybrid_retrieval
 from ..web_ai.retrieval.persistent_knowledge import (
     owner_active_knowledge_tokens,
+    owner_knowledge_lexical_relevance,
 )
 from ..web_ai.settings import TriagConfigurationError, TriagSettings
 from ..web_ai.rollout import (
@@ -125,6 +126,15 @@ from .web_memory import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_verifier_status(value: object) -> bool:
+    normalized = str(value or "").strip().upper()
+    if normalized == "SUPPORTED":
+        return True
+    if normalized == "UNSUPPORTED":
+        return False
+    raise ValueError("verifier_unavailable")
 
 
 class DuplicateRequestInProgress(RuntimeError):
@@ -362,6 +372,25 @@ def _rollout_cache_policy(
     )
 
 
+def _persistent_knowledge_cache_policy(
+    optimization: WebTurnOptimization,
+    available_tokens: int,
+) -> WebTurnOptimization:
+    if available_tokens <= 0:
+        return optimization
+    return replace(
+        optimization,
+        cache_eligible=False,
+        cache_scope="disabled",
+        cache_scope_reason="private_knowledge_context",
+        metrics={
+            **optimization.metrics,
+            "cache_scope": "disabled",
+            "cache_scope_reason": "private_knowledge_context",
+        },
+    )
+
+
 def _global_cache_admission(
     optimization: WebTurnOptimization | None,
     *,
@@ -557,6 +586,17 @@ def _context(
                 for key in ("topic", "brand_subintent", "brand_profile_version")
                 if stored.get(key)
             }
+            raw_sources = stored.get("sources")
+            if isinstance(raw_sources, list) and any(
+                isinstance(source, dict)
+                and source.get("source_kind") in {
+                    "persistent_knowledge",
+                    "approved_document",
+                    "knowledge_triplet",
+                }
+                for source in raw_sources
+            ):
+                previous_metadata["knowledge_backed"] = "true"
         break
     turns: list[dict[str, str]] = []
     pending: WebChatMessage | None = None
@@ -1290,6 +1330,17 @@ def prepare_web_turn(
                     for key in ("topic", "brand_subintent", "brand_profile_version")
                     if continuation_safe.get(key)
                 }
+                raw_sources = continuation_safe.get("sources")
+                if isinstance(raw_sources, list) and any(
+                    isinstance(source, dict)
+                    and source.get("source_kind") in {
+                        "persistent_knowledge",
+                        "approved_document",
+                        "knowledge_triplet",
+                    }
+                    for source in raw_sources
+                ):
+                    previous_safe_metadata["knowledge_backed"] = "true"
             all_context = []
         elif newly_created_thread:
             all_context = []
@@ -1347,10 +1398,17 @@ def prepare_web_turn(
         ):
             needs_memory = True
         persistent_knowledge_tokens = 0
+        persistent_knowledge_lexical_relevance = 0.0
         if request_triag_settings.persistent_knowledge_runtime_enabled:
             persistent_knowledge_tokens = owner_active_knowledge_tokens(
                 session, user_id
             )
+            if persistent_knowledge_tokens > 0:
+                persistent_knowledge_lexical_relevance = (
+                    owner_knowledge_lexical_relevance(
+                        session, user_id, model_message
+                    )
+                )
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads) or repository_snapshot is not None,
@@ -1359,18 +1417,13 @@ def prepare_web_turn(
         preliminary = _rollout_cache_policy(
             preliminary, rollout_decision
         )
-        if persistent_knowledge_tokens > 0:
-            preliminary = replace(
-                preliminary,
-                cache_eligible=False,
-                cache_scope="disabled",
-                cache_scope_reason="private_knowledge_context",
-                metrics={
-                    **preliminary.metrics,
-                    "cache_scope": "disabled",
-                    "cache_scope_reason": "private_knowledge_context",
-                },
-            )
+        # Preserve the existing private-owner cache boundary whenever saved
+        # knowledge exists.  Retrieval planning below remains independently
+        # relevance-gated, so an unrelated turn is provider-backed without
+        # receiving private evidence.
+        preliminary = _persistent_knowledge_cache_policy(
+            preliminary, persistent_knowledge_tokens
+        )
         if repository_snapshot is not None:
             preliminary = replace(
                 preliminary,
@@ -1417,6 +1470,13 @@ def prepare_web_turn(
             "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
             "user_tier": "paid", "swico_tier": swico_tier,
             "attachment_count": len(uploads),
+            # These values are derived only after the upload store has enforced
+            # TTL and owner isolation.  The provider router uses them to avoid
+            # mistaking web attachment questions for legacy document tools.
+            "validated_attachment_count": len(uploads),
+            "validated_attachment_chunks_present": bool(
+                uploads and any(bool(upload.chunks) for upload in uploads)
+            ),
             "thread_title_seed": (
                 continuation_chain.root_user.content
                 if continuation_chain is not None
@@ -1481,6 +1541,12 @@ def prepare_web_turn(
                     repository_available=repository_snapshot is not None,
                     persistent_knowledge_available_tokens=(
                         persistent_knowledge_tokens
+                    ),
+                    persistent_knowledge_contextual_followup=(
+                        previous_safe_metadata.get("knowledge_backed") == "true"
+                    ),
+                    persistent_knowledge_lexical_relevance=(
+                        persistent_knowledge_lexical_relevance
                     ),
                 ),
                 settings=active_triag_settings,
@@ -1977,6 +2043,9 @@ def prepare_web_turn(
 
         optimization = _rollout_cache_policy(
             optimization, rollout_decision
+        )
+        optimization = _persistent_knowledge_cache_policy(
+            optimization, persistent_knowledge_tokens
         )
         if coordinator_decision is not None and not optimization.cache_eligible:
             coordinator_decision = replace(
@@ -2944,6 +3013,7 @@ def _phase3_stage(
     price: PriceResult | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    reasoning_tokens: int = 0,
     reserved_micros: int = 0,
 ) -> None:
     """Upsert content-free, owner-scoped accounting for one provider stage."""
@@ -2999,6 +3069,9 @@ def _phase3_stage(
                         "micro_inr_cost": price.micros,
                         "input_token_count": max(0, int(input_tokens)),
                         "output_token_count": max(0, int(output_tokens)),
+                        "reasoning_token_count": max(
+                            0, int(reasoning_tokens)
+                        ),
                     }
                     if price else {}
                 ),
@@ -3098,6 +3171,44 @@ def _aggregate_phase3_prices(
             ],
         },
     )
+
+
+def _settle_incomplete_phase3_parent(
+    prepared: PreparedWebTurn,
+    prices: list[tuple[str, PriceResult, int, int]],
+) -> None:
+    """Settle paid provider usage even when no answer text was produced."""
+
+    if not prices:
+        return
+    price = _aggregate_phase3_prices(prices, prices[0][1])
+    input_tokens = sum(item[2] for item in prices)
+    output_tokens = sum(item[3] for item in prices)
+    with SessionLocal() as session:
+        settle = (
+            settle_billing_exempt_usage
+            if prepared.billing_exempt else settle_usage_reservation
+        )
+        settle(
+            session,
+            request_id=prepared.request_id,
+            provider_cost_amount=price.amount,
+            provider_cost_currency=price.currency,
+            provider_cost_micros=price.micros,
+            input_tokens=input_tokens,
+            cached_input_tokens=0,
+            output_tokens=output_tokens,
+            usage_source="actual",
+            pricing_snapshot_json=snapshot_json(price.snapshot),
+            usd_to_inr_rate=(
+                env_decimal("USD_TO_INR_BILLING_RATE", "90")
+                if prepared.route.provider == "openai" else None
+            ),
+            provider=prepared.route.provider,
+            model=prepared.route.model,
+            swico_tier=prepared.swico_tier,
+        )
+        session.commit()
 
 
 def _generation_cancellation_requested(prepared: PreparedWebTurn) -> bool:
@@ -3330,6 +3441,52 @@ def execute_web_turn(
                         )
                         if visible_delta:
                             visible_delta(draft.text)
+                except GenerationIncomplete as exc:
+                    usage = exc.metadata
+                    if usage.get("provider_usage_received"):
+                        incomplete = AIProviderResponse(
+                            text="",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model,
+                            route=prepared.route.route,
+                            reason=prepared.route.reason,
+                            language=prepared.route.language,
+                            intent=prepared.route.intent,
+                            input_tokens=int(usage.get("input_tokens") or 0),
+                            output_tokens=int(usage.get("output_tokens") or 0),
+                            raw={"usage_actual": True},
+                        )
+                        incomplete_price = _phase3_response_price(incomplete)
+                        phase3_prices.append((
+                            "generation",
+                            incomplete_price,
+                            incomplete.input_tokens,
+                            incomplete.output_tokens,
+                        ))
+                        _phase3_stage(
+                            prepared,
+                            stage_name="generation",
+                            status="settled",
+                            provider=incomplete.provider,
+                            model=incomplete.model or "",
+                            price=incomplete_price,
+                            input_tokens=incomplete.input_tokens,
+                            output_tokens=incomplete.output_tokens,
+                            reasoning_tokens=int(
+                                usage.get("reasoning_tokens") or 0
+                            ),
+                            reserved_micros=prepared.reserved_micros,
+                        )
+                    else:
+                        _phase3_stage(
+                            prepared,
+                            stage_name="generation",
+                            status="failed",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model or "",
+                            reserved_micros=prepared.reserved_micros,
+                        )
+                    raise
                 except GenerationCancelled as exc:
                     if exc.response is not None:
                         partial_price = _phase3_response_price(exc.response)
@@ -3427,10 +3584,11 @@ def execute_web_turn(
                         ),
                         "max_provider_attempts": 1,
                         "prompt_cache_enabled": False,
+                        "answer_class": "simple",
                     },
                 )
                 verifier_route = replace(
-                    prepared.route, max_output_tokens=16
+                    prepared.route, max_output_tokens=96
                 )
                 try:
                     reserved = _expand_phase3_reservation(
@@ -3460,6 +3618,52 @@ def execute_web_turn(
                     verifier_response = verifier_provider.complete(
                         verifier_request, verifier_route
                     )
+                except GenerationIncomplete as exc:
+                    usage = exc.metadata
+                    if usage.get("provider_usage_received"):
+                        incomplete = AIProviderResponse(
+                            text="",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model,
+                            route=verifier_route.route,
+                            reason=verifier_route.reason,
+                            language=verifier_route.language,
+                            intent=verifier_route.intent,
+                            input_tokens=int(usage.get("input_tokens") or 0),
+                            output_tokens=int(usage.get("output_tokens") or 0),
+                            raw={"usage_actual": True},
+                        )
+                        verifier_price = _phase3_response_price(incomplete)
+                        phase3_prices.append((
+                            "verifier",
+                            verifier_price,
+                            incomplete.input_tokens,
+                            incomplete.output_tokens,
+                        ))
+                        _phase3_stage(
+                            prepared,
+                            stage_name="verifier",
+                            status="settled",
+                            provider=incomplete.provider,
+                            model=incomplete.model or "",
+                            price=verifier_price,
+                            input_tokens=incomplete.input_tokens,
+                            output_tokens=incomplete.output_tokens,
+                            reasoning_tokens=int(
+                                usage.get("reasoning_tokens") or 0
+                            ),
+                            reserved_micros=reserved,
+                        )
+                    else:
+                        _phase3_stage(
+                            prepared,
+                            stage_name="verifier",
+                            status="failed",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model or "",
+                            reserved_micros=reserved,
+                        )
+                    raise ValueError("verifier_unavailable") from exc
                 except GenerationCancelled:
                     _phase3_stage(
                         prepared,
@@ -3498,10 +3702,7 @@ def execute_web_turn(
                     output_tokens=verifier_response.output_tokens,
                     reserved_micros=reserved,
                 )
-                return (
-                    str(verifier_response.text or "").strip().upper()
-                    == "SUPPORTED"
-                )
+                return _parse_verifier_status(verifier_response.text)
 
             def verify(answer: str) -> AnswerQualityResult:
                 nonlocal guard_context, repository_validation_attempts
@@ -3559,11 +3760,7 @@ def execute_web_turn(
                             return guard.check(
                                 answer,
                                 guard_context,
-                                model_verifier=(
-                                    model_verifier
-                                    if guard_context.model_verifier_allowed
-                                    else None
-                                ),
+                                model_verifier=None,
                             )
                         if on_status:
                             on_status("running_code_checks")
@@ -3601,7 +3798,25 @@ def execute_web_turn(
                                 attempt_number=repository_validation_attempts,
                             )
                             raise GenerationCancelled() from exc
+                        except Exception:
+                            _phase3_stage(
+                                prepared,
+                                stage_name="repository_validation",
+                                status="failed",
+                                provider="internal",
+                                model="repository-validator",
+                                attempt_number=repository_validation_attempts,
+                            )
+                            raise
                         if cancelled_check():
+                            _phase3_stage(
+                                prepared,
+                                stage_name="repository_validation",
+                                status="released",
+                                provider="internal",
+                                model="repository-validator",
+                                attempt_number=repository_validation_attempts,
+                            )
                             raise GenerationCancelled()
                         _phase3_stage(
                             prepared,
@@ -3637,10 +3852,7 @@ def execute_web_turn(
                 return guard.check(
                     answer,
                     guard_context,
-                    model_verifier=(
-                        model_verifier
-                        if guard_context.model_verifier_allowed else None
-                    ),
+                    model_verifier=None,
                 )
 
             def repair(
@@ -3701,6 +3913,52 @@ def execute_web_turn(
                     repaired = provider.complete(
                         contract.request, repair_route
                     )
+                except GenerationIncomplete as exc:
+                    usage = exc.metadata
+                    if usage.get("provider_usage_received"):
+                        incomplete = AIProviderResponse(
+                            text="",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model,
+                            route=repair_route.route,
+                            reason=repair_route.reason,
+                            language=repair_route.language,
+                            intent=repair_route.intent,
+                            input_tokens=int(usage.get("input_tokens") or 0),
+                            output_tokens=int(usage.get("output_tokens") or 0),
+                            raw={"usage_actual": True},
+                        )
+                        repair_price = _phase3_response_price(incomplete)
+                        phase3_prices.append((
+                            "repair",
+                            repair_price,
+                            incomplete.input_tokens,
+                            incomplete.output_tokens,
+                        ))
+                        _phase3_stage(
+                            prepared,
+                            stage_name="repair",
+                            status="settled",
+                            provider=incomplete.provider,
+                            model=incomplete.model or "",
+                            price=repair_price,
+                            input_tokens=incomplete.input_tokens,
+                            output_tokens=incomplete.output_tokens,
+                            reasoning_tokens=int(
+                                usage.get("reasoning_tokens") or 0
+                            ),
+                            reserved_micros=reserved,
+                        )
+                    else:
+                        _phase3_stage(
+                            prepared,
+                            stage_name="repair",
+                            status="failed",
+                            provider=prepared.route.provider,
+                            model=prepared.route.model or "",
+                            reserved_micros=reserved,
+                        )
+                    return None
                 except GenerationCancelled:
                     _phase3_stage(
                         prepared,
@@ -3755,15 +4013,28 @@ def execute_web_turn(
                 return guard.check(
                     answer,
                     guard_context,
-                    model_verifier=(
-                        model_verifier
-                        if guard_context.model_verifier_allowed else None
-                    ),
+                    model_verifier=None,
                     only_checks={
                         check.check_type for check in prior.failed_checks
                     },
                     repair_attempted=True,
                 )
+
+            def verify_final(
+                answer: str, prior: AnswerQualityResult | None
+            ) -> AnswerQualityResult:
+                result = guard.check(
+                    answer,
+                    guard_context,
+                    model_verifier=(
+                        model_verifier
+                        if guard_context.model_verifier_allowed else None
+                    ),
+                    repair_attempted=bool(
+                        prior and prior.repair_attempted
+                    ),
+                )
+                return result
 
             generated = VerifiedGenerator(stream_policy).generate(
                 generate_draft=generate_draft,
@@ -3775,6 +4046,7 @@ def execute_web_turn(
                 cancellation_signal=prepared.ai_request.metadata.get(
                     "cancellation_signal"
                 ),
+                verify_final=verify_final,
             )
             response = generated.response
             prepared.answer_quality = generated.quality
@@ -3812,6 +4084,65 @@ def execute_web_turn(
         else:
             _release_pre_provider_cancellation(prepared)
             raise
+    except GenerationIncomplete as exc:
+        usage = exc.metadata
+        if not phase3_prices and usage.get("provider_usage_received"):
+            incomplete = AIProviderResponse(
+                text="",
+                provider=prepared.route.provider,
+                model=prepared.route.model,
+                route=prepared.route.route,
+                reason=prepared.route.reason,
+                language=prepared.route.language,
+                intent=prepared.route.intent,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                raw={"usage_actual": True},
+            )
+            incomplete_price = _phase3_response_price(incomplete)
+            phase3_prices.append((
+                "generation", incomplete_price,
+                incomplete.input_tokens, incomplete.output_tokens,
+            ))
+            _phase3_stage(
+                prepared,
+                stage_name="generation",
+                status="settled",
+                provider=incomplete.provider,
+                model=incomplete.model or "",
+                price=incomplete_price,
+                input_tokens=incomplete.input_tokens,
+                output_tokens=incomplete.output_tokens,
+                reasoning_tokens=int(usage.get("reasoning_tokens") or 0),
+                reserved_micros=prepared.reserved_micros,
+            )
+        if phase3_prices:
+            _settle_incomplete_phase3_parent(prepared, phase3_prices)
+        else:
+            with SessionLocal() as session:
+                if prepared.billing_exempt:
+                    release_billing_exempt_usage(
+                        session, prepared.request_id,
+                        reason="provider_incomplete_without_usage",
+                    )
+                else:
+                    release_usage_reservation(
+                        session, prepared.request_id,
+                        reason="provider_incomplete_without_usage",
+                    )
+                session.commit()
+        with SessionLocal() as session:
+            user_message = session.exec(select(WebChatMessage).where(
+                WebChatMessage.user_id == prepared.user_id,
+                WebChatMessage.request_id == prepared.request_id,
+                WebChatMessage.role == "user",
+            )).first()
+            if user_message:
+                user_message.status = "retryable"
+                session.add(user_message)
+            _release_continuation_claim(session, prepared)
+            session.commit()
+        raise
     except OpenAIBudgetExceededError as exc:
         with SessionLocal() as session:
             if prepared.billing_exempt:

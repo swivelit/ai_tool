@@ -190,6 +190,7 @@ export type ProductionScenarioSubreasonCode =
   | 'repository_quality_invalid'
   | 'repository_harness_failure'
   | 'cancellation_fresh_chat_failed'
+  | 'cancellation_tier_selection_failed'
   | 'cancellation_request_not_observed'
   | 'cancellation_request_id_missing'
   | 'cancellation_assistant_not_visible'
@@ -233,6 +234,9 @@ export type ProductionSafeScenarioResult = {
   quality_status?: 'not_run' | 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
   source_kind_counts?: Record<string, number>
   answer_check_status_counts?: Record<string, number>
+  usage_stage_status_counts?: Record<string, number>
+  active_usage_stage_names?: string[]
+  last_terminal_charge_status?: 'settled' | 'billing_exempt' | 'released' | 'failed' | null
   repository_validation_mode?: 'static_only' | 'executable' | 'unavailable' | null
   phase2_fallback_reason_code?: string | null
   cancellation_attempt_http_result?: 'http_200' | 'http_non_200' | 'not_observed'
@@ -249,6 +253,11 @@ export type ProductionSafeSummary = {
   scenarios: ProductionSafeScenarioResult[]
   cleanup: ProductionCleanup
   primary_failure_reason_code: ProductionPrimaryFailureReasonCode
+  rollout_report?: {
+    generated_at: string
+    window: { hours: number; started_at: string; ended_at: string }
+    groups: Array<Record<string, unknown>>
+  }
 }
 
 export type ProductionBootstrap = {
@@ -763,6 +772,7 @@ export function buildProductionTriagSummary(input: {
   scenarios: ProductionSafeScenarioResult[]
   cleanup: ProductionCleanup
   primaryFailureReasonCode: ProductionPrimaryFailureReasonCode
+  rolloutReport?: ProductionSafeSummary['rollout_report']
 }): ProductionSafeSummary {
   const phase2FallbackReasons = [
     'dense_unavailable', 'embedding_budget_unavailable', 'malformed_vector',
@@ -823,6 +833,24 @@ export function buildProductionTriagSummary(input: {
       item.answer_check_status_counts,
       ['not_run', 'passed', 'failed', 'skipped', 'error', 'other'],
     ) } : {}),
+    ...(boundedCounts(item.usage_stage_status_counts, [
+      'planned', 'reserved', 'running', 'settled', 'released', 'skipped',
+      'failed', 'other',
+    ]) ? { usage_stage_status_counts:boundedCounts(
+      item.usage_stage_status_counts,
+      ['planned', 'reserved', 'running', 'settled', 'released', 'skipped',
+        'failed', 'other'],
+    ) } : {}),
+    ...(Array.isArray(item.active_usage_stage_names)
+      ? { active_usage_stage_names:item.active_usage_stage_names.filter(
+        value => [
+          'embedding', 'generation', 'verifier', 'repository_validation',
+          'repair', 'knowledge_embedding', 'knowledge_triplet_extract',
+        ].includes(value),
+      ).slice(0, 16) } : {}),
+    ...(['settled', 'billing_exempt', 'released', 'failed'].includes(
+      item.last_terminal_charge_status ?? '',
+    ) ? { last_terminal_charge_status:item.last_terminal_charge_status } : {}),
     ...([
       'static_only', 'executable', 'unavailable',
     ].includes(item.repository_validation_mode ?? '')
@@ -855,6 +883,7 @@ export function buildProductionTriagSummary(input: {
       reason_codes:[...input.cleanup.reason_codes],
     },
     primary_failure_reason_code:input.primaryFailureReasonCode,
+    ...(input.rolloutReport ? { rollout_report:input.rolloutReport } : {}),
   }
 }
 

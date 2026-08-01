@@ -78,6 +78,37 @@ def owner_active_knowledge_tokens(
     return min(max(0, int(ceiling)), sum(max(0, int(value or 0)) for value in rows))
 
 
+def owner_knowledge_lexical_relevance(
+    session: Session,
+    owner_user_id: int,
+    query: str,
+    *,
+    chunk_limit: int = 64,
+) -> float:
+    """Return a bounded owner-scoped lexical preflight without provider work."""
+
+    bounded_limit = min(128, max(1, int(chunk_limit)))
+    rows = session.exec(
+        select(WebKnowledgeChunk.content_text).join(
+            WebKnowledgeDocument,
+            WebKnowledgeDocument.id == WebKnowledgeChunk.document_id,
+        ).where(
+            WebKnowledgeChunk.owner_user_id == int(owner_user_id),
+            WebKnowledgeDocument.owner_user_id == int(owner_user_id),
+            WebKnowledgeChunk.status == "ready",
+            WebKnowledgeDocument.status == "ready",
+            WebKnowledgeDocument.deleted_at.is_(None),
+        ).order_by(
+            WebKnowledgeDocument.id,
+            WebKnowledgeChunk.chunk_index,
+        ).limit(bounded_limit)
+    ).all()
+    return max(
+        (_lexical_score(str(query or "")[:4096], str(body or "")) for body in rows),
+        default=0.0,
+    )
+
+
 def approve_persistent_knowledge(
     session: Session,
     *,

@@ -930,6 +930,37 @@ test('safe summary retains only allowlisted content-free diagnostics', () => {
   expect(JSON.stringify(summary)).not.toContain('unexpected')
 })
 
+test('safe summary preserves the pre-cleanup content-free rollout report', () => {
+  const rolloutReport = {
+    generated_at:'2026-08-01T00:00:00Z',
+    window:{
+      hours:24,
+      started_at:'2026-07-31T00:00:00Z',
+      ended_at:'2026-08-01T00:00:00Z',
+    },
+    groups:[{
+      policy_version:'v1',
+      feature_key:'web_triag_hybrid',
+      rollout_cohort:'acceptance',
+      metrics:{ total_eligible_requests:6, provider_call_count:4 },
+    }],
+  }
+  const summary = buildProductionTriagSummary({
+    preflight:{ status:'passed', reason_code:'preflight_passed' },
+    scenarios:[],
+    cleanup:{ status:'complete', reason_codes:[] },
+    primaryFailureReasonCode:'none',
+    rolloutReport,
+  })
+  expect(summary.rollout_report).toEqual(rolloutReport)
+
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec.indexOf("'GET', '/api/web/admin/triag-rollout-report'"))
+    .toBeLessThan(spec.indexOf('deleteGeneratedThread('))
+})
+
 test('staging and production-readonly commands retain their existing timeout behavior', () => {
   const workflow = readFileSync(
     resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',

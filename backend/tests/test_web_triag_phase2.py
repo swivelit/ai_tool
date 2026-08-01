@@ -469,6 +469,8 @@ def test_live_hybrid_lexical_path_freezes_messages_and_persists_safe_sources(
     monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
+    monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response", lambda *args: None
     )
@@ -504,13 +506,15 @@ def test_live_hybrid_lexical_path_freezes_messages_and_persists_safe_sources(
 
     prepared = prepare_web_turn(
         user_id=int(user.id),
-        message="Which attached planet has prominent rings?",
+        message="Using only the attached PDF, which planet has prominent rings?",
         request_id="phase2-live-request",
         thread_id=None,
         reply_language="en",
         attachment_ids=[upload.id],
     )
     original_messages = prepared.provider_messages
+    assert prepared.route.provider in {"openai", "sarvam"}
+    assert prepared.route.route != "unsupported_web_capability"
     completed = execute_web_turn(
         prepared,
         providers={prepared.route.provider: Provider()},
@@ -520,7 +524,10 @@ def test_live_hybrid_lexical_path_freezes_messages_and_persists_safe_sources(
     assert prepared.provider_messages == captured["messages"]
     assert prepared.provider_messages != original_messages
     assert completed.message.sources
+    assert completed.message.sources[0]["source_kind"] == "temporary_upload"
     assert completed.message.sources[0]["id"] == "S1"
+    assert completed.message.quality is not None
+    assert completed.message.quality["status"] in {"grounded", "verified"}
     serialized = json.dumps(completed.message.sources)
     assert "Saturn has prominent rings" not in serialized
     with SessionLocal() as session:
@@ -735,6 +742,7 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
     monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response", lambda *args: None
     )
@@ -756,7 +764,10 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
 
     prepared = prepare_web_turn(
         user_id=int(user.id),
-        message="What is the orbital period of Neptune?",
+        message=(
+            "Using only the attached PDF, what launch city is stated? "
+            "Do not use outside knowledge."
+        ),
         request_id="phase2-insufficient-request",
         thread_id=None,
         reply_language="en",
@@ -767,6 +778,8 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
         providers={prepared.route.provider: Provider()},
     )
     assert "couldn’t find enough support" in completed.message.content
+    assert completed.message.quality is not None
+    assert completed.message.quality["status"] == "insufficient_evidence"
     assert completed.response.raw["provider_attempts"] == 0
     assert completed.response.raw["provider_calls_with_usage"] == 0
     with SessionLocal() as session:

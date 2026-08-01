@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
 from sqlmodel import select
 
-from app.ai.providers.base import GenerationCancelled
+from app.ai.providers.base import GenerationCancelled, GenerationIncomplete
 from app.ai.types import AIProviderResponse
 from app.billing.errors import PaymentValidationError
 from app.database import SessionLocal
@@ -18,7 +19,11 @@ from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_qua
 from app.web_ai.settings import TriagSettings
 from app.web_ai.streaming_policy import StreamingPolicy
 from app.web_ai.triage import AttachmentMetadata, TriageInput, build_execution_plan
-from app.web_api.chat_service import execute_web_turn, prepare_web_turn
+from app.web_api.chat_service import (
+    _parse_verifier_status,
+    execute_web_turn,
+    prepare_web_turn,
+)
 from app.web_api.conversation_continuity import SameThreadContinuityDecision
 from tests.conftest import create_test_user
 from tests.test_web_chat_api import _fund
@@ -481,6 +486,200 @@ def test_phase2_insufficient_evidence_quality_remains_deterministic():
         ),
     )
     assert result.status == "insufficient_evidence"
+
+
+def test_verifier_contract_is_bounded_simple_and_strict(monkeypatch):
+    assert _parse_verifier_status("SUPPORTED") is True
+    assert _parse_verifier_status("UNSUPPORTED") is False
+    for invalid in ("", "supported because...", "UNKNOWN", "{}"):
+        with pytest.raises(ValueError, match="verifier_unavailable"):
+            _parse_verifier_status(invalid)
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    user = create_test_user("phase3-contract", "p3-contract@example.com")
+    _fund(int(user.id))
+    observed: dict[str, object] = {}
+
+    class GenerationProvider:
+        def complete(self, request, route):
+            return _response("Saturn has prominent rings made mostly of ice [S1].")
+
+    class VerifierProvider:
+        def complete(self, request, route):
+            observed["max_output_tokens"] = route.max_output_tokens
+            observed["answer_class"] = request.metadata.get("answer_class")
+            return _response("SUPPORTED")
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain Saturn from the evidence.",
+        request_id="phase3-contract-request", thread_id=None,
+        reply_language="en",
+    )
+    prepared.retrieval_context = replace(
+        _pack(), owner_user_id=int(user.id),
+        request_id="phase3-contract-request",
+    )
+    prepared.swico_tier = "standard"
+    prepared.triag_settings = TriagSettings(
+        enabled=True, shadow_mode=False, answer_guard_enabled=True,
+        verified_streaming_enabled=True, model_claim_verifier_enabled=True,
+    )
+    completed = execute_web_turn(prepared, providers={
+        prepared.route.provider: GenerationProvider(),
+        "verifier": VerifierProvider(),
+    })
+
+    assert observed == {"max_output_tokens": 96, "answer_class": "simple"}
+    assert completed.message.quality
+    assert completed.message.quality["status"] == "grounded"
+
+
+@pytest.mark.parametrize("mode", ["empty", "incomplete"])
+def test_verifier_unavailable_is_terminal_and_incomplete_usage_is_billed_once(
+    monkeypatch, mode,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    user = create_test_user(
+        f"phase3-verifier-{mode}", f"p3-verifier-{mode}@example.com"
+    )
+    _fund(int(user.id))
+    verifier_calls = 0
+
+    class GenerationProvider:
+        def complete(self, request, route):
+            return _response("Saturn has prominent rings made mostly of ice [S1].")
+
+    class VerifierProvider:
+        def complete(self, request, route):
+            nonlocal verifier_calls
+            verifier_calls += 1
+            if mode == "incomplete":
+                raise GenerationIncomplete(
+                    completion_status="incomplete",
+                    incomplete_reason="max_output_tokens",
+                    finish_reason="length",
+                    input_tokens=41,
+                    output_tokens=96,
+                    reasoning_tokens=80,
+                    visible_characters=0,
+                    max_output_tokens=96,
+                    provider_usage_received=True,
+                )
+            response = _response("")
+            response.input_tokens = 41
+            response.output_tokens = 3
+            return response
+
+    request_id = f"phase3-verifier-{mode}-request"
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain Saturn from the evidence.",
+        request_id=request_id, thread_id=None, reply_language="en",
+    )
+    prepared.retrieval_context = replace(
+        _pack(), owner_user_id=int(user.id), request_id=request_id,
+    )
+    prepared.swico_tier = "standard"
+    prepared.triag_settings = TriagSettings(
+        enabled=True, shadow_mode=False, answer_guard_enabled=True,
+        verified_streaming_enabled=True, model_claim_verifier_enabled=True,
+    )
+    completed = execute_web_turn(prepared, providers={
+        prepared.route.provider: GenerationProvider(),
+        "verifier": VerifierProvider(),
+    })
+
+    assert verifier_calls == 1
+    assert completed.message.quality
+    checks = completed.message.quality["checks"]
+    assert any(
+        check["type"] == "model_claim_verifier"
+        and check["status"] == "error"
+        for check in checks
+    )
+    with SessionLocal() as session:
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id
+        )).all()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        verifier = next(
+            stage for stage in stages if stage.stage_name == "verifier"
+        )
+        assert verifier.status == "settled"
+        assert verifier.input_tokens == 41
+        assert verifier.output_tokens == (96 if mode == "incomplete" else 3)
+        if mode == "incomplete":
+            assert json.loads(verifier.safe_metadata_json)[
+                "reasoning_token_count"
+            ] == 80
+        assert charge.status == "settled"
+        assert charge.debited_micros == sum(
+            stage.debited_micros for stage in stages
+        )
+        assert all(stage.status not in {"planned", "reserved", "running"}
+                   for stage in stages)
+
+
+def test_repair_runs_before_the_single_paid_verifier(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args: None
+    )
+    user = create_test_user("phase3-final-verify", "p3-final@example.com")
+    _fund(int(user.id))
+    generation_calls = 0
+    verifier_answers: list[str] = []
+
+    class GenerationProvider:
+        def complete(self, request, route):
+            nonlocal generation_calls
+            generation_calls += 1
+            return _response(
+                "" if generation_calls == 1
+                else "Saturn has prominent rings made mostly of ice [S1]."
+            )
+
+    class VerifierProvider:
+        def complete(self, request, route):
+            verifier_answers.append(str(request.metadata["provider_messages"][-1]))
+            return _response("SUPPORTED")
+
+    request_id = "phase3-final-verifier-request"
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain Saturn from the evidence.",
+        request_id=request_id, thread_id=None, reply_language="en",
+    )
+    prepared.retrieval_context = replace(
+        _pack(), owner_user_id=int(user.id), request_id=request_id,
+    )
+    prepared.swico_tier = "standard"
+    prepared.triag_settings = TriagSettings(
+        enabled=True, shadow_mode=False, answer_guard_enabled=True,
+        verified_streaming_enabled=True, model_claim_verifier_enabled=True,
+        answer_repair_enabled=True,
+    )
+    execute_web_turn(prepared, providers={
+        prepared.route.provider: GenerationProvider(),
+        "verifier": VerifierProvider(),
+    })
+
+    assert generation_calls == 2
+    assert len(verifier_answers) == 1
+    assert "Saturn has prominent rings" in verifier_answers[0]
+    with SessionLocal() as session:
+        verifier_stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id,
+            WebUsageStage.stage_name == "verifier",
+        )).all()
+        assert len(verifier_stages) == 1
+        assert verifier_stages[0].status == "settled"
 
 
 def test_generation_and_repair_settle_parent_exactly_once(monkeypatch):

@@ -42,6 +42,9 @@ class VerifiedGenerator:
         on_delta: Callable[[str], None] | None,
         on_status: Callable[[str], None] | None,
         cancellation_signal: object | None,
+        verify_final: Callable[
+            [str, AnswerQualityResult | None], AnswerQualityResult
+        ] | None = None,
     ) -> GeneratedAnswer:
         def status(value: str) -> None:
             if on_status:
@@ -52,6 +55,8 @@ class VerifiedGenerator:
             response = generate_draft(on_delta)
             _check_cancelled(cancellation_signal)
             quality = verify(response.text) if verify else None
+            if verify_final is not None:
+                quality = verify_final(response.text, quality)
             return GeneratedAnswer(response=response, quality=quality)
 
         status("generating")
@@ -86,6 +91,8 @@ class VerifiedGenerator:
                 )
             else:
                 quality = replace(quality, repair_attempted=True)
+        if verify_final is not None:
+            quality = verify_final(response.text, quality)
         _check_cancelled(cancellation_signal)
         status("responding")
         if on_delta:

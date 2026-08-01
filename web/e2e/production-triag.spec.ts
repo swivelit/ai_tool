@@ -82,6 +82,9 @@ type AuditResult = {
   charged_micro_inr_total: number
   settled_micro_inr_total: number
   charge_status_counts: Record<string, number>
+  usage_stage_status_counts: Record<string, number>
+  active_usage_stage_names: string[]
+  last_terminal_charge_status: 'settled' | 'billing_exempt' | 'released' | 'failed' | null
   paid_usage_stage_count: number
   duplicate_settlement_indicator: boolean
   source_count: number
@@ -102,6 +105,9 @@ type ScenarioDiagnostics = Pick<ProductionSafeScenarioResult,
   | 'quality_status'
   | 'source_kind_counts'
   | 'answer_check_status_counts'
+  | 'usage_stage_status_counts'
+  | 'active_usage_stage_names'
+  | 'last_terminal_charge_status'
   | 'repository_validation_mode'
   | 'phase2_fallback_reason_code'
   | 'cancellation_attempt_http_result'
@@ -378,6 +384,7 @@ async function pollAudit(
   timeoutMilliseconds = 30_000,
 ): Promise<AuditResult> {
   const deadline = Date.now() + timeoutMilliseconds
+  let lastObserved: AuditResult | null = null
   while (Date.now() < deadline) {
     try {
       const response = await api.request<{ results: AuditResult[] }>(
@@ -386,13 +393,21 @@ async function pollAudit(
       )
       const current = response.status === 200
         ? response.data?.results[0] : undefined
+      if (current) lastObserved = current
       if (current && predicate(current)) return current
     } catch {
       // Audit creation and terminal persistence are eventually consistent.
     }
     await new Promise(resolveWait => setTimeout(resolveWait, 500))
   }
-  throw new Error('TRIAG request audit did not reach the expected state')
+  throw new AuditPollingError(lastObserved)
+}
+
+class AuditPollingError extends Error {
+  constructor(readonly lastObserved: AuditResult | null) {
+    super('TRIAG request audit did not reach the expected state')
+    this.name = 'AuditPollingError'
+  }
 }
 
 async function pollTerminalScenarioAudit(
@@ -400,6 +415,7 @@ async function pollTerminalScenarioAudit(
   requestId: string,
   failureCode: ProductionScenarioSubreasonCode,
   timeoutMilliseconds = 45_000,
+  onTimeoutObserved?: (value: AuditResult) => void,
 ): Promise<AuditResult> {
   try {
     return await pollAudit(
@@ -407,7 +423,10 @@ async function pollTerminalScenarioAudit(
       value => value.cancellation_state === 'complete',
       timeoutMilliseconds,
     )
-  } catch {
+  } catch (error) {
+    if (error instanceof AuditPollingError && error.lastObserved) {
+      onTimeoutObserved?.(error.lastObserved)
+    }
     throw new ProductionScenarioHarnessError(failureCode)
   }
 }
@@ -478,6 +497,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   let primaryFailureReason: ProductionPrimaryFailureReasonCode = 'none'
   let uploadId: string | null = null
   let uploadReady = false
+  let rolloutReport: ProductionSafeSummary['rollout_report']
   const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const unsupportedMarker = `ABSENT-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const factualValue = `TRIAG-${runMarker}`
@@ -500,6 +520,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       quality_status:audit.quality_status as ScenarioDiagnostics['quality_status'],
       source_kind_counts:audit.source_kind_counts,
       answer_check_status_counts:audit.answer_check_status_counts,
+      usage_stage_status_counts:audit.usage_stage_status_counts,
+      active_usage_stage_names:audit.active_usage_stage_names,
+      last_terminal_charge_status:audit.last_terminal_charge_status,
       repository_validation_mode:audit.repository_validation_mode,
       phase2_fallback_reason_code:audit.phase2_fallback_reason_code,
     })
@@ -870,6 +893,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       if (!['grounded', 'verified'].includes(result.quality_status)) {
         scenarioFailure('knowledge_library_quality_invalid')
       }
+      await deleteGeneratedKnowledgeDocument(
+        api!, documentId, originalKnowledgeIds,
+      )
+      generatedKnowledgeIds.delete(documentId)
     })
     } else {
       for (const scenario of [
@@ -954,7 +981,8 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         },
       )
       const result = await pollTerminalScenarioAudit(
-        api!, sent.requestId, 'repository_audit_not_ready',
+        api!, sent.requestId, 'repository_audit_not_ready', 45_000,
+        lastObserved => recordAuditDiagnostics('repository_pro', lastObserved),
       )
       recordAuditDiagnostics('repository_pro', result)
       try {
@@ -982,6 +1010,15 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
 
     await runScenario('cancellation_settlement', async () => {
       let cancelled: AuditResult | null = null
+      await selectProductionTier(
+        page, api!, 'pro', 'cancellation_tier_selection_failed',
+      )
+      scenarioDiagnostics.set('cancellation_settlement', {
+        selected_tier:'pro',
+      })
+      const cancellationMarker = (
+        `CANCEL-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+      )
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         freshChatStrategies.set(
           'cancellation_settlement', await scenarioFreshChat(
@@ -990,7 +1027,13 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         )
         const sent = await sendMessage(
           page,
-          `Produce a detailed ${attempt}-part technical review with extensive reasoning and examples. ${runMarker} `.repeat(20),
+          (
+            `Analyze lock-free concurrency, backpressure, fairness, and `
+            + `failure recovery in a hypothetical distributed scheduler. `
+            + `Provide a deep Pro-level technical review with alternatives, `
+            + `trade-offs, and pseudocode. Attempt ${attempt}. `
+            + `${cancellationMarker} `
+          ).repeat(18),
           {
             waitForCompletion:false,
             failureCodes:{
@@ -1004,6 +1047,29 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
             },
           },
         )
+        try {
+          await pollAudit(
+            api!, sent.requestId,
+            value => value.cancellation_state === 'active' && (
+              value.active_usage_stage_names.length > 0
+              || ['reserving', 'reserved', 'exempt_pending'].some(
+                status => (value.charge_status_counts[status] ?? 0) > 0,
+              )
+            ),
+            15_000,
+          )
+        } catch (error) {
+          if (
+            error instanceof AuditPollingError
+            && error.lastObserved?.cancellation_state === 'complete'
+          ) {
+            recordAuditDiagnostics(
+              'cancellation_settlement', error.lastObserved,
+            )
+            continue
+          }
+          scenarioFailure('cancellation_audit_not_ready')
+        }
         const stop = page.getByTestId('stop-generation-button')
         try {
           await expect(stop).toHaveAttribute(
@@ -1016,12 +1082,27 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           ), { timeout:30_000 }).catch(() => null)
           await stop.click()
           const observed = await cancellationResponse
+          let responseStatus = ''
+          if (observed) {
+            try {
+              const body = await observed.json() as { status?: unknown }
+              responseStatus = typeof body.status === 'string'
+                ? body.status : ''
+            } catch {
+              responseStatus = ''
+            }
+          }
           scenarioDiagnostics.set('cancellation_settlement', {
             ...scenarioDiagnostics.get('cancellation_settlement'),
             cancellation_attempt_http_result:observed
               ? observed.status() === 200 ? 'http_200' : 'http_non_200'
               : 'not_observed',
           })
+          if (
+            !observed
+            || observed.status() !== 200
+            || !['stopped', 'cancelling'].includes(responseStatus)
+          ) scenarioFailure('cancellation_not_reached')
         } catch {
           scenarioFailure('cancellation_stop_button_unavailable')
         }
@@ -1046,6 +1127,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           cancelled = result
           break
         }
+        scenarioFailure('cancellation_not_reached')
       }
       if (!cancelled) scenarioFailure('cancellation_not_reached')
       if (
@@ -1058,6 +1140,12 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       if (cancelled.cancellation_failure_count !== 0) {
         scenarioFailure('cancellation_settlement_mismatch')
       }
+      if (
+        cancelled.active_usage_stage_names.length > 0
+        || ['planned', 'reserved', 'running'].some(
+          status => (cancelled.usage_stage_status_counts[status] ?? 0) > 0,
+        )
+      ) scenarioFailure('cancellation_settlement_mismatch')
       if (cancelled.charged_micro_inr_total > 0 && (
         cancelled.charge_status_counts.settled !== 1
         || cancelled.settled_micro_inr_total
@@ -1088,6 +1176,22 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       primaryFailureReason = 'unexpected_harness_failure'
     }
   } finally {
+    if (api && authenticationSucceeded && productionMutationsBegan) {
+      const captured = await api.request<NonNullable<
+        ProductionSafeSummary['rollout_report']
+      >>(
+        'GET', '/api/web/admin/triag-rollout-report',
+      ).catch(() => ({ status:0, data:null }))
+      if (
+        captured.status === 200
+        && captured.data
+        && Array.isArray(captured.data.groups)
+      ) {
+        rolloutReport = captured.data
+      } else if (primaryFailureReason === 'none') {
+        primaryFailureReason = 'unexpected_harness_failure'
+      }
+    }
     if (api && snapshotsCaptured && productionMutationsBegan) {
       if (threadMutationPossible) {
         const currentThreads = await api.request<ThreadList>(
@@ -1196,6 +1300,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     scenarios,
     cleanup,
     primaryFailureReasonCode:primaryFailureReason,
+    rolloutReport,
   })
   await mkdir(artifactRoot, { recursive:true })
   const serialized = `${JSON.stringify(summary, null, 2)}\n`

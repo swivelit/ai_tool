@@ -17,7 +17,7 @@ from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
 from app.models import (
     OpenAIUsageLog, PaymentOrder, UsageCharge, WalletLedger, WebChatMessage,
-    WebChatThread, WebUsagePreferences,
+    WebChatThread, WebUsagePreferences, WebUsageStage,
     UserProfile,
 )
 from app.openai_tracked import (
@@ -452,7 +452,7 @@ def test_provider_failure_releases_complete_reservation(client, monkeypatch):
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
 
 
-def test_generation_incomplete_is_retryable_and_releases_reservation(
+def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
     client, monkeypatch
 ):
     user = create_test_user()
@@ -515,8 +515,18 @@ def test_generation_incomplete_is_retryable_and_releases_reservation(
                 WebChatMessage.role == "assistant",
             )
         ).first()
-        assert charge.status == "released"
-        assert charge.debited_micros == 0
+        assert charge.status == "settled"
+        assert charge.input_tokens == 100
+        assert charge.output_tokens == 320
+        assert charge.usage_source == "actual"
+        stage = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id,
+            WebUsageStage.stage_name == "generation",
+        )).one()
+        assert stage.status == "settled"
+        assert stage.input_tokens == 100
+        assert stage.output_tokens == 320
+        assert charge.debited_micros == stage.debited_micros
         assert user_message.status == "retryable"
         assert assistant is None
         assert get_wallet_summary(session, int(user.id))[
