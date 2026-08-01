@@ -80,6 +80,13 @@ def _insert_request(
     with_charge: bool = True,
     mismatch: bool = False,
     feedback: bool = False,
+    charge_status: str = "settled",
+    reserved_micros: int | None = None,
+    debited_micros: int | None = None,
+    provider_cost_micros: int = 100,
+    billing_exemption_reason: str | None = None,
+    with_stages: bool = True,
+    stage_costs: tuple[int, int, int] = (60, 20, 20),
 ) -> None:
     user = create_test_user(uid, email)
     with SessionLocal() as session:
@@ -137,7 +144,6 @@ def _insert_request(
         session.add(assistant)
         session.flush([assistant])
         if with_charge:
-            provider_cost = 100
             session.add(UsageCharge(
                 request_id=request_id,
                 user_id=int(user.id),
@@ -146,20 +152,29 @@ def _insert_request(
                 provider="private-provider",
                 model="private-model",
                 swico_tier=tier,
-                status="settled",
-                reserved_micros=90 if mismatch else 100,
-                debited_micros=80 if mismatch else 100,
-                provider_cost_micros=provider_cost,
+                status=charge_status,
+                reserved_micros=(
+                    reserved_micros
+                    if reserved_micros is not None
+                    else (90 if mismatch else 100)
+                ),
+                debited_micros=(
+                    debited_micros
+                    if debited_micros is not None
+                    else (80 if mismatch else 100)
+                ),
+                provider_cost_micros=provider_cost_micros,
+                billing_exemption_reason=billing_exemption_reason,
                 input_tokens=30,
                 output_tokens=15,
                 settled_at=created_at + timedelta(seconds=2),
                 created_at=created_at,
             ))
             for order, name, cost, input_count, output_count in (
-                (10, "generation", 60, 21, 9),
-                (20, "verifier", 20, 5, 2),
-                (30, "repair", 20, 4, 1),
-            ):
+                (10, "generation", stage_costs[0], 21, 9),
+                (20, "verifier", stage_costs[1], 5, 2),
+                (30, "repair", stage_costs[2], 4, 1),
+            ) if with_stages else ():
                 session.add(WebUsageStage(
                     user_id=int(user.id),
                     thread_id=thread.id,
@@ -355,6 +370,122 @@ def test_tokens_cost_feedback_failures_cancellation_and_mismatch_aggregate():
     assert metrics["feedback_rate"] == 1.0
     assert metrics["latency_p50_ms"] == 2000
     assert metrics["latency_p95_ms"] == 2000
+
+
+def test_valid_billing_exempt_completion_has_no_settlement_mismatch():
+    _insert_request(
+        uid="exempt-complete",
+        email="exempt-complete@example.com",
+        request_id="report-exempt-complete",
+        created_at=NOW - timedelta(hours=1),
+        charge_status="billing_exempt",
+        reserved_micros=0,
+        debited_micros=0,
+        provider_cost_micros=100,
+        billing_exemption_reason="internal_capability_test",
+    )
+    with SessionLocal() as session:
+        metrics = _group(build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        ))["metrics"]
+    assert metrics["reservation_settlement_mismatch_count"] == 0
+
+
+def test_valid_billing_exempt_released_cancellation_has_no_mismatch():
+    _insert_request(
+        uid="exempt-cancelled",
+        email="exempt-cancelled@example.com",
+        request_id="report-exempt-cancelled",
+        created_at=NOW - timedelta(hours=1),
+        user_status="cancelled",
+        assistant_status="cancelled",
+        charge_status="released",
+        reserved_micros=0,
+        debited_micros=0,
+        provider_cost_micros=0,
+        billing_exemption_reason="internal_capability_test",
+        with_stages=False,
+    )
+    with SessionLocal() as session:
+        metrics = _group(build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        ))["metrics"]
+    assert metrics["reservation_settlement_mismatch_count"] == 0
+    assert metrics["cancellation_failure_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("reserved_micros", "debited_micros", "provider_cost_micros", "reason"),
+    [
+        (1, 0, 100, "internal_capability_test"),
+        (0, 1, 100, "internal_capability_test"),
+        (0, 0, 0, "internal_capability_test"),
+        (0, 0, 100, None),
+    ],
+)
+def test_invalid_billing_exempt_accounting_still_fails(
+    reserved_micros: int,
+    debited_micros: int,
+    provider_cost_micros: int,
+    reason: str | None,
+):
+    _insert_request(
+        uid=f"invalid-exempt-{reserved_micros}-{debited_micros}-{reason}",
+        email=(
+            f"invalid-exempt-{reserved_micros}-{debited_micros}-"
+            f"{reason}@example.com"
+        ),
+        request_id=(
+            f"report-invalid-exempt-{reserved_micros}-{debited_micros}-"
+            f"{reason}"
+        ),
+        created_at=NOW - timedelta(hours=1),
+        charge_status="billing_exempt",
+        reserved_micros=reserved_micros,
+        debited_micros=debited_micros,
+        provider_cost_micros=provider_cost_micros,
+        billing_exemption_reason=reason,
+    )
+    with SessionLocal() as session:
+        metrics = _group(build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        ))["metrics"]
+    assert metrics["reservation_settlement_mismatch_count"] == 1
+
+
+def test_billing_exempt_stage_cost_disagreement_still_fails():
+    _insert_request(
+        uid="exempt-stage-mismatch",
+        email="exempt-stage-mismatch@example.com",
+        request_id="report-exempt-stage-mismatch",
+        created_at=NOW - timedelta(hours=1),
+        charge_status="billing_exempt",
+        reserved_micros=0,
+        debited_micros=0,
+        provider_cost_micros=100,
+        billing_exemption_reason="internal_capability_test",
+        stage_costs=(60, 20, 10),
+    )
+    with SessionLocal() as session:
+        metrics = _group(build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        ))["metrics"]
+    assert metrics["reservation_settlement_mismatch_count"] == 1
+
+
+def test_ordinary_non_exempt_settlement_mismatch_still_fails():
+    _insert_request(
+        uid="ordinary-mismatch",
+        email="ordinary-mismatch@example.com",
+        request_id="report-ordinary-mismatch",
+        created_at=NOW - timedelta(hours=1),
+        mismatch=True,
+    )
+    with SessionLocal() as session:
+        metrics = _group(build_rollout_report(
+            session, window_hours=24, settings=_settings(), now=NOW
+        ))["metrics"]
+    assert metrics["reservation_settlement_mismatch_count"] == 1
 
 
 def test_report_never_returns_sensitive_content_or_identity():

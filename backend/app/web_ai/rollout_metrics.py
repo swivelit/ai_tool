@@ -790,34 +790,52 @@ def build_rollout_report(
                 output_tokens += _bounded_nonnegative(charge_output)
                 if charge_status == "settled":
                     settled_micros += _bounded_nonnegative(debited)
-                stage_cost = sum(
+                paid_stage_costs = [
                     _bounded_nonnegative(stage[2])
                     for stage in stages
                     if (
                         str(stage[0]) in _PROVIDER_STAGES
                         and str(stage[1]) == "settled"
+                        and _bounded_nonnegative(stage[2]) > 0
                     )
-                )
-                mismatch = (
-                    charge_status not in {"settled", "released"}
-                    or (
-                        charge_status == "settled"
-                        and not exemption
-                        and _bounded_nonnegative(debited)
-                        != _bounded_nonnegative(provider_cost)
+                ]
+                stage_cost = sum(paid_stage_costs)
+                reserved_micros = _bounded_nonnegative(reserved)
+                debited_micros = _bounded_nonnegative(debited)
+                provider_cost_micros = _bounded_nonnegative(provider_cost)
+                exemption_present = bool(str(exemption or "").strip())
+                if charge_status == "billing_exempt":
+                    mismatch = (
+                        not exemption_present
+                        or reserved_micros != 0
+                        or debited_micros != 0
+                        or provider_cost_micros == 0
+                        or (
+                            bool(paid_stage_costs)
+                            and stage_cost != provider_cost_micros
+                        )
                     )
-                    or (
-                        charge_status == "settled"
-                        and not exemption
-                        and _bounded_nonnegative(provider_cost)
-                        > _bounded_nonnegative(reserved)
+                elif charge_status == "released":
+                    mismatch = (
+                        exemption_present
+                        and (
+                            reserved_micros != 0
+                            or debited_micros != 0
+                            or provider_cost_micros != 0
+                            or bool(paid_stage_costs)
+                        )
                     )
-                    or (
-                        charge_status == "settled"
-                        and stage_cost > 0
-                        and stage_cost != _bounded_nonnegative(provider_cost)
+                elif charge_status == "settled" and not exemption_present:
+                    mismatch = (
+                        debited_micros != provider_cost_micros
+                        or provider_cost_micros > reserved_micros
+                        or (
+                            bool(paid_stage_costs)
+                            and stage_cost != provider_cost_micros
+                        )
                     )
-                )
+                else:
+                    mismatch = True
                 mismatch_count += int(mismatch)
                 if (
                     fact["assistant_status"] == "cancelled"

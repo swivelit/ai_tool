@@ -66,7 +66,7 @@ def get_or_create_usage_stage(
     status: str = "planned",
     safe_metadata: Mapping[str, object] | None = None,
 ) -> WebUsageStage:
-    """Owner-scoped idempotent constructor reserved for future phases."""
+    """Return an owner-scoped idempotent provider-stage accounting row."""
 
     normalized_stage = str(stage_name or "").strip().lower()
     if not normalized_stage or len(normalized_stage) > 32:

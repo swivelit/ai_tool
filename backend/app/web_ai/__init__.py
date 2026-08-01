@@ -1,7 +1,7 @@
-"""Phase 0/1 foundations for the future website TRIAG-RAG runtime.
+"""TRIAG-RAG planning, retrieval, verification, and rollout components.
 
-This package is deliberately provider-free.  The production website continues
-to use ``app.web_api.request_coordinator`` and ``app.ai.router``.
+The package extends the existing website flow; it does not replace
+``app.web_api.request_coordinator`` or ``app.ai.router``.
 """
 
 from .execution_plan import ExecutionPlan
