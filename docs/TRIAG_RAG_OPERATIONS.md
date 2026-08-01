@@ -1,5 +1,8 @@
 # TRIAG-RAG operations
 
+Release acceptance metadata is recorded in
+[TRIAG_RAG_RELEASE_CLOSEOUT.md](TRIAG_RAG_RELEASE_CLOSEOUT.md).
+
 ## Runtime status
 
 Startup validates the two booleans, bounded policy version, and built-in tier
