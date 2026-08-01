@@ -8,16 +8,20 @@ import {
   bootstrapReasonCode,
   boundedCombinedFailure,
   buildProductionTriagSummary,
+  freshChatStateReason,
   greetingAuditSubreason,
   loginObservationReasonCode,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   productionCapabilityReasonCode,
   pollTerminalGreetingAudit,
   resolveProductionCleanup,
+  stabilizeFreshChat,
   workspaceShellReasonCode,
   type ProductionBootstrap,
   type ProductionSafeScenarioResult,
   type GreetingSubreasonCode,
+  type FreshChatProbe,
+  type FreshChatState,
 } from './productionTriagSafety'
 import type { DeployedApi } from './deployedSafety'
 
@@ -36,6 +40,8 @@ test('production test and GitHub command use matching 20-minute timeouts', () =>
     'npx playwright test "$test_file" --project=chromium --workers=1 --timeout=1200000',
   )
   expect(workflow).toContain('timeout-minutes: 30')
+  expect(workflow).toContain('subreason=${subreason}')
+  expect(workflow).toContain('prerequisite=${prerequisite}')
 })
 
 test('bootstrap status maps to bounded production preflight reasons', () => {
@@ -154,17 +160,127 @@ test('combined failure preserves primary and real cleanup failures', () => {
 
 test('isolated greeting payload has no previous thread, attachments, or repository', () => {
   expect(() => assertIsolatedGreetingPayload({
-    request_id:requestId, message:'redacted', attachment_ids:[], input_mode:'text',
+    request_id:requestId, message:'redacted', thread_id:null,
+    repository_id:'', attachment_ids:[], input_mode:'text',
+  })).not.toThrow()
+  expect(() => assertIsolatedGreetingPayload({
+    request_id:requestId, message:'redacted', input_mode:'text',
   })).not.toThrow()
   for (const payload of [
     { request_id:requestId, thread_id:'old-thread' },
     { request_id:requestId, attachment_ids:['old-upload'] },
+    { request_id:requestId, attachment_ids:null },
     { request_id:requestId, repository_id:'old-repository' },
+    { request_id:requestId, continue_message_id:'old-continuation' },
+    { request_id:requestId, edit_message_id:'old-edit' },
+    { request_id:requestId, regenerate_message_id:'old-regeneration' },
   ]) {
     expect(() => assertIsolatedGreetingPayload(payload)).toThrowError(
       expect.objectContaining({ reasonCode:'greeting_payload_not_isolated' }),
     )
   }
+})
+
+const readyFreshChatState: FreshChatState = {
+  emptyStateHeadingVisible:true,
+  conversationVisible:true,
+  composerVisible:true,
+  textboxVisible:true,
+  textboxEnabled:true,
+  textboxEmpty:true,
+  messageCount:0,
+  attachmentCount:0,
+  repositoryCount:0,
+}
+
+function freshChatProbe(options: {
+  buttonAvailable?: boolean
+  clickError?: boolean
+  states?: Array<FreshChatState | Error>
+} = {}): FreshChatProbe & { clicks: ReturnType<typeof vi.fn> } {
+  const states = options.states ?? [readyFreshChatState]
+  let stateIndex = 0
+  const clicks = vi.fn(async () => {
+    if (options.clickError) throw new Error('private click error')
+  })
+  return {
+    clicks,
+    prepareNewChatButton:vi.fn(async () => options.buttonAvailable ?? true),
+    clickNewChat:clicks,
+    readState:vi.fn(async () => {
+      const state = states[Math.min(stateIndex, states.length - 1)]
+      stateIndex += 1
+      if (state instanceof Error) throw state
+      return state
+    }),
+  }
+}
+
+test('visible heading, empty textbox, and empty conversation pass fresh chat', async () => {
+  const probe = freshChatProbe()
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBeUndefined()
+  expect(probe.clicks).toHaveBeenCalledTimes(1)
+})
+
+test('temporarily stale old message is polled until cleared', async () => {
+  const probe = freshChatProbe({ states:[
+    { ...readyFreshChatState, messageCount:1 },
+    readyFreshChatState,
+  ] })
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:30, pollMilliseconds:1,
+    retryClickAfterMilliseconds:20,
+  })).resolves.toBeUndefined()
+  expect(probe.readState).toHaveBeenCalledTimes(2)
+  expect(probe.clicks).toHaveBeenCalledTimes(1)
+})
+
+test('fresh-chat stabilization retries its click at most once', async () => {
+  const probe = freshChatProbe({ states:[
+    { ...readyFreshChatState, messageCount:1 },
+  ] })
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:8, pollMilliseconds:1,
+    retryClickAfterMilliseconds:2,
+  })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_messages_not_cleared',
+  })
+  expect(probe.clicks).toHaveBeenCalledTimes(2)
+})
+
+test('missing New chat button and failed click map safely', async () => {
+  await expect(stabilizeFreshChat(freshChatProbe({
+    buttonAvailable:false,
+  }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_button_unavailable',
+  })
+  await expect(stabilizeFreshChat(freshChatProbe({
+    clickError:true,
+  }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
+    reasonCode:'fresh_chat_click_failed',
+  })
+})
+
+test.each([
+  [{ textboxEmpty:false }, 'fresh_chat_textbox_not_empty'],
+  [{ messageCount:1 }, 'fresh_chat_messages_not_cleared'],
+  [{ attachmentCount:1 }, 'fresh_chat_attachments_not_cleared'],
+  [{ repositoryCount:1 }, 'fresh_chat_repository_not_cleared'],
+] as const)('fresh-chat state maps to %s safely', (change, reasonCode) => {
+  const state = { ...readyFreshChatState, ...change }
+  expect(freshChatStateReason(state)).toBe(reasonCode)
+  expect(freshChatStateReason(state)).not.toBe('greeting_payload_not_isolated')
+})
+
+test('fresh-chat shell and composer failures remain distinct from payload isolation', () => {
+  expect(freshChatStateReason({
+    ...readyFreshChatState, emptyStateHeadingVisible:false,
+  })).toBe('fresh_chat_shell_not_ready')
+  expect(freshChatStateReason({
+    ...readyFreshChatState, textboxEnabled:false,
+  })).toBe('fresh_chat_composer_not_ready')
 })
 
 test('immediate audit 404 and active state are polled until terminal', async () => {
@@ -228,6 +344,16 @@ test('greeting starts fresh and captures its request before rendering waits', ()
   expect(greeting).toContain('assertIsolatedGreetingPayload(payload)')
   expect(spec.indexOf('options.onRequestCaptured?.(requestId, payload)'))
     .toBeLessThan(spec.indexOf('await expect(assistant).toBeVisible'))
+  expect(greeting).toContain("'fresh_chat_ready'")
+  expect(greeting.slice(0, greeting.indexOf('let before'))).not.toContain(
+    'greeting_payload_not_isolated',
+  )
+  const safety = readFileSync(
+    resolve(process.cwd(), 'src/testing/productionTriagSafety.ts'), 'utf8',
+  )
+  expect(safety).toContain("page.getByTestId('conversation')")
+  expect(safety).toContain("conversation.locator('article.message')")
+  expect(safety).toContain("const composerContainer = composer.locator('..')")
 })
 
 test('request ID survives assistant rendering failure in the safe summary', () => {
@@ -247,8 +373,32 @@ test('request ID survives assistant rendering failure in the safe summary', () =
   })
 })
 
+test('request UUID is retained before captured payload isolation fails', () => {
+  const summary = buildProductionTriagSummary({
+    preflight:{ status:'passed', reason_code:'preflight_passed' },
+    scenarios:[{
+      scenario:'deterministic_greeting', status:'failed',
+      request_ids:[requestId], reason_code:'deterministic_greeting_failed',
+      subreason_code:'greeting_payload_not_isolated',
+    }],
+    cleanup:{ status:'complete', reason_codes:[] },
+    primaryFailureReasonCode:'deterministic_greeting_failed',
+  })
+  expect(summary.scenarios[0].request_ids).toEqual([requestId])
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec.indexOf("recordRequest('deterministic_greeting', requestId)"))
+    .toBeLessThan(spec.indexOf('assertIsolatedGreetingPayload(payload)'))
+})
+
 test('all bounded greeting subreasons are retained without private detail', () => {
   const reasons: GreetingSubreasonCode[] = [
+    'fresh_chat_button_unavailable', 'fresh_chat_click_failed',
+    'fresh_chat_shell_not_ready', 'fresh_chat_composer_not_ready',
+    'fresh_chat_textbox_not_empty', 'fresh_chat_messages_not_cleared',
+    'fresh_chat_attachments_not_cleared',
+    'fresh_chat_repository_not_cleared', 'fresh_chat_state_timeout',
     'greeting_request_not_observed', 'greeting_request_id_missing',
     'greeting_payload_not_isolated', 'greeting_assistant_not_visible',
     'greeting_assistant_not_complete', 'greeting_response_empty',
@@ -308,18 +458,32 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
     provider:'private-provider',
     model:'private-model',
   } as ProductionSafeScenarioResult
+  const freshScenario = {
+    scenario:'deterministic_greeting',
+    status:'failed',
+    request_ids:[],
+    reason_code:'deterministic_greeting_failed',
+    subreason_code:'fresh_chat_messages_not_cleared',
+    selector_error:'private DOM text',
+    message:'private greeting',
+    token:'private-token',
+  } as ProductionSafeScenarioResult
   const summary = buildProductionTriagSummary({
     preflight:{ status:'passed', reason_code:'preflight_passed' },
-    scenarios:[scenario],
+    scenarios:[scenario, freshScenario],
     cleanup:{ status:'incomplete', reason_codes:['upload_delete_failed'] },
     primaryFailureReasonCode:'supported_pdf_failed',
   })
   const serialized = JSON.stringify(summary)
   expect(summary.scenarios[0].request_ids).toEqual([requestId])
+  expect(summary.scenarios[1]).toMatchObject({
+    request_ids:[], subreason_code:'fresh_chat_messages_not_cleared',
+  })
   for (const forbidden of [
     'person@example.test', 'secret-password', 'secret-token', 'raw message',
     'raw answer', 'private.pdf', 'page 1', 'private-provider', 'private-model',
     'wallet-private-id', 'private.example.test', 'private-header-value',
+    'private DOM text', 'private greeting', 'private-token',
   ]) {
     expect(serialized).not.toContain(forbidden)
   }

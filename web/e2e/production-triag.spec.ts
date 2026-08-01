@@ -18,10 +18,12 @@ import {
   GreetingHarnessError,
   isProductionRequestId,
   loginProductionTriag,
+  playwrightFreshChatProbe,
   pollTerminalGreetingAudit,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   ProductionPreflightError,
   resolveProductionCleanup,
+  stabilizeFreshChat,
   type ProductionCleanup,
   type ProductionCleanupReasonCode,
   type ProductionPreflightReasonCode,
@@ -214,22 +216,7 @@ async function openSidebar(page: Page): Promise<void> {
 }
 
 async function newChat(page: Page): Promise<void> {
-  await openSidebar(page)
-  await page.getByRole('button', { name:'New chat' }).click()
-  const composer = page.getByTestId('composer')
-  const textbox = page.getByLabel('Message Swico')
-  await expect(composer).toBeVisible({ timeout:30_000 })
-  await expect(composer).toBeEnabled({ timeout:30_000 })
-  await expect(textbox).toBeVisible({ timeout:30_000 })
-  await expect(textbox).toBeEnabled({ timeout:30_000 })
-  await expect(textbox).toHaveValue('', { timeout:30_000 })
-  await expect(page.locator('.message')).toHaveCount(0, { timeout:30_000 })
-  await expect(page.locator('.attachment-chip')).toHaveCount(0, {
-    timeout:30_000,
-  })
-  await expect(page.getByLabel('Active code repository')).toHaveCount(0, {
-    timeout:30_000,
-  })
+  await stabilizeFreshChat(playwrightFreshChatProbe(page))
 }
 
 async function sendMessage(
@@ -337,7 +324,7 @@ async function pollAudit(
 async function safeScreenshot(
   page: Page,
   directory: string,
-  scenario: ProductionScenarioName,
+  scenario: ProductionScenarioName | 'fresh_chat_ready',
 ): Promise<void> {
   await mkdir(directory, { recursive:true })
   await page.screenshot({
@@ -483,11 +470,10 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     snapshotsCaptured = true
 
     await runScenario('deterministic_greeting', async () => {
-      try {
-        await newChat(page)
-      } catch {
-        throw new GreetingHarnessError('greeting_payload_not_isolated')
-      }
+      await newChat(page)
+      await safeScreenshot(
+        page, screenshotDirectory, 'fresh_chat_ready',
+      )
       let before: { available_micros: number } | null = null
       try {
         const wallet = await api!.request<{ available_micros: number }>(

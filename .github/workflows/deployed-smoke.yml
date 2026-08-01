@@ -162,7 +162,10 @@ jobs:
           process.stdout.write('\n### Render log request IDs\n\n')
           for (const item of summary.scenarios || []) {
             const ids = Array.isArray(item.request_ids) ? item.request_ids : []
-            process.stdout.write(`- ${item.scenario}: ${ids.length ? ids.join(', ') : 'none'}\n`)
+            const reason = item.reason_code || 'none'
+            const subreason = item.subreason_code || 'none'
+            const prerequisite = item.prerequisite_reason_code || 'none'
+            process.stdout.write(`- ${item.scenario}: status=${item.status || 'unknown'}, reason=${reason}, subreason=${subreason}, prerequisite=${prerequisite}, request_ids=${ids.length ? ids.join(', ') : 'none'}\n`)
           }
           NODE
           fi

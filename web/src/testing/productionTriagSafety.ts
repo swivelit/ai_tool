@@ -63,7 +63,19 @@ export type ProductionScenarioReasonCode =
   | 'repository_pro_failed'
   | 'cancellation_settlement_failed'
 
+export type FreshChatReasonCode =
+  | 'fresh_chat_button_unavailable'
+  | 'fresh_chat_click_failed'
+  | 'fresh_chat_shell_not_ready'
+  | 'fresh_chat_composer_not_ready'
+  | 'fresh_chat_textbox_not_empty'
+  | 'fresh_chat_messages_not_cleared'
+  | 'fresh_chat_attachments_not_cleared'
+  | 'fresh_chat_repository_not_cleared'
+  | 'fresh_chat_state_timeout'
+
 export type GreetingSubreasonCode =
+  | FreshChatReasonCode
   | 'greeting_request_not_observed'
   | 'greeting_request_id_missing'
   | 'greeting_payload_not_isolated'
@@ -151,6 +163,144 @@ export type GreetingAuditState = {
   orphaned_active_reservation: boolean
 }
 
+export type FreshChatState = {
+  emptyStateHeadingVisible: boolean
+  conversationVisible: boolean
+  composerVisible: boolean
+  textboxVisible: boolean
+  textboxEnabled: boolean
+  textboxEmpty: boolean
+  messageCount: number
+  attachmentCount: number
+  repositoryCount: number
+}
+
+export type FreshChatProbe = {
+  prepareNewChatButton(timeoutMilliseconds: number): Promise<boolean>
+  clickNewChat(): Promise<void>
+  readState(): Promise<FreshChatState>
+}
+
+export function freshChatStateReason(
+  state: FreshChatState,
+): FreshChatReasonCode | null {
+  if (!state.emptyStateHeadingVisible || !state.conversationVisible) {
+    return 'fresh_chat_shell_not_ready'
+  }
+  if (
+    !state.composerVisible
+    || !state.textboxVisible
+    || !state.textboxEnabled
+  ) return 'fresh_chat_composer_not_ready'
+  if (!state.textboxEmpty) return 'fresh_chat_textbox_not_empty'
+  if (state.messageCount !== 0) return 'fresh_chat_messages_not_cleared'
+  if (state.attachmentCount !== 0) {
+    return 'fresh_chat_attachments_not_cleared'
+  }
+  if (state.repositoryCount !== 0) {
+    return 'fresh_chat_repository_not_cleared'
+  }
+  return null
+}
+
+export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
+  const button = page.getByRole('button', { name:'New chat' })
+  const conversation = page.getByTestId('conversation')
+  const composer = page.getByTestId('composer')
+  const composerContainer = composer.locator('..')
+  const textbox = composer.getByRole('textbox', { name:'Message Swico' })
+  return {
+    async prepareNewChatButton(timeoutMilliseconds) {
+      try {
+        if (!await button.isVisible()) {
+          const trigger = page.getByRole('button', { name:'Open sidebar' })
+          if (await trigger.isVisible()) await trigger.click()
+        }
+        await button.waitFor({
+          state:'visible', timeout:Math.min(5_000, timeoutMilliseconds),
+        })
+        return true
+      } catch {
+        return false
+      }
+    },
+    async clickNewChat() {
+      await button.click({ timeout:5_000 })
+    },
+    async readState() {
+      return {
+        emptyStateHeadingVisible:await conversation.getByRole('heading', {
+          name:'How can I help?', exact:true,
+        }).isVisible(),
+        conversationVisible:await conversation.isVisible(),
+        composerVisible:await composer.isVisible(),
+        textboxVisible:await textbox.isVisible(),
+        textboxEnabled:await textbox.isEnabled(),
+        textboxEmpty:(await textbox.inputValue()) === '',
+        messageCount:await conversation.locator('article.message').count(),
+        attachmentCount:await composerContainer.locator(
+          '.attachment-chip:not(.repository-chip)',
+        ).count(),
+        repositoryCount:await composerContainer.locator(
+          '[aria-label="Active code repository"]',
+        ).count(),
+      }
+    },
+  }
+}
+
+export async function stabilizeFreshChat(
+  probe: FreshChatProbe,
+  options: {
+    timeoutMilliseconds?: number
+    pollMilliseconds?: number
+    retryClickAfterMilliseconds?: number
+  } = {},
+): Promise<void> {
+  const timeoutMilliseconds = Math.min(
+    45_000, Math.max(1, options.timeoutMilliseconds ?? 45_000),
+  )
+  const pollMilliseconds = Math.max(1, options.pollMilliseconds ?? 250)
+  const start = Date.now()
+  const deadline = start + timeoutMilliseconds
+  const retryAt = start + Math.min(
+    options.retryClickAfterMilliseconds ?? 15_000,
+    Math.max(1, Math.floor(timeoutMilliseconds / 2)),
+  )
+  if (!await probe.prepareNewChatButton(Math.max(1, deadline - Date.now()))) {
+    throw new GreetingHarnessError('fresh_chat_button_unavailable')
+  }
+  try {
+    await probe.clickNewChat()
+  } catch {
+    throw new GreetingHarnessError('fresh_chat_click_failed')
+  }
+  let retriedClick = false
+  let lastReason: FreshChatReasonCode = 'fresh_chat_state_timeout'
+  while (Date.now() < deadline) {
+    try {
+      const reasonCode = freshChatStateReason(await probe.readState())
+      if (!reasonCode) return
+      lastReason = reasonCode
+    } catch {
+      lastReason = 'fresh_chat_state_timeout'
+    }
+    if (!retriedClick && Date.now() >= retryAt) {
+      try {
+        await probe.clickNewChat()
+      } catch {
+        throw new GreetingHarnessError('fresh_chat_click_failed')
+      }
+      retriedClick = true
+    }
+    await new Promise(resolveWait => setTimeout(
+      resolveWait,
+      Math.min(pollMilliseconds, Math.max(1, deadline - Date.now())),
+    ))
+  }
+  throw new GreetingHarnessError(lastReason)
+}
+
 const REQUEST_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isProductionRequestId(value: unknown): value is string {
@@ -162,13 +312,21 @@ export function assertIsolatedGreetingPayload(payload: unknown): void {
     throw new GreetingHarnessError('greeting_payload_not_isolated')
   }
   const value = payload as Record<string, unknown>
+  const identifiers = [
+    value.thread_id,
+    value.repository_id,
+    value.continue_message_id,
+    value.edit_message_id,
+    value.regenerate_message_id,
+  ]
+  const identifiersIsolated = identifiers.every(identifier => (
+    identifier === undefined || identifier === null || identifier === ''
+  ))
   const attachments = value.attachment_ids
   if (
-    'thread_id' in value
-    || 'repository_id' in value
-    || (attachments !== undefined && (
-      !Array.isArray(attachments) || attachments.length > 0
-    ))
+    !identifiersIsolated
+    || (attachments !== undefined
+      && (!Array.isArray(attachments) || attachments.length > 0))
   ) throw new GreetingHarnessError('greeting_payload_not_isolated')
 }
 
