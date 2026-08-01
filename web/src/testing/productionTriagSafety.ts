@@ -9,6 +9,41 @@ export const PRODUCTION_TRIAG_TEST_TIMEOUT_MS = 20 * 60 * 1000
 export const PRODUCTION_TRIAG_AUTH_TIMEOUT_MS = 90 * 1000
 export const PRODUCTION_TRIAG_UNKNOWN_REQUEST_ID = '00000000-0000-4000-8000-000000000000'
 
+export function productionTriagPdfFixture(factualValue: string): Buffer {
+  const escaped = factualValue.replaceAll('\\', '\\\\')
+    .replaceAll('(', '\\(').replaceAll(')', '\\)')
+  const stream = `BT /F1 12 Tf 72 720 Td (Acceptance fact: ${escaped}) Tj ET`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let body = '%PDF-1.4\n'
+  const offsets = [0]
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(body))
+    body += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`
+  }
+  const xrefOffset = Buffer.byteLength(body)
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  body += offsets.slice(1).map(value => (
+    `${String(value).padStart(10, '0')} 00000 n \n`
+  )).join('')
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  return Buffer.from(body)
+}
+
+export function supportedPdfUploadStatusSubreason(
+  status: number,
+): ProductionScenarioSubreasonCode | null {
+  if (status === 201) return null
+  if (status >= 400 && status <= 499) return 'supported_pdf_upload_http_4xx'
+  if (status >= 500 && status <= 599) return 'supported_pdf_upload_http_5xx'
+  return 'supported_pdf_upload_response_invalid'
+}
+
 export type ProductionPreflightReasonCode =
   | 'login_form_unavailable'
   | 'firebase_login_rejected'
@@ -82,8 +117,9 @@ export type FreshChatStrategy =
   | 'sidebar_button'
   | 'keyboard_shortcut'
 
-export type GreetingSubreasonCode =
+export type ProductionScenarioSubreasonCode =
   | FreshChatReasonCode
+  | 'scenario_artifact_capture_failed'
   | 'greeting_request_not_observed'
   | 'greeting_request_id_missing'
   | 'greeting_payload_not_isolated'
@@ -97,9 +133,79 @@ export type GreetingSubreasonCode =
   | 'greeting_nonzero_charge'
   | 'greeting_paid_stage_detected'
   | 'greeting_duplicate_settlement'
+  | 'greeting_harness_failure'
+  | 'supported_pdf_fresh_chat_failed'
+  | 'supported_pdf_upload_input_missing'
+  | 'supported_pdf_upload_request_not_observed'
+  | 'supported_pdf_upload_http_4xx'
+  | 'supported_pdf_upload_http_5xx'
+  | 'supported_pdf_upload_response_invalid'
+  | 'supported_pdf_upload_id_missing'
+  | 'supported_pdf_attachment_not_ready'
+  | 'supported_pdf_chat_request_not_observed'
+  | 'supported_pdf_request_id_missing'
+  | 'supported_pdf_assistant_not_visible'
+  | 'supported_pdf_assistant_not_complete'
+  | 'supported_pdf_sources_not_visible'
+  | 'supported_pdf_audit_not_ready'
+  | 'supported_pdf_document_source_missing'
+  | 'supported_pdf_retrieval_not_sufficient'
+  | 'supported_pdf_quality_not_grounded'
+  | 'supported_pdf_harness_failure'
+  | 'unsupported_pdf_chat_request_not_observed'
+  | 'unsupported_pdf_request_id_missing'
+  | 'unsupported_pdf_assistant_not_visible'
+  | 'unsupported_pdf_assistant_not_complete'
+  | 'unsupported_pdf_audit_not_ready'
+  | 'unsupported_pdf_quality_invalid'
+  | 'unsupported_pdf_refusal_not_visible'
+  | 'unsupported_pdf_harness_failure'
+  | 'knowledge_library_setup_failed'
+  | 'knowledge_library_indexing_failed'
+  | 'knowledge_library_fresh_chat_failed'
+  | 'knowledge_library_chat_request_not_observed'
+  | 'knowledge_library_request_id_missing'
+  | 'knowledge_library_assistant_not_visible'
+  | 'knowledge_library_assistant_not_complete'
+  | 'knowledge_library_audit_not_ready'
+  | 'knowledge_library_source_missing'
+  | 'knowledge_library_quality_invalid'
+  | 'repository_fresh_chat_failed'
+  | 'repository_tier_selection_failed'
+  | 'repository_upload_input_missing'
+  | 'repository_upload_request_not_observed'
+  | 'repository_upload_http_failure'
+  | 'repository_not_ready'
+  | 'repository_chat_request_not_observed'
+  | 'repository_request_id_missing'
+  | 'repository_assistant_not_visible'
+  | 'repository_assistant_not_complete'
+  | 'repository_quality_not_visible'
+  | 'repository_static_only_label_missing'
+  | 'repository_audit_not_ready'
+  | 'repository_source_missing'
+  | 'repository_quality_invalid'
+  | 'repository_harness_failure'
+  | 'cancellation_fresh_chat_failed'
+  | 'cancellation_request_not_observed'
+  | 'cancellation_request_id_missing'
+  | 'cancellation_assistant_not_visible'
+  | 'cancellation_stop_button_unavailable'
+  | 'cancellation_not_reached'
+  | 'cancellation_audit_not_ready'
+  | 'cancellation_duplicate_charge'
+  | 'cancellation_orphaned_reservation'
+  | 'cancellation_settlement_mismatch'
+  | 'cancellation_harness_failure'
+
+export type GreetingSubreasonCode = Extract<
+  ProductionScenarioSubreasonCode,
+  FreshChatReasonCode | `greeting_${string}`
+>
 
 export type ProductionPrerequisiteReasonCode =
-  'deterministic_greeting_prerequisite_failed'
+  | 'deterministic_greeting_prerequisite_failed'
+  | 'supported_pdf_prerequisite_failed'
 
 export type ProductionPrimaryFailureReasonCode =
   | Exclude<ProductionPreflightReasonCode, 'preflight_passed'>
@@ -115,8 +221,9 @@ export type ProductionSafeScenarioResult = {
   status: 'passed' | 'failed' | 'not_run'
   request_ids: string[]
   reason_code?: ProductionScenarioReasonCode
-  subreason_code?: GreetingSubreasonCode
+  subreason_code?: ProductionScenarioSubreasonCode
   fresh_chat_strategy?: FreshChatStrategy
+  fresh_chat_reason_code?: FreshChatReasonCode
   prerequisite_reason_code?: ProductionPrerequisiteReasonCode
 }
 
@@ -155,10 +262,27 @@ export class ProductionPreflightError extends Error {
   }
 }
 
-export class GreetingHarnessError extends Error {
-  constructor(readonly reasonCode: GreetingSubreasonCode) {
-    super(`Deterministic greeting failed: ${reasonCode}`)
+export class ProductionScenarioHarnessError extends Error {
+  constructor(
+    readonly reasonCode: ProductionScenarioSubreasonCode,
+    readonly freshChatReasonCode?: FreshChatReasonCode,
+  ) {
+    super(`Production scenario failed: ${reasonCode}`)
+    this.name = 'ProductionScenarioHarnessError'
+  }
+}
+
+export class GreetingHarnessError extends ProductionScenarioHarnessError {
+  constructor(reasonCode: GreetingSubreasonCode) {
+    super(reasonCode)
     this.name = 'GreetingHarnessError'
+  }
+}
+
+export class FreshChatHarnessError extends ProductionScenarioHarnessError {
+  constructor(readonly reasonCode: FreshChatReasonCode) {
+    super(reasonCode, reasonCode)
+    this.name = 'FreshChatHarnessError'
   }
 }
 
@@ -346,7 +470,7 @@ export async function stabilizeFreshChat(
       navigationAttempts += 1
       if ('reasonCode' in navigation) {
         if (!lastStrategy) {
-          throw new GreetingHarnessError(navigation.reasonCode)
+          throw new FreshChatHarnessError(navigation.reasonCode)
         }
       } else {
         lastStrategy = navigation.strategy
@@ -364,7 +488,7 @@ export async function stabilizeFreshChat(
       Math.min(pollMilliseconds, Math.max(1, deadline - Date.now())),
     ))
   }
-  throw new GreetingHarnessError(lastReason)
+  throw new FreshChatHarnessError(lastReason)
 }
 
 const REQUEST_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -555,6 +679,8 @@ export function buildProductionTriagSummary(input: {
       ? { subreason_code:item.subreason_code } : {}),
     ...(item.fresh_chat_strategy
       ? { fresh_chat_strategy:item.fresh_chat_strategy } : {}),
+    ...(item.fresh_chat_reason_code
+      ? { fresh_chat_reason_code:item.fresh_chat_reason_code } : {}),
     ...(item.status === 'not_run' && item.prerequisite_reason_code
       ? { prerequisite_reason_code:item.prerequisite_reason_code } : {}),
   }))

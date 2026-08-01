@@ -16,14 +16,18 @@ import {
   boundedCombinedFailure,
   buildProductionTriagSummary,
   GreetingHarnessError,
+  FreshChatHarnessError,
   isProductionRequestId,
   loginProductionTriag,
   playwrightFreshChatProbe,
   pollTerminalGreetingAudit,
+  productionTriagPdfFixture,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   ProductionPreflightError,
+  ProductionScenarioHarnessError,
   resolveProductionCleanup,
   stabilizeFreshChat,
+  supportedPdfUploadStatusSubreason,
   type ProductionCleanup,
   type ProductionCleanupReasonCode,
   type ProductionPreflightReasonCode,
@@ -32,6 +36,7 @@ import {
   type ProductionSafeSummary,
   type ProductionScenarioName,
   type ProductionScenarioReasonCode,
+  type ProductionScenarioSubreasonCode,
   type FreshChatStrategy,
 } from '../src/testing/productionTriagSafety'
 
@@ -122,6 +127,17 @@ const scenarioFailureReason: Record<
   cancellation_settlement:'cancellation_settlement_failed',
 }
 
+const scenarioDefaultSubreason: Record<
+  ProductionScenarioName, ProductionScenarioSubreasonCode
+> = {
+  deterministic_greeting:'greeting_harness_failure',
+  supported_pdf:'supported_pdf_harness_failure',
+  unsupported_pdf:'unsupported_pdf_harness_failure',
+  knowledge_library:'knowledge_library_setup_failed',
+  repository_pro:'repository_harness_failure',
+  cancellation_settlement:'cancellation_harness_failure',
+}
+
 function crc32(input: Buffer): number {
   let crc = 0xffffffff
   for (const byte of input) {
@@ -185,32 +201,6 @@ function repositoryZip(): Buffer {
   return Buffer.concat([...localParts, centralDirectory, end])
 }
 
-function pdfFixture(factualValue: string): Buffer {
-  const escaped = factualValue.replaceAll('\\', '\\\\')
-    .replaceAll('(', '\\(').replaceAll(')', '\\)')
-  const stream = `BT /F1 12 Tf 72 720 Td (Acceptance fact: ${escaped}) Tj ET`
-  const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
-  ]
-  let body = '%PDF-1.4\n'
-  const offsets = [0]
-  for (let index = 0; index < objects.length; index += 1) {
-    offsets.push(Buffer.byteLength(body))
-    body += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`
-  }
-  const xrefOffset = Buffer.byteLength(body)
-  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
-  body += offsets.slice(1).map(value => (
-    `${String(value).padStart(10, '0')} 00000 n \n`
-  )).join('')
-  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
-  return Buffer.from(body)
-}
-
 async function openSidebar(page: Page): Promise<void> {
   const trigger = page.getByRole('button', { name:'Open sidebar' })
   if (await trigger.isVisible()) await trigger.click()
@@ -220,12 +210,39 @@ async function newChat(page: Page): Promise<FreshChatStrategy> {
   return stabilizeFreshChat(playwrightFreshChatProbe(page))
 }
 
+async function scenarioFreshChat(
+  page: Page,
+  failureCode: ProductionScenarioSubreasonCode,
+): Promise<FreshChatStrategy> {
+  try {
+    return await newChat(page)
+  } catch (error) {
+    if (error instanceof FreshChatHarnessError) {
+      throw new ProductionScenarioHarnessError(
+        failureCode, error.reasonCode,
+      )
+    }
+    throw new ProductionScenarioHarnessError(failureCode)
+  }
+}
+
+function scenarioFailure(
+  reasonCode: ProductionScenarioSubreasonCode,
+): never {
+  throw new ProductionScenarioHarnessError(reasonCode)
+}
+
 async function sendMessage(
   page: Page,
   message: string,
   options: {
     waitForCompletion?: boolean
-    greeting?: boolean
+    failureCodes?: {
+      requestNotObserved: ProductionScenarioSubreasonCode
+      requestIdMissing: ProductionScenarioSubreasonCode
+      assistantNotVisible: ProductionScenarioSubreasonCode
+      assistantNotComplete: ProductionScenarioSubreasonCode
+    }
     onRequestCaptured?: (
       requestId: string,
       payload: Record<string, unknown>,
@@ -242,8 +259,10 @@ async function sendMessage(
     await page.getByRole('button', { name:'Send message' }).click()
     request = await observed
   } catch {
-    if (options.greeting) {
-      throw new GreetingHarnessError('greeting_request_not_observed')
+    if (options.failureCodes) {
+      throw new ProductionScenarioHarnessError(
+        options.failureCodes.requestNotObserved,
+      )
     }
     throw new Error('Production chat request was not observed')
   }
@@ -255,8 +274,10 @@ async function sendMessage(
   }
   const requestId = payload.request_id
   if (!isProductionRequestId(requestId)) {
-    if (options.greeting) {
-      throw new GreetingHarnessError('greeting_request_id_missing')
+    if (options.failureCodes) {
+      throw new ProductionScenarioHarnessError(
+        options.failureCodes.requestIdMissing,
+      )
     }
     throw new Error('Production request identifier was not captured')
   }
@@ -269,8 +290,10 @@ async function sendMessage(
   try {
     await expect(assistant).toBeVisible({ timeout:90_000 })
   } catch {
-    if (options.greeting) {
-      throw new GreetingHarnessError('greeting_assistant_not_visible')
+    if (options.failureCodes) {
+      throw new ProductionScenarioHarnessError(
+        options.failureCodes.assistantNotVisible,
+      )
     }
     throw new Error('Production assistant response was not visible')
   }
@@ -278,28 +301,15 @@ async function sendMessage(
     try {
       await expect(assistant).not.toHaveClass(/streaming/, { timeout:180_000 })
     } catch {
-      if (options.greeting) {
-        throw new GreetingHarnessError('greeting_assistant_not_complete')
+      if (options.failureCodes) {
+        throw new ProductionScenarioHarnessError(
+          options.failureCodes.assistantNotComplete,
+        )
       }
       throw new Error('Production assistant response did not complete')
     }
   }
   return { requestId, assistant }
-}
-
-async function audit(
-  api: DeployedApi,
-  requestIds: string[],
-): Promise<AuditResult[]> {
-  const result = await api.request<{ results: AuditResult[] }>(
-    'POST',
-    '/api/web/admin/triag-request-audit',
-    { request_ids:requestIds },
-  )
-  if (result.status !== 200 || !result.data) {
-    throw new Error('TRIAG request audit was unavailable')
-  }
-  return result.data.results
 }
 
 async function pollAudit(
@@ -310,16 +320,37 @@ async function pollAudit(
 ): Promise<AuditResult> {
   const deadline = Date.now() + timeoutMilliseconds
   while (Date.now() < deadline) {
-    const response = await api.request<{ results: AuditResult[] }>(
-      'POST', '/api/web/admin/triag-request-audit',
-      { request_ids:[requestId] },
-    )
-    const current = response.status === 200
-      ? response.data?.results[0] : undefined
-    if (current && predicate(current)) return current
+    try {
+      const response = await api.request<{ results: AuditResult[] }>(
+        'POST', '/api/web/admin/triag-request-audit',
+        { request_ids:[requestId] },
+      )
+      const current = response.status === 200
+        ? response.data?.results[0] : undefined
+      if (current && predicate(current)) return current
+    } catch {
+      // Audit creation and terminal persistence are eventually consistent.
+    }
     await new Promise(resolveWait => setTimeout(resolveWait, 500))
   }
   throw new Error('TRIAG request audit did not reach the expected state')
+}
+
+async function pollTerminalScenarioAudit(
+  api: DeployedApi,
+  requestId: string,
+  failureCode: ProductionScenarioSubreasonCode,
+  timeoutMilliseconds = 45_000,
+): Promise<AuditResult> {
+  try {
+    return await pollAudit(
+      api, requestId,
+      value => value.cancellation_state === 'complete',
+      timeoutMilliseconds,
+    )
+  } catch {
+    throw new ProductionScenarioHarnessError(failureCode)
+  }
 }
 
 async function safeScreenshot(
@@ -364,6 +395,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     }]),
   )
   const requestIds = new Map<ProductionScenarioName, string[]>()
+  const freshChatStrategies = new Map<ProductionScenarioName, FreshChatStrategy>()
   const cleanupErrors: ProductionCleanupReasonCode[] = []
   const originalThreadIds = new Set<string>()
   const originalKnowledgeIds = new Set<string>()
@@ -384,7 +416,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
   }
   let primaryFailureReason: ProductionPrimaryFailureReasonCode = 'none'
   let uploadId: string | null = null
-  let greetingFreshChatStrategy: FreshChatStrategy | null = null
+  let uploadReady = false
   const runMarker = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const factualValue = `TRIAG-${runMarker}`
   const recordRequest = (
@@ -407,24 +439,27 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           scenario,
           status:'passed',
           request_ids:requestIds.get(scenario) ?? [],
-          ...(scenario === 'deterministic_greeting'
-            && greetingFreshChatStrategy
-            ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
+          ...(freshChatStrategies.has(scenario)
+            ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
         })
       } catch (error) {
         const reasonCode = scenarioFailureReason[scenario]
+        const scenarioError = error instanceof ProductionScenarioHarnessError
+          ? error
+          : new ProductionScenarioHarnessError(
+            scenarioDefaultSubreason[scenario],
+          )
         if (primaryFailureReason === 'none') primaryFailureReason = reasonCode
         safeResults.set(scenario, {
           scenario,
           status:'failed',
           request_ids:requestIds.get(scenario) ?? [],
           reason_code:reasonCode,
-          ...(scenario === 'deterministic_greeting'
-            && error instanceof GreetingHarnessError
-            ? { subreason_code:error.reasonCode } : {}),
-          ...(scenario === 'deterministic_greeting'
-            && greetingFreshChatStrategy
-            ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
+          subreason_code:scenarioError.reasonCode,
+          ...(scenarioError.freshChatReasonCode
+            ? { fresh_chat_reason_code:scenarioError.freshChatReasonCode } : {}),
+          ...(freshChatStrategies.has(scenario)
+            ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
         })
       } finally {
         try {
@@ -439,9 +474,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
               status:'failed',
               request_ids:requestIds.get(scenario) ?? [],
               reason_code:reasonCode,
-              ...(scenario === 'deterministic_greeting'
-                && greetingFreshChatStrategy
-                ? { fresh_chat_strategy:greetingFreshChatStrategy } : {}),
+              subreason_code:'scenario_artifact_capture_failed',
+              ...(freshChatStrategies.has(scenario)
+                ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
             })
           }
         }
@@ -481,7 +516,9 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
     snapshotsCaptured = true
 
     await runScenario('deterministic_greeting', async () => {
-      greetingFreshChatStrategy = await newChat(page)
+      freshChatStrategies.set(
+        'deterministic_greeting', await newChat(page),
+      )
       await safeScreenshot(
         page, screenshotDirectory, 'fresh_chat_ready',
       )
@@ -498,7 +535,12 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         throw new GreetingHarnessError('greeting_wallet_read_failed')
       }
       const sent = await sendMessage(page, 'Hi', {
-        greeting:true,
+        failureCodes:{
+          requestNotObserved:'greeting_request_not_observed',
+          requestIdMissing:'greeting_request_id_missing',
+          assistantNotVisible:'greeting_assistant_not_visible',
+          assistantNotComplete:'greeting_assistant_not_complete',
+        },
         onRequestCaptured:(requestId, payload) => {
           recordRequest('deterministic_greeting', requestId)
           assertIsolatedGreetingPayload(payload)
@@ -538,55 +580,119 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
 
     if (safeResults.get('deterministic_greeting')?.status === 'passed') {
     await runScenario('supported_pdf', async () => {
-      await newChat(page)
+      freshChatStrategies.set(
+        'supported_pdf', await scenarioFreshChat(
+          page, 'supported_pdf_fresh_chat_failed',
+        ),
+      )
+      const uploadInput = page.getByLabel('Upload files')
+      if (await uploadInput.count() !== 1) {
+        scenarioFailure('supported_pdf_upload_input_missing')
+      }
       const uploadResponse = page.waitForResponse(response => (
         new URL(response.url()).pathname === '/api/web/uploads'
         && response.request().method() === 'POST'
-        && response.status() === 201
-      ))
-      await page.getByLabel('Upload files').setInputFiles({
-        name:'production-triag-document.pdf',
-        mimeType:'application/pdf',
-        buffer:pdfFixture(factualValue),
-      })
+      ), { timeout:30_000 }).catch(() => null)
+      try {
+        await uploadInput.setInputFiles({
+          name:'production-triag-document.pdf',
+          mimeType:'application/pdf',
+          buffer:productionTriagPdfFixture(factualValue),
+        })
+      } catch {
+        scenarioFailure('supported_pdf_upload_input_missing')
+      }
       const uploaded = await uploadResponse
-      uploadId = String(
-        (await uploaded.json() as { id?: unknown }).id ?? '',
-      )
-      if (!uploadId) throw new Error('Production document upload failed')
+      if (!uploaded) scenarioFailure('supported_pdf_upload_request_not_observed')
+      const uploadStatus = uploaded.status()
+      const uploadStatusFailure = supportedPdfUploadStatusSubreason(uploadStatus)
+      if (uploadStatusFailure) scenarioFailure(uploadStatusFailure)
+      let uploadedData: { id?: unknown }
+      try {
+        uploadedData = await uploaded.json() as { id?: unknown }
+      } catch {
+        scenarioFailure('supported_pdf_upload_response_invalid')
+      }
+      uploadId = typeof uploadedData.id === 'string'
+        ? uploadedData.id : null
+      if (!uploadId) scenarioFailure('supported_pdf_upload_id_missing')
       generatedUploadIds.add(uploadId)
-      await expect(page.locator('.attachment-chip.ready')).toBeVisible({
-        timeout:60_000,
-      })
+      try {
+        await expect(page.locator('.attachment-chip.ready')).toBeVisible({
+          timeout:60_000,
+        })
+      } catch {
+        scenarioFailure('supported_pdf_attachment_not_ready')
+      }
+      uploadReady = true
       const sent = await sendMessage(
         page,
         `Using only the attached PDF, what is the acceptance fact? ${runMarker}`,
+        {
+          failureCodes:{
+            requestNotObserved:'supported_pdf_chat_request_not_observed',
+            requestIdMissing:'supported_pdf_request_id_missing',
+            assistantNotVisible:'supported_pdf_assistant_not_visible',
+            assistantNotComplete:'supported_pdf_assistant_not_complete',
+          },
+          onRequestCaptured:requestId => {
+            recordRequest('supported_pdf', requestId)
+          },
+        },
       )
-      recordRequest('supported_pdf', sent.requestId)
-      await expect(sent.assistant.getByRole('region', { name:'Sources' }))
-        .toBeVisible()
-      const result = (await audit(api!, [sent.requestId]))[0]
-      expect(result.source_kind_counts.temporary_upload ?? 0).toBeGreaterThan(0)
-      expect(result.retrieval_status).toBe('sufficient')
-      expect(['grounded', 'verified']).toContain(result.quality_status)
+      try {
+        await expect(sent.assistant.getByRole('region', { name:'Sources' }))
+          .toBeVisible({ timeout:30_000 })
+      } catch {
+        scenarioFailure('supported_pdf_sources_not_visible')
+      }
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'supported_pdf_audit_not_ready',
+      )
+      if ((result.source_kind_counts.temporary_upload ?? 0) <= 0) {
+        scenarioFailure('supported_pdf_document_source_missing')
+      }
+      if (result.retrieval_status !== 'sufficient') {
+        scenarioFailure('supported_pdf_retrieval_not_sufficient')
+      }
+      if (!['grounded', 'verified'].includes(result.quality_status)) {
+        scenarioFailure('supported_pdf_quality_not_grounded')
+      }
     })
 
+    if (uploadReady && uploadId) {
     await runScenario('unsupported_pdf', async () => {
-      if (!uploadId) throw new Error('Required production fixture is unavailable')
       const sent = await sendMessage(
         page,
         `Using only the attached PDF, what launch city is stated? Do not use outside knowledge. ${runMarker}`,
+        {
+          failureCodes:{
+            requestNotObserved:'unsupported_pdf_chat_request_not_observed',
+            requestIdMissing:'unsupported_pdf_request_id_missing',
+            assistantNotVisible:'unsupported_pdf_assistant_not_visible',
+            assistantNotComplete:'unsupported_pdf_assistant_not_complete',
+          },
+          onRequestCaptured:requestId => {
+            recordRequest('unsupported_pdf', requestId)
+          },
+        },
       )
-      recordRequest('unsupported_pdf', sent.requestId)
-      const result = (await audit(api!, [sent.requestId]))[0]
-      expect(result.quality_status).toBe('insufficient_evidence')
-      await expect(sent.assistant).toContainText(
-        /not enough|does not (?:contain|provide|state)|is not (?:in|provided)|cannot (?:find|determine)/i,
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'unsupported_pdf_audit_not_ready',
       )
+      if (result.quality_status !== 'insufficient_evidence') {
+        scenarioFailure('unsupported_pdf_quality_invalid')
+      }
+      try {
+        await expect(sent.assistant).toContainText(
+          /not enough|does not (?:contain|provide|state)|is not (?:in|provided)|cannot (?:find|determine)/i,
+        )
+      } catch {
+        scenarioFailure('unsupported_pdf_refusal_not_visible')
+      }
     })
 
     await runScenario('knowledge_library', async () => {
-      if (!uploadId) throw new Error('Required production fixture is unavailable')
       await openSidebar(page)
       await page.locator('.account-button').click()
       await page.getByRole('menuitem', { name:'Settings' }).click()
@@ -611,13 +717,13 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           'GET', `/api/web/knowledge/${encodeURIComponent(documentId)}`,
         )
         if (status.status !== 200 || !status.data) {
-          throw new Error('Knowledge document status was unavailable')
+          scenarioFailure('knowledge_library_indexing_failed')
         }
         if (
           status.data.document.status === 'failed'
           || status.data.job.status === 'failed'
         ) {
-          throw new Error('Knowledge indexing reported failure')
+          scenarioFailure('knowledge_library_indexing_failed')
         }
         if (status.data.document.status === 'ready') {
           ready = status.data
@@ -625,108 +731,237 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
         }
         await new Promise(resolveWait => setTimeout(resolveWait, 2_000))
       }
-      expect(ready?.document.status).toBe('ready')
-      expect(ready?.job.status).not.toBe('failed')
+      if (
+        ready?.document.status !== 'ready'
+        || ready.job.status === 'failed'
+      ) scenarioFailure('knowledge_library_indexing_failed')
       await page.getByRole('button', { name:'Close settings' }).click()
       await page.locator('.attachment-chip.ready button').click()
-      await newChat(page)
+      freshChatStrategies.set(
+        'knowledge_library', await scenarioFreshChat(
+          page, 'knowledge_library_fresh_chat_failed',
+        ),
+      )
       const sent = await sendMessage(
         page,
         `From my Knowledge Library, what is the acceptance fact? ${runMarker}`,
+        {
+          failureCodes:{
+            requestNotObserved:'knowledge_library_chat_request_not_observed',
+            requestIdMissing:'knowledge_library_request_id_missing',
+            assistantNotVisible:'knowledge_library_assistant_not_visible',
+            assistantNotComplete:'knowledge_library_assistant_not_complete',
+          },
+          onRequestCaptured:requestId => {
+            recordRequest('knowledge_library', requestId)
+          },
+        },
       )
-      recordRequest('knowledge_library', sent.requestId)
-      const result = (await audit(api!, [sent.requestId]))[0]
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'knowledge_library_audit_not_ready',
+      )
       const knowledgeSources = (
         (result.source_kind_counts.persistent_knowledge ?? 0)
         + (result.source_kind_counts.approved_document ?? 0)
         + (result.source_kind_counts.knowledge_triplet ?? 0)
       )
-      expect(knowledgeSources).toBeGreaterThan(0)
-      expect(['grounded', 'verified']).toContain(result.quality_status)
+      if (knowledgeSources <= 0) {
+        scenarioFailure('knowledge_library_source_missing')
+      }
+      if (!['grounded', 'verified'].includes(result.quality_status)) {
+        scenarioFailure('knowledge_library_quality_invalid')
+      }
     })
+    } else {
+      for (const scenario of [
+        'unsupported_pdf', 'knowledge_library',
+      ] as const) {
+        safeResults.set(scenario, {
+          scenario,
+          status:'not_run',
+          request_ids:[],
+          prerequisite_reason_code:'supported_pdf_prerequisite_failed',
+        })
+      }
+    }
 
     await runScenario('repository_pro', async () => {
-      await newChat(page)
+      freshChatStrategies.set(
+        'repository_pro', await scenarioFreshChat(
+          page, 'repository_fresh_chat_failed',
+        ),
+      )
       const tier = page.locator('.tier-selector-composer')
-      if (originalTier !== 'pro') {
-        const tierResponse = page.waitForResponse(response => (
-          new URL(response.url()).pathname === '/api/web/settings/assistant'
-          && response.request().method() === 'PATCH'
-        ))
-        await tier.getByRole('button', { name:/Swico/ }).click()
-        await tier.getByRole('option', { name:/Swico Pro/ }).click()
-        if ((await tierResponse).status() !== 200) {
-          throw new Error('bounded scenario failure')
+      try {
+        if (originalTier !== 'pro') {
+          const tierResponse = page.waitForResponse(response => (
+            new URL(response.url()).pathname === '/api/web/settings/assistant'
+            && response.request().method() === 'PATCH'
+          ), { timeout:30_000 }).catch(() => null)
+          await tier.getByRole('button', { name:/Swico/ }).click()
+          await tier.getByRole('option', { name:/Swico Pro/ }).click()
+          if ((await tierResponse)?.status() !== 200) {
+            scenarioFailure('repository_tier_selection_failed')
+          }
+          tierChanged = true
         }
-        tierChanged = true
+        await expect(tier.getByRole('button', { name:/Swico Pro/ }))
+          .toBeVisible({ timeout:30_000 })
+      } catch (error) {
+        if (error instanceof ProductionScenarioHarnessError) throw error
+        scenarioFailure('repository_tier_selection_failed')
       }
-      await expect(tier.getByRole('button', { name:/Swico Pro/ }))
-        .toBeVisible({ timeout:30_000 })
+      const repositoryInput = page.getByLabel('Upload code repository')
+      if (await repositoryInput.count() !== 1) {
+        scenarioFailure('repository_upload_input_missing')
+      }
       const repositoryResponse = page.waitForResponse(response => (
         new URL(response.url()).pathname === '/api/web/repositories'
         && response.request().method() === 'POST'
-        && [200, 201].includes(response.status())
-      ))
-      await page.getByLabel('Upload code repository').setInputFiles({
-        name:'production-triag-repository.zip',
-        mimeType:'application/zip',
-        buffer:repositoryZip(),
-      })
+      ), { timeout:30_000 }).catch(() => null)
+      try {
+        await repositoryInput.setInputFiles({
+          name:'production-triag-repository.zip',
+          mimeType:'application/zip',
+          buffer:repositoryZip(),
+        })
+      } catch {
+        scenarioFailure('repository_upload_input_missing')
+      }
       const repositoryUpload = await repositoryResponse
-      const repository = await repositoryUpload.json() as { id: string }
+      if (!repositoryUpload) {
+        scenarioFailure('repository_upload_request_not_observed')
+      }
+      if (![200, 201].includes(repositoryUpload.status())) {
+        scenarioFailure('repository_upload_http_failure')
+      }
+      let repository: { id?: unknown }
+      try {
+        repository = await repositoryUpload.json() as { id?: unknown }
+      } catch {
+        scenarioFailure('repository_upload_http_failure')
+      }
+      if (typeof repository.id !== 'string' || !repository.id) {
+        scenarioFailure('repository_upload_http_failure')
+      }
       generatedRepositoryIds.add(repository.id)
-      await expect(page.getByText('Static checks only', { exact:true }))
-        .toBeVisible({ timeout:60_000 })
-      expect(authenticated.bootstrap.repositories.validation_capability)
-        .toBe('static_only')
+      try {
+        await expect(page.getByText('Static checks only', { exact:true }))
+          .toBeVisible({ timeout:60_000 })
+      } catch {
+        scenarioFailure('repository_not_ready')
+      }
+      if (
+        authenticated.bootstrap.repositories.validation_capability
+        !== 'static_only'
+      ) scenarioFailure('repository_static_only_label_missing')
       const sent = await sendMessage(
         page,
         `Correct the clear bug in the uploaded repository and explain the change. ${runMarker}`,
+        {
+          failureCodes:{
+            requestNotObserved:'repository_chat_request_not_observed',
+            requestIdMissing:'repository_request_id_missing',
+            assistantNotVisible:'repository_assistant_not_visible',
+            assistantNotComplete:'repository_assistant_not_complete',
+          },
+          onRequestCaptured:requestId => {
+            recordRequest('repository_pro', requestId)
+          },
+        },
       )
-      recordRequest('repository_pro', sent.requestId)
-      await expect(sent.assistant.getByRole('region', {
-        name:'Response quality',
-      })).toBeVisible()
-      await expect(sent.assistant.getByText(/Static checks only/)).toBeVisible()
-      await expect(sent.assistant).not.toContainText(/Repository verified|Executable validation available/i)
-      const result = (await audit(api!, [sent.requestId]))[0]
-      expect(result.source_kind_counts.repository ?? 0).toBeGreaterThan(0)
-      expect(['grounded', 'unverified']).toContain(result.quality_status)
+      try {
+        await expect(sent.assistant.getByRole('region', {
+          name:'Response quality',
+        })).toBeVisible({ timeout:30_000 })
+      } catch {
+        scenarioFailure('repository_quality_not_visible')
+      }
+      try {
+        await expect(sent.assistant.getByText(/Static checks only/)).toBeVisible()
+        await expect(sent.assistant).not.toContainText(
+          /Repository verified|Executable validation available/i,
+        )
+      } catch {
+        scenarioFailure('repository_static_only_label_missing')
+      }
+      const result = await pollTerminalScenarioAudit(
+        api!, sent.requestId, 'repository_audit_not_ready',
+      )
+      if ((result.source_kind_counts.repository ?? 0) <= 0) {
+        scenarioFailure('repository_source_missing')
+      }
+      if (!['grounded', 'unverified'].includes(result.quality_status)) {
+        scenarioFailure('repository_quality_invalid')
+      }
     })
 
     await runScenario('cancellation_settlement', async () => {
       let cancelled: AuditResult | null = null
       for (let attempt = 1; attempt <= 3; attempt += 1) {
-        await newChat(page)
+        freshChatStrategies.set(
+          'cancellation_settlement', await scenarioFreshChat(
+            page, 'cancellation_fresh_chat_failed',
+          ),
+        )
         const sent = await sendMessage(
           page,
           `Produce a detailed ${attempt}-part technical review with extensive reasoning and examples. ${runMarker} `.repeat(20),
-          { waitForCompletion:false },
+          {
+            waitForCompletion:false,
+            failureCodes:{
+              requestNotObserved:'cancellation_request_not_observed',
+              requestIdMissing:'cancellation_request_id_missing',
+              assistantNotVisible:'cancellation_assistant_not_visible',
+              assistantNotComplete:'cancellation_not_reached',
+            },
+            onRequestCaptured:requestId => {
+              recordRequest('cancellation_settlement', requestId)
+            },
+          },
         )
-        recordRequest('cancellation_settlement', sent.requestId)
         const stop = page.getByRole('button', { name:'Stop generation' })
-        if (await stop.isVisible()) await stop.click()
-        const result = await pollAudit(
-          api!,
-          sent.requestId,
-          value => value.cancellation_state !== 'active',
-          45_000,
-        )
+        if (!await stop.isVisible()) {
+          scenarioFailure('cancellation_stop_button_unavailable')
+        }
+        try {
+          await stop.click()
+        } catch {
+          scenarioFailure('cancellation_stop_button_unavailable')
+        }
+        let result: AuditResult
+        try {
+          result = await pollAudit(
+            api!,
+            sent.requestId,
+            value => value.cancellation_state !== 'active',
+            45_000,
+          )
+        } catch {
+          scenarioFailure('cancellation_audit_not_ready')
+        }
         if (result.cancellation_state === 'cancelled') {
           cancelled = result
           break
         }
       }
-      expect(cancelled, 'At least one bounded attempt must be cancelled')
-        .not.toBeNull()
-      expect(cancelled!.usage_charge_row_count).toBe(1)
-      expect(cancelled!.duplicate_settlement_indicator).toBe(false)
-      expect(cancelled!.orphaned_active_reservation).toBe(false)
-      expect(cancelled!.cancellation_failure_count).toBe(0)
-      if (cancelled!.charged_micro_inr_total > 0) {
-        expect(cancelled!.charge_status_counts.settled).toBe(1)
-        expect(cancelled!.settled_micro_inr_total)
-          .toBe(cancelled!.charged_micro_inr_total)
+      if (!cancelled) scenarioFailure('cancellation_not_reached')
+      if (
+        cancelled.usage_charge_row_count !== 1
+        || cancelled.duplicate_settlement_indicator !== false
+      ) scenarioFailure('cancellation_duplicate_charge')
+      if (cancelled.orphaned_active_reservation !== false) {
+        scenarioFailure('cancellation_orphaned_reservation')
+      }
+      if (cancelled.cancellation_failure_count !== 0) {
+        scenarioFailure('cancellation_settlement_mismatch')
+      }
+      if (cancelled.charged_micro_inr_total > 0 && (
+        cancelled.charge_status_counts.settled !== 1
+        || cancelled.settled_micro_inr_total
+          !== cancelled.charged_micro_inr_total
+      )) {
+        scenarioFailure('cancellation_settlement_mismatch')
       }
     })
     } else {

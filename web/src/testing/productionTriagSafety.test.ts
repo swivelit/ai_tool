@@ -1,4 +1,8 @@
-import { readFileSync } from 'node:fs'
+import {
+  existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import {
   adminAuditReasonCode,
@@ -8,18 +12,23 @@ import {
   bootstrapReasonCode,
   boundedCombinedFailure,
   buildProductionTriagSummary,
+  FreshChatHarnessError,
   freshChatStateReason,
+  GreetingHarnessError,
   greetingAuditSubreason,
   loginObservationReasonCode,
   PRODUCTION_TRIAG_TEST_TIMEOUT_MS,
   productionCapabilityReasonCode,
   pollTerminalGreetingAudit,
+  productionTriagPdfFixture,
   resolveProductionCleanup,
   stabilizeFreshChat,
+  supportedPdfUploadStatusSubreason,
   workspaceShellReasonCode,
   type ProductionBootstrap,
   type ProductionSafeScenarioResult,
   type GreetingSubreasonCode,
+  type ProductionScenarioSubreasonCode,
   type FreshChatProbe,
   type FreshChatState,
 } from './productionTriagSafety'
@@ -41,6 +50,7 @@ test('production test and GitHub command use matching 20-minute timeouts', () =>
   )
   expect(workflow).toContain('timeout-minutes: 30')
   expect(workflow).toContain('subreason=${subreason}')
+  expect(workflow).toContain('fresh_chat_reason=${freshChatReason}')
   expect(workflow).toContain('fresh_chat_strategy=${freshChatStrategy}')
   expect(workflow).toContain('prerequisite=${prerequisite}')
 })
@@ -182,6 +192,56 @@ test('isolated greeting payload has no previous thread, attachments, or reposito
   }
 })
 
+test('production TRIAG PDF fixture is structurally valid and backend-extractable', () => {
+  const factualValue = 'TRIAG-FIXTURE-ACCEPTANCE'
+  const fixture = productionTriagPdfFixture(factualValue)
+  const source = fixture.toString('latin1')
+  expect(source.startsWith('%PDF-1.4\n')).toBe(true)
+  expect(source).toContain('\nxref\n0 6\n')
+  expect(source).toMatch(/startxref\n\d+\n%%EOF\n$/)
+  expect(source.match(/\/Type \/Page\b/g)).toHaveLength(1)
+  expect(source).toContain('/Count 1')
+
+  const backendPython = resolve(
+    process.cwd(), '../backend/.venv/bin/python',
+  )
+  if (!existsSync(backendPython)) return
+  const fixtureDirectory = mkdtempSync(
+    resolve(tmpdir(), 'swico-triag-fixture-'),
+  )
+  const fixturePath = resolve(fixtureDirectory, 'fixture.pdf')
+  try {
+    writeFileSync(fixturePath, fixture)
+    const extracted = spawnSync(backendPython, [
+      '-c',
+      [
+        'import sys',
+        'from app.web_api.document_extraction import extract_document',
+        "result = extract_document(sys.argv[1], '.pdf')",
+        "text = '\\n'.join(chunk.text for chunk in result.chunks)",
+        'assert sys.argv[2] in text',
+        'assert len(result.page_character_counts) == 1',
+      ].join('; '),
+      fixturePath,
+      factualValue,
+    ], { cwd:resolve(process.cwd(), '../backend') })
+    expect(extracted.status).toBe(0)
+  } finally {
+    rmSync(fixtureDirectory, { recursive:true, force:true })
+  }
+})
+
+test.each([
+  [201, null],
+  [400, 'supported_pdf_upload_http_4xx'],
+  [422, 'supported_pdf_upload_http_4xx'],
+  [500, 'supported_pdf_upload_http_5xx'],
+  [503, 'supported_pdf_upload_http_5xx'],
+  [200, 'supported_pdf_upload_response_invalid'],
+] as const)('supported PDF upload status %s maps safely', (status, reasonCode) => {
+  expect(supportedPdfUploadStatusSubreason(status)).toBe(reasonCode)
+})
+
 const readyFreshChatState: FreshChatState = {
   emptyStateHeadingVisible:true,
   conversationVisible:true,
@@ -239,6 +299,29 @@ test('already fresh workspace needs no New chat button or navigation', async () 
   expect(probe.directCalls).not.toHaveBeenCalled()
   expect(probe.sidebarCalls).not.toHaveBeenCalled()
   expect(probe.shortcutCalls).not.toHaveBeenCalled()
+})
+
+test('fresh chat resets a completed greeting conversation for the next scenario', async () => {
+  const existingConversation = {
+    ...readyFreshChatState,
+    emptyStateHeadingVisible:false,
+    textboxEmpty:false,
+    messageCount:2,
+    attachmentCount:1,
+    repositoryCount:1,
+  }
+  const probe = freshChatProbe({
+    states:[readyFreshChatState, existingConversation, readyFreshChatState],
+    direct:'clicked', sidebar:'unavailable', shortcut:'unavailable',
+  })
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('already_ready')
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('direct_button')
+  expect(probe.directCalls).toHaveBeenCalledTimes(1)
+  expect(await probe.readState()).toEqual(readyFreshChatState)
 })
 
 test('temporarily stale old message is polled until cleared', async () => {
@@ -317,6 +400,21 @@ test('keyboard and unavailable navigation failures map safely', async () => {
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
     reasonCode:'fresh_chat_navigation_unavailable',
   })
+})
+
+test('fresh-chat failures are independent from greeting failures', async () => {
+  const stale = { ...readyFreshChatState, messageCount:1 }
+  let caught: unknown
+  try {
+    await stabilizeFreshChat(freshChatProbe({
+      states:[stale], direct:'unavailable', sidebar:'unavailable',
+      shortcut:'unavailable',
+    }), { timeoutMilliseconds:5 })
+  } catch (error) {
+    caught = error
+  }
+  expect(caught).toBeInstanceOf(FreshChatHarnessError)
+  expect(caught).not.toBeInstanceOf(GreetingHarnessError)
 })
 
 test('button and sidebar failures retain bounded navigation distinctions', async () => {
@@ -539,6 +637,111 @@ test('all bounded greeting subreasons are retained without private detail', () =
   for (const reason of reasons) expect(source).toContain(reason)
 })
 
+test('scenario-wide PDF, repository, and cancellation subreasons stay bounded', () => {
+  const reasons: ProductionScenarioSubreasonCode[] = [
+    'supported_pdf_fresh_chat_failed',
+    'supported_pdf_upload_input_missing',
+    'supported_pdf_upload_request_not_observed',
+    'supported_pdf_upload_http_4xx',
+    'supported_pdf_upload_http_5xx',
+    'supported_pdf_upload_response_invalid',
+    'supported_pdf_upload_id_missing',
+    'supported_pdf_attachment_not_ready',
+    'supported_pdf_chat_request_not_observed',
+    'supported_pdf_request_id_missing',
+    'supported_pdf_assistant_not_visible',
+    'supported_pdf_assistant_not_complete',
+    'supported_pdf_sources_not_visible',
+    'supported_pdf_audit_not_ready',
+    'supported_pdf_document_source_missing',
+    'supported_pdf_retrieval_not_sufficient',
+    'supported_pdf_quality_not_grounded',
+    'repository_fresh_chat_failed',
+    'repository_tier_selection_failed',
+    'repository_upload_input_missing',
+    'repository_upload_request_not_observed',
+    'repository_upload_http_failure',
+    'repository_not_ready',
+    'repository_chat_request_not_observed',
+    'repository_quality_not_visible',
+    'repository_static_only_label_missing',
+    'repository_source_missing',
+    'repository_quality_invalid',
+    'cancellation_fresh_chat_failed',
+    'cancellation_request_not_observed',
+    'cancellation_request_id_missing',
+    'cancellation_stop_button_unavailable',
+    'cancellation_not_reached',
+    'cancellation_audit_not_ready',
+    'cancellation_duplicate_charge',
+    'cancellation_orphaned_reservation',
+    'cancellation_settlement_mismatch',
+  ]
+  const source = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  ) + readFileSync(
+    resolve(process.cwd(), 'src/testing/productionTriagSafety.ts'), 'utf8',
+  )
+  for (const subreason_code of reasons) {
+    const summary = buildProductionTriagSummary({
+      preflight:{ status:'passed', reason_code:'preflight_passed' },
+      scenarios:[{
+        scenario:'supported_pdf', status:'failed', request_ids:[],
+        reason_code:'supported_pdf_failed', subreason_code,
+      }],
+      cleanup:{ status:'complete', reason_codes:[] },
+      primaryFailureReasonCode:'supported_pdf_failed',
+    })
+    expect(summary.scenarios[0].subreason_code).toBe(subreason_code)
+    expect(source).toContain(subreason_code)
+  }
+})
+
+test('supported PDF captures all upload statuses and UUID before later checks', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  const supported = spec.slice(
+    spec.indexOf("await runScenario('supported_pdf'"),
+    spec.indexOf("await runScenario('unsupported_pdf'"),
+  )
+  const listener = supported.slice(
+    supported.indexOf('page.waitForResponse'),
+    supported.indexOf('const uploaded ='),
+  )
+  expect(listener).toContain("response.request().method() === 'POST'")
+  expect(listener).not.toContain('response.status() === 201')
+  expect(supported.indexOf("recordRequest('supported_pdf', requestId)"))
+    .toBeLessThan(supported.indexOf('supported_pdf_sources_not_visible'))
+  expect(supported).toContain('supported_pdf_audit_not_ready')
+})
+
+test('PDF prerequisite skips only dependent scenarios while independent ones run', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain('if (uploadReady && uploadId)')
+  expect(spec).toContain(
+    "prerequisite_reason_code:'supported_pdf_prerequisite_failed'",
+  )
+  expect(spec.indexOf("await runScenario('repository_pro'"))
+    .toBeGreaterThan(spec.indexOf("supported_pdf_prerequisite_failed"))
+  expect(spec.indexOf("await runScenario('cancellation_settlement'"))
+    .toBeGreaterThan(spec.indexOf("supported_pdf_prerequisite_failed"))
+})
+
+test('content scenarios poll terminal audits instead of immediate audit reads', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
+  )
+  for (const reason of [
+    'supported_pdf_audit_not_ready', 'unsupported_pdf_audit_not_ready',
+    'knowledge_library_audit_not_ready', 'repository_audit_not_ready',
+  ]) {
+    expect(spec).toContain(`pollTerminalScenarioAudit(\n        api!, sent.requestId, '${reason}'`)
+  }
+})
+
 test('baseline failure prevents dependent production mutation scenarios', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-triag.spec.ts'), 'utf8',
@@ -577,6 +780,7 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
     reason_code:'deterministic_greeting_failed',
     subreason_code:'fresh_chat_messages_not_cleared',
     fresh_chat_strategy:'keyboard_shortcut',
+    fresh_chat_reason_code:'fresh_chat_messages_not_cleared',
     selector_error:'private DOM text',
     message:'private greeting',
     token:'private-token',
@@ -592,6 +796,7 @@ test('safe summary strips non-schema content and retains request UUIDs', () => {
   expect(summary.scenarios[1]).toMatchObject({
     request_ids:[], subreason_code:'fresh_chat_messages_not_cleared',
     fresh_chat_strategy:'keyboard_shortcut',
+    fresh_chat_reason_code:'fresh_chat_messages_not_cleared',
   })
   for (const forbidden of [
     'person@example.test', 'secret-password', 'secret-token', 'raw message',
