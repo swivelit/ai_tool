@@ -4089,6 +4089,10 @@ async def cancel_chat_request(
                     stopped = current.status == "released" or (assistant is not None and assistant.status == "cancelled")
                     return {"status": "stopped" if stopped else "completed", "request_id": request_id}
         return {"status": "cancelling", "request_id": request_id}
+    if active is None and charge.status in {
+        "released", "settled", "billing_exempt", "failed",
+    }:
+        return {"status": "already_complete", "request_id": request_id}
     return {"status": charge.status, "request_id": request_id}
 
 

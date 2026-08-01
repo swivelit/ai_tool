@@ -192,6 +192,7 @@ jobs:
               'repository_validation_mode',
               'phase2_fallback_reason_code',
               'cancellation_attempt_http_result',
+              'cancellation_response_status',
               'cancellation_observed_audit_state',
               'cancellation_failure_origin',
             ]) {

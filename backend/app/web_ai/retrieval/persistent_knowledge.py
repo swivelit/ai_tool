@@ -438,6 +438,31 @@ class PersistentKnowledgeRetriever:
                     )
                 ).all()
             } if document_ids else {}
+            document_text_parts: dict[str, list[str]] = {
+                document_id: [] for document_id in document_ids
+            }
+            if document_ids:
+                parent_rows = session.exec(
+                    select(
+                        WebKnowledgeChunk.document_id,
+                        WebKnowledgeChunk.content_text,
+                    ).where(
+                        WebKnowledgeChunk.owner_user_id == int(owner_user_id),
+                        WebKnowledgeChunk.document_id.in_(document_ids),
+                        WebKnowledgeChunk.status == "ready",
+                    ).order_by(
+                        WebKnowledgeChunk.document_id,
+                        WebKnowledgeChunk.chunk_index,
+                    )
+                ).all()
+                for document_id, content_text in parent_rows:
+                    document_text_parts.setdefault(document_id, []).append(
+                        content_text
+                    )
+            document_texts = {
+                document_id: "\n".join(parts)
+                for document_id, parts in document_text_parts.items()
+            }
             return tuple(
                 RetrievalCandidate(
                     candidate_id=f"knowledge:{row.id}",
@@ -449,7 +474,12 @@ class PersistentKnowledgeRetriever:
                     lexical_score=fts_scores.get(row.id, 0.0),
                     query_coverage=_lexical_score(query, row.content_text),
                     semantic_score=semantic.get(row.id, 0.0),
-                    metadata_score=0.1,
+                    metadata_score=max(0.0, min(
+                        1.0,
+                        _lexical_score(
+                            query, document_texts.get(row.document_id, ""),
+                        ),
+                    )),
                     fused_score=max(
                         fts_scores.get(row.id, 0.0),
                         semantic.get(row.id, 0.0),

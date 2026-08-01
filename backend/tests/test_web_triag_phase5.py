@@ -143,6 +143,8 @@ def test_approved_knowledge_is_grounded_only_with_supported_citation():
         owner_user_id=int(user.id),
         limit=3,
     )
+    assert len(supported) == 1
+    assert supported[0].metadata_score >= 0.5
     supported_status, contradictions = evaluate_retrieval(supported)
     assert supported_status == "sufficient"
     pack = build_evidence_pack(
@@ -544,6 +546,22 @@ def test_flags_are_disabled_and_private_plan_is_not_global_cacheable():
     assert "knowledge" in plan.retrieval_sources
     assert plan.cache_eligible is False
     assert tier_policy_for("lite").persistent_knowledge_allowed is False
+
+
+def test_retrieval_score_settings_clamp_and_bad_values_use_defaults():
+    clamped = TriagSettings.from_environ({
+        "WEB_TRIAG_SEMANTIC_SUFFICIENCY_THRESHOLD": "2.5",
+        "WEB_TRIAG_KNOWLEDGE_METADATA_SCORE": "-0.25",
+    })
+    assert clamped.semantic_sufficiency_threshold == 1.0
+    assert clamped.knowledge_metadata_score == 0.0
+
+    defaults = TriagSettings.from_environ({
+        "WEB_TRIAG_SEMANTIC_SUFFICIENCY_THRESHOLD": "not-a-number",
+        "WEB_TRIAG_KNOWLEDGE_METADATA_SCORE": "nan",
+    })
+    assert defaults.semantic_sufficiency_threshold == 0.55
+    assert defaults.knowledge_metadata_score == 0.5
 
 
 def test_unrelated_pro_request_does_not_plan_private_knowledge():

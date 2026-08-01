@@ -240,8 +240,25 @@ export type ProductionSafeScenarioResult = {
   repository_validation_mode?: 'static_only' | 'executable' | 'unavailable' | null
   phase2_fallback_reason_code?: string | null
   cancellation_attempt_http_result?: 'http_200' | 'http_non_200' | 'not_observed'
+  cancellation_response_status?: 'stopped' | 'cancelling' | 'completed' | 'already_terminal' | 'unknown'
   cancellation_observed_audit_state?: 'not_started' | 'active' | 'cancelled' | 'complete' | 'failed'
   cancellation_failure_origin?: 'message_status' | 'charge_status' | 'stage_status' | 'trace_status' | 'none'
+}
+
+export function boundedCancellationResponseStatus(
+  value: unknown,
+): NonNullable<ProductionSafeScenarioResult['cancellation_response_status']> {
+  if (value === 'stopped' || value === 'cancelling' || value === 'completed') {
+    return value
+  }
+  if (
+    value === 'already_complete'
+    || value === 'billing_exempt'
+    || value === 'settled'
+    || value === 'released'
+    || value === 'failed'
+  ) return 'already_terminal'
+  return 'unknown'
 }
 
 export type ProductionSafeSummary = {
@@ -879,6 +896,10 @@ export function buildProductionTriagSummary(input: {
       'http_200', 'http_non_200', 'not_observed',
     ].includes(item.cancellation_attempt_http_result ?? '')
       ? { cancellation_attempt_http_result:item.cancellation_attempt_http_result } : {}),
+    ...([
+      'stopped', 'cancelling', 'completed', 'already_terminal', 'unknown',
+    ].includes(item.cancellation_response_status ?? '')
+      ? { cancellation_response_status:item.cancellation_response_status } : {}),
     ...([
       'not_started', 'active', 'cancelled', 'complete', 'failed',
     ].includes(item.cancellation_observed_audit_state ?? '')

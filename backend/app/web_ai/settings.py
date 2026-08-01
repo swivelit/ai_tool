@@ -77,6 +77,21 @@ def _parse_float(
     return value
 
 
+def _parse_clamped_float(
+    environ: Mapping[str, str], name: str, default: float,
+) -> float:
+    raw = environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return min(1.0, max(0.0, value))
+
+
 @dataclass(frozen=True)
 class TriagSettings:
     enabled: bool = False
@@ -85,6 +100,8 @@ class TriagSettings:
     rag_hybrid_enabled: bool = False
     rag_dense_enabled: bool = False
     retrieval_evaluator_enabled: bool = False
+    semantic_sufficiency_threshold: float = 0.55
+    knowledge_metadata_score: float = 0.5
     max_corrective_rounds: int = 1
     query_embedding_cache_ttl_seconds: int = 86_400
     embedding_model: str = "text-embedding-3-small"
@@ -126,6 +143,12 @@ class TriagSettings:
         dense = _parse_bool(env, "WEB_RAG_DENSE_ENABLED", False, errors)
         evaluator = _parse_bool(
             env, "WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED", False, errors
+        )
+        semantic_sufficiency_threshold = _parse_clamped_float(
+            env, "WEB_TRIAG_SEMANTIC_SUFFICIENCY_THRESHOLD", 0.55,
+        )
+        knowledge_metadata_score = _parse_clamped_float(
+            env, "WEB_TRIAG_KNOWLEDGE_METADATA_SCORE", 0.5,
         )
         answer_guard = _parse_bool(
             env, "WEB_ANSWER_GUARD_ENABLED", False, errors
@@ -291,6 +314,8 @@ class TriagSettings:
             rag_hybrid_enabled=hybrid,
             rag_dense_enabled=dense,
             retrieval_evaluator_enabled=evaluator,
+            semantic_sufficiency_threshold=semantic_sufficiency_threshold,
+            knowledge_metadata_score=knowledge_metadata_score,
             max_corrective_rounds=max_corrective_rounds,
             query_embedding_cache_ttl_seconds=query_cache_ttl,
             embedding_model=embedding_model,

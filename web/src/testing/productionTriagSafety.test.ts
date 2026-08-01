@@ -11,6 +11,7 @@ import {
   assertIsolatedGreetingPayload,
   authenticatedHeaderReasonCode,
   bootstrapReasonCode,
+  boundedCancellationResponseStatus,
   boundedCombinedFailure,
   buildProductionTriagSummary,
   FreshChatHarnessError,
@@ -69,6 +70,7 @@ test('job summary surfaces only present content-free TRIAG diagnostics', () => {
     'repository_validation_mode',
     'phase2_fallback_reason_code',
     'cancellation_attempt_http_result',
+    'cancellation_response_status',
     'cancellation_observed_audit_state',
     'source_kind_counts',
     'answer_check_status_counts',
@@ -966,6 +968,7 @@ test('safe summary retains only allowlisted content-free diagnostics', () => {
       repository_validation_mode:'static_only',
       phase2_fallback_reason_code:'dense_unavailable',
       cancellation_attempt_http_result:'http_200',
+      cancellation_response_status:'already_terminal',
       cancellation_observed_audit_state:'cancelled',
     }],
     cleanup:{ status:'complete', reason_codes:[] },
@@ -979,10 +982,24 @@ test('safe summary retains only allowlisted content-free diagnostics', () => {
     repository_validation_mode:'static_only',
     phase2_fallback_reason_code:'dense_unavailable',
     cancellation_attempt_http_result:'http_200',
+    cancellation_response_status:'already_terminal',
     cancellation_observed_audit_state:'cancelled',
   })
   expect(JSON.stringify(summary)).not.toContain('secret')
   expect(JSON.stringify(summary)).not.toContain('unexpected')
+})
+
+test('cancel responses normalize to bounded public diagnostics', () => {
+  expect(boundedCancellationResponseStatus('stopped')).toBe('stopped')
+  expect(boundedCancellationResponseStatus('cancelling')).toBe('cancelling')
+  expect(boundedCancellationResponseStatus('completed')).toBe('completed')
+  for (const value of [
+    'already_complete', 'billing_exempt', 'settled', 'released', 'failed',
+  ]) {
+    expect(boundedCancellationResponseStatus(value)).toBe('already_terminal')
+  }
+  expect(boundedCancellationResponseStatus('private-provider-detail'))
+    .toBe('unknown')
 })
 
 test('safe summary preserves the pre-cleanup content-free rollout report', () => {

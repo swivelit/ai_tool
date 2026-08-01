@@ -14,6 +14,7 @@ import {
 import {
   assertGreetingAudit,
   assertIsolatedGreetingPayload,
+  boundedCancellationResponseStatus,
   boundedCombinedFailure,
   buildProductionTriagSummary,
   GreetingHarnessError,
@@ -115,6 +116,7 @@ type ScenarioDiagnostics = Pick<ProductionSafeScenarioResult,
   | 'repository_validation_mode'
   | 'phase2_fallback_reason_code'
   | 'cancellation_attempt_http_result'
+  | 'cancellation_response_status'
   | 'cancellation_observed_audit_state'
   | 'cancellation_failure_origin'
 >
@@ -877,7 +879,7 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
       )
       const sent = await sendMessage(
         page,
-        `From my Knowledge Library, what is the acceptance fact? ${runMarker}`,
+        'From my Knowledge Library, what is the acceptance fact?',
         {
           failureCodes:{
             requestNotObserved:'knowledge_library_chat_request_not_observed',
@@ -1094,28 +1096,37 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           ), { timeout:30_000 }).catch(() => null)
           await stop.click()
           const observed = await cancellationResponse
-          let responseStatus = ''
+          let responseStatus: unknown
           if (observed) {
             try {
               const body = await observed.json() as { status?: unknown }
-              responseStatus = typeof body.status === 'string'
-                ? body.status : ''
+              responseStatus = body.status
             } catch {
-              responseStatus = ''
+              responseStatus = undefined
             }
           }
+          const cancellationResponseStatus = boundedCancellationResponseStatus(
+            responseStatus,
+          )
           scenarioDiagnostics.set('cancellation_settlement', {
             ...scenarioDiagnostics.get('cancellation_settlement'),
             cancellation_attempt_http_result:observed
               ? observed.status() === 200 ? 'http_200' : 'http_non_200'
               : 'not_observed',
+            cancellation_response_status:cancellationResponseStatus,
           })
+          if (!observed || observed.status() !== 200) {
+            scenarioFailure('cancellation_not_reached')
+          }
           if (
-            !observed
-            || observed.status() !== 200
-            || !['stopped', 'cancelling'].includes(responseStatus)
-          ) scenarioFailure('cancellation_not_reached')
-        } catch {
+            cancellationResponseStatus === 'completed'
+            || cancellationResponseStatus === 'already_terminal'
+          ) continue
+          if (!['stopped', 'cancelling'].includes(cancellationResponseStatus)) {
+            scenarioFailure('cancellation_not_reached')
+          }
+        } catch (error) {
+          if (error instanceof ProductionScenarioHarnessError) throw error
           scenarioFailure('cancellation_stop_button_unavailable')
         }
         let result: AuditResult

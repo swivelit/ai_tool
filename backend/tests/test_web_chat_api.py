@@ -1244,6 +1244,13 @@ def test_accepted_pre_worker_cancellation_is_queued_and_releases_once():
         assert audit[0]["cancellation_state"] == "cancelled"
         assert audit[0]["duplicate_settlement_indicator"] is False
         assert audit[0]["orphaned_active_reservation"] is False
+    with SessionLocal() as session:
+        terminal = asyncio.run(cancel_chat_request(
+            request_id, session=session, auth=auth,
+        ))
+    assert terminal == {
+        "status": "already_complete", "request_id": request_id,
+    }
 
 
 def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):

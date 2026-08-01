@@ -3,16 +3,30 @@ from __future__ import annotations
 import re
 
 from ..evidence.models import RetrievalStatus
+from ..settings import TriagConfigurationError, TriagSettings
 from .models import RetrievalCandidate
 
 
 _NEGATION = re.compile(r"\b(no|not|never|without|cannot|can't|doesn't|isn't)\b", re.I)
-_SEMANTIC_SUFFICIENCY_THRESHOLD = 0.70
+_SEMANTIC_SUFFICIENCY_THRESHOLD = 0.55
+_KNOWLEDGE_METADATA_SCORE = 0.5
+
+
+def _score_thresholds() -> tuple[float, float]:
+    try:
+        settings = TriagSettings.from_environ()
+    except TriagConfigurationError:
+        return _SEMANTIC_SUFFICIENCY_THRESHOLD, _KNOWLEDGE_METADATA_SCORE
+    return (
+        settings.semantic_sufficiency_threshold,
+        settings.knowledge_metadata_score,
+    )
 
 
 def evaluate_retrieval(
     candidates: tuple[RetrievalCandidate, ...],
 ) -> tuple[RetrievalStatus, tuple[str, ...]]:
+    semantic_threshold, knowledge_metadata_score = _score_thresholds()
     support_scores = [
         max(item.lexical_score, item.semantic_score, item.metadata_score)
         for item in candidates
@@ -65,13 +79,19 @@ def evaluate_retrieval(
             candidates, support_scores, query_coverage, strict=True,
         )
         if (
-            item.semantic_score >= _SEMANTIC_SUFFICIENCY_THRESHOLD
-            or item.metadata_score >= 0.45
+            item.semantic_score >= semantic_threshold
+            or item.metadata_score >= knowledge_metadata_score
             or (item.lexical_score >= 0.45 and coverage >= 0.45)
         )
     ]
     if high:
         return "sufficient", ()
+    if len(candidates) == 1:
+        return (
+            ("ambiguous", ())
+            if support_scores[0] >= 0.25
+            else ("insufficient", ())
+        )
     if len(candidates) >= 2:
         return "ambiguous", ()
     return "insufficient", ()

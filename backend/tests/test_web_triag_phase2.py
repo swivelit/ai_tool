@@ -44,6 +44,7 @@ from app.web_api.upload_store import (
     reset_upload_store_for_tests,
 )
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
+from app.web_api.attachment_context import calibrated_query_coverage
 from tests.conftest import create_test_user
 from tests.test_web_chat_api import _fund
 
@@ -270,9 +271,10 @@ def test_dense_orthogonal_vectors_are_zero_and_insufficient():
 
 def test_dense_weak_positive_similarity_is_insufficient():
     candidates = _dense_result_for_vectors(
-        query_vector=[1.0, 0.0], document_vector=[0.6, 0.8]
+        query_vector=[1.0, 0.0],
+        document_vector=[0.2, 0.9797958971],
     )
-    assert candidates[0].semantic_score == pytest.approx(0.6)
+    assert candidates[0].semantic_score == pytest.approx(0.2)
     assert evaluate_retrieval(candidates)[0] == "insufficient"
 
 
@@ -354,6 +356,21 @@ def test_one_candidate_weak_overlap_is_not_normalized_to_one():
     assert fused[0].fused_score < 1.0
 
 
+def test_uuid_does_not_dilute_query_coverage_but_can_match_document():
+    query = "What launch city is stated?"
+    query_with_uuid = (
+        f"{query} 123e4567-e89b-42d3-a456-426614174000"
+    )
+    document = "The stated launch city is Chennai."
+    assert calibrated_query_coverage(
+        query_with_uuid, document,
+    ) == calibrated_query_coverage(query, document)
+    assert calibrated_query_coverage(
+        "123e4567-e89b-42d3-a456-426614174000",
+        "Record 123e4567-e89b-42d3-a456-426614174000 is approved.",
+    ) == 1.0
+
+
 def test_no_embedding_call_without_accounted_stage():
     store = InProcessEphemeralUploadStore()
     upload = _upload()
@@ -411,7 +428,9 @@ def test_fusion_is_repeatable_and_deduplication_is_stable():
     ("candidates", "expected"),
     [
         ((), "insufficient"),
+        ((_candidate("very-weak", "alpha", score=0.07),), "insufficient"),
         ((_candidate("a", "alpha", score=0.2),), "insufficient"),
+        ((_candidate("weak", "alpha", score=0.3),), "ambiguous"),
         (
             (
                 _candidate("a", "alpha", score=0.3),

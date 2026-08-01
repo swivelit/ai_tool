@@ -36,6 +36,12 @@ _QUERY_CONTEXT_TERMS = {
     "state", "stated", "states", "tell", "that", "the", "this", "use",
     "using", "was", "were", "what", "where", "which", "with", "would",
 }
+_UUID = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.I,
+)
+_HEX = re.compile(r"^[0-9a-f]+$", re.I)
+_ALPHANUMERIC = re.compile(r"^[a-z0-9]+$", re.I)
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,7 @@ def rank_attachment_chunks(
     """Return the existing lexical ranking without formatting prompt text."""
 
     question_tokens = _query_terms(question)
+    opaque_tokens = _opaque_identifier_tokens(question)
     all_chunks = [chunk for upload in uploads for chunk in upload.chunks]
     document_frequency = Counter(
         token for chunk in all_chunks for token in _tokens(chunk.text)
@@ -62,7 +69,10 @@ def rank_attachment_chunks(
     for upload_index, upload in enumerate(uploads):
         for chunk_index, chunk in enumerate(upload.chunks):
             chunk_tokens = _tokens(chunk.text)
-            overlap_terms = question_tokens & chunk_tokens
+            effective_question_tokens = question_tokens | (
+                opaque_tokens & chunk_tokens
+            )
+            overlap_terms = effective_question_tokens & chunk_tokens
             matched_weight = sum(
                 math.log(
                     (len(all_chunks) + 1)
@@ -75,7 +85,7 @@ def rank_attachment_chunks(
                     (len(all_chunks) + 1)
                     / (document_frequency.get(token, 0) + 1)
                 ) + 1.0
-                for token in question_tokens
+                for token in effective_question_tokens
             )
             overlap = matched_weight / total_weight if total_weight else 0.0
             label = f"[{upload.name}, {chunk.source}]"
@@ -100,19 +110,51 @@ def _tokens(value: str) -> set[str]:
 
 
 def _query_terms(value: str) -> set[str]:
+    opaque_tokens = _opaque_identifier_tokens(value)
     return {
         token for token in _tokens(value)
-        if token not in _QUERY_CONTEXT_TERMS
+        if (
+            token not in _QUERY_CONTEXT_TERMS
+            and token not in opaque_tokens
+        )
+    }
+
+
+def _opaque_identifier_tokens(value: str) -> set[str]:
+    uuid_segments = {
+        segment
+        for match in _UUID.findall(str(value or "").lower())
+        for segment in match.split("-")
+    }
+    return {
+        token
+        for token in _tokens(value)
+        if (
+            token in uuid_segments
+            or (
+                len(token) >= 8
+                and (
+                    bool(_HEX.fullmatch(token))
+                    or (
+                        bool(_ALPHANUMERIC.fullmatch(token))
+                        and not any(vowel in token for vowel in "aeiou")
+                    )
+                )
+            )
+        )
     }
 
 
 def calibrated_query_coverage(query: str, text: str) -> float:
     """Return absolute query coverage that stays calibrated for one result."""
 
-    query_terms = _query_terms(query)
+    text_tokens = _tokens(text)
+    query_terms = _query_terms(query) | (
+        _opaque_identifier_tokens(query) & text_tokens
+    )
     if not query_terms:
         return 0.0
-    return len(query_terms & _tokens(text)) / len(query_terms)
+    return len(query_terms & text_tokens) / len(query_terms)
 
 
 def attachment_prompt_max_chars() -> int:
