@@ -23,6 +23,17 @@ it('supports collapse, grouped history, menus, and search shortcut', () => {
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
 })
 
+it('keeps the primary New chat action unique when a thread has the same title', () => {
+  const newChat = vi.fn()
+  render(<Sidebar {...props} newChat={newChat} threads={[{
+    ...props.threads[0], title:'New chat',
+  }]} />)
+  expect(screen.getAllByRole('button', { name:'New chat' })).toHaveLength(2)
+  fireEvent.click(screen.getByTestId('new-chat-button'))
+  expect(newChat).toHaveBeenCalledTimes(1)
+  expect(props.select).not.toHaveBeenCalled()
+})
+
 it.each([
   ['lite', 'Swico Lite'],
   ['standard', 'Swico'],

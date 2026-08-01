@@ -4,6 +4,7 @@ import {
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import type { Page } from '@playwright/test'
 import {
   adminAuditReasonCode,
   assertGreetingAudit,
@@ -21,6 +22,7 @@ import {
   productionCapabilityReasonCode,
   pollTerminalGreetingAudit,
   productionTriagPdfFixture,
+  playwrightFreshChatProbe,
   resolveProductionCleanup,
   stabilizeFreshChat,
   supportedPdfUploadStatusSubreason,
@@ -320,8 +322,70 @@ test('fresh chat resets a completed greeting conversation for the next scenario'
   await expect(stabilizeFreshChat(probe, {
     timeoutMilliseconds:20, pollMilliseconds:1,
   })).resolves.toBe('direct_button')
+  await expect(stabilizeFreshChat(probe, {
+    timeoutMilliseconds:20, pollMilliseconds:1,
+  })).resolves.toBe('already_ready')
   expect(probe.directCalls).toHaveBeenCalledTimes(1)
-  expect(await probe.readState()).toEqual(readyFreshChatState)
+})
+
+test('Playwright uses the unique New chat action and catches visibility errors', async () => {
+  const button = {
+    isVisible:vi.fn().mockRejectedValue(new Error('strict locator failure')),
+    click:vi.fn(),
+    waitFor:vi.fn(),
+  }
+  const composer = {
+    locator:vi.fn(() => ({})),
+    getByRole:vi.fn(() => ({})),
+  }
+  const page = {
+    getByTestId:vi.fn((testId: string) => {
+      if (testId === 'new-chat-button') return button
+      if (testId === 'composer') return composer
+      return {}
+    }),
+    getByRole:vi.fn(() => ({})),
+    keyboard:{ press:vi.fn() },
+    isClosed:vi.fn(() => false),
+  } as unknown as Page
+
+  const probe = playwrightFreshChatProbe(page)
+  await expect(probe.tryDirectButton()).resolves.toBe('failed')
+  expect(page.getByTestId).toHaveBeenCalledWith('new-chat-button')
+  expect(button.isVisible).toHaveBeenCalledWith({ timeout:5_000 })
+  expect(button.click).not.toHaveBeenCalled()
+})
+
+test('Playwright catches sidebar wait and click locator failures', async () => {
+  const button = {
+    isVisible:vi.fn().mockResolvedValue(false),
+    click:vi.fn(),
+    waitFor:vi.fn().mockRejectedValueOnce(new Error('wait failed')),
+  }
+  const trigger = {
+    isVisible:vi.fn().mockResolvedValue(true),
+    click:vi.fn().mockResolvedValue(undefined),
+  }
+  const composer = {
+    locator:vi.fn(() => ({})),
+    getByRole:vi.fn(() => ({})),
+  }
+  const page = {
+    getByTestId:vi.fn((testId: string) => {
+      if (testId === 'new-chat-button') return button
+      if (testId === 'composer') return composer
+      return {}
+    }),
+    getByRole:vi.fn(() => trigger),
+    keyboard:{ press:vi.fn() },
+    isClosed:vi.fn(() => false),
+  } as unknown as Page
+
+  const probe = playwrightFreshChatProbe(page)
+  await expect(probe.trySidebarButton(1_000)).resolves.toBe('open_failed')
+  button.waitFor.mockResolvedValueOnce(undefined)
+  button.click.mockRejectedValueOnce(new Error('click failed'))
+  await expect(probe.trySidebarButton(1_000)).resolves.toBe('click_failed')
 })
 
 test('temporarily stale old message is polled until cleared', async () => {
@@ -393,12 +457,14 @@ test('keyboard and unavailable navigation failures map safely', async () => {
     shortcut:'failed',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
     reasonCode:'fresh_chat_shortcut_failed',
+    freshChatStrategy:'keyboard_shortcut',
   })
   await expect(stabilizeFreshChat(freshChatProbe({
     states:[stale], direct:'unavailable', sidebar:'unavailable',
     shortcut:'unavailable',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
     reasonCode:'fresh_chat_navigation_unavailable',
+    freshChatStrategy:'keyboard_shortcut',
   })
 })
 
@@ -424,12 +490,14 @@ test('button and sidebar failures retain bounded navigation distinctions', async
     shortcut:'unavailable',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
     reasonCode:'fresh_chat_button_click_failed',
+    freshChatStrategy:'direct_button',
   })
   await expect(stabilizeFreshChat(freshChatProbe({
     states:[stale], direct:'unavailable', sidebar:'open_failed',
     shortcut:'unavailable',
   }), { timeoutMilliseconds:5 })).rejects.toMatchObject({
     reasonCode:'fresh_chat_sidebar_open_failed',
+    freshChatStrategy:'sidebar_button',
   })
 })
 

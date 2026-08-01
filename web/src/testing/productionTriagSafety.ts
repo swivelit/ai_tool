@@ -266,6 +266,7 @@ export class ProductionScenarioHarnessError extends Error {
   constructor(
     readonly reasonCode: ProductionScenarioSubreasonCode,
     readonly freshChatReasonCode?: FreshChatReasonCode,
+    readonly freshChatStrategy?: FreshChatStrategy,
   ) {
     super(`Production scenario failed: ${reasonCode}`)
     this.name = 'ProductionScenarioHarnessError'
@@ -280,8 +281,11 @@ export class GreetingHarnessError extends ProductionScenarioHarnessError {
 }
 
 export class FreshChatHarnessError extends ProductionScenarioHarnessError {
-  constructor(readonly reasonCode: FreshChatReasonCode) {
-    super(reasonCode, reasonCode)
+  constructor(
+    readonly reasonCode: FreshChatReasonCode,
+    readonly freshChatStrategy: Exclude<FreshChatStrategy, 'already_ready'>,
+  ) {
+    super(reasonCode, reasonCode, freshChatStrategy)
     this.name = 'FreshChatHarnessError'
   }
 }
@@ -340,16 +344,30 @@ export function freshChatStateReason(
 }
 
 export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
-  const button = page.getByRole('button', { name:'New chat' })
+  const operationTimeoutMilliseconds = 5_000
+  const boundedOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await beforeDeadline(
+        operation(), Date.now() + operationTimeoutMilliseconds,
+      )
+    } catch {
+      throw new Error('bounded fresh-chat locator operation failed')
+    }
+  }
+  const button = page.getByTestId('new-chat-button')
   const conversation = page.getByTestId('conversation')
   const composer = page.getByTestId('composer')
   const composerContainer = composer.locator('..')
   const textbox = composer.getByRole('textbox', { name:'Message Swico' })
   return {
     async tryDirectButton() {
-      if (!await button.isVisible()) return 'unavailable'
       try {
-        await button.click({ timeout:5_000 })
+        if (!await boundedOperation(() => button.isVisible({
+          timeout:operationTimeoutMilliseconds,
+        }))) return 'unavailable'
+        await boundedOperation(() => button.click({
+          timeout:operationTimeoutMilliseconds,
+        }))
         return 'clicked'
       } catch {
         return 'failed'
@@ -357,17 +375,22 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
     },
     async trySidebarButton(timeoutMilliseconds) {
       const trigger = page.getByRole('button', { name:'Open sidebar' })
-      if (!await trigger.isVisible()) return 'unavailable'
+      const timeout = Math.min(
+        operationTimeoutMilliseconds, Math.max(1, timeoutMilliseconds),
+      )
       try {
-        await trigger.click({ timeout:5_000 })
-        await button.waitFor({
-          state:'visible', timeout:Math.min(5_000, timeoutMilliseconds),
-        })
+        if (!await boundedOperation(() => trigger.isVisible({ timeout }))) {
+          return 'unavailable'
+        }
+        await boundedOperation(() => trigger.click({ timeout }))
+        await boundedOperation(() => button.waitFor({
+          state:'visible', timeout,
+        }))
       } catch {
         return 'open_failed'
       }
       try {
-        await button.click({ timeout:5_000 })
+        await boundedOperation(() => button.click({ timeout }))
         return 'clicked'
       } catch {
         return 'click_failed'
@@ -376,29 +399,60 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
     async tryKeyboardShortcut() {
       if (page.isClosed()) return 'unavailable'
       try {
-        await page.keyboard.press('Control+Shift+O')
+        await boundedOperation(() => page.keyboard.press('Control+Shift+O'))
         return 'pressed'
       } catch {
         return 'failed'
       }
     },
     async readState() {
-      return {
-        emptyStateHeadingVisible:await conversation.getByRole('heading', {
+      const [
+        emptyStateHeadingVisible,
+        conversationVisible,
+        composerVisible,
+        textboxVisible,
+        textboxEnabled,
+        textboxValue,
+        messageCount,
+        attachmentCount,
+        repositoryCount,
+      ] = await Promise.all([
+        boundedOperation(() => conversation.getByRole('heading', {
           name:'How can I help?', exact:true,
-        }).isVisible(),
-        conversationVisible:await conversation.isVisible(),
-        composerVisible:await composer.isVisible(),
-        textboxVisible:await textbox.isVisible(),
-        textboxEnabled:await textbox.isEnabled(),
-        textboxEmpty:(await textbox.inputValue()) === '',
-        messageCount:await conversation.locator('article.message').count(),
-        attachmentCount:await composerContainer.locator(
+        }).isVisible({ timeout:operationTimeoutMilliseconds })),
+        boundedOperation(() => conversation.isVisible({
+          timeout:operationTimeoutMilliseconds,
+        })),
+        boundedOperation(() => composer.isVisible({
+          timeout:operationTimeoutMilliseconds,
+        })),
+        boundedOperation(() => textbox.isVisible({
+          timeout:operationTimeoutMilliseconds,
+        })),
+        boundedOperation(() => textbox.isEnabled({
+          timeout:operationTimeoutMilliseconds,
+        })),
+        boundedOperation(() => textbox.inputValue({
+          timeout:operationTimeoutMilliseconds,
+        })),
+        boundedOperation(() => conversation.locator('article.message').count()),
+        boundedOperation(() => composerContainer.locator(
           '.attachment-chip:not(.repository-chip)',
-        ).count(),
-        repositoryCount:await composerContainer.locator(
+        ).count()),
+        boundedOperation(() => composerContainer.locator(
           '[aria-label="Active code repository"]',
-        ).count(),
+        ).count()),
+      ])
+      return {
+        emptyStateHeadingVisible,
+        conversationVisible,
+        composerVisible,
+        textboxVisible,
+        textboxEnabled,
+        textboxEmpty:textboxValue === '',
+        messageCount,
+        attachmentCount,
+        repositoryCount,
       }
     },
   }
@@ -406,7 +460,10 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
 
 type FreshChatNavigationResult =
   | { strategy: Exclude<FreshChatStrategy, 'already_ready'> }
-  | { reasonCode: FreshChatReasonCode }
+  | {
+    reasonCode: FreshChatReasonCode
+    strategy: Exclude<FreshChatStrategy, 'already_ready'>
+  }
 
 async function navigateToFreshChat(
   probe: FreshChatProbe,
@@ -414,24 +471,48 @@ async function navigateToFreshChat(
 ): Promise<FreshChatNavigationResult> {
   let fallbackReason: FreshChatReasonCode =
     'fresh_chat_navigation_unavailable'
-  const direct = await probe.tryDirectButton()
+  let fallbackStrategy: Exclude<FreshChatStrategy, 'already_ready'> =
+    'keyboard_shortcut'
+  let direct: Awaited<ReturnType<FreshChatProbe['tryDirectButton']>>
+  try {
+    direct = await probe.tryDirectButton()
+  } catch {
+    direct = 'failed'
+  }
   if (direct === 'clicked') return { strategy:'direct_button' }
-  if (direct === 'failed') fallbackReason = 'fresh_chat_button_click_failed'
+  if (direct === 'failed') {
+    fallbackReason = 'fresh_chat_button_click_failed'
+    fallbackStrategy = 'direct_button'
+  }
 
-  const sidebar = await probe.trySidebarButton(timeoutMilliseconds)
+  let sidebar: Awaited<ReturnType<FreshChatProbe['trySidebarButton']>>
+  try {
+    sidebar = await probe.trySidebarButton(timeoutMilliseconds)
+  } catch {
+    sidebar = 'open_failed'
+  }
   if (sidebar === 'clicked') return { strategy:'sidebar_button' }
   if (sidebar === 'open_failed') {
     fallbackReason = 'fresh_chat_sidebar_open_failed'
+    fallbackStrategy = 'sidebar_button'
   } else if (sidebar === 'click_failed') {
     fallbackReason = 'fresh_chat_button_click_failed'
+    fallbackStrategy = 'sidebar_button'
   }
 
-  const shortcut = await probe.tryKeyboardShortcut()
+  let shortcut: Awaited<ReturnType<FreshChatProbe['tryKeyboardShortcut']>>
+  try {
+    shortcut = await probe.tryKeyboardShortcut()
+  } catch {
+    shortcut = 'failed'
+  }
   if (shortcut === 'pressed') return { strategy:'keyboard_shortcut' }
   if (shortcut === 'failed') {
-    return { reasonCode:'fresh_chat_shortcut_failed' }
+    return {
+      reasonCode:'fresh_chat_shortcut_failed', strategy:'keyboard_shortcut',
+    }
   }
-  return { reasonCode:fallbackReason }
+  return { reasonCode:fallbackReason, strategy:fallbackStrategy }
 }
 
 export async function stabilizeFreshChat(
@@ -470,7 +551,9 @@ export async function stabilizeFreshChat(
       navigationAttempts += 1
       if ('reasonCode' in navigation) {
         if (!lastStrategy) {
-          throw new FreshChatHarnessError(navigation.reasonCode)
+          throw new FreshChatHarnessError(
+            navigation.reasonCode, navigation.strategy,
+          )
         }
       } else {
         lastStrategy = navigation.strategy
@@ -488,7 +571,7 @@ export async function stabilizeFreshChat(
       Math.min(pollMilliseconds, Math.max(1, deadline - Date.now())),
     ))
   }
-  throw new FreshChatHarnessError(lastReason)
+  throw new FreshChatHarnessError(lastReason, lastStrategy ?? 'direct_button')
 }
 
 const REQUEST_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i

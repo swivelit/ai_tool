@@ -44,7 +44,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     window.addEventListener('keydown', shortcuts); return () => window.removeEventListener('keydown', shortcuts)
   }, [close, open])
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
-  const iconButton = (label: string, icon: ReactNode, action: () => void) => <button className="rail-action" aria-label={label} title={label} onClick={action}>{icon}<span>{label}</span></button>
+  const iconButton = (label: string, icon: ReactNode, action: () => void, testId?: string) => <button className="rail-action" aria-label={label} title={label} data-testid={testId} onClick={action}>{icon}<span>{label}</span></button>
   const estimatedTokens = wallet?.token_estimate?.estimated_blended_tokens
   const billingExempt = wallet?.billing_exempt === true
   const estimatedBalanceName = !wallet || estimatedTokens === null || estimatedTokens === undefined
@@ -56,7 +56,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       <button className="collapse-button icon-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={toggleCollapsed}>{collapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>
     </div>
     <div className="sidebar-primary">
-      {iconButton('New chat', <MessageSquarePlus size={19} />, newChat)}
+      {iconButton('New chat', <MessageSquarePlus size={19} />, newChat, 'new-chat-button')}
       <label className="search-action" title="Search chats"><Search size={19} /><input ref={searchRef} aria-label="Search chats" placeholder="Search chats" value={query} onChange={event => setQuery(event.target.value)} /><kbd>⌘K</kbd></label>
     </div>
     <button className="archive-toggle rail-action" onClick={toggleArchived}><Archive size={18} /><span>{archived ? 'Back to chats' : 'Archived chats'}</span>{archived ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>

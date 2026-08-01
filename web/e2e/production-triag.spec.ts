@@ -207,7 +207,14 @@ async function openSidebar(page: Page): Promise<void> {
 }
 
 async function newChat(page: Page): Promise<FreshChatStrategy> {
-  return stabilizeFreshChat(playwrightFreshChatProbe(page))
+  try {
+    return await stabilizeFreshChat(playwrightFreshChatProbe(page))
+  } catch (error) {
+    if (error instanceof FreshChatHarnessError) throw error
+    throw new FreshChatHarnessError(
+      'fresh_chat_navigation_unavailable', 'direct_button',
+    )
+  }
 }
 
 async function scenarioFreshChat(
@@ -219,7 +226,7 @@ async function scenarioFreshChat(
   } catch (error) {
     if (error instanceof FreshChatHarnessError) {
       throw new ProductionScenarioHarnessError(
-        failureCode, error.reasonCode,
+        failureCode, error.reasonCode, error.freshChatStrategy,
       )
     }
     throw new ProductionScenarioHarnessError(failureCode)
@@ -449,6 +456,8 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           : new ProductionScenarioHarnessError(
             scenarioDefaultSubreason[scenario],
           )
+        const freshChatStrategy = scenarioError.freshChatStrategy
+          ?? freshChatStrategies.get(scenario)
         if (primaryFailureReason === 'none') primaryFailureReason = reasonCode
         safeResults.set(scenario, {
           scenario,
@@ -458,8 +467,8 @@ test('safe automated production TRIAG acceptance', async ({ page }) => {
           subreason_code:scenarioError.reasonCode,
           ...(scenarioError.freshChatReasonCode
             ? { fresh_chat_reason_code:scenarioError.freshChatReasonCode } : {}),
-          ...(freshChatStrategies.has(scenario)
-            ? { fresh_chat_strategy:freshChatStrategies.get(scenario) } : {}),
+          ...(freshChatStrategy
+            ? { fresh_chat_strategy:freshChatStrategy } : {}),
         })
       } finally {
         try {

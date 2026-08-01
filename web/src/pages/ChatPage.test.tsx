@@ -173,7 +173,7 @@ it('continues without an optimistic control bubble and consumes the parent butto
 
 it('keeps the authoritative SSE thread for follow-ups, supports selection, and clears it for New chat', async () => {
   const existingThread = {
-    id:'thread-existing', title:'Existing topic', archived:false,
+    id:'thread-existing', title:'New chat', archived:false,
     created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
   }
   vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
@@ -200,13 +200,21 @@ it('keeps the authoritative SSE thread for follow-ups, supports selection, and c
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
   expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ thread_id:'thread-from-sse' })
 
-  await userEvent.click(await screen.findByRole('button', { name:'Existing topic' }))
+  const titledNewChatButtons = await screen.findAllByRole('button', {
+    name:'New chat',
+  })
+  const conversationRow = titledNewChatButtons.find(button => (
+    button.classList.contains('thread-select')
+  ))
+  expect(conversationRow).toBeDefined()
+  await userEvent.click(conversationRow!)
   await userEvent.type(composer, 'selected chat follow-up')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(3))
   expect(vi.mocked(streamChat).mock.calls[2][1]).toMatchObject({ thread_id:'thread-existing' })
 
-  await userEvent.click(screen.getByRole('button', { name:'New chat' }))
+  expect(screen.getAllByRole('button', { name:'New chat' })).toHaveLength(2)
+  await userEvent.click(screen.getByTestId('new-chat-button'))
   await userEvent.type(composer, 'fresh topic')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(4))
