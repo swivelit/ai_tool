@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   DebitBudget,
+  PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
   PRODUCTION_CAPABILITY_CONFIRMATION,
+  PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS,
   ProductionCapabilityGateError,
   batchIncludes,
   bulletLines,
+  capabilityEffectiveTimeoutMs,
   countSentences,
   countWords,
   deploymentParitySafeSummary,
@@ -12,6 +15,7 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
+  formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
   normalizeCapabilityApiBaseUrl,
   parseSseEventOrder,
@@ -38,6 +42,35 @@ const valid = {
 describe('production capability safety', () => {
   const fullSha = 'b14f183691b93c36be4693937407d8d6f986b55f'
   const endpointHostname = 'api.example.test'
+
+  it('gives core a smaller effective deadline than the complete benchmark', () => {
+    expect(capabilityEffectiveTimeoutMs('core')).toBe(
+      PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS,
+    )
+    expect(capabilityEffectiveTimeoutMs('all')).toBe(
+      PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
+    )
+    expect(capabilityEffectiveTimeoutMs('core')).toBeLessThan(
+      capabilityEffectiveTimeoutMs('all'),
+    )
+  })
+
+  it('formats progress without admitting prompts, answers, or credentials', () => {
+    const line = formatCapabilityProgress({
+      kind:'question_complete',
+      phase:'question',
+      scenarioId:'B01-standard',
+      requestId:'12345678-1234-1234-1234-123456789abc',
+      elapsedSeconds:42,
+    })
+    expect(line).toBe('[capability] question_complete phase=question scenario=B01-standard elapsed_seconds=42 request_id=12345678-1234-1234-1234-123456789abc')
+    const unsafe = formatCapabilityProgress({
+      kind:'heartbeat', phase:'token=private value',
+      scenarioId:'raw answer: private', elapsedSeconds:1,
+    })
+    expect(unsafe).toContain('phase=unknown scenario=none')
+    expect(unsafe).not.toContain('private')
+  })
 
   it('separates and safely normalizes the UI and API origins', () => {
     expect(normalizeCapabilityApiBaseUrl(

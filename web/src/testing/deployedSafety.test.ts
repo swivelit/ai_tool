@@ -5,6 +5,7 @@ import {
   isPostChatStreamRequest, isPostChatStreamResponse,
   observePlaywrightPromise, productionRequestViolation,
   restoreProfile, restoreUsagePreferences, runCleanupActionSafely,
+  runWithBoundedConcurrency, withBoundedTimeout,
   ThreadCleanupError,
   waitForDeployedWorkspace, writeFinalSafetyReports,
   type ApiResult, type DeployedApi, type RestorableProfile, type RestorableUsagePreferences,
@@ -126,16 +127,16 @@ test('production capability workflows use typed chat observers only', () => {
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
   )
   for (const [observer, matcher] of [
-    ['editRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
-    ['editResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
-    ['regenerateRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
-    ['regenerateResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
-    ['continuationRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
-    ['continuationResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
+    ['editRequestPromise', 'waitForRequest'],
+    ['editResponsePromise', 'waitForResponse'],
+    ['regenerateRequestPromise', 'waitForRequest'],
+    ['regenerateResponsePromise', 'waitForResponse'],
+    ['continuationRequestPromise', 'waitForRequest'],
+    ['continuationResponsePromise', 'waitForResponse'],
   ]) {
-    expect(spec).toContain(
-      `const ${observer} = observePlaywrightPromise(page.${matcher})`,
-    )
+    expect(spec).toMatch(new RegExp(
+      `const ${observer} = observePlaywrightPromise\\(page\\.${matcher}\\(\\s*isPostChatStream${matcher === 'waitForRequest' ? 'Request' : 'Response'}`,
+    ))
   }
   const cancellation = spec.slice(
     spec.indexOf('let cancellationRequestId'),
@@ -145,7 +146,7 @@ test('production capability workflows use typed chat observers only', () => {
     /requestPromise\s*=\s*observePlaywrightPromise\(page\.waitForRequest\(\s*isPostChatStreamRequest/,
   )
   expect(cancellation).toMatch(
-    /cancellationTerminalResponse\s*=\s*observePlaywrightPromise\(page\.waitForResponse\(\s*isPostChatStreamResponse/,
+    /cancellationResponseObserver\s*=\s*observePlaywrightPromise\(page\.waitForResponse\(\s*isPostChatStreamResponse/,
   )
   const requestObservers = [...spec.matchAll(/waitForRequest\(([\s\S]{0,120})/g)]
   expect(requestObservers).toHaveLength(5)
@@ -158,6 +159,75 @@ test('production capability workflows use typed chat observers only', () => {
     'cancel_http_failed', 'terminal_audit_timeout',
     'cancellation_settlement_inconsistent',
   ]) expect(cancellation).toContain(reason)
+  expect(cancellation).not.toContain('.body()')
+  expect(cancellation).toContain('discoverGeneratedThread')
+  expect(cancellation).toContain('pollAudit(')
+})
+
+test('production capability browser waits and cleanup are independently bounded', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain("page.waitForEvent(\n            'download', { timeout:BROWSER_TOOL_TIMEOUT_MS }")
+  expect(spec).toContain("'response_download_timeout'")
+  expect(spec).toContain('const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS')
+  expect(spec).toContain('const executionDeadline = testStartedAt')
+  expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
+  expect(spec).toContain('const audits = await pollAudits(api, [...benchmarkRequestIds], timeout)')
+  expect(spec).not.toMatch(/for \(const requestId of benchmarkRequestIds\)[\s\S]{0,300}pollAudit/)
+  expect(spec).toContain('const heartbeat = setInterval(')
+  expect(spec).toContain('completed_scenario_ids:')
+  expect(spec).toContain('last_progress_timestamp:lastProgressTimestamp')
+  expect(spec).toContain("progress('safe_summary_write_start'")
+  expect(spec).toContain("progress('safe_summary_write_complete'")
+})
+
+test('hanging deployed API requests fail with a bounded transport reason', async () => {
+  const requestContext = {
+    fetch:vi.fn(() => new Promise(() => undefined)),
+    post:vi.fn(() => new Promise(() => undefined)),
+  } as unknown as APIRequestContext
+  const api = new AuthenticatedDeployedApi(
+    requestContext, 'https://redacted.invalid', 'Bearer redacted', 20,
+  )
+  await expect(api.request('GET', '/api/web/never'))
+    .rejects.toMatchObject({ reasonCode:'deployed_api_timeout' })
+  await expect(api.requestMultipart('/api/web/uploads', {
+    file:{ name:'synthetic.txt', mimeType:'text/plain', buffer:Buffer.from('x') },
+  })).rejects.toMatchObject({ reasonCode:'deployed_api_timeout' })
+})
+
+test('one timed-out cleanup action does not stop later cleanup work', async () => {
+  const cleanupErrors: string[] = []
+  const completed: string[] = []
+  await runWithBoundedConcurrency(['hang', 'later'], 1, async item => {
+    await runCleanupActionSafely(cleanupErrors, `${item}_timeout`, async () => {
+      if (item === 'hang') await new Promise(() => undefined)
+      completed.push(item)
+    }, 20)
+  })
+  expect(cleanupErrors).toEqual(['hang_timeout'])
+  expect(completed).toEqual(['later'])
+})
+
+test('bounded workflow timeout still permits safe-summary generation', async () => {
+  let safeSummaryWritten = false
+  let primaryFailure: string | null = 'website_audit_timeout'
+  await expect(withBoundedTimeout(
+    () => new Promise(() => undefined), 20, 'website_audit_timeout',
+  )).rejects.toThrow('website_audit_timeout')
+  const cleanupErrors = ['cleanup_global_timeout']
+  const report = await writeFinalSafetyReports({
+    primaryFailure,
+    cleanupErrors,
+    preliminaryReports:[],
+    buildSafeSummary:errors => ({ primary_failure:primaryFailure, errors }),
+    writeSafeSummary:async () => { safeSummaryWritten = true },
+  })
+  primaryFailure = report.primaryFailure
+  expect(primaryFailure).toBe('website_audit_timeout')
+  expect(report.cleanupErrors).toContain('cleanup_global_timeout')
+  expect(safeSummaryWritten).toBe(true)
 })
 
 test('production capability search distinguishes API, index, UI, and opening failures', () => {

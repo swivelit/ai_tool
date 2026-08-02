@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Response } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
@@ -13,6 +13,8 @@ import {
   observePlaywrightPromise,
   restoreProfile,
   runCleanupActionSafely,
+  runWithBoundedConcurrency,
+  withBoundedTimeout,
   writeFinalSafetyReports,
   type AuthenticatedDeployedApi,
   type DeployedApi,
@@ -30,12 +32,14 @@ import {
   DebitBudget,
   batchIncludes,
   bulletLines,
+  capabilityEffectiveTimeoutMs,
   countSentences,
   countWords,
   deploymentParitySafeSummary,
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
+  formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
   newCapabilityRunId,
   parseSseEventOrder,
@@ -80,9 +84,13 @@ test.skip(
 )
 test.describe.configure({ mode:'serial' })
 
-const TEST_TIMEOUT_MS = 180 * 60 * 1000
 const CHAT_START_INTERVAL_MS = 5_100
 const UPLOAD_START_INTERVAL_MS = 6_100
+const QUESTION_DEADLINE_MS = 6 * 60_000
+const WEBSITE_AUDIT_DEADLINE_MS = 10 * 60_000
+const CLEANUP_DEADLINE_MS = 5 * 60_000
+const RESPONSE_BODY_TIMEOUT_MS = 30_000
+const BROWSER_TOOL_TIMEOUT_MS = 15_000
 
 type Wallet = {
   available_micros: number
@@ -264,6 +272,20 @@ type WorkflowResult = {
   reasonCodes: string[]
   requestIds: string[]
   severity: 'P0' | 'P1' | 'P2' | 'P3' | null
+}
+
+class CheckpointingArray<T> extends Array<T> {
+  static get [Symbol.species](): ArrayConstructor { return Array }
+
+  constructor(private readonly checkpoint: (items: readonly T[]) => void) {
+    super()
+  }
+
+  override push(...items: T[]): number {
+    const length = super.push(...items)
+    this.checkpoint(items)
+    return length
+  }
 }
 
 function scenarioId(question: CapabilityQuestion): string {
@@ -456,10 +478,18 @@ class PaceGate {
   }
 }
 
-async function allThreads(api: DeployedApi, archived: boolean): Promise<Thread[]> {
+async function allThreads(
+  api: DeployedApi, archived: boolean, timeoutMilliseconds = 30_000,
+): Promise<Thread[]> {
   const output: Thread[] = []
+  const deadline = Date.now() + timeoutMilliseconds
   for (let offset = 0; offset < 1_000; offset += 100) {
-    const response = await api.request<ThreadList>('GET', `/api/web/threads?archived=${archived}&limit=100&offset=${offset}`)
+    const remaining = deadline - Date.now()
+    if (remaining < 1) throw new Error('thread_snapshot_timeout')
+    const response = await api.request<ThreadList>(
+      'GET', `/api/web/threads?archived=${archived}&limit=100&offset=${offset}`,
+      undefined, { timeoutMilliseconds:Math.min(5_000, remaining) },
+    )
     if (response.status !== 200 || !response.data) throw new Error('thread_snapshot_failed')
     output.push(...response.data.items)
     if (!response.data.has_more) return output
@@ -478,8 +508,10 @@ async function pollThreadTitleSearch(
 ): Promise<SearchWorkflowFailure | null> {
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
+    const requestTimeout = Math.max(1, Math.min(5_000, deadline - Date.now()))
     const response = await api.request<ThreadList>(
       'GET', `/api/web/threads?archived=false&q=${encodeURIComponent(marker)}&limit=20&offset=0`,
+      undefined, { timeoutMilliseconds:requestTimeout },
     ).catch(() => ({ status:0, data:null }))
     if (response.status !== 200 || !response.data) return 'search_api_failed'
     if (response.data.items.some(item => item.id === expectedThreadId)) return null
@@ -494,29 +526,54 @@ async function readWallet(api: DeployedApi): Promise<WalletResponse> {
   return response.data
 }
 
-async function pollAudit(api: DeployedApi, requestId: string): Promise<Audit> {
-  const deadline = Date.now() + 60_000
-  let last: Audit | null = null
+async function pollAudits(
+  api: DeployedApi,
+  requestIds: readonly string[],
+  timeoutMilliseconds = 60_000,
+): Promise<Map<string, Audit>> {
+  const uniqueIds = [...new Set(requestIds)].filter(id => /^[0-9a-f-]{36}$/i.test(id))
+  if (uniqueIds.length === 0) return new Map()
+  const deadline = Date.now() + timeoutMilliseconds
+  const last = new Map<string, Audit>()
   while (Date.now() < deadline) {
+    const requestTimeout = Math.max(1, Math.min(15_000, deadline - Date.now()))
     const response = await api.request<{ results: Audit[] }>(
-      'POST', '/api/web/admin/triag-request-audit', { request_ids:[requestId] },
+      'POST', '/api/web/admin/triag-request-audit', { request_ids:uniqueIds },
+      { timeoutMilliseconds:requestTimeout },
     ).catch(() => ({ status:0, data:null }))
-    const current = response.data?.results[0]
-    if (current) last = current
-    if (current && !current.orphaned_active_reservation && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)) return current
+    for (const current of response.data?.results ?? []) last.set(current.request_id, current)
+    const terminal = uniqueIds.every(id => {
+      const current = last.get(id)
+      return current
+        && !current.orphaned_active_reservation
+        && current.active_usage_stage_names.length === 0
+        && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)
+    })
+    if (terminal) return last
     await new Promise(resolveWait => setTimeout(resolveWait, 500))
   }
-  if (last) return last
+  if (last.size === uniqueIds.length) return last
+  throw new Error('request_audit_timeout')
+}
+
+async function pollAudit(
+  api: DeployedApi, requestId: string, timeoutMilliseconds = 60_000,
+): Promise<Audit> {
+  const audits = await pollAudits(api, [requestId], timeoutMilliseconds)
+  const audit = audits.get(requestId)
+  if (audit) return audit
   throw new Error('request_audit_timeout')
 }
 
 async function pollCancellationActive(
-  api: DeployedApi, requestId: string,
+  api: DeployedApi, requestId: string, timeoutMilliseconds = 15_000,
 ): Promise<'active' | 'terminal' | 'timeout'> {
-  const deadline = Date.now() + 15_000
+  const deadline = Date.now() + timeoutMilliseconds
   while (Date.now() < deadline) {
+    const requestTimeout = Math.max(1, Math.min(5_000, deadline - Date.now()))
     const response = await api.request<{ results: Audit[] }>(
       'POST', '/api/web/admin/triag-request-audit', { request_ids:[requestId] },
+      { timeoutMilliseconds:requestTimeout },
     ).catch(() => ({ status:0, data:null }))
     const current = response.data?.results[0]
     if (current && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)) {
@@ -534,7 +591,39 @@ async function pollCancellationActive(
 }
 
 async function freshChat(page: Page): Promise<void> {
-  await stabilizeFreshChat(playwrightFreshChatProbe(page))
+  await withBoundedTimeout(
+    () => stabilizeFreshChat(playwrightFreshChatProbe(page)),
+    30_000,
+    'fresh_chat_timeout',
+  )
+}
+
+async function boundedResponseJson<T>(
+  response: { json: () => Promise<unknown> },
+  timeoutMilliseconds = RESPONSE_BODY_TIMEOUT_MS,
+): Promise<T | null> {
+  return withBoundedTimeout(
+    () => response.json() as Promise<T>,
+    timeoutMilliseconds,
+    'response_body_timeout',
+  ).catch(() => null)
+}
+
+async function discoverGeneratedThread(
+  api: DeployedApi,
+  before: ReadonlySet<string>,
+  timeoutMilliseconds = 15_000,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMilliseconds
+  while (Date.now() < deadline) {
+    const threads = await allThreads(
+      api, false, Math.max(1, Math.min(5_000, deadline - Date.now())),
+    ).catch(() => [])
+    const discovered = threads.find(thread => !before.has(thread.id))
+    if (discovered) return discovered.id
+    await new Promise(resolveWait => setTimeout(resolveWait, 300))
+  }
+  return null
 }
 
 async function selectTier(
@@ -549,11 +638,11 @@ async function selectTier(
     const response = observePlaywrightPromise(page.waitForResponse(value => (
       new URL(value.url()).pathname === '/api/web/settings/assistant'
       && value.request().method() === 'PATCH'
-    )))
+    ), { timeout:30_000 }))
     await choice.click()
     const observed = await response
     if (observed.status() !== 200) throw new Error(`tier_selection_failed:${target}`)
-    const saved = await observed.json().catch(() => ({})) as { tier?: unknown }
+    const saved = await boundedResponseJson<{ tier?: unknown }>(observed) ?? {}
     if (saved.tier !== target) throw new Error(`tier_selection_response_mismatch:${target}`)
   }
   await expect(selector).toHaveAttribute('data-selected-tier', target, { timeout:30_000 })
@@ -621,7 +710,7 @@ async function uploadThroughComposer(
   ), { timeout:60_000 }))
   await page.getByLabel('Upload files').setInputFiles(file)
   const observed = await response
-  const body = await observed.json().catch(() => ({})) as FixtureUpload
+  const body = await boundedResponseJson<FixtureUpload>(observed) ?? {} as FixtureUpload
   if (observed.status() !== 201 || !body.id) throw new Error(`upload_failed:${observed.status()}`)
   await expect(page.locator('.attachment-chip.ready')).toBeVisible({ timeout:60_000 })
   return body
@@ -640,7 +729,7 @@ async function uploadRepositoryThroughComposer(
     buffer:pricingRepositoryZip(runId),
   })
   const observed = await response
-  const body = await observed.json().catch(() => ({})) as { id?: unknown }
+  const body = await boundedResponseJson<{ id?: unknown }>(observed) ?? {}
   if (![200, 201].includes(observed.status()) || typeof body.id !== 'string') {
     throw new Error(`repository_upload_failed:${observed.status()}`)
   }
@@ -683,7 +772,7 @@ async function readDeployedBackendRelease(
     })
     const httpStatus = response.status()
     if (httpStatus !== 200) return { release:null, httpStatus }
-    const body = await response.json().catch(() => null)
+    const body = await boundedResponseJson<unknown>(response, timeoutMs)
     return {
       release:releaseShaFromVersionPayload(body),
       httpStatus,
@@ -694,8 +783,11 @@ async function readDeployedBackendRelease(
 }
 
 test('production-safe standalone Swico capability benchmark', async ({ page, context }) => {
-  test.setTimeout(TEST_TIMEOUT_MS)
   const gate = productionCapabilityGate(process.env)
+  test.setTimeout(capabilityEffectiveTimeoutMs(gate.batch))
+  const testStartedAt = Date.now()
+  page.setDefaultTimeout(30_000)
+  page.setDefaultNavigationTimeout(30_000)
   const runId = newCapabilityRunId()
   const safeSummaryPath = resolve(process.cwd(), 'test-results/production-capability-summary.json')
   try {
@@ -735,10 +827,42 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       )
     },
   })
+  const benchmarkStartedAt = Date.now()
+  const executionDeadline = testStartedAt
+    + capabilityEffectiveTimeoutMs(gate.batch)
+    - CLEANUP_DEADLINE_MS
+    - 120_000
+  let currentPhase = 'startup'
+  let currentScenarioId: string | null = null
+  let lastProgressTimestamp = new Date().toISOString()
+  const progress = (
+    kind: Parameters<typeof formatCapabilityProgress>[0]['kind'],
+    phase = currentPhase,
+    scenarioId: string | null = currentScenarioId,
+    requestId?: string | null,
+  ) => {
+    currentPhase = phase
+    currentScenarioId = scenarioId
+    lastProgressTimestamp = new Date().toISOString()
+    console.log(formatCapabilityProgress({
+      kind,
+      phase,
+      scenarioId,
+      requestId,
+      elapsedSeconds:Math.floor((Date.now() - benchmarkStartedAt) / 1_000),
+    }))
+  }
+  progress('parity_passed', 'preflight', null)
   const privateRoot = resolve(process.cwd(), 'test-results/swico-capability-private', runId)
   await mkdir(privateRoot, { recursive:true })
-  const results: QuestionResult[] = []
-  const workflowResults: WorkflowResult[] = []
+  let scheduleCheckpoint = () => undefined
+  const results = new CheckpointingArray<QuestionResult>(() => scheduleCheckpoint())
+  const workflowResults = new CheckpointingArray<WorkflowResult>(items => {
+    for (const item of items) {
+      progress('workflow_complete', 'workflow', item.id, item.requestIds.at(-1))
+    }
+    scheduleCheckpoint()
+  })
   const generatedThreadIds = new Set<string>()
   const generatedUploadIds = new Set<string>()
   const generatedKnowledgeIds = new Set<string>()
@@ -758,6 +882,42 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
   const uploadPace = new PaceGate(UPLOAD_START_INTERVAL_MS)
   const budget = new DebitBudget(gate.chatDebitCapMicros, gate.voiceDebitCapMicros)
+  let checkpointCleanupStatus = 'not_started'
+  let checkpointQueue = Promise.resolve()
+  scheduleCheckpoint = () => {
+    const checkpoint = {
+      run_id:runId,
+      current_phase:currentPhase,
+      completed_scenario_ids:[...results.map(item => item.scenarioId), ...workflowResults.map(item => item.id)],
+      request_ids:[...benchmarkRequestIds],
+      statuses:Object.fromEntries([
+        ...results.map(item => [item.scenarioId, item.status] as const),
+        ...workflowResults.map(item => [item.id, item.status] as const),
+      ]),
+      current_debit_totals:budget.snapshot(),
+      cleanup_status:checkpointCleanupStatus,
+      last_progress_timestamp:lastProgressTimestamp,
+    }
+    checkpointQueue = checkpointQueue.then(async () => {
+      await mkdir(resolve(process.cwd(), 'test-results'), { recursive:true })
+      await writeFile(
+        safeSummaryPath,
+        JSON.stringify(checkpoint, null, 2),
+        { mode:0o600 },
+      )
+    }).catch(() => {
+      if (!cleanupErrors.includes('checkpoint_summary_write_failed')) {
+        cleanupErrors.push('checkpoint_summary_write_failed')
+      }
+    })
+  }
+  const heartbeat = setInterval(() => {
+    progress('heartbeat')
+    scheduleCheckpoint()
+  }, 30_000)
+  const workflowStart = (id: string) => progress(
+    'workflow_start', 'workflow', id,
+  )
   let api: AuthenticatedDeployedApi | null = null
   let bootstrap: Bootstrap | null = null
   let originalProfile: RestorableProfile | null = null
@@ -783,16 +943,33 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     failedRequests.push(`${request.method()} ${path}: ${request.failure()?.errorText ?? 'failed'}`.slice(0, 500))
   })
 
-  const runQuestion = async (
+  const executeQuestion = async (
     source: CapabilityQuestion,
     options: { composerText?: string; virtualText?: boolean } = {},
   ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
+    if (Date.now() >= executionDeadline) throw new Error('batch_deadline_exceeded')
     const question = materializeQuestion(source, runId)
+    const activeScenarioId = scenarioId(question)
+    const questionDeadline = Math.min(
+      executionDeadline, Date.now() + QUESTION_DEADLINE_MS,
+    )
+    const remaining = (maximum: number) => Math.max(
+      1, Math.min(maximum, questionDeadline - Date.now()),
+    )
+    progress('question_start', 'question', activeScenarioId)
     const tier = question.tier ?? 'standard'
-    if (question.freshThread || question.category === 'B' || question.category === 'C' || question.category === 'F' || question.category === 'H') {
+    const createsFreshThread = question.freshThread
+      || question.category === 'B'
+      || question.category === 'C'
+      || question.category === 'F'
+      || question.category === 'H'
+    if (createsFreshThread) {
       await freshChat(page)
     }
+    const threadsBefore = createsFreshThread
+      ? new Set((await allThreads(api, false)).map(thread => thread.id))
+      : null
     const selectedTierEvidence = await selectTier(page, api, tier)
     budget.assertRequestMayStart('chat')
     await chatPace.wait()
@@ -801,16 +978,16 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const startedAt = Date.now()
     const startedAtUtc = new Date(startedAt).toISOString()
     const requestPromise = observePlaywrightPromise(page.waitForRequest(
-      isPostChatStreamRequest, { timeout:30_000 },
+      isPostChatStreamRequest, { timeout:remaining(30_000) },
     ))
     const responsePromise = observePlaywrightPromise(page.waitForResponse(
-      isPostChatStreamResponse, { timeout:60_000 },
+      isPostChatStreamResponse, { timeout:remaining(60_000) },
     ))
     const virtualUploadPromise = options.virtualText
       ? observePlaywrightPromise(page.waitForResponse(response => (
         new URL(response.url()).pathname === '/api/web/uploads/text'
         && response.request().method() === 'POST'
-      ), { timeout:60_000 }))
+      ), { timeout:remaining(60_000) }))
       : null
     await page.getByLabel('Message Swico').fill(options.composerText ?? question.prompt)
     if (options.virtualText) {
@@ -819,7 +996,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     await page.getByRole('button', { name:'Send message' }).click()
     if (virtualUploadPromise) {
       const virtualUploadResponse = await virtualUploadPromise
-      const virtualUpload = await virtualUploadResponse.json().catch(() => ({})) as FixtureUpload
+      const virtualUpload = await boundedResponseJson<FixtureUpload>(virtualUploadResponse) ?? {} as FixtureUpload
       if (![200, 201].includes(virtualUploadResponse.status()) || !virtualUpload.id) {
         throw new Error(`virtual_text_upload_failed:${virtualUploadResponse.status()}`)
       }
@@ -834,26 +1011,39 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     requestPayloads.set(requestId, payload)
     const response = await responsePromise
     const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
-    await assistant.waitFor({ state:'visible', timeout:90_000 })
+    await assistant.waitFor({ state:'visible', timeout:remaining(90_000) })
     let firstVisibleDeltaMs: number | null = null
-    const firstDeltaDeadline = Date.now() + 180_000
+    const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
     while (Date.now() < firstDeltaDeadline) {
       const text = await visibleAnswer(assistant).catch(() => '')
       if (text) { firstVisibleDeltaMs = Date.now() - startedAt; break }
       if (!await assistant.evaluate(element => element.classList.contains('streaming'))) break
       await new Promise(resolveWait => setTimeout(resolveWait, 50))
     }
-    await expect(assistant).not.toHaveClass(/streaming/, { timeout:300_000 })
+    await expect(assistant).not.toHaveClass(/streaming/, {
+      timeout:remaining(300_000),
+    })
     const endedAt = Date.now()
     const endedAtUtc = new Date(endedAt).toISOString()
     let rawSse = ''
-    try { rawSse = (await response.body()).toString('utf8') } catch { rawSse = '' }
+    try {
+      rawSse = (await withBoundedTimeout(
+        () => response.body(),
+        remaining(RESPONSE_BODY_TIMEOUT_MS),
+        'response_body_timeout',
+      )).toString('utf8')
+    } catch { rawSse = '' }
     const events = parseSseEventOrder(rawSse)
     const threadEvent = sseData(rawSse, 'thread').at(0)
     const doneEvent = sseData(rawSse, 'done').at(-1)
     const usageEvent = sseData(rawSse, 'usage').at(-1)
     const qualityEvent = sseData(rawSse, 'quality').at(-1)
-    const threadId = String(threadEvent?.thread_id ?? payload.thread_id ?? '')
+    let threadId = String(threadEvent?.thread_id ?? payload.thread_id ?? '')
+    if (!threadId && threadsBefore) {
+      threadId = await discoverGeneratedThread(
+        api, threadsBefore, remaining(15_000),
+      ) ?? ''
+    }
     if (threadId) generatedThreadIds.add(threadId)
     const raw = threadId ? await rawMessage(api, threadId, requestId) : null
     const displayed = await visibleAnswer(assistant)
@@ -867,7 +1057,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const sources = await sourceRows(assistant)
     const persistedSourceIds = new Set((raw?.sources ?? []).map(source => source.id))
     const invalidCitation = sources.some(source => !persistedSourceIds.has(source.id))
-    const audit = await pollAudit(api, requestId)
+    const audit = await pollAudit(api, requestId, remaining(60_000))
     const payloadTier = typeof payload.tier === 'string' ? payload.tier : null
     const tierEvidence: CapabilityTierEvidence = {
       expectedTier:tier,
@@ -968,6 +1158,25 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     return result
   }
 
+  const runQuestion = async (
+    source: CapabilityQuestion,
+    options: { composerText?: string; virtualText?: boolean } = {},
+  ): Promise<QuestionResult> => {
+    const activeScenarioId = scenarioId(materializeQuestion(source, runId))
+    try {
+      const result = await executeQuestion(source, options)
+      progress('question_complete', 'question', activeScenarioId, result.requestId)
+      scheduleCheckpoint()
+      await checkpointQueue
+      return result
+    } catch (error) {
+      progress('question_complete', 'question', activeScenarioId)
+      scheduleCheckpoint()
+      await checkpointQueue
+      throw error
+    }
+  }
+
   const approveKnowledge = async (uploadId: string): Promise<string> => {
     if (!api) throw new Error('benchmark_not_authenticated')
     const response = await api.request<{ document: KnowledgeDocument }>(
@@ -1028,13 +1237,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         await d01User.getByLabel('Edit message').fill('I am building an inventory API with Django, MySQL, and Valkey. The stock-reservation endpoint occasionally applies the same reservation twice after a client retry. Keep these details in this thread.')
         budget.assertRequestMayStart('chat')
         await chatPace.wait()
-        const editRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
-        const editResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
+        const editRequestPromise = observePlaywrightPromise(page.waitForRequest(
+          isPostChatStreamRequest, { timeout:30_000 },
+        ))
+        const editResponsePromise = observePlaywrightPromise(page.waitForResponse(
+          isPostChatStreamResponse, { timeout:60_000 },
+        ))
         await d01User.getByRole('button', { name:'Save and regenerate' }).click()
         const editRequest = await editRequestPromise
         const editRequestId = String((editRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
         benchmarkRequestIds.add(editRequestId)
-        await (await editResponsePromise).body()
+        await editResponsePromise
         await expect(page.locator('.message.assistant').last()).not.toHaveClass(/streaming/, { timeout:300_000 })
         const editAudit = await pollAudit(api!, editRequestId)
         budget.observeAuthoritativeCharge('chat', editAudit.charged_micro_inr_total)
@@ -1052,13 +1265,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         }
         budget.assertRequestMayStart('chat')
         await chatPace.wait()
-        const regenerateRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
-        const regenerateResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
+        const regenerateRequestPromise = observePlaywrightPromise(page.waitForRequest(
+          isPostChatStreamRequest, { timeout:30_000 },
+        ))
+        const regenerateResponsePromise = observePlaywrightPromise(page.waitForResponse(
+          isPostChatStreamResponse, { timeout:60_000 },
+        ))
         await page.locator('.message.assistant').last().getByRole('button', { name:'Regenerate answer' }).click()
         const regenerateRequest = await regenerateRequestPromise
         const regenerateRequestId = String((regenerateRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
         benchmarkRequestIds.add(regenerateRequestId)
-        await (await regenerateResponsePromise).body()
+        await regenerateResponsePromise
         await expect(page.locator('.message.assistant').last()).not.toHaveClass(/streaming/, { timeout:300_000 })
         const regenerateAudit = await pollAudit(api!, regenerateRequestId)
         budget.observeAuthoritativeCharge('chat', regenerateAudit.charged_micro_inr_total)
@@ -1095,13 +1312,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const before = long.rawMarkdown
       budget.assertRequestMayStart('chat')
       await chatPace.wait()
-      const continuationRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
-      const continuationResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
+      const continuationRequestPromise = observePlaywrightPromise(page.waitForRequest(
+        isPostChatStreamRequest, { timeout:30_000 },
+      ))
+      const continuationResponsePromise = observePlaywrightPromise(page.waitForResponse(
+        isPostChatStreamResponse, { timeout:60_000 },
+      ))
       await button.click()
       const continuationRequest = await continuationRequestPromise
       const continuationRequestId = String((continuationRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
       benchmarkRequestIds.add(continuationRequestId)
-      await (await continuationResponsePromise).body()
+      await continuationResponsePromise
       await expect(page.locator('.message.assistant').last()).not.toHaveClass(/streaming/, { timeout:300_000 })
       const continuationAudit = await pollAudit(api!, continuationRequestId)
       budget.observeAuthoritativeCharge('chat', continuationAudit.charged_micro_inr_total)
@@ -1294,8 +1515,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
   }
 
-  const runWebsiteAudit = async () => {
+  const runWebsiteAudit = async (
+    assertWithinDeadline: () => number = () => WEBSITE_AUDIT_DEADLINE_MS,
+  ) => {
     if (!api) throw new Error('benchmark_not_authenticated')
+    assertWithinDeadline()
+    workflowStart('J-RESPONSE-TOOLS')
     const currentAssistant = page.locator('.message.assistant').last()
     const currentRequestId = await currentAssistant.getAttribute('data-request-id')
     const currentResult = results.find(item => item.requestId === currentRequestId)
@@ -1303,27 +1528,64 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       workflowResults.push({ id:'J-RESPONSE-TOOLS', status:'skipped', reasonCodes:['no_current_generated_answer'], requestIds:[], severity:null })
     } else {
       try {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-        await currentAssistant.getByRole('button', { name:'Copy response' }).click()
-        const clipboard = await page.evaluate(() => navigator.clipboard.readText())
+        await withBoundedTimeout(
+          () => context.grantPermissions(['clipboard-read', 'clipboard-write']),
+          BROWSER_TOOL_TIMEOUT_MS,
+          'clipboard_timeout',
+        )
+        await currentAssistant.getByRole('button', { name:'Copy response' }).click({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
+        const clipboard = await withBoundedTimeout(
+          () => page.evaluate(() => navigator.clipboard.readText()),
+          BROWSER_TOOL_TIMEOUT_MS,
+          'clipboard_timeout',
+        )
         const copyPassed = clipboard.trim() === currentResult.rawMarkdown.trim()
 
-        const downloadPromise = page.waitForEvent('download')
-        await currentAssistant.getByRole('button', { name:'Download response' }).click()
-        const download = await downloadPromise
-        const downloadPath = await download.path()
-        const downloaded = downloadPath ? await readFile(downloadPath, 'utf8') : ''
-        const downloadPassed = downloaded.trim() === currentResult.rawMarkdown.trim()
+        let downloadPassed = false
+        let downloadTimedOut = false
+        try {
+          const downloadPromise = observePlaywrightPromise(page.waitForEvent(
+            'download', { timeout:BROWSER_TOOL_TIMEOUT_MS },
+          ))
+          await currentAssistant.getByRole('button', { name:'Download response' }).click({
+            timeout:BROWSER_TOOL_TIMEOUT_MS,
+          })
+          const download = await downloadPromise
+          const downloadPath = await withBoundedTimeout(
+            () => download.path(), BROWSER_TOOL_TIMEOUT_MS,
+            'response_download_timeout',
+          )
+          const downloaded = downloadPath
+            ? await withBoundedTimeout(
+              () => readFile(downloadPath, 'utf8'), BROWSER_TOOL_TIMEOUT_MS,
+              'response_download_timeout',
+            ) : ''
+          downloadPassed = downloaded.trim() === currentResult.rawMarkdown.trim()
+        } catch {
+          downloadTimedOut = true
+        }
 
         const before = currentResult.rawMarkdown
-        await currentAssistant.getByRole('button', { name:'Open response editor' }).click()
+        await currentAssistant.getByRole('button', { name:'Open response editor' }).click({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
         const editor = page.getByRole('dialog', { name:'Response editor' })
-        await editor.getByRole('button', { name:'Markdown source' }).click()
+        await editor.getByRole('button', { name:'Markdown source' }).click({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
         const source = editor.getByLabel('Response Markdown source')
-        await source.fill(`${before}\n\nLOCAL-${runId}`)
-        await editor.getByRole('button', { name:'Apply changes' }).click()
-        await expect(editor.getByText(`LOCAL-${runId}`)).toBeVisible()
-        await editor.getByRole('button', { name:'Close response editor' }).click()
+        await source.fill(`${before}\n\nLOCAL-${runId}`, { timeout:BROWSER_TOOL_TIMEOUT_MS })
+        await editor.getByRole('button', { name:'Apply changes' }).click({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
+        await expect(editor.getByText(`LOCAL-${runId}`)).toBeVisible({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
+        await editor.getByRole('button', { name:'Close response editor' }).click({
+          timeout:BROWSER_TOOL_TIMEOUT_MS,
+        })
         const persisted = currentResult.threadId
           ? await rawMessage(api, currentResult.threadId, currentResult.requestId!) : null
         const localOnly = persisted?.content === before
@@ -1332,11 +1594,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           status:copyPassed && downloadPassed && localOnly ? 'passed' : 'failed',
           reasonCodes:[
             ...(copyPassed ? [] : ['clipboard_mismatch']),
-            ...(downloadPassed ? [] : ['download_mismatch']),
+            ...(downloadPassed ? [] : [downloadTimedOut ? 'response_download_timeout' : 'download_mismatch']),
             ...(localOnly ? [] : ['local_edit_mutated_server_message']),
           ].length ? [
             ...(copyPassed ? [] : ['clipboard_mismatch']),
-            ...(downloadPassed ? [] : ['download_mismatch']),
+            ...(downloadPassed ? [] : [downloadTimedOut ? 'response_download_timeout' : 'download_mismatch']),
             ...(localOnly ? [] : ['local_edit_mutated_server_message']),
           ] : ['copy_download_editor_passed'],
           requestIds:[currentResult.requestId!], severity:copyPassed && downloadPassed && localOnly ? null : 'P2',
@@ -1346,22 +1608,26 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       }
     }
 
+    assertWithinDeadline()
+    workflowStart('J-FEEDBACK')
     const feedbackCandidates = page.locator('.message.assistant').filter({ has:page.getByRole('button', { name:'Good answer' }) })
     if (bootstrap?.features.web_answer_feedback && await feedbackCandidates.count() >= 2) {
       try {
         const first = feedbackCandidates.nth(0)
         const second = feedbackCandidates.nth(1)
         const requests = [await first.getAttribute('data-request-id'), await second.getAttribute('data-request-id')].filter((value): value is string => Boolean(value))
-        const upResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST'))
+        const upResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST', { timeout:30_000 }))
         await first.getByRole('button', { name:'Good answer' }).click()
         const up = await upResponse
-        const downResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST'))
+        const downResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST', { timeout:30_000 }))
         await second.getByRole('button', { name:'Bad answer' }).click()
         const down = await downResponse
         workflowResults.push({ id:'J-FEEDBACK', status:up.status() === 200 && down.status() === 200 ? 'passed' : 'failed', reasonCodes:up.status() === 200 && down.status() === 200 ? ['owner_scoped_feedback_saved'] : ['feedback_http_failure'], requestIds:requests, severity:up.status() === 200 && down.status() === 200 ? null : 'P2' })
       } catch { workflowResults.push({ id:'J-FEEDBACK', status:'failed', reasonCodes:['feedback_ui_failure'], requestIds:[], severity:'P2' }) }
     } else workflowResults.push({ id:'J-FEEDBACK', status:'skipped', reasonCodes:['feedback_disabled_or_insufficient_messages'], requestIds:[], severity:null })
 
+    assertWithinDeadline()
+    workflowStart('J-SEARCH')
     if (bootstrap?.features.web_content_search) {
       const target = [...generatedThreadIds].at(0)
       let searchFailure: SearchWorkflowFailure | null = null
@@ -1399,6 +1665,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       }
     } else workflowResults.push({ id:'J-SEARCH', status:'skipped', reasonCodes:['content_search_disabled'], requestIds:[], severity:null })
 
+    assertWithinDeadline()
+    workflowStart('J-ARCHIVE-RESTORE')
     const archiveTarget = [...generatedThreadIds].at(0)
     if (archiveTarget) {
       const archived = await api.request<Thread>('PATCH', `/api/web/threads/${encodeURIComponent(archiveTarget)}`, { archived:true })
@@ -1411,6 +1679,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       workflowResults.push({ id:'J-ARCHIVE-RESTORE', status:pass ? 'passed' : 'failed', reasonCodes:pass ? ['archive_restore_persisted'] : ['archive_restore_failed'], requestIds:[], severity:pass ? null : 'P2' })
     }
 
+    assertWithinDeadline()
+    workflowStart('J-REQUEST-IDEMPOTENCY')
     const idempotencyTarget = results.find(item => item.status === 'passed' && item.requestId && requestPayloads.has(item.requestId))
     if (idempotencyTarget) {
       const payload = requestPayloads.get(idempotencyTarget.requestId!)!
@@ -1427,21 +1697,28 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       workflowResults.push({ id:'J-REQUEST-IDEMPOTENCY', status:pass ? 'passed' : 'failed', reasonCodes:pass ? ['same_request_id_replayed_once'] : ['same_request_id_duplicate_state'], requestIds:[idempotencyTarget.requestId!], severity:pass ? null : 'P0' })
     }
 
+    assertWithinDeadline()
+    workflowStart('J-CANCELLATION')
     let cancellationRequestId: string | null = null
-    let cancellationTerminalResponse: Promise<Response> | null = null
+    let cancellationResponseObserver: Promise<unknown> | null = null
+    let cancellationThreadsBefore = new Set<string>()
     let cancellationChargeObserved = false
     let cancellationFailure: CapabilityCancellationReasonCode | null = null
     try {
       budget.assertRequestMayStart('chat')
       await freshChat(page)
       await selectTier(page, api, 'pro')
+      cancellationThreadsBefore = new Set(
+        (await allThreads(api, false)).map(thread => thread.id),
+      )
       await chatPace.wait()
       const requestPromise = observePlaywrightPromise(page.waitForRequest(
         isPostChatStreamRequest, { timeout:30_000 },
       ))
-      cancellationTerminalResponse = observePlaywrightPromise(page.waitForResponse(
+      cancellationResponseObserver = observePlaywrightPromise(page.waitForResponse(
         isPostChatStreamResponse, { timeout:120_000 },
       ))
+      void cancellationResponseObserver.catch(() => undefined)
       await page.getByLabel('Message Swico').fill(`For cancellation audit ${runId}, produce a long, detailed analysis of idempotent distributed transaction recovery with at least 100 separately numbered points.`)
       await page.getByRole('button', { name:'Send message' }).click()
       const request = await requestPromise
@@ -1451,13 +1728,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       cancellationRequestId = requestId
       benchmarkRequestIds.add(requestId)
       requestPayloads.set(requestId, payload)
-      const readiness = await pollCancellationActive(api, requestId)
+      const readiness = await pollCancellationActive(
+        api, requestId, Math.min(15_000, assertWithinDeadline()),
+      )
       if (readiness === 'terminal') throw new Error('request_completed_before_cancel')
       if (readiness === 'timeout') throw new Error('stop_button_not_ready')
       const stop = page.getByTestId('stop-generation-button')
       try {
         await expect(stop).toHaveAttribute(
-          'data-cancellation-ready', 'true', { timeout:30_000 },
+          'data-cancellation-ready', 'true', {
+            timeout:Math.min(30_000, assertWithinDeadline()),
+          },
         )
       } catch {
         throw new Error('stop_button_not_ready')
@@ -1466,13 +1747,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         new URL(response.url()).pathname
           === `/api/web/chat/requests/${requestId}/cancel`
         && response.request().method() === 'POST'
-      ), { timeout:30_000 }))
+      ), { timeout:Math.min(30_000, assertWithinDeadline()) }))
       await stop.click()
       const cancelResponse = await cancelResponsePromise.catch(() => null)
       if (!cancelResponse || cancelResponse.status() !== 200) {
         throw new Error('cancel_http_failed')
       }
-      const cancelBody = await cancelResponse.json().catch(() => ({})) as { status?: unknown }
+      const cancelBody = await boundedResponseJson<{ status?: unknown }>(
+        cancelResponse,
+      ) ?? {}
       const cancelStatus = boundedCancellationResponseStatus(cancelBody.status)
       if (['completed', 'already_terminal'].includes(cancelStatus)) {
         throw new Error('request_completed_before_cancel')
@@ -1480,11 +1763,16 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       if (!['stopped', 'cancelling'].includes(cancelStatus)) {
         throw new Error('cancel_http_failed')
       }
-      const response = await cancellationTerminalResponse
-      const raw = (await response.body()).toString('utf8')
-      const threadId = String(sseData(raw, 'thread').at(0)?.thread_id ?? '')
+      const threadId = await discoverGeneratedThread(
+        api, cancellationThreadsBefore,
+        Math.min(15_000, assertWithinDeadline()),
+      )
       if (threadId) generatedThreadIds.add(threadId)
-      const audit = await pollAudit(api, requestId)
+      const audit = await pollAudit(
+        api, requestId, Math.min(60_000, assertWithinDeadline()),
+      ).catch(() => {
+        throw new Error('terminal_audit_timeout')
+      })
       if (!['cancelled', 'complete', 'failed'].includes(audit.cancellation_state)) {
         throw new Error('terminal_audit_timeout')
       }
@@ -1501,16 +1789,14 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ? reason as CapabilityCancellationReasonCode
         : 'cancel_http_failed'
     } finally {
-      if (cancellationTerminalResponse) {
-        const terminal = await cancellationTerminalResponse.catch(() => null)
-        if (terminal) {
-          const raw = await terminal.body().then(body => body.toString('utf8')).catch(() => '')
-          const threadId = String(sseData(raw, 'thread').at(0)?.thread_id ?? '')
-          if (threadId) generatedThreadIds.add(threadId)
-        }
+      if (cancellationResponseObserver) {
+        void cancellationResponseObserver.then(() => undefined, () => undefined)
       }
       if (cancellationRequestId && !cancellationChargeObserved) {
-        const terminalAudit = await pollAudit(api, cancellationRequestId).catch(() => null)
+        const terminalAudit = await pollAudit(
+          api, cancellationRequestId,
+          Math.min(60_000, assertWithinDeadline()),
+        ).catch(() => null)
         if (terminalAudit) {
           budget.observeAuthoritativeCharge('chat', terminalAudit.charged_micro_inr_total)
           cancellationChargeObserved = true
@@ -1521,6 +1807,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           cancellationFailure = 'terminal_audit_timeout'
         }
       }
+      const threadId = await discoverGeneratedThread(
+        api, cancellationThreadsBefore,
+        Math.min(5_000, assertWithinDeadline()),
+      ).catch(() => null)
+      if (threadId) generatedThreadIds.add(threadId)
     }
     workflowResults.push({
       id:'J-CANCELLATION', status:cancellationFailure ? 'failed' : 'passed',
@@ -1530,6 +1821,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ? 'P0' : cancellationFailure ? 'P2' : null,
     })
 
+    assertWithinDeadline()
     workflowResults.push({ id:'J-DISCONNECT-RECOVERY', status:'skipped', reasonCodes:['existing_production_helpers_do_not_expose_safe_stream_disconnect_injection'], requestIds:[], severity:null })
     const publicConfig = await api.request<Record<string, unknown>>('GET', '/api/web/billing/public-config')
     const ledger = await api.request<{ items: unknown[] }>('GET', '/api/web/billing/ledger?limit=10&offset=0')
@@ -1624,6 +1916,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     )
     api = authenticated.api
     bootstrap = authenticated.bootstrap
+    progress('login_passed', 'startup', null)
     originalTier = bootstrap.assistant.tier
     const active = await allThreads(api, false)
     const archived = await allThreads(api, true)
@@ -1654,88 +1947,164 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     if (!stopAfterSecret && batchIncludes(gate.batch, 'rag')) await runRag()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'repository')) await runRepository()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'voice-ui')) await runVoice()
-    if (!stopAfterSecret && batchIncludes(gate.batch, 'core')) await runWebsiteAudit()
+    if (!stopAfterSecret && batchIncludes(gate.batch, 'core')) {
+      workflowStart('J-WEBSITE-AUDIT')
+      const websiteTimeout = Math.max(
+        1, Math.min(WEBSITE_AUDIT_DEADLINE_MS, executionDeadline - Date.now()),
+      )
+      const websiteDeadline = Date.now() + websiteTimeout
+      let websiteAuditAborted = false
+      const websiteAuditPromise = runWebsiteAudit(() => {
+        if (websiteAuditAborted || Date.now() >= websiteDeadline) {
+          throw new Error('website_audit_timeout')
+        }
+        return Math.max(1, websiteDeadline - Date.now())
+      })
+      void websiteAuditPromise.catch(() => undefined)
+      try {
+        await withBoundedTimeout(
+          () => websiteAuditPromise, websiteTimeout, 'website_audit_timeout',
+        )
+        workflowResults.push({
+          id:'J-WEBSITE-AUDIT', status:'passed',
+          reasonCodes:['website_audit_completed_within_deadline'],
+          requestIds:[], severity:null,
+        })
+      } catch (error) {
+        websiteAuditAborted = true
+        await page.goto('/', {
+          waitUntil:'domcontentloaded', timeout:15_000,
+        }).catch(() => null)
+        await withBoundedTimeout(
+          () => websiteAuditPromise.then(() => undefined, () => undefined),
+          30_000,
+          'website_audit_detach_timeout',
+        ).catch(() => undefined)
+        const reason = safeHarnessReason(error)
+        workflowResults.push({
+          id:'J-WEBSITE-AUDIT', status:'failed', reasonCodes:[reason],
+          requestIds:[], severity:'P2',
+        })
+        throw error
+      }
+    }
     if (!stopAfterSecret && gate.batch === 'all') await runOwnerIsolation()
   } catch (error) {
     primaryFailure ??= safeHarnessReason(error)
   } finally {
+    checkpointCleanupStatus = 'running'
+    progress('cleanup_start', 'cleanup', null)
+    scheduleCheckpoint()
+    const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS
+    const cleanupRemaining = (maximum = 30_000) => Math.max(
+      0, Math.min(maximum, cleanupDeadline - Date.now()),
+    )
+    const cleanupAction = async (
+      reasonCode: string,
+      action: () => Promise<void>,
+      maximum = 30_000,
+    ) => {
+      const timeout = cleanupRemaining(maximum)
+      if (timeout < 1) {
+        if (!cleanupErrors.includes('cleanup_global_timeout')) {
+          cleanupErrors.push('cleanup_global_timeout')
+        }
+        return
+      }
+      await runCleanupActionSafely(
+        cleanupErrors, reasonCode, action, timeout,
+      )
+    }
     if (api) {
-      for (const id of generatedMemoryIds) {
-        await runCleanupActionSafely(cleanupErrors, 'memory_delete_failed', async () => {
+      await runWithBoundedConcurrency([...generatedMemoryIds], 3, id => (
+        cleanupAction('memory_delete_failed', async () => {
           const deleted = await api.request('DELETE', `/api/web/settings/memory/${encodeURIComponent(id)}`)
           if (deleted.status !== 204 && deleted.status !== 404) throw new Error('memory_delete_failed')
         })
-      }
-      for (const id of generatedKnowledgeIds) {
-        await runCleanupActionSafely(cleanupErrors, 'knowledge_delete_failed', () => (
+      ))
+      await runWithBoundedConcurrency([...generatedKnowledgeIds], 3, id => (
+        cleanupAction('knowledge_delete_failed', () => (
           deleteGeneratedKnowledgeDocument(api!, id, originalKnowledgeIds)
         ))
-      }
-      for (const id of generatedRepositoryIds) {
-        await runCleanupActionSafely(cleanupErrors, 'repository_delete_failed', async () => {
+      ))
+      await runWithBoundedConcurrency([...generatedRepositoryIds], 3, id => (
+        cleanupAction('repository_delete_failed', async () => {
           await deleteGeneratedRepository(api, id)
           deletedRepositoryIds.add(id)
         })
-      }
-      for (const id of generatedUploadIds) {
-        await runCleanupActionSafely(cleanupErrors, 'upload_delete_failed', async () => {
+      ))
+      await runWithBoundedConcurrency([...generatedUploadIds], 3, id => (
+        cleanupAction('upload_delete_failed', async () => {
           await deleteGeneratedUpload(api, id)
           deletedUploadIds.add(id)
         })
-      }
-      for (const id of generatedThreadIds) {
-        if (originalThreads.has(id)) { cleanupErrors.push('generated_thread_matches_original'); continue }
-        await runCleanupActionSafely(cleanupErrors, 'thread_delete_failed', async () => {
+      ))
+      await runWithBoundedConcurrency([...generatedThreadIds], 2, async id => {
+        if (originalThreads.has(id)) {
+          cleanupErrors.push('generated_thread_matches_original')
+          return
+        }
+        await cleanupAction('thread_cleanup_timeout', async () => {
           await deleteGeneratedThread(api, id, new Set(originalThreads.keys()), generatedThreadIds)
-          await new Promise(resolveWait => setTimeout(resolveWait, 2_100))
-        })
-      }
+        }, 45_000)
+      })
       if (originalTier) {
-        await runCleanupActionSafely(cleanupErrors, 'tier_restore_failed', async () => {
+        await cleanupAction('tier_restore_failed', async () => {
           const restored = await api!.request('PATCH', '/api/web/settings/assistant', { tier:originalTier })
           if (restored.status !== 200) throw new Error('tier_restore_failed')
         })
       }
       if (originalProfile) {
-        await runCleanupActionSafely(cleanupErrors, 'profile_restore_failed', () => (
+        await cleanupAction('profile_restore_failed', () => (
           restoreProfile(api!, originalProfile!)
         ))
       }
       if (originalMemory) {
-        await runCleanupActionSafely(cleanupErrors, 'memory_state_restore_failed', async () => {
+        await cleanupAction('memory_state_restore_failed', async () => {
           const restored = await api!.request('PATCH', '/api/web/settings/memory', { enabled:originalMemory!.enabled })
           if (restored.status !== 200) throw new Error('memory_state_restore_failed')
         })
       }
-      await runCleanupActionSafely(cleanupErrors, 'thread_cleanup_verification_failed', async () => {
+      await cleanupAction('thread_cleanup_verification_failed', async () => {
         const remaining = new Set([...(await allThreads(api, false)), ...(await allThreads(api, true))].map(item => item.id))
         for (const id of originalThreads.keys()) if (!remaining.has(id)) cleanupErrors.push('original_thread_missing')
         for (const id of generatedThreadIds) if (remaining.has(id)) cleanupErrors.push('generated_thread_remains')
       })
-      await runCleanupActionSafely(cleanupErrors, 'knowledge_cleanup_verification_failed', async () => {
+      await cleanupAction('knowledge_cleanup_verification_failed', async () => {
         const knowledge = await api.request<{ items: KnowledgeDocument[] }>('GET', '/api/web/knowledge')
         const remainingKnowledge = new Set(knowledge.data?.items.map(item => item.id) ?? [])
         for (const id of originalKnowledgeIds) if (!remainingKnowledge.has(id)) cleanupErrors.push('original_knowledge_missing')
         for (const id of createdKnowledgeIds) if (remainingKnowledge.has(id)) cleanupErrors.push('generated_knowledge_remains')
       })
-      await runCleanupActionSafely(cleanupErrors, 'memory_cleanup_verification_failed', async () => {
+      await cleanupAction('memory_cleanup_verification_failed', async () => {
         const remainingMemory = await api.request<MemorySettings>('GET', '/api/web/settings/memory')
         const remainingMemoryIds = new Set(remainingMemory.data?.items.map(item => item.id) ?? [])
         for (const id of createdMemoryIds) if (remainingMemoryIds.has(id)) cleanupErrors.push('generated_memory_remains')
       })
       for (const id of createdRepositoryIds) if (!deletedRepositoryIds.has(id)) cleanupErrors.push('repository_delete_unconfirmed')
       for (const id of createdUploadIds) if (!deletedUploadIds.has(id)) cleanupErrors.push('upload_delete_unconfirmed')
-      await runCleanupActionSafely(cleanupErrors, 'wallet_reconciliation_failed', async () => {
+      await cleanupAction('wallet_reconciliation_failed', async () => {
         finalWallet = walletValues(await readWallet(api))
       })
-      for (const requestId of benchmarkRequestIds) {
-        await runCleanupActionSafely(cleanupErrors, 'usage_cleanup_verification_failed', async () => {
-          const audit = await pollAudit(api, requestId)
-          if (audit.orphaned_active_reservation || audit.active_usage_stage_names.length) cleanupErrors.push('active_usage_remains')
-        })
-      }
-      await runCleanupActionSafely(cleanupErrors, 'logout_failed', () => logoutDeployed(page))
+      await cleanupAction('usage_cleanup_timeout', async () => {
+        const timeout = cleanupRemaining(60_000)
+        if (timeout < 1) throw new Error('usage_cleanup_timeout')
+        const audits = await pollAudits(api, [...benchmarkRequestIds], timeout)
+        for (const audit of audits.values()) {
+          if (audit.orphaned_active_reservation || audit.active_usage_stage_names.length) {
+            cleanupErrors.push('active_usage_remains')
+          }
+        }
+      }, 60_000)
+      await cleanupAction(
+        'logout_timeout', () => logoutDeployed(page, cleanupRemaining(30_000)),
+      )
     }
+    checkpointCleanupStatus = cleanupErrors.length ? 'incomplete' : 'complete'
+    progress('cleanup_complete', 'cleanup', null)
+    clearInterval(heartbeat)
+    scheduleCheckpoint()
+    await checkpointQueue
 
     const debit = {
       chat:originalWallet && finalWallet ? Math.max(0, originalWallet.chat - finalWallet.chat) : null,
@@ -1860,6 +2229,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       cleanup:{ errors:cleanupErrors, final_wallet:finalWallet, debit },
     }
     const qa = results.map(item => `## ${item.scenarioId}\n\nExpected: ${item.expected}\n\nScore: ${item.score}\n\nStatus: ${item.status} (${item.reasonCodes.join(', ')})\n\nSwico answer:\n\n${item.visibleAnswer || '[NOT RUN]'}\n`).join('\n')
+    progress('safe_summary_write_start', 'reporting', null)
     const finalReports = await writeFinalSafetyReports({
       primaryFailure,
       cleanupErrors,
@@ -1877,6 +2247,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       writeSafeSummary:summary => writeFile(safeSummaryPath, JSON.stringify(summary, null, 2), { mode:0o600 }),
     })
     primaryFailure = finalReports.primaryFailure
+    progress('safe_summary_write_complete', 'reporting', null)
   }
 
   expect(primaryFailure, `primary=${primaryFailure} cleanup=${cleanupErrors.join(',')}`).toBeNull()

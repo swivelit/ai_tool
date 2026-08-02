@@ -10,6 +10,56 @@ export const PRODUCTION_CAPABILITY_BATCHES = [
 export type ProductionCapabilityBatch =
   typeof PRODUCTION_CAPABILITY_BATCHES[number]
 
+export const PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS = 45 * 60_000
+export const PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS = 180 * 60_000
+
+export function capabilityEffectiveTimeoutMs(
+  batch: ProductionCapabilityBatch,
+): number {
+  return batch === 'core'
+    ? PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS
+    : PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS
+}
+
+export type CapabilityProgressKind =
+  | 'parity_passed'
+  | 'login_passed'
+  | 'question_start'
+  | 'question_complete'
+  | 'workflow_start'
+  | 'workflow_complete'
+  | 'cleanup_start'
+  | 'cleanup_complete'
+  | 'safe_summary_write_start'
+  | 'safe_summary_write_complete'
+  | 'heartbeat'
+
+const SAFE_PROGRESS_VALUE = /^[A-Za-z0-9_-]{1,80}$/
+const SAFE_PROGRESS_REQUEST_ID = /^[0-9a-f-]{36}$/i
+
+export function formatCapabilityProgress(input: {
+  kind: CapabilityProgressKind
+  phase: string
+  scenarioId?: string | null
+  elapsedSeconds: number
+  requestId?: string | null
+}): string {
+  const phase = SAFE_PROGRESS_VALUE.test(input.phase) ? input.phase : 'unknown'
+  const scenario = input.scenarioId
+    && SAFE_PROGRESS_VALUE.test(input.scenarioId)
+    ? input.scenarioId : 'none'
+  const elapsed = Number.isFinite(input.elapsedSeconds)
+    ? Math.max(0, Math.min(10_800, Math.floor(input.elapsedSeconds))) : 0
+  const requestId = input.requestId
+    && SAFE_PROGRESS_REQUEST_ID.test(input.requestId)
+    ? input.requestId : null
+  return [
+    '[capability]', input.kind,
+    `phase=${phase}`, `scenario=${scenario}`, `elapsed_seconds=${elapsed}`,
+    ...(requestId ? [`request_id=${requestId}`] : []),
+  ].join(' ')
+}
+
 export type CapabilityEnvironment = {
   GITHUB_SHA?: string
   PLAYWRIGHT_BASE_URL?: string

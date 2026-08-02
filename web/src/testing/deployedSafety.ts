@@ -2,8 +2,65 @@ import type { APIRequestContext, Page, Request, Response } from '@playwright/tes
 
 export type ApiResult<T> = { status: number; data: T | null }
 
+export type DeployedApiRequestOptions = { timeoutMilliseconds?: number }
+
 export interface DeployedApi {
-  request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<T>>
+  request<T>(
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    options?: DeployedApiRequestOptions,
+  ): Promise<ApiResult<T>>
+}
+
+const DEFAULT_DEPLOYED_API_TIMEOUT_MS = 30_000
+const MAX_BOUNDED_OPERATION_TIMEOUT_MS = 3 * 60 * 60_000
+
+function validatedTimeout(
+  value: number | undefined,
+  fallback = DEFAULT_DEPLOYED_API_TIMEOUT_MS,
+): number {
+  const timeout = value ?? fallback
+  if (
+    !Number.isFinite(timeout)
+    || timeout < 1
+    || timeout > MAX_BOUNDED_OPERATION_TIMEOUT_MS
+  ) throw new Error('bounded_timeout_invalid')
+  return Math.floor(timeout)
+}
+
+export class DeployedApiTransportError extends Error {
+  readonly reasonCode = 'deployed_api_timeout'
+
+  constructor() {
+    super('deployed_api_timeout')
+    this.name = 'DeployedApiTransportError'
+  }
+}
+
+export async function withBoundedTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMilliseconds: number,
+  reasonCode = 'bounded_operation_timeout',
+): Promise<T> {
+  const timeout = validatedTimeout(timeoutMilliseconds)
+  const pending = Promise.resolve().then(operation)
+  void pending.catch(() => undefined)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(
+          reasonCode === 'deployed_api_timeout'
+            ? new DeployedApiTransportError()
+            : new Error(reasonCode),
+        ), timeout)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 const CHAT_STREAM_PATH = '/api/web/chat/stream'
@@ -33,12 +90,38 @@ export async function runCleanupActionSafely(
   cleanupErrors: string[],
   reasonCode: string,
   action: () => Promise<void>,
+  timeoutMilliseconds = DEFAULT_DEPLOYED_API_TIMEOUT_MS,
 ): Promise<void> {
   try {
-    await action()
+    await withBoundedTimeout(
+      action, timeoutMilliseconds,
+      boundedReasonCode(reasonCode, 'cleanup_action_failed'),
+    )
   } catch {
     cleanupErrors.push(boundedReasonCode(reasonCode, 'cleanup_action_failed'))
   }
+}
+
+export async function runWithBoundedConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  action: (item: T) => Promise<void>,
+): Promise<void> {
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) {
+    throw new Error('bounded_concurrency_invalid')
+  }
+  let next = 0
+  const workers = Array.from(
+    { length:Math.min(concurrency, items.length) },
+    async () => {
+      while (next < items.length) {
+        const index = next
+        next += 1
+        await action(items[index])
+      }
+    },
+  )
+  await Promise.all(workers)
 }
 
 export async function writeFinalSafetyReports<T>(options: {
@@ -85,23 +168,34 @@ export class AuthenticatedDeployedApi implements DeployedApi {
     private readonly requestContext: APIRequestContext,
     private readonly origin: string,
     private readonly authorization: string,
+    private readonly defaultTimeoutMilliseconds = DEFAULT_DEPLOYED_API_TIMEOUT_MS,
   ) {}
 
   async request<T>(
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
+    options: DeployedApiRequestOptions = {},
   ): Promise<ApiResult<T>> {
-    const response = await this.requestContext.fetch(
-      `${this.origin}${path}`,
-      {
-        method,
-        headers: {
-          Authorization: this.authorization,
-          Accept: 'application/json',
+    const timeout = validatedTimeout(
+      options.timeoutMilliseconds, this.defaultTimeoutMilliseconds,
+    )
+    const deadline = Date.now() + timeout
+    const response = await withBoundedTimeout(
+      () => this.requestContext.fetch(
+        `${this.origin}${path}`,
+        {
+          method,
+          timeout,
+          headers: {
+            Authorization: this.authorization,
+            Accept: 'application/json',
+          },
+          ...(body === undefined ? {} : { data: body }),
         },
-        ...(body === undefined ? {} : { data: body }),
-      },
+      ),
+      timeout,
+      'deployed_api_timeout',
     )
     const status = response.status()
     if (status === 204 || status === 205) {
@@ -111,7 +205,10 @@ export class AuthenticatedDeployedApi implements DeployedApi {
     if (!contentType.includes('application/json')) {
       return { status, data:null }
     }
-    const bodyBytes = await response.body()
+    const bodyBytes = await withBoundedTimeout(
+      () => response.body(), Math.max(1, deadline - Date.now()),
+      'deployed_api_timeout',
+    )
     if (bodyBytes.length === 0) return { status, data:null }
     try {
       return { status, data:JSON.parse(bodyBytes.toString('utf8')) as T }
@@ -125,18 +222,31 @@ export class AuthenticatedDeployedApi implements DeployedApi {
   async requestMultipart<T>(
     path: string,
     multipart: Record<string, string | number | boolean | DeployedMultipartFile>,
+    options: DeployedApiRequestOptions = {},
   ): Promise<ApiResult<T>> {
-    const response = await this.requestContext.post(`${this.origin}${path}`, {
-      headers: {
-        Authorization: this.authorization,
-        Accept: 'application/json',
-      },
-      multipart,
-    })
+    const timeout = validatedTimeout(
+      options.timeoutMilliseconds, this.defaultTimeoutMilliseconds,
+    )
+    const deadline = Date.now() + timeout
+    const response = await withBoundedTimeout(
+      () => this.requestContext.post(`${this.origin}${path}`, {
+        timeout,
+        headers: {
+          Authorization: this.authorization,
+          Accept: 'application/json',
+        },
+        multipart,
+      }),
+      timeout,
+      'deployed_api_timeout',
+    )
     const status = response.status()
     const contentType = response.headers()['content-type'] ?? ''
     if (!contentType.includes('application/json')) return { status, data:null }
-    const body = await response.body()
+    const body = await withBoundedTimeout(
+      () => response.body(), Math.max(1, deadline - Date.now()),
+      'deployed_api_timeout',
+    )
     if (!body.length) return { status, data:null }
     try {
       return { status, data:JSON.parse(body.toString('utf8')) as T }
@@ -172,11 +282,11 @@ export async function loginDeployed<TBootstrap>(
 ): Promise<{ api: AuthenticatedDeployedApi; bootstrap: TBootstrap }> {
   if (!email) throw new Error('E2E_TEST_EMAIL must be configured')
   if (!password) throw new Error('E2E_TEST_PASSWORD must be configured')
-  await page.goto('/')
+  await page.goto('/', { waitUntil:'domcontentloaded', timeout:30_000 })
   const bootstrapResponse = observePlaywrightPromise(page.waitForResponse(response => (
     new URL(response.url()).pathname === '/api/web/bootstrap'
     && response.status() === 200
-  )))
+  ), { timeout:60_000 }))
   await page.getByLabel('Email address').fill(email)
   await page.getByLabel('Password', { exact:true }).fill(password)
   await page.getByRole('button', { name:'Sign in' }).click()
@@ -186,26 +296,39 @@ export async function loginDeployed<TBootstrap>(
   if (!authorization?.startsWith('Bearer ')) {
     throw new Error('Authenticated Swico API request was not observed')
   }
+  const bootstrap = await withBoundedTimeout(
+    () => response.json() as Promise<TBootstrap>,
+    30_000,
+    'deployed_api_timeout',
+  )
   return {
     api: new AuthenticatedDeployedApi(
       page.request,
       new URL(response.url()).origin,
       authorization,
     ),
-    bootstrap: await response.json() as TBootstrap,
+    bootstrap,
   }
 }
 
-export async function logoutDeployed(page: Page): Promise<void> {
+export async function logoutDeployed(
+  page: Page, timeoutMilliseconds = 30_000,
+): Promise<void> {
   if (page.isClosed()) return
-  await page.goto('/')
+  const deadline = Date.now() + validatedTimeout(timeoutMilliseconds)
+  const remaining = () => Math.max(1, deadline - Date.now())
+  await page.goto('/', { waitUntil:'domcontentloaded', timeout:remaining() })
   const sidebar = page.getByRole('button', { name:'Open sidebar' })
-  if (await sidebar.isVisible()) await sidebar.click()
+  if (await sidebar.isVisible()) await sidebar.click({ timeout:remaining() })
   const account = page.locator('.account-button')
   if (!await account.isVisible()) return
-  await account.click()
-  await page.getByRole('menuitem', { name:'Sign out' }).click()
-  await page.getByRole('heading', { name:'Welcome back' }).waitFor()
+  await account.click({ timeout:remaining() })
+  await page.getByRole('menuitem', { name:'Sign out' }).click({
+    timeout:remaining(),
+  })
+  await page.getByRole('heading', { name:'Welcome back' }).waitFor({
+    state:'visible', timeout:remaining(),
+  })
 }
 
 export function assertUsableTokenCredits(availableMicros: number): void {
