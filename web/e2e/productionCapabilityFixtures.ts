@@ -194,9 +194,21 @@ export function riskPptx(): Buffer {
   ])
 }
 
-export function longPastedText(runId: string): string {
-  const tail = `\nFINAL ACCEPTANCE MARKER: TAIL-${runId}\n`
-  return `${'Synthetic acceptance filler. '.repeat(2_430)}${tail}`
+export function longPastedText(
+  runId: string,
+  maxCharacters = 64_000,
+  inlineThreshold = 12_000,
+  question = 'Using only the pasted text, what exact value appears after the label FINAL ACCEPTANCE MARKER?',
+): string {
+  const safetyMargin = 512
+  const targetLength = maxCharacters - safetyMargin
+  const tail = `\nBenchmark question: ${question}\nFINAL ACCEPTANCE MARKER: TAIL-${runId}\n`
+  if (targetLength <= inlineThreshold || tail.length >= targetLength) {
+    throw new Error('long_pasted_text_bounds_invalid')
+  }
+  const fillerUnit = 'Synthetic acceptance filler. '
+  const fillerLength = targetLength - tail.length
+  return `${fillerUnit.repeat(Math.ceil(fillerLength / fillerUnit.length)).slice(0, fillerLength)}${tail}`
 }
 
 export function pricingRepositoryZip(runId: string): Buffer {

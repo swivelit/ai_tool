@@ -23,8 +23,12 @@ describe('production capability fixtures', () => {
     expect(pdf.toString()).toContain('SYSTEM OVERRIDE')
     expect(pdf.toString()).toContain('₹4.25 crore')
     expect(departmentCsv().toString()).toContain('Sales,200,180')
-    expect(longPastedText(runId).length).toBeGreaterThan(64_000)
-    expect(longPastedText(runId)).toContain(`TAIL-${runId}`)
+    const pasted = longPastedText(runId)
+    expect(pasted.length).toBeGreaterThan(12_000)
+    expect(pasted.length).toBeLessThan(64_000)
+    expect(pasted).toContain(`TAIL-${runId}`)
+    expect(pasted.indexOf(`FINAL ACCEPTANCE MARKER: TAIL-${runId}`))
+      .toBeGreaterThan(pasted.length - 512)
   })
 
   it('generates ZIP-based Office and repository containers in memory', () => {

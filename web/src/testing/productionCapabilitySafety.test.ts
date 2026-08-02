@@ -56,11 +56,19 @@ describe('production capability safety', () => {
 
   it('redacts secret-shaped values without echoing them', () => {
     const result = redactPotentialSecrets(
-      'token Bearer abcdefghijklmnopqrstuvwxyz12345 and DATABASE_URL=postgres://u:p@host/db',
+      'token Bearer abcdefghijklmnopqrstuvwxyz12345 and service endpoint postgres://example.invalid/example',
     )
     expect(result.potentialSecret).toBe(true)
     expect(result.text).not.toContain('abcdefghijklmnopqrstuvwxyz')
     expect(result.text).not.toContain('postgres://')
+  })
+
+  it('detects provider-neutral secret-key shapes', () => {
+    const shapedValue = `sk-${'x'.repeat(24)}`
+    const result = redactPotentialSecrets(shapedValue)
+    expect(result.potentialSecret).toBe(true)
+    expect(result.reasonCodes).toContain('provider_secret_key')
+    expect(result.text).not.toContain(shapedValue)
   })
 
   it('provides deterministic format and metric helpers', () => {

@@ -117,6 +117,7 @@ type Bootstrap = {
     max_files_per_message: number
     supported_extensions: string[]
     long_input_enabled?: boolean
+    long_input_inline_threshold_chars?: number
     long_input_max_chars?: number
   }
   repositories: { validation_capability: 'static_only' | 'executable' }
@@ -598,7 +599,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     failedRequests.push(`${request.method()} ${path}: ${request.failure()?.errorText ?? 'failed'}`.slice(0, 500))
   })
 
-  const runQuestion = async (source: CapabilityQuestion): Promise<QuestionResult> => {
+  const runQuestion = async (
+    source: CapabilityQuestion,
+    options: { composerText?: string; virtualText?: boolean } = {},
+  ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
     const question = materializeQuestion(source, runId)
     const tier = question.tier ?? 'standard'
@@ -620,8 +624,26 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       new URL(response.url()).pathname === '/api/web/chat/stream'
       && response.request().method() === 'POST'
     ), { timeout:60_000 })
-    await page.getByLabel('Message Swico').fill(question.prompt)
+    const virtualUploadPromise = options.virtualText
+      ? page.waitForResponse(response => (
+        new URL(response.url()).pathname === '/api/web/uploads/text'
+        && response.request().method() === 'POST'
+      ), { timeout:60_000 })
+      : null
+    await page.getByLabel('Message Swico').fill(options.composerText ?? question.prompt)
+    if (options.virtualText) {
+      await page.getByLabel('Large text action').selectOption('ask_questions')
+    }
     await page.getByRole('button', { name:'Send message' }).click()
+    if (virtualUploadPromise) {
+      const virtualUploadResponse = await virtualUploadPromise
+      const virtualUpload = await virtualUploadResponse.json().catch(() => ({})) as FixtureUpload
+      if (![200, 201].includes(virtualUploadResponse.status()) || !virtualUpload.id) {
+        throw new Error(`virtual_text_upload_failed:${virtualUploadResponse.status()}`)
+      }
+      generatedUploadIds.add(virtualUpload.id)
+      createdUploadIds.add(virtualUpload.id)
+    }
     const request = await requestPromise
     const payload = request.postDataJSON() as Record<string, unknown>
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
@@ -978,10 +1000,23 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       await runQuestion({ ...RAG_QUESTIONS.find(item => item.id === id)!, freshThread:false })
     }
     const e09 = materializeQuestion(RAG_QUESTIONS.find(item => item.id === 'E09')!, runId)
-    const pasted = longPastedText(runId)
-    const max = bootstrap?.uploads.long_input_max_chars ?? 64_000
-    if (pasted.length > max) {
-      results.push(skippedResult(e09, backendRelease(), 'failed', `pasted_text_fixture_${pasted.length}_exceeds_deployed_limit_${max}`))
+    if (!bootstrap?.uploads.long_input_enabled) {
+      results.push(skippedResult(e09, backendRelease(), 'skipped', 'deployed_long_input_disabled'))
+    } else {
+      const max = bootstrap.uploads.long_input_max_chars ?? 64_000
+      const inlineThreshold = bootstrap.uploads.long_input_inline_threshold_chars ?? 12_000
+      if (max - 512 <= inlineThreshold) {
+        results.push(skippedResult(e09, backendRelease(), 'skipped', 'deployed_long_input_bounds_leave_no_safe_virtual_text_window'))
+      } else {
+        const pasted = longPastedText(runId, max, inlineThreshold, e09.prompt)
+        try {
+          await runQuestion(e09, { composerText:pasted, virtualText:true })
+        } catch (error) {
+          const reason = safeHarnessReason(error)
+          results.push(skippedResult(e09, backendRelease(), 'failed', reason))
+          primaryFailure ??= reason
+        }
+      }
     }
 
     // Negative upload checks are provider-free and must never start chat.

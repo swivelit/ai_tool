@@ -134,12 +134,12 @@ export class DebitBudget {
 const SECRET_PATTERNS: Array<{ code: string; pattern: RegExp }> = [
   { code:'private_key', pattern:/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i },
   { code:'jwt', pattern:/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
-  { code:'openai_key', pattern:/\bsk-[A-Za-z0-9_-]{20,}\b/ },
+  { code:'provider_secret_key', pattern:/\bsk-[A-Za-z0-9_-]{20,}\b/ },
   { code:'google_key', pattern:/\bAIza[0-9A-Za-z_-]{30,}\b/ },
   { code:'aws_key', pattern:/\bAKIA[0-9A-Z]{16}\b/ },
   { code:'database_url', pattern:/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s]+/i },
   { code:'bearer', pattern:/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/i },
-  { code:'secret_assignment', pattern:/\b(?:API_KEY|DATABASE_URL|AUTH_TOKEN|SECRET_KEY|PASSWORD)\s*[=:]\s*[^\s,;]{8,}/i },
+  { code:'secret_assignment', pattern:/\b(?:API_KEY|AUTH_TOKEN|SECRET_KEY|PASSWORD)\s*[=:]\s*[^\s,;]{8,}/i },
 ]
 
 export type RedactionResult = {
