@@ -9,20 +9,24 @@ import {
   countWords,
   deploymentParitySafeSummary,
   deploymentShasMatch,
+  deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
   hasAffirmativeWaitAdvice,
+  normalizeCapabilityApiBaseUrl,
   parseSseEventOrder,
   percentile,
   pollDeploymentParity,
   productionCapabilityGate,
   redactPotentialSecrets,
+  releaseShaFromVersionPayload,
   tierEvidenceMatches,
   weightedScore,
 } from './productionCapabilitySafety'
 
 const valid = {
   PLAYWRIGHT_BASE_URL:'https://swico.example',
+  PLAYWRIGHT_API_BASE_URL:'https://api.example.test',
   E2E_TEST_EMAIL:'acceptance@example.invalid',
   E2E_TEST_PASSWORD:'not-a-real-password',
   PRODUCTION_CAPABILITY_CONFIRMATION,
@@ -33,6 +37,40 @@ const valid = {
 
 describe('production capability safety', () => {
   const fullSha = 'b14f183691b93c36be4693937407d8d6f986b55f'
+  const endpointHostname = 'api.example.test'
+
+  it('separates and safely normalizes the UI and API origins', () => {
+    expect(normalizeCapabilityApiBaseUrl(
+      'https://api.example.test/service/',
+    )).toEqual({
+      baseUrl:'https://api.example.test/service',
+      hostname:'api.example.test',
+    })
+    expect(deploymentVersionUrl('https://api.example.test')).toBe(
+      'https://api.example.test/api/version',
+    )
+    expect(deploymentVersionUrl('https://api.example.test')).not.toContain(
+      'swico.in',
+    )
+  })
+
+  it('requires a safe credential-free HTTPS API base before polling', () => {
+    expect(() => productionCapabilityGate({
+      ...valid, PLAYWRIGHT_API_BASE_URL:undefined,
+    })).toThrow(/playwright_api_base_url_missing/)
+    for (const apiBase of [
+      'http://api.example.test',
+      'https://user:pass@api.example.test',
+      'https://api.example.test?mode=unsafe',
+      'https://api.example.test?',
+      'https://api.example.test#fragment',
+      'not-a-url',
+    ]) {
+      expect(() => productionCapabilityGate({
+        ...valid, PLAYWRIGHT_API_BASE_URL:apiBase,
+      })).toThrow(/playwright_api_base_url_invalid/)
+    }
+  })
 
   it('matches only validated full or prefix deployment SHAs', () => {
     expect(deploymentShasMatch(fullSha, fullSha)).toBe(true)
@@ -46,10 +84,15 @@ describe('production capability safety', () => {
 
   it('polls immediately and eventually observes deployment parity', async () => {
     let clock = 0
-    const releases = ['b29f237ba34d', 'b14f183691b9']
+    const releases = [
+      { release:null, httpStatus:404 },
+      { release:'b14f183691b9', httpStatus:200 },
+    ]
     const result = await pollDeploymentParity({
       expectedCommitSha:fullSha,
-      readBackendRelease:async () => releases.shift() ?? null,
+      backendEndpointHostname:endpointHostname,
+      readBackendRelease:async () => releases.shift()
+        ?? { release:null, httpStatus:null },
       intervalMs:20_000,
       maxWaitMs:600_000,
       now:() => clock,
@@ -59,14 +102,17 @@ describe('production capability safety', () => {
       expectedCommitSha:fullSha,
       observedBackendRelease:'b14f183691b9',
       status:'matched', checks:2, elapsedWaitMs:20_000,
+      backendEndpointHostname:endpointHostname,
+      lastHttpStatus:200, safeFailureReason:null,
     })
   })
 
-  it('times out without treating missing or malformed releases as matches', async () => {
+  it('reports repeated 404 responses as backend release unavailable', async () => {
     let clock = 0
     const result = await pollDeploymentParity({
       expectedCommitSha:fullSha,
-      readBackendRelease:async () => 'not-a-release',
+      backendEndpointHostname:endpointHostname,
+      readBackendRelease:async () => ({ release:null, httpStatus:404 }),
       intervalMs:20_000,
       maxWaitMs:40_000,
       now:() => clock,
@@ -75,8 +121,49 @@ describe('production capability safety', () => {
     expect(result).toEqual({
       expectedCommitSha:fullSha,
       observedBackendRelease:null,
-      status:'backend_release_mismatch', checks:2, elapsedWaitMs:40_000,
+      status:'backend_release_unavailable', checks:2, elapsedWaitMs:40_000,
+      backendEndpointHostname:endpointHostname,
+      lastHttpStatus:404,
+      safeFailureReason:'backend_release_unavailable',
     })
+  })
+
+  it('reports malformed version JSON as backend release unavailable', async () => {
+    expect(releaseShaFromVersionPayload('not-json')).toBeNull()
+    expect(releaseShaFromVersionPayload({ backend_release_sha:'malformed' }))
+      .toBeNull()
+    const result = await pollDeploymentParity({
+      expectedCommitSha:fullSha,
+      backendEndpointHostname:endpointHostname,
+      readBackendRelease:async () => ({ release:null, httpStatus:200 }),
+      maxWaitMs:0,
+      now:() => 0,
+    })
+    expect(result.status).toBe('backend_release_unavailable')
+    expect(result.lastHttpStatus).toBe(200)
+  })
+
+  it('uses app_release only when the primary release field is absent', () => {
+    expect(releaseShaFromVersionPayload({ app_release:'b14f183691b9' }))
+      .toBe('b14f183691b9')
+    expect(releaseShaFromVersionPayload({
+      backend_release_sha:'malformed', app_release:'b14f183691b9',
+    })).toBeNull()
+  })
+
+  it('reports a valid different release as a real mismatch', async () => {
+    const result = await pollDeploymentParity({
+      expectedCommitSha:fullSha,
+      backendEndpointHostname:endpointHostname,
+      readBackendRelease:async () => ({
+        release:'b29f237ba34d', httpStatus:200,
+      }),
+      maxWaitMs:0,
+      now:() => 0,
+    })
+    expect(result.status).toBe('backend_release_mismatch')
+    expect(result.observedBackendRelease).toBe('b29f237ba34d')
+    expect(result.safeFailureReason).toBe('backend_release_mismatch')
   })
 
   it('writes only safe parity fields and stops work after a mismatch', async () => {
@@ -88,7 +175,10 @@ describe('production capability safety', () => {
     await expect((async () => {
       await enforceProductionDeploymentParity({
         expectedCommitSha:fullSha,
-        readBackendRelease:async () => 'b29f237ba34d',
+        backendEndpointHostname:endpointHostname,
+        readBackendRelease:async () => ({
+          release:'b29f237ba34d', httpStatus:200,
+        }),
         maxWaitMs:0,
         now:() => 0,
         writeSafeFailure:async summary => { written = summary },
@@ -100,6 +190,8 @@ describe('production capability safety', () => {
       'expected_commit_sha', 'observed_backend_release',
       'deployment_parity_status', 'deployment_parity_checks',
       'deployment_parity_elapsed_wait_ms',
+      'backend_endpoint_hostname', 'last_http_status',
+      'safe_failure_reason',
     ])
     const serialized = JSON.stringify(written)
     expect(serialized).not.toContain(privateBootstrap.token)
@@ -108,12 +200,40 @@ describe('production capability safety', () => {
       expectedCommitSha:fullSha,
       observedBackendRelease:'b29f237ba34d',
       status:'backend_release_mismatch', checks:1, elapsedWaitMs:0,
+      backendEndpointHostname:endpointHostname,
+      lastHttpStatus:200, safeFailureReason:'backend_release_mismatch',
     }))
+  })
+
+  it('writes an unavailable summary without instructing a redeploy', async () => {
+    let written: ReturnType<typeof deploymentParitySafeSummary> | null = null
+    let message = ''
+    try {
+      await enforceProductionDeploymentParity({
+        expectedCommitSha:fullSha,
+        backendEndpointHostname:endpointHostname,
+        readBackendRelease:async () => ({ release:null, httpStatus:404 }),
+        maxWaitMs:0,
+        now:() => 0,
+        writeSafeFailure:async summary => { written = summary },
+      })
+    } catch (error) {
+      message = error instanceof Error ? error.message : ''
+    }
+    expect(written).toMatchObject({
+      deployment_parity_status:'backend_release_unavailable',
+      last_http_status:404,
+      safe_failure_reason:'backend_release_unavailable',
+    })
+    expect(message).toContain('backend_release_unavailable')
+    expect(message).not.toContain('deploy the latest commit')
   })
 
   it('requires every production gate and positive integer caps', () => {
     expect(productionCapabilityGate(valid)).toEqual({
       batch:'rag', chatDebitCapMicros:1000, voiceDebitCapMicros:2000,
+      apiBaseUrl:'https://api.example.test',
+      apiHostname:'api.example.test',
     })
     for (const cap of ['', '0', '-1', '1.5', ' 2', '9007199254740992']) {
       expect(() => productionCapabilityGate({

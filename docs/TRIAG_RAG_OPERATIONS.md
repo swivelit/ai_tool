@@ -14,15 +14,33 @@ operator steps in order:
 4. Run `backend/scripts/triag_release_check.py` against the deployment.
 5. Launch the `production-capability` mode only after those checks pass.
 
+Configure the public backend origin in GitHub before the run:
+
+```text
+GitHub Settings
+-> Environments
+-> production-triag
+-> Environment variables
+-> PLAYWRIGHT_API_BASE_URL=https://ai-tool-rrau.onrender.com
+```
+
+`PLAYWRIGHT_API_BASE_URL` is a public URL, not a credential. It identifies the
+backend API origin independently of `PLAYWRIGHT_BASE_URL`, which remains the
+website UI origin.
+
 The benchmark compares the workflow's `GITHUB_SHA` with the public backend
 release SHA before login or production state creation. It checks immediately,
 then every 20 seconds for at most 10 minutes to allow bounded Render deployment
 propagation. A persistent mismatch fails closed with
 `backend_release_mismatch`; deploy the latest commit to the `ai_tool` Render
 service, verify that its Render branch is `main`, and rerun after the backend
-release matches. The web deployment currently exposes no safe build SHA, so
-frontend release parity remains an operator-verified prerequisite rather than
-an automated assertion.
+release matches. If no valid SHA can be read, it reports
+`backend_release_unavailable` and directs the operator to verify the configured
+API origin and public `/api/version` availability instead of redeploying. The
+`app_release` response field is accepted only as compatibility fallback when
+`backend_release_sha` is absent. The web deployment currently exposes no safe
+build SHA, so frontend release parity remains an operator-verified prerequisite
+rather than an automated assertion.
 
 ## Runtime status
 

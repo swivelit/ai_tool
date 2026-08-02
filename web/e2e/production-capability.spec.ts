@@ -33,6 +33,7 @@ import {
   countSentences,
   countWords,
   deploymentParitySafeSummary,
+  deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
   hasAffirmativeWaitAdvice,
@@ -41,9 +42,11 @@ import {
   percentile,
   productionCapabilityGate,
   redactPotentialSecrets,
+  releaseShaFromVersionPayload,
   tierEvidenceMatches,
   weightedScore,
   type CapabilityTierEvidence,
+  type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
 import {
   CORE_QUESTIONS,
@@ -671,21 +674,22 @@ function skippedResult(
 }
 
 async function readDeployedBackendRelease(
-  page: Page, timeoutMs: number,
-): Promise<string | null> {
+  page: Page, apiBaseUrl: string, timeoutMs: number,
+): Promise<DeploymentReleaseObservation> {
   try {
-    const response = await page.request.get('/api/version', {
+    const response = await page.request.get(deploymentVersionUrl(apiBaseUrl), {
       failOnStatusCode:false,
       timeout:timeoutMs,
     })
-    if (response.status() !== 200) return null
-    const body = await response.json().catch(() => null) as {
-      backend_release_sha?: unknown
-    } | null
-    return typeof body?.backend_release_sha === 'string'
-      ? body.backend_release_sha : null
+    const httpStatus = response.status()
+    if (httpStatus !== 200) return { release:null, httpStatus }
+    const body = await response.json().catch(() => null)
+    return {
+      release:releaseShaFromVersionPayload(body),
+      httpStatus,
+    }
   } catch {
-    return null
+    return { release:null, httpStatus:null }
   }
 }
 
@@ -720,7 +724,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   }
   const deploymentParity = await enforceProductionDeploymentParity({
     expectedCommitSha:process.env.GITHUB_SHA,
-    readBackendRelease:timeoutMs => readDeployedBackendRelease(page, timeoutMs),
+    backendEndpointHostname:gate.apiHostname,
+    readBackendRelease:timeoutMs => readDeployedBackendRelease(
+      page, gate.apiBaseUrl, timeoutMs,
+    ),
     writeSafeFailure:async summary => {
       await mkdir(resolve(process.cwd(), 'test-results'), { recursive:true })
       await writeFile(

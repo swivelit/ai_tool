@@ -13,6 +13,7 @@ export type ProductionCapabilityBatch =
 export type CapabilityEnvironment = {
   GITHUB_SHA?: string
   PLAYWRIGHT_BASE_URL?: string
+  PLAYWRIGHT_API_BASE_URL?: string
   E2E_TEST_EMAIL?: string
   E2E_TEST_PASSWORD?: string
   PRODUCTION_CAPABILITY_CONFIRMATION?: string
@@ -23,7 +24,15 @@ export type CapabilityEnvironment = {
 
 const DEPLOYMENT_SHA_PATTERN = /^[0-9a-f]{7,40}$/
 
-export type DeploymentParityStatus = 'matched' | 'backend_release_mismatch'
+export type DeploymentParityStatus =
+  | 'matched'
+  | 'backend_release_unavailable'
+  | 'backend_release_mismatch'
+
+export type DeploymentReleaseObservation = {
+  release: unknown
+  httpStatus: number | null
+}
 
 export type DeploymentParityResult = {
   expectedCommitSha: string | null
@@ -31,6 +40,9 @@ export type DeploymentParityResult = {
   status: DeploymentParityStatus
   checks: number
   elapsedWaitMs: number
+  backendEndpointHostname: string
+  lastHttpStatus: number | null
+  safeFailureReason: Exclude<DeploymentParityStatus, 'matched'> | null
 }
 
 export type DeploymentParitySafeSummary = {
@@ -39,25 +51,79 @@ export type DeploymentParitySafeSummary = {
   deployment_parity_status: DeploymentParityStatus
   deployment_parity_checks: number
   deployment_parity_elapsed_wait_ms: number
+  backend_endpoint_hostname: string
+  last_http_status: number | null
+  safe_failure_reason: Exclude<DeploymentParityStatus, 'matched'> | null
 }
 
 export class DeploymentParityError extends Error {
-  readonly reasonCode = 'backend_release_mismatch'
+  readonly reasonCode: Exclude<DeploymentParityStatus, 'matched'>
 
   constructor(readonly result: DeploymentParityResult) {
-    super(
-      'backend_release_mismatch: deploy the latest commit to the ai_tool '
-      + 'Render service, verify that the Render branch is main, and rerun '
-      + 'after the backend release matches',
-    )
+    const unavailable = result.status === 'backend_release_unavailable'
+    super(unavailable
+      ? 'backend_release_unavailable: verify PLAYWRIGHT_API_BASE_URL and '
+        + 'public /api/version availability, then rerun'
+      : 'backend_release_mismatch: deploy the latest commit to the ai_tool '
+        + 'Render service, verify that the Render branch is main, and rerun '
+        + 'after the backend release matches')
     this.name = 'DeploymentParityError'
+    this.reasonCode = unavailable
+      ? 'backend_release_unavailable' : 'backend_release_mismatch'
   }
+}
+
+export type CapabilityApiBase = {
+  baseUrl: string
+  hostname: string
+}
+
+export function normalizeCapabilityApiBaseUrl(
+  value: unknown,
+): CapabilityApiBase | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    const trimmed = value.trim()
+    if (/[?#]/u.test(trimmed)) return null
+    const parsed = new URL(trimmed)
+    if (
+      parsed.protocol !== 'https:'
+      || !parsed.hostname
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+    ) return null
+    const pathname = parsed.pathname.replace(/\/+$/u, '')
+    return {
+      baseUrl:`${parsed.origin}${pathname === '/' ? '' : pathname}`,
+      hostname:parsed.hostname.toLowerCase(),
+    }
+  } catch {
+    return null
+  }
+}
+
+export function deploymentVersionUrl(apiBaseUrl: string): string {
+  return `${apiBaseUrl}/api/version`
 }
 
 export function normalizeDeploymentSha(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const normalized = value.trim().toLowerCase()
   return DEPLOYMENT_SHA_PATTERN.test(normalized) ? normalized : null
+}
+
+export function releaseShaFromVersionPayload(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const payload = value as Record<string, unknown>
+  const candidate = Object.prototype.hasOwnProperty.call(
+    payload, 'backend_release_sha',
+  )
+    ? payload.backend_release_sha
+    // Compatibility with older public /api/version responses only.
+    : payload.app_release
+  return normalizeDeploymentSha(candidate)
 }
 
 export function deploymentShasMatch(
@@ -72,7 +138,10 @@ export function deploymentShasMatch(
 
 export async function pollDeploymentParity(options: {
   expectedCommitSha: unknown
-  readBackendRelease: (timeoutMs: number) => Promise<unknown>
+  backendEndpointHostname: string
+  readBackendRelease: (
+    timeoutMs: number,
+  ) => Promise<DeploymentReleaseObservation>
   intervalMs?: number
   maxWaitMs?: number
   now?: () => number
@@ -95,41 +164,60 @@ export async function pollDeploymentParity(options: {
     return {
       expectedCommitSha:null, observedBackendRelease:null,
       status:'backend_release_mismatch', checks:0, elapsedWaitMs:0,
+      backendEndpointHostname:options.backendEndpointHostname,
+      lastHttpStatus:null, safeFailureReason:'backend_release_mismatch',
     }
   }
   const startedAt = now()
   let checks = 0
-  let observed: string | null = null
+  let lastValidRelease: string | null = null
+  let lastHttpStatus: number | null = null
+  const failedResult = (elapsedWaitMs: number): DeploymentParityResult => {
+    const status = lastValidRelease
+      ? 'backend_release_mismatch' : 'backend_release_unavailable'
+    return {
+      expectedCommitSha:expected,
+      observedBackendRelease:lastValidRelease,
+      status,
+      checks,
+      elapsedWaitMs,
+      backendEndpointHostname:options.backendEndpointHostname,
+      lastHttpStatus,
+      safeFailureReason:status,
+    }
+  }
   while (true) {
     const elapsedBeforeCheck = Math.max(0, now() - startedAt)
     if (checks > 0 && elapsedBeforeCheck >= maxWaitMs) {
-      return {
-        expectedCommitSha:expected, observedBackendRelease:observed,
-        status:'backend_release_mismatch', checks,
-        elapsedWaitMs:elapsedBeforeCheck,
-      }
+      return failedResult(elapsedBeforeCheck)
     }
     checks += 1
     try {
       const remainingMs = Math.max(1, maxWaitMs - elapsedBeforeCheck)
-      observed = normalizeDeploymentSha(
-        await options.readBackendRelease(Math.min(30_000, remainingMs)),
+      const observation = await options.readBackendRelease(
+        Math.min(30_000, remainingMs),
       )
+      const observedHttpStatus = Number.isInteger(observation.httpStatus)
+        && Number(observation.httpStatus) >= 100
+        && Number(observation.httpStatus) <= 599
+        ? Number(observation.httpStatus) : null
+      if (observedHttpStatus !== null) lastHttpStatus = observedHttpStatus
+      const observed = normalizeDeploymentSha(observation.release)
+      if (observed) lastValidRelease = observed
     } catch {
-      observed = null
+      // A transport failure contributes an unavailable observation.
     }
     const elapsedWaitMs = Math.max(0, now() - startedAt)
-    if (deploymentShasMatch(expected, observed)) {
+    if (deploymentShasMatch(expected, lastValidRelease)) {
       return {
-        expectedCommitSha:expected, observedBackendRelease:observed,
+        expectedCommitSha:expected, observedBackendRelease:lastValidRelease,
         status:'matched', checks, elapsedWaitMs,
+        backendEndpointHostname:options.backendEndpointHostname,
+        lastHttpStatus, safeFailureReason:null,
       }
     }
     if (elapsedWaitMs >= maxWaitMs) {
-      return {
-        expectedCommitSha:expected, observedBackendRelease:observed,
-        status:'backend_release_mismatch', checks, elapsedWaitMs,
-      }
+      return failedResult(elapsedWaitMs)
     }
     await wait(Math.min(intervalMs, maxWaitMs - elapsedWaitMs))
   }
@@ -144,12 +232,18 @@ export function deploymentParitySafeSummary(
     deployment_parity_status:result.status,
     deployment_parity_checks:result.checks,
     deployment_parity_elapsed_wait_ms:result.elapsedWaitMs,
+    backend_endpoint_hostname:result.backendEndpointHostname,
+    last_http_status:result.lastHttpStatus,
+    safe_failure_reason:result.safeFailureReason,
   }
 }
 
 export async function enforceProductionDeploymentParity(options: {
   expectedCommitSha: unknown
-  readBackendRelease: (timeoutMs: number) => Promise<unknown>
+  backendEndpointHostname: string
+  readBackendRelease: (
+    timeoutMs: number,
+  ) => Promise<DeploymentReleaseObservation>
   writeSafeFailure: (summary: DeploymentParitySafeSummary) => Promise<void>
   intervalMs?: number
   maxWaitMs?: number
@@ -166,6 +260,8 @@ export type CapabilityGate = {
   batch: ProductionCapabilityBatch
   chatDebitCapMicros: number
   voiceDebitCapMicros: number
+  apiBaseUrl: string
+  apiHostname: string
 }
 
 export class ProductionCapabilityGateError extends Error {
@@ -198,6 +294,19 @@ export function productionCapabilityGate(
       )
     }
   }
+  if (!env.PLAYWRIGHT_API_BASE_URL?.trim()) {
+    throw new ProductionCapabilityGateError(
+      'playwright_api_base_url_missing',
+    )
+  }
+  const apiBase = normalizeCapabilityApiBaseUrl(
+    env.PLAYWRIGHT_API_BASE_URL,
+  )
+  if (!apiBase) {
+    throw new ProductionCapabilityGateError(
+      'playwright_api_base_url_invalid',
+    )
+  }
   if (
     env.PRODUCTION_CAPABILITY_CONFIRMATION
     !== PRODUCTION_CAPABILITY_CONFIRMATION
@@ -216,6 +325,8 @@ export function productionCapabilityGate(
   }
   return {
     batch:batch as ProductionCapabilityBatch,
+    apiBaseUrl:apiBase.baseUrl,
+    apiHostname:apiBase.hostname,
     chatDebitCapMicros:positiveInteger(
       env.PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS,
       'production_capability_chat_debit_cap_invalid',

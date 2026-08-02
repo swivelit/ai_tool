@@ -211,7 +211,11 @@ test('production capability deployment parity gates authentication and questions
   expect(parity).toBeLessThan(authentication)
   expect(parity).toBeLessThan(firstQuestion)
   expect(spec).toContain('expectedCommitSha:process.env.GITHUB_SHA')
-  expect(spec).toContain("page.request.get('/api/version'")
+  expect(spec).toContain(
+    'page.request.get(deploymentVersionUrl(apiBaseUrl)',
+  )
+  expect(spec).not.toContain("page.request.get('/api/version'")
+  expect(spec).toContain('page, gate.apiBaseUrl, timeoutMs')
 })
 
 test('deployment mismatch GitHub summary is restricted to parity fields', () => {
@@ -228,11 +232,19 @@ test('deployment mismatch GitHub summary is restricted to parity fields', () => 
     'expected_commit_sha', 'observed_backend_release',
     'deployment_parity_status', 'deployment_parity_checks',
     'deployment_parity_elapsed_wait_ms',
+    'backend_endpoint_hostname', 'last_http_status', 'safe_failure_reason',
   ]) expect(mismatchSummary).toContain(field)
   for (const unsafeField of [
     'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD', 'bootstrap', 'BASE_URL',
   ]) expect(mismatchSummary).not.toContain(unsafeField)
+  expect(mismatchSummary).toContain("backend_release_unavailable")
   expect(mismatchSummary).toContain('exit 0')
+  expect(workflow).toContain(
+    'PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL }}',
+  )
+  expect(workflow).toContain(
+    "inputs.mode == 'production-capability' && vars.PLAYWRIGHT_API_BASE_URL || ''",
+  )
 })
 
 test('mandatory exact-format failures cannot retain passed status', () => {

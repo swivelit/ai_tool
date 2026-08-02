@@ -89,6 +89,7 @@ jobs:
           PRODUCTION_CAPABILITY_CONFIRMATION: ${{ inputs.production_capability_confirmation }}
           PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS: ${{ inputs.production_capability_max_chat_debit_micros }}
           PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS: ${{ inputs.production_capability_max_voice_debit_micros }}
+          PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL }}
         run: |
           if [[ "$PRODUCTION_CAPABILITY_CONFIRMATION" != 'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS' ]]; then
             echo 'production-capability requires the exact billable capability confirmation' >&2
@@ -101,6 +102,26 @@ jobs:
               exit 1
             fi
           done
+          if [[ -z "${PLAYWRIGHT_API_BASE_URL:-}" ]]; then
+            echo 'PLAYWRIGHT_API_BASE_URL is required for production-capability' >&2
+            exit 1
+          fi
+          node - <<'NODE'
+          let valid = false
+          try {
+            const raw = process.env.PLAYWRIGHT_API_BASE_URL.trim()
+            const parsed = new URL(raw)
+            valid = parsed.protocol === 'https:'
+              && Boolean(parsed.hostname)
+              && !parsed.username && !parsed.password
+              && !parsed.search && !parsed.hash
+              && !raw.includes('?') && !raw.includes('#')
+          } catch {}
+          if (!valid) {
+            process.stderr.write('PLAYWRIGHT_API_BASE_URL must be a safe absolute HTTPS base URL\n')
+            process.exit(1)
+          }
+          NODE
       - name: Install web dependencies
         run: npm ci
         working-directory: web
@@ -121,6 +142,7 @@ jobs:
         env:
           PLAYWRIGHT_MODE: ${{ inputs.mode }}
           PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+          PLAYWRIGHT_API_BASE_URL: ${{ inputs.mode == 'production-capability' && vars.PLAYWRIGHT_API_BASE_URL || '' }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
           E2E_SECOND_TEST_EMAIL: ${{ secrets.E2E_SECOND_TEST_EMAIL }}
@@ -197,7 +219,7 @@ jobs:
         run: |
           if [[ "$MODE" == 'production-capability' && -f web/test-results/production-capability-summary.json ]]; then
             parity_status=$(node -e "const summary=require('./web/test-results/production-capability-summary.json'); process.stdout.write(String(summary.deployment_parity_status || ''))")
-            if [[ "$parity_status" == 'backend_release_mismatch' ]]; then
+            if [[ "$parity_status" == 'backend_release_mismatch' || "$parity_status" == 'backend_release_unavailable' ]]; then
               node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
           const summary = require('./web/test-results/production-capability-summary.json')
           for (const [label, value] of [
@@ -206,6 +228,9 @@ jobs:
             ['deployment parity status', summary.deployment_parity_status],
             ['number of checks', summary.deployment_parity_checks],
             ['elapsed wait time (ms)', summary.deployment_parity_elapsed_wait_ms],
+            ['backend endpoint hostname', summary.backend_endpoint_hostname],
+            ['last HTTP status', summary.last_http_status],
+            ['safe failure reason', summary.safe_failure_reason],
           ]) process.stdout.write(`- ${label}: ${String(value ?? 'unknown').slice(0, 160)}\n`)
           NODE
               exit 0
@@ -296,6 +321,14 @@ jobs:
           for (const [label, value] of [
             ['run ID', summary.run_id],
             ['backend release', summary.backend_release],
+            ['expected commit SHA', summary.expected_commit_sha],
+            ['observed backend release', summary.observed_backend_release],
+            ['deployment parity status', summary.deployment_parity_status],
+            ['deployment parity checks', summary.deployment_parity_checks],
+            ['deployment parity elapsed wait (ms)', summary.deployment_parity_elapsed_wait_ms],
+            ['backend endpoint hostname', summary.backend_endpoint_hostname],
+            ['last HTTP status', summary.last_http_status],
+            ['safe failure reason', summary.safe_failure_reason],
             ['batch', summary.batch],
             ['overall score', summary.overall_score],
             ['chat debit micros', summary.chat_debit_micros],
