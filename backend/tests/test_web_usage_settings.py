@@ -257,6 +257,42 @@ def test_assistant_tier_defaults_persists_and_does_not_change_value_limits(
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == before_wallet
 
 
+def test_sequential_tier_switches_are_durable_for_request_audit(client, monkeypatch):
+    from app.web_ai.request_audit import build_request_audit
+
+    monkeypatch.setenv("SWICO_TIER_SELECTION_ENABLED", "true")
+    monkeypatch.setenv("SWICO_PRO_ENABLED", "true")
+    user = create_test_user("tier-sequence", "tier-sequence@example.com")
+    headers = auth_headers("tier-sequence", "tier-sequence@example.com")
+    request_ids = {
+        "lite": "a1000000-0000-4000-8000-000000000001",
+        "standard": "a1000000-0000-4000-8000-000000000002",
+        "pro": "a1000000-0000-4000-8000-000000000003",
+    }
+
+    for tier in ("lite", "standard", "pro"):
+        saved = client.patch(
+            "/api/web/settings/assistant", headers=headers, json={"tier": tier}
+        )
+        assert saved.status_code == 200
+        assert saved.json()["tier"] == tier
+        response = client.post(
+            "/api/web/chat/stream", headers=headers,
+            json={"request_id": request_ids[tier], "message": "Hi"},
+        )
+        assert response.status_code == 200
+
+    with SessionLocal() as session:
+        audits = build_request_audit(
+            session, request_ids=list(request_ids.values())
+        )
+    assert audits is not None
+    selected = {item["request_id"]: item["selected_tier"] for item in audits}
+    assert selected == {
+        request_id: tier for tier, request_id in request_ids.items()
+    }
+
+
 def test_assistant_tier_rejects_invalid_unknown_and_disabled_pro(client, monkeypatch):
     create_test_user("tier-validation", "tier-validation@example.com")
     headers = auth_headers("tier-validation", "tier-validation@example.com")

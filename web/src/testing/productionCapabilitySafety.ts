@@ -250,6 +250,77 @@ export function sourceIdsFromVisibleText(value: string): string[] {
   return [...String(value).matchAll(/\bS\d{1,3}\b/g)].map(match => match[0])
 }
 
+export const WEBHOOK_ARCHITECTURE_AREAS = [
+  'database_schema', 'transaction_boundaries', 'state_transitions',
+  'pseudocode', 'duplicate_handling', 'out_of_order_handling',
+  'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
+] as const
+
+export type WebhookArchitectureEvaluation = {
+  postgresAuthoritative: boolean
+  nonPostgresAuthoritativeClaim: boolean
+  coveredAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
+  missingAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
+}
+
+function hasAll(value: string, patterns: RegExp[]): boolean {
+  return patterns.every(pattern => pattern.test(value))
+}
+
+export function evaluateWebhookArchitecture(
+  answer: string,
+): WebhookArchitectureEvaluation {
+  const value = String(answer)
+  const clauses = value.split(/(?<=[.!?;])\s+|\n+/u).filter(Boolean)
+  const authority = /\b(?:source of truth|system of record|authoritative(?: store| database)?)\b/i
+  const postgresAuthoritative = clauses.some(clause => (
+    /\bpostgres(?:ql)?\b/i.test(clause)
+    && authority.test(clause)
+    && !/\b(?:not|never|isn't|is not|must not|cannot|can't)\b[^.;]{0,45}\b(?:source of truth|system of record|authoritative)/i.test(clause)
+  ))
+  const nonPostgresAuthoritativeClaim = clauses.some(clause => {
+    if (!/\b(?:redis|valkey)\b/i.test(clause) || !authority.test(clause)) return false
+    return !/\b(?:redis|valkey)\b[^.;]{0,60}\b(?:is|are|must|should|can|will|remains?)?\s*(?:explicitly\s+)?(?:not|never)\b[^.;]{0,45}\b(?:the\s+)?(?:source of truth|system of record|authoritative)/i.test(clause)
+      && !/\b(?:not|never)\b[^.;]{0,35}\b(?:redis|valkey)\b[^.;]{0,45}\b(?:source of truth|system of record|authoritative)/i.test(clause)
+      && !/\bneither\s+redis\s+nor\s+valkey\b[^.;]{0,60}\b(?:source of truth|system of record|authoritative)/i.test(clause)
+  })
+  const coverage: Record<typeof WEBHOOK_ARCHITECTURE_AREAS[number], boolean> = {
+    database_schema:hasAll(value, [
+      /\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b/i,
+      /\b(?:unique|primary key|constraint|deduplication key)\b/i,
+    ]),
+    transaction_boundaries:/\b(?:transaction boundaries?|atomic transaction|begin\b|commit\b|rollback\b|select for update)\b/i.test(value),
+    state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle)\b/i.test(value),
+    pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process[_ ]?event)\b/i.test(value),
+    duplicate_handling:/\b(?:duplicate(?: event)? handling|deduplicat\w*|idempotenc\w*|already processed|on conflict)\b/i.test(value),
+    out_of_order_handling:/\b(?:out[- ]of[- ]order|late event|event ordering|reorder|sequence gap|monotonic state)\b/i.test(value),
+    failure_recovery:/\b(?:failure recovery|retry|replay|dead[- ]letter|crash recovery|lease recovery)\b/i.test(value),
+    reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/i.test(value),
+    security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|timestamp validation|raw body)\b/i.test(value),
+    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b/i.test(value),
+  }
+  const coveredAreas = WEBHOOK_ARCHITECTURE_AREAS.filter(area => coverage[area])
+  return {
+    postgresAuthoritative,
+    nonPostgresAuthoritativeClaim,
+    coveredAreas,
+    missingAreas:WEBHOOK_ARCHITECTURE_AREAS.filter(area => !coverage[area]),
+  }
+}
+
+export type CapabilityTierEvidence = {
+  expectedTier: 'lite' | 'standard' | 'pro'
+  uiTier: string | null
+  payloadTier: string | null
+  auditedTier: string | null
+}
+
+export function tierEvidenceMatches(value: CapabilityTierEvidence): boolean {
+  return value.uiTier === value.expectedTier
+    && (value.payloadTier === null || value.payloadTier === value.expectedTier)
+    && value.auditedTier === value.expectedTier
+}
+
 export function safeSummaryValue(value: unknown): string | number | boolean | null {
   if (value === null || typeof value === 'boolean') return value
   if (typeof value === 'number') {

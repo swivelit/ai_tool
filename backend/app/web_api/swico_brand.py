@@ -11,6 +11,7 @@ SWICO_PUBLIC_PROFILE_VERSION = "2026-07-v1"
 
 
 class SwicoBrandSubintent(str, Enum):
+    PUBLIC_PROFILE = "public_profile"
     IDENTITY = "identity"
     ABOUT = "about"
     CREATOR = "creator"
@@ -101,6 +102,10 @@ SWICO_PUBLIC_PROFILE = SwicoPublicProfile(
 
 
 _ENGLISH_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
+    SwicoBrandSubintent.PUBLIC_PROFILE: (
+        "Swico is the flagship AI assistant developed by Swivel Technologies. "
+        "It was envisioned and created under the leadership of CEO Jeyanth."
+    ),
     SwicoBrandSubintent.IDENTITY: "I’m Swico, an AI-powered assistant developed by Swivel Technologies.",
     SwicoBrandSubintent.ABOUT: (
         "Swico is an AI-powered personal assistant and the flagship product of Swivel Technologies. "
@@ -202,6 +207,10 @@ _ENGLISH_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
 
 
 _TAMIL_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
+    SwicoBrandSubintent.PUBLIC_PROFILE: (
+        "Swico என்பது Swivel Technologies உருவாக்கிய முக்கிய AI உதவியாளர். "
+        "அதன் உருவாக்கத்தை CEO Jeyanth வழிநடத்தினார்."
+    ),
     SwicoBrandSubintent.IDENTITY: "நான் Swico — Swivel Technologies உருவாக்கிய AI உதவியாளர்.",
     SwicoBrandSubintent.CREATOR: (
         "CEO Jeyanth தலைமையில் Swico திட்டமிட்டு உருவாக்கப்பட்டது; இது Swivel Technologies-ன் முக்கிய AI தயாரிப்பு."
@@ -348,6 +357,22 @@ def validate_swico_public_response(text: str) -> str:
 
 def _select_subintent(text: str) -> SwicoBrandSubintent:
     lowered = text.casefold()
+    public_profile_parts = sum((
+        bool(
+            re.search(r"\b(?:what is|who are you|what are you|identity)\b", lowered)
+            or re.search(r"(?:என்றால் என்ன|என்ன உதவியாளர்|நீ(?:ங்கள்)?\s+யார்)", text)
+        ),
+        bool(
+            re.search(r"\b(?:which|what)\s+company\b|\b(?:company|developer)\b", lowered)
+            or "நிறுவனம்" in text
+        ),
+        bool(
+            re.search(r"\b(?:who led|who leads|leadership|leader|ceo|created|creation)\b", lowered)
+            or re.search(r"(?:வழிநடத்த|தலைமை|உருவாக்க)", text)
+        ),
+    ))
+    if public_profile_parts >= 2:
+        return SwicoBrandSubintent.PUBLIC_PROFILE
     if re.search(r"\b(founder|owner|ownership|investor|shareholder)\b", lowered) or (
         "swivel technologies" in lowered
         and "swico" not in lowered

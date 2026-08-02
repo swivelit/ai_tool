@@ -82,6 +82,32 @@ _TECHNICAL_CODING_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_URGENT_CHEST_PAIN_RE = re.compile(
+    r"\b(?:sudden|severe|crushing|pressure|tightness)?\s*chest\s+pain\b",
+    re.IGNORECASE,
+)
+_URGENT_BREATHING_RE = re.compile(
+    r"\b(?:difficulty|trouble|shortness)\s+(?:with\s+)?breath(?:ing)?\b|"
+    r"\b(?:cannot|can't|unable\s+to)\s+breathe\b",
+    re.IGNORECASE,
+)
+_URGENT_RADIATION_RE = re.compile(
+    r"\b(?:pain\s+)?(?:spreading|radiating|travelling)\s+to\s+(?:the\s+)?"
+    r"(?:left\s+)?(?:arm|shoulder|jaw|back)\b",
+    re.IGNORECASE,
+)
+
+
+def is_urgent_medical_emergency(message: str) -> bool:
+    text = str(message or "")
+    return bool(
+        _URGENT_CHEST_PAIN_RE.search(text)
+        and (
+            _URGENT_BREATHING_RE.search(text)
+            or _URGENT_RADIATION_RE.search(text)
+        )
+    )
+
 
 _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -120,13 +146,25 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("unsafe_or_sensitive", re.compile(r"\b(suicide|self[- ]?harm|kill myself|hurt myself|harm myself|emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|tax advice|investment advice|stock tip)\b", re.I)),
     ("file_retrieval", re.compile(r"\b(open|find|show|get|retrieve)\b.*\b(file|files|doc|docs|document|documents|pdf|notes?)\b|\b(?:yesterday|today|nethu|naethu|inniku|business|work|home)\b.*\b(?:open|find|show|notes?|pdf|file)\b|\b(?:நேத்து|நேற்று|இன்று|business|work|home)\b.*\b(?:open|find|show|notes?|pdf|file|காட்டு|திற)\b|(?:file|pdf|notes?)\s+(?:show|open)\s*(?:பண்ணு|pannu)?", re.I)),
     ("creative_tool", re.compile(r"\b(create|make|edit|generate|clean up|cleanup)\b.*\b(poster|image|photo|video|audio|song|voice edit|thumbnail|recording)\b|\b(poster|image|photo|video|audio)\b.*\b(edit|editing|generate|cleanup|clean up)\b", re.I)),
-    ("document", re.compile(r"\b(pdf|docx|word|word document|document|xlsx|excel|sheet|pptx|ppt|powerpoint|slides?|csv)\b.*\b(?:ஆக்கி|aakki|akki|make|create|generate|save|வை|pannu|பண்ணு)\b|\b(?:ஆக்கி|aakki|akki|make|create|generate)\b.*\b(pdf|docx|word|document|xlsx|excel|sheet|pptx|ppt|powerpoint|slides?)\b|\b(pdf|docx|xlsx|pptx|ppt|excel|powerpoint|word)\b", re.I)),
+    ("document", re.compile(
+        r"\b(?:pdf|docx|xlsx|pptx|csv)\b|"
+        r"\b(?:microsoft\s+word|word\s+(?:document|file)|excel(?:\s+sheet)?|"
+        r"powerpoint|ppt|spreadsheet|slides?)\b|"
+        r"\b(?:document|file)\b.{0,80}\b(?:ஆக்கி|aakki|akki|make|create|generate|save|வை|pannu|பண்ணு)\b|"
+        r"\b(?:ஆக்கி|aakki|akki|make|create|generate)\b.{0,80}\b(?:document|file)\b",
+        re.I,
+    )),
     ("reminder", re.compile(r"\b(remind|reminder|alarm|appointment|calendar)\b|நினைவூட்ட|நினைவு|remind\s*(?:பண்ணு|pannu|panna)|reminder\s*(?:save|வை|pannu)|நாளைக்கு.*remind|(?:tomorrow|naalaikku|nalai|நாளைக்கு|நாளை).*\breminder\b", re.I)),
     ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|^\s*remember\s+(?!me\b).{3,}|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
     ("task", re.compile(r"\b(?:add|create|save|set)\s+(?:a\s+)?(?:task|todo|to-do)\b|\b(?:task|todo|to-do)\b.*\b(?:add|save|வை|pannu|பண்ணு)\b|\b(task|todo|to-do|follow up|follow-up)\b|பணி", re.I)),
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
-    ("settings", re.compile(r"\b(settings|preference|preferences|reply language|assistant name|change language)\b", re.I)),
+    ("settings", re.compile(
+        r"\b(?:settings|reply language|assistant name|change language)\b|"
+        r"\b(?:change|set|update|switch|configure|edit|save)\b.{0,50}\bpreferences?\b|"
+        r"\bpreferences?\b.{0,50}\b(?:change|update|settings)\b",
+        re.I,
+    )),
     ("coding", re.compile(r"\b(code|coding|debug|bug|stack trace|typescript|python|react native|fastapi|sql|api implementation|function implementation|class implementation|refactor)\b", re.I)),
     ("complex_reasoning", re.compile(r"\b(architecture|design a|multi[- ]?step|trade[- ]?off|deep analysis|reason through|system design|migration plan|debug this architecture)\b", re.I)),
     ("translation", re.compile(r"\b(translate|translation|transliterate|transliteration|convert (?:to|into)|in tamil|tamil la|hindi me|hinglish|tanglish)\b", re.I)),
@@ -232,6 +270,12 @@ def _classify_intent_text(
     contextual = classify_contextual_followup(text)
     if contextual is not None:
         return contextual
+    if is_urgent_medical_emergency(text):
+        return IntentDecision(
+            intent="urgent_medical_emergency",
+            route="safety",
+            reason="clear_emergency_symptoms",
+        )
     if (
         _HIGH_CONFIDENCE_CODING_ACTION_RE.search(text)
         and _TECHNICAL_CODING_MARKER_RE.search(text)

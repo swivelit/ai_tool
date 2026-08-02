@@ -345,6 +345,35 @@ def test_unsupported_web_tool_is_truthful_and_safety_stays_distinct(client):
     assert safety.status_code == 200
     assert "safer alternative" in _stream_text(safety)
     assert "not available on the web" not in safety.text
+    with SessionLocal() as session:
+        assert session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == "10000000-0000-4000-8000-000000000002"
+        )).first() is None
+
+    emergency_request_id = "10000000-0000-4000-8000-000000000004"
+    emergency = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": emergency_request_id,
+        "message": (
+            "A hypothetical person has sudden crushing chest pain, difficulty "
+            "breathing, and pain spreading to the left arm. What should they do?"
+        ),
+    })
+    emergency_text = _stream_text(emergency)
+    assert emergency.status_code == 200
+    assert "emergency services immediately" in emergency_text
+    assert "can’t diagnose" in emergency_text
+    assert "do not wait" in emergency_text
+    assert "safer alternative" not in emergency_text
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == emergency_request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+        assert assistant.provider == "blocked"
+        assert assistant.charge_micros == 0
+        assert session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == emergency_request_id,
+        )).first() is None
 
 
 def test_success_settles_and_duplicate_request_does_not_reinvoke_provider(client, monkeypatch):

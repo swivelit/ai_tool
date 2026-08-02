@@ -431,6 +431,8 @@ def _local_route(intent: str) -> str:
         return f"deterministic_{intent}"
     if intent == "unsafe_or_sensitive":
         return "safety_block"
+    if intent == "urgent_medical_emergency":
+        return "medical_emergency_guidance"
     if intent in {
         "reminder", "routine", "profile", "settings", "note", "task",
         "document", "file_retrieval", "creative_tool", "tts", "stt",

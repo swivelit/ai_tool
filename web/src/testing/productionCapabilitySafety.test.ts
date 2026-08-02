@@ -7,10 +7,12 @@ import {
   bulletLines,
   countSentences,
   countWords,
+  evaluateWebhookArchitecture,
   parseSseEventOrder,
   percentile,
   productionCapabilityGate,
   redactPotentialSecrets,
+  tierEvidenceMatches,
   weightedScore,
 } from './productionCapabilitySafety'
 
@@ -87,5 +89,69 @@ describe('production capability safety', () => {
     )
     expect(result.score).toBeCloseTo(88.89, 2)
     expect(result.redistributedWeights.correctness).toBeCloseTo(77.78, 2)
+  })
+
+  it('accepts PostgreSQL authority and explicit Redis negation', () => {
+    const result = evaluateWebhookArchitecture(`
+      PostgreSQL is the source of truth. Redis is not the source of truth.
+      Tables and unique constraints. Transaction boundaries. State transitions.
+      Processing flow pseudocode. Idempotency handles duplicates. Late event ordering.
+      Retry and failure recovery. Reconciliation job. Signature verification security checks.
+      Focused test plan.
+    `)
+    expect(result.postgresAuthoritative).toBe(true)
+    expect(result.nonPostgresAuthoritativeClaim).toBe(false)
+    expect(result.missingAreas).toEqual([])
+  })
+
+  it('accepts the requested must-not authority wording', () => {
+    const result = evaluateWebhookArchitecture(
+      'PostgreSQL is authoritative. Redis or Valkey must not be the source of truth.',
+    )
+    expect(result.postgresAuthoritative).toBe(true)
+    expect(result.nonPostgresAuthoritativeClaim).toBe(false)
+  })
+
+  it('rejects Redis authority and incomplete architecture coverage', () => {
+    const authoritative = evaluateWebhookArchitecture(
+      'Redis is the authoritative source of truth. PostgreSQL stores a copy.',
+    )
+    expect(authoritative.nonPostgresAuthoritativeClaim).toBe(true)
+    expect(authoritative.postgresAuthoritative).toBe(false)
+    expect(authoritative.missingAreas.length).toBeGreaterThan(0)
+    const missing = evaluateWebhookArchitecture(
+      'PostgreSQL is the source of truth. Tables have a unique constraint.',
+    )
+    expect(missing.missingAreas).toContain('transaction_boundaries')
+  })
+
+  it('accepts all ten areas under reasonable heading synonyms', () => {
+    const result = evaluateWebhookArchitecture(`
+      Schema and deduplication key constraint
+      Atomic transaction and rollback
+      Payment lifecycle
+      Worker flow algorithm
+      Idempotency and already processed events
+      Late event ordering
+      Crash recovery and replay
+      Consistency check job
+      HMAC signature verification
+      Testing strategy and failure injection
+      PostgreSQL is the system of record; Valkey is never authoritative.
+    `)
+    expect(result.missingAreas).toEqual([])
+    expect(result.nonPostgresAuthoritativeClaim).toBe(false)
+  })
+
+  it('keeps sequential tier evidence exact across fresh requests', () => {
+    for (const tier of ['lite', 'standard', 'pro'] as const) {
+      expect(tierEvidenceMatches({
+        expectedTier:tier, uiTier:tier, payloadTier:null, auditedTier:tier,
+      })).toBe(true)
+    }
+    expect(tierEvidenceMatches({
+      expectedTier:'standard', uiTier:'standard', payloadTier:null,
+      auditedTier:'lite',
+    })).toBe(false)
   })
 })

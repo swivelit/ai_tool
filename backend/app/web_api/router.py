@@ -2108,7 +2108,11 @@ def patch_assistant_settings(
         row.assistant_tier = payload.tier
     row.updated_at = utc_now()
     session.add(row)
-    session.flush()
+    # The client may issue a chat request as soon as this response arrives. Make
+    # the selected tier durable before returning so that request preparation
+    # cannot observe the previous committed value from another DB session.
+    session.commit()
+    session.refresh(row)
     return public_tier_settings(row.assistant_tier)
 
 

@@ -261,6 +261,47 @@ export function boundedCancellationResponseStatus(
   return 'unknown'
 }
 
+export type CapabilityCancellationReasonCode =
+  | 'stop_button_not_ready'
+  | 'request_completed_before_cancel'
+  | 'cancel_http_failed'
+  | 'terminal_audit_timeout'
+  | 'cancellation_settlement_inconsistent'
+
+export type BoundedCancellationAudit = {
+  cancellation_state: string
+  usage_charge_row_count: number
+  duplicate_settlement_indicator: boolean
+  orphaned_active_reservation: boolean
+  cancellation_failure_count: number
+  active_usage_stage_names: string[]
+  usage_stage_status_counts: Record<string, number>
+  charged_micro_inr_total: number
+  settled_micro_inr_total: number
+  charge_status_counts: Record<string, number>
+}
+
+export function boundedCancellationSettlementReason(
+  audit: BoundedCancellationAudit,
+): CapabilityCancellationReasonCode | null {
+  if (
+    audit.cancellation_state !== 'cancelled'
+    || audit.usage_charge_row_count !== 1
+    || audit.duplicate_settlement_indicator
+    || audit.orphaned_active_reservation
+    || audit.cancellation_failure_count !== 0
+    || audit.active_usage_stage_names.length > 0
+    || ['planned', 'reserved', 'running'].some(
+      status => (audit.usage_stage_status_counts[status] ?? 0) > 0,
+    )
+    || (audit.charged_micro_inr_total > 0 && (
+      audit.charge_status_counts.settled !== 1
+      || audit.settled_micro_inr_total !== audit.charged_micro_inr_total
+    ))
+  ) return 'cancellation_settlement_inconsistent'
+  return null
+}
+
 export type ProductionSafeSummary = {
   schema_version: 3
   result: 'passed' | 'failed'

@@ -141,16 +141,50 @@ test('production capability workflows use typed chat observers only', () => {
     spec.indexOf('let cancellationRequestId'),
     spec.indexOf("workflowResults.push({ id:'J-DISCONNECT-RECOVERY'"),
   )
-  expect(cancellation).toContain(
-    'const requestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))',
+  expect(cancellation).toMatch(
+    /requestPromise\s*=\s*observePlaywrightPromise\(page\.waitForRequest\(\s*isPostChatStreamRequest/,
   )
-  expect(cancellation).toContain(
-    'const responsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))',
+  expect(cancellation).toMatch(
+    /cancellationTerminalResponse\s*=\s*observePlaywrightPromise\(page\.waitForResponse\(\s*isPostChatStreamResponse/,
   )
   const requestObservers = [...spec.matchAll(/waitForRequest\(([\s\S]{0,120})/g)]
   expect(requestObservers).toHaveLength(5)
   expect(requestObservers.every(match => match[1].includes('isPostChatStreamRequest'))).toBe(true)
   expect(spec).not.toMatch(/waitForRequest\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>[\s\S]{0,300}?\.request\(\)/)
+  expect(cancellation).toContain('boundedCancellationResponseStatus')
+  expect(cancellation).toContain('boundedCancellationSettlementReason')
+  for (const reason of [
+    'stop_button_not_ready', 'request_completed_before_cancel',
+    'cancel_http_failed', 'terminal_audit_timeout',
+    'cancellation_settlement_inconsistent',
+  ]) expect(cancellation).toContain(reason)
+})
+
+test('production capability search distinguishes API, index, UI, and opening failures', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const search = spec.slice(
+    spec.indexOf("if (bootstrap?.features.web_content_search)"),
+    spec.indexOf("const archiveTarget"),
+  )
+  for (const reason of [
+    'search_api_failed', 'search_index_timeout', 'frontend_search_stale',
+    'search_result_not_openable',
+  ]) expect(search).toContain(reason)
+  expect(search).toContain('matchingThread.click()')
+  expect(search).toContain('toHaveClass(/active/')
+})
+
+test('mandatory exact-format failures cannot retain passed status', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const evaluation = spec.slice(
+    spec.indexOf('function evaluation('), spec.indexOf('class PaceGate'),
+  )
+  expect(evaluation).toContain('mandatoryConstraintFailed = true')
+  expect(evaluation).toMatch(/const passed = scored\.score >= 75\s*&& !mandatoryConstraintFailed/)
 })
 
 test('observed Playwright promises remain rejectable when consumed', async () => {

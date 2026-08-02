@@ -12,6 +12,7 @@ import {
   authenticatedHeaderReasonCode,
   bootstrapReasonCode,
   boundedCancellationResponseStatus,
+  boundedCancellationSettlementReason,
   boundedCombinedFailure,
   buildProductionTriagSummary,
   FreshChatHarnessError,
@@ -808,6 +809,24 @@ test('scenario-wide PDF, repository, and cancellation subreasons stay bounded', 
     expect(summary.scenarios[0].subreason_code).toBe(subreason_code)
     expect(source).toContain(subreason_code)
   }
+})
+
+test('bounded cancellation settlement helper preserves TRIAG invariants', () => {
+  const valid = {
+    cancellation_state:'cancelled', usage_charge_row_count:1,
+    duplicate_settlement_indicator:false, orphaned_active_reservation:false,
+    cancellation_failure_count:0, active_usage_stage_names:[],
+    usage_stage_status_counts:{ released:2 }, charged_micro_inr_total:0,
+    settled_micro_inr_total:0, charge_status_counts:{ released:1 },
+  }
+  expect(boundedCancellationSettlementReason(valid)).toBeNull()
+  expect(boundedCancellationSettlementReason({
+    ...valid, usage_stage_status_counts:{ running:1 },
+  })).toBe('cancellation_settlement_inconsistent')
+  expect(boundedCancellationSettlementReason({
+    ...valid, charged_micro_inr_total:10, settled_micro_inr_total:9,
+    charge_status_counts:{ settled:1 },
+  })).toBe('cancellation_settlement_inconsistent')
 })
 
 test('supported PDF captures all upload statuses and UUID before later checks', () => {

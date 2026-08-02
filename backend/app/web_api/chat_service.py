@@ -53,6 +53,10 @@ from ..web_ai.generation.generator import VerifiedGenerator
 from ..web_ai.generation.models import (
     AnswerQualityResult, RepositoryValidationMode,
 )
+from ..web_ai.generation.output_contract import (
+    OutputContract,
+    extract_output_contract,
+)
 from ..web_ai.generation.repair import build_repair_request
 from ..web_ai.persistence import (
     get_or_create_usage_stage,
@@ -1308,6 +1312,7 @@ def prepare_web_turn(
                 "Continue the previous response exactly from where it stopped. "
                 "Do not repeat completed sections; finish all remaining steps end-to-end."
             )
+        output_contract = extract_output_contract(model_message)
         display_attachments = [upload.display_metadata() for upload in uploads]
         visible_content = visible_message or (
             "Attached: " + ", ".join(upload.name for upload in uploads)
@@ -1613,6 +1618,14 @@ def prepare_web_turn(
                 ),
                 settings=active_triag_settings,
             )
+            if (
+                output_contract.required
+                and active_triag_settings.answer_guard_runtime_enabled
+                and not execution_plan.deterministic
+            ):
+                execution_plan = replace(
+                    execution_plan, streaming_mode="verified_buffered"
+                )
             if active_triag_settings.shadow_planning_enabled:
                 triag_shadow_metadata = {
                     **shadow_metadata(
@@ -2128,6 +2141,7 @@ def prepare_web_turn(
             "answer_class": optimization.answer_class,
             "cache_scope": optimization.cache_scope,
             "cache_scope_reason": optimization.cache_scope_reason,
+            "output_contract": output_contract.as_metadata(),
         }
         if continuation_packet is not None and continuation_chain is not None:
             metadata.update({
@@ -2498,6 +2512,13 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             str(route.metadata.get("brand_subintent") or "general"),
             reply_language=request.reply_language or route.language,
             message=request.message,
+        )
+    elif route.intent == "urgent_medical_emergency":
+        text = (
+            "These symptoms could be a medical emergency. Call your applicable "
+            "local emergency number or emergency services immediately, and have "
+            "someone stay with the person if possible. I can’t diagnose the cause "
+            "here, but do not wait for a routine appointment or online consultation."
         )
     elif route.provider == "blocked":
         text = "I can’t help with that request, but I can help with a safer alternative."
@@ -3389,6 +3410,9 @@ def execute_web_turn(
         except TriagConfigurationError:
             phase3_settings = TriagSettings()
     guard_enabled = phase3_settings.answer_guard_runtime_enabled
+    output_contract = OutputContract.from_metadata(
+        prepared.ai_request.metadata.get("output_contract")
+    )
     if on_status and guard_enabled:
         on_status("understanding_request")
         if prepared.retrieval_uploads:
@@ -3429,6 +3453,7 @@ def execute_web_turn(
                         answer_class="normal",
                         task_contract=prepared.ai_request.message,
                         evidence_pack=prepared.retrieval_context,
+                        output_contract=output_contract,
                     ),
                 )
             if (
@@ -3470,6 +3495,7 @@ def execute_web_turn(
                 max_buffer_characters=(
                     phase3_settings.verified_buffer_max_characters
                 ),
+                output_contract_required=output_contract.required,
             )
             prepared.streaming_mode = stream_policy.mode
             guard_context = AnswerGuardContext(
@@ -3490,6 +3516,7 @@ def execute_web_turn(
                         prepared.repository_contract is not None
                     ),
                 ),
+                output_contract=output_contract,
             )
             guard = AnswerGuard()
             repository_validation_attempts = 0
@@ -4146,6 +4173,7 @@ def execute_web_turn(
                     AnswerGuardContext(
                         answer_class="normal",
                         task_contract=prepared.ai_request.message,
+                        output_contract=output_contract,
                     ),
                 )
                 if on_delta:

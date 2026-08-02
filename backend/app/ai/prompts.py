@@ -7,6 +7,10 @@ import hashlib
 from typing import Any
 
 from app.age_utils import normalize_age_group
+from app.web_ai.generation.output_contract import (
+    OutputContract,
+    output_contract_instruction,
+)
 
 from .types import AIRequest, AIRoute
 from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
@@ -198,6 +202,13 @@ def _build_dynamic_system_instructions(
             answer_class=str((request.metadata or {}).get("answer_class") or ""),
         ),
     ]
+    contract_instruction = output_contract_instruction(
+        OutputContract.from_metadata(
+            (request.metadata or {}).get("output_contract")
+        )
+    )
+    if contract_instruction:
+        parts.append(contract_instruction)
     life_context_present = bool(
         ((request.metadata or {}).get("client_context") or {}).get("life_context")
     )

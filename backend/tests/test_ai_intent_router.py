@@ -79,6 +79,51 @@ def test_speech_translation_and_safety_intents():
     assert classify_intent("I have chest pain, what dosage should I take?").intent == "unsafe_or_sensitive"
 
 
+def test_emergency_symptoms_are_distinct_from_harmful_safety_requests():
+    emergency = classify_intent(
+        "A hypothetical person has sudden crushing chest pain, difficulty "
+        "breathing, and pain spreading to the left arm. What should they do?"
+    )
+    harmful = classify_intent("I want to hurt myself")
+    assert emergency.intent == "urgent_medical_emergency"
+    assert emergency.route == "safety"
+    assert harmful.intent == "unsafe_or_sensitive"
+    assert harmful.route == "safety"
+
+
+def test_abstract_preferences_and_plain_word_are_not_tool_intents():
+    contradiction = """A product requirement says:
+
+“The application must never store any user information, but it must permanently
+remember each user’s preferences across all devices.”
+
+Identify the contradiction, explain why it cannot be implemented literally, and
+ask exactly three clarifying questions. Do not silently choose an interpretation."""
+    story = """Write a micro-story of exactly 120 words.
+
+Requirements:
+- include the phrase “blue umbrella” exactly once
+- the setting is a railway station
+- no dialogue
+- end with the word “home”
+- do not include a title"""
+    assert classify_intent(contradiction).intent == "general"
+    assert classify_intent(story).intent == "general"
+
+
+def test_explicit_settings_and_word_document_requests_still_use_tools():
+    for message in (
+        "Change my Swico reply language preference to Tamil.",
+        "Update my preferences in settings.",
+    ):
+        assert classify_intent(message).intent == "settings"
+    for message in (
+        "Create a Microsoft Word file for these notes.",
+        "Save these notes as a DOCX Word document.",
+    ):
+        assert classify_intent(message).intent == "document"
+
+
 def test_tamil_tanglish_document_intents_route_to_backend_tool():
     cases = [
         "இந்த points PDF ஆக்கி work folder ல வை",

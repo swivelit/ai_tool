@@ -116,6 +116,54 @@ def test_tamil_creator_question_has_faithful_deterministic_answer():
     assert "தலைமையில்" in answer
 
 
+@pytest.mark.parametrize(
+    ("question", "language"),
+    [
+        (
+            "What is Swico, which company develops it, and who led its creation?",
+            "en",
+        ),
+        (
+            "Swico என்றால் என்ன, அதை எந்த நிறுவனம் உருவாக்குகிறது, "
+            "அதன் உருவாக்கத்தை யார் வழிநடத்தினார்?",
+            "ta",
+        ),
+    ],
+)
+def test_compound_public_profile_questions_include_all_approved_facts(
+    question, language,
+):
+    optimized = optimize_web_turn(question, reply_language=language)
+    answer = swico_brand_response(
+        optimized.brand_subintent,
+        reply_language=language,
+        message=question,
+    )
+    assert optimized.optimization_route == "deterministic_swico_brand"
+    assert optimized.brand_subintent == "public_profile"
+    assert all(value in answer for value in (
+        "Swico", "Swivel Technologies", "CEO Jeyanth",
+    ))
+
+
+def test_compound_public_profile_web_turn_is_provider_free(client, monkeypatch):
+    create_test_user("brand-user", "brand-user@example.com")
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation",
+        lambda *args, **kwargs: pytest.fail("compound brand route must not reserve"),
+    )
+    response = _post(
+        client,
+        "What is Swico, which company develops it, and who led its creation?",
+        11,
+    )
+    assert response.status_code == 200
+    assert all(value in _stream_text(response) for value in (
+        "Swico", "Swivel Technologies", "CEO Jeyanth",
+    ))
+    assert _metadata(_request_id(11))["provider_attempts"] == 0
+
+
 def test_validator_falls_back_without_llm_for_configured_model(monkeypatch):
     monkeypatch.setenv("SWICO_LITE_MODEL_PRIMARY", "private-upstream-77")
     answer = validate_swico_public_response("Swico uses private-upstream-77.")
