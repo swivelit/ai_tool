@@ -59,6 +59,7 @@ class AnswerQualityResult:
             "retrieval_status": self.retrieval_status or None,
             "checks": [check.safe_summary for check in self.checks],
             "repository_validation_mode": self.repository_validation_mode,
+            "repair_attempted": self.repair_attempted,
         }
 
 

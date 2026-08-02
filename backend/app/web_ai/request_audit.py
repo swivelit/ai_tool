@@ -94,6 +94,13 @@ _PHASE2_FALLBACK_REASONS = frozenset({
 _CANCELLATION_FAILURE_ORIGINS = frozenset({
     "message_status", "charge_status", "stage_status", "trace_status", "none",
 })
+_CACHE_HIT_KINDS = frozenset({"none", "exact", "semantic"})
+_FINISH_REASONS = frozenset({
+    "unknown", "stop", "length", "content_filter", "tool_calls",
+})
+_COMPLETION_STATUSES = frozenset({
+    "unknown", "complete", "incomplete", "cancelled",
+})
 
 
 def _bounded_count(value: object) -> int:
@@ -272,6 +279,13 @@ def build_request_audit(
         quality_status = "not_run"
         selected_tier = "not_run"
         repository_validation_mode: str | None = None
+        cache_hit = False
+        cache_hit_kind = "none"
+        finish_reason = "unknown"
+        completion_status = "unknown"
+        truncated = False
+        repair_attempted = False
+        output_contract_check_statuses: list[str] = []
         phase2_fallback_reason_code: str | None = None
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
@@ -281,6 +295,25 @@ def build_request_audit(
             if str(role) != "assistant":
                 continue
             metadata = _safe_json(str(metadata_json or "{}"))
+            cache_hit = cache_hit or metadata.get("cache_hit") is True
+            candidate_cache_kind = str(
+                metadata.get("cache_hit_kind") or "none"
+            )
+            if candidate_cache_kind in _CACHE_HIT_KINDS:
+                cache_hit_kind = candidate_cache_kind
+            candidate_finish = str(metadata.get("finish_reason") or "unknown")
+            finish_reason = (
+                candidate_finish
+                if candidate_finish in _FINISH_REASONS else "unknown"
+            )
+            candidate_completion = str(
+                metadata.get("completion_status") or "unknown"
+            )
+            completion_status = (
+                candidate_completion
+                if candidate_completion in _COMPLETION_STATUSES else "unknown"
+            )
+            truncated = metadata.get("truncated") is True
             provider_calls_from_messages = max(
                 provider_calls_from_messages,
                 min(100, _bounded_count(
@@ -292,6 +325,20 @@ def build_request_audit(
                 retrieval_status = str(candidate_retrieval)
             quality = metadata.get("quality")
             if isinstance(quality, dict):
+                repair_attempted = quality.get("repair_attempted") is True
+                for raw_check in (
+                    quality.get("checks")
+                    if isinstance(quality.get("checks"), list) else []
+                ):
+                    if not isinstance(raw_check, dict):
+                        continue
+                    if not str(raw_check.get("type") or "").startswith(
+                        "output_contract_"
+                    ):
+                        continue
+                    output_contract_check_statuses.append(
+                        str(raw_check.get("status") or "")
+                    )
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
@@ -420,6 +467,25 @@ def build_request_audit(
             ),
             "retrieval_status": retrieval_status,
             "quality_status": quality_status,
+            "persisted_quality_status": quality_status,
+            "cache_hit": cache_hit,
+            "cache_hit_kind": cache_hit_kind,
+            "finish_reason": finish_reason,
+            "completion_status": completion_status,
+            "truncated": truncated,
+            "output_contract_check_status_counts": _bounded_counts(
+                output_contract_check_statuses,
+                frozenset({"passed", "failed", "warning", "skipped", "error"}),
+            ),
+            "repair_attempted": repair_attempted,
+            "generation_stage_count": min(
+                _COUNT_MAX,
+                sum(1 for row in stage_rows if str(row[0]) == "generation"),
+            ),
+            "repair_stage_count": min(
+                _COUNT_MAX,
+                sum(1 for row in stage_rows if str(row[0]) == "repair"),
+            ),
             "answer_check_status_counts": _bounded_counts(
                 (row[0] for row in check_rows), _ANSWER_CHECK_STATUSES
             ),

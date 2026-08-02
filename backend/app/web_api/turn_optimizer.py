@@ -403,6 +403,24 @@ def classify_answer_class(message: str, intent: str = "") -> AnswerClass:
     )
     if any(trigger in lowered for trigger in long_form_triggers):
         return "long_form"
+    numbered_deliverables = re.findall(
+        r"(?m)^\s*\d{1,3}[.)]\s+\S+", text
+    )
+    many_required_sections = bool(
+        len(numbered_deliverables) >= 8
+        and re.search(
+            r"\b(?:include|cover|address|requirements?|constraints?|sections?)\b",
+            lowered,
+        )
+    )
+    large_numbered_contract = bool(re.search(
+        r"\b(?:at\s+least\s+|exactly\s+)?(?:[5-9]\d|[1-9]\d{2,})"
+        r"(?:[- ]+(?:distinct\s+|separately\s+numbered\s+|numbered\s+)?)"
+        r"(?:item|point|step|section|entry|sentence)s?\b",
+        lowered,
+    ))
+    if many_required_sections or large_numbered_contract:
+        return "long_form"
     if intent in {"coding", "complex_reasoning"} or detailed_answer_requested(text):
         return "detailed"
     if len(text.split()) <= 12 and (

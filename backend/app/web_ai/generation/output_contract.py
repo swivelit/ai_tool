@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import re
 from typing import Any
@@ -301,6 +302,69 @@ def output_contract_instruction(contract: OutputContract) -> str:
     if contract.no_introductory_prose:
         rules.append("Do not include introductory or surrounding prose.")
     return "Mandatory output contract; every rule must pass:\n- " + "\n- ".join(rules)
+
+
+def output_contract_hash(contract: OutputContract) -> str:
+    payload = json.dumps(
+        contract.as_metadata(), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def canonicalize_output_contract(answer: str, contract: OutputContract) -> str:
+    """Remove wrappers only when doing so preserves the generated semantics."""
+    value = str(answer or "").strip()
+    if not contract.required:
+        return value
+
+    if contract.json_only:
+        decoder = json.JSONDecoder()
+        candidates: list[dict[str, Any]] = []
+        for index, character in enumerate(value):
+            if character != "{":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(value[index:])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if contract.exact_json_keys and set(parsed) != set(
+                contract.exact_json_keys
+            ):
+                continue
+            candidates.append(parsed)
+        if len(candidates) == 1:
+            return json.dumps(
+                candidates[0], ensure_ascii=False, separators=(",", ":")
+            )
+
+    if contract.exact_fenced_block_count is not None:
+        matches = list(_FENCED_BLOCK.finditer(value))
+        selected: list[re.Match[str]] = []
+        for match in matches:
+            if (
+                contract.fenced_language
+                and match.group("language").casefold()
+                != contract.fenced_language.casefold()
+            ):
+                continue
+            prefix_index = len(selected)
+            if prefix_index < len(contract.fenced_block_prefixes):
+                if not match.group("body").lstrip().startswith(
+                    contract.fenced_block_prefixes[prefix_index]
+                ):
+                    continue
+            selected.append(match)
+            if len(selected) == contract.exact_fenced_block_count:
+                break
+        if len(selected) == contract.exact_fenced_block_count:
+            return "\n\n".join(
+                "```" + match.group("language") + "\n"
+                + match.group("body").rstrip() + "\n```"
+                for match in selected
+            )
+    return value
 
 
 def validate_output_contract(

@@ -26,6 +26,38 @@ _REPOSITORY_CHANGE = re.compile(
     r"\b(repository|repo|codebase|file|files)\b",
     re.IGNORECASE | re.DOTALL,
 )
+ANSWER_GUARD_VERSION = "2026-08-02.1"
+
+
+@dataclass(frozen=True)
+class ProviderCompletion:
+    """Content-free terminal metadata supplied by a generation provider."""
+
+    finish_reason: str = "unknown"
+    completion_status: str = "unknown"
+    incomplete_reason: str = ""
+    truncated: bool = False
+
+    @classmethod
+    def from_raw(cls, value: object) -> "ProviderCompletion":
+        raw = value if isinstance(value, dict) else {}
+        return cls(
+            finish_reason=str(raw.get("finish_reason") or "unknown")[:40],
+            completion_status=str(
+                raw.get("completion_status") or "unknown"
+            )[:40],
+            incomplete_reason=str(raw.get("incomplete_reason") or "")[:80],
+            truncated=raw.get("truncated") is True,
+        )
+
+    @property
+    def incomplete(self) -> bool:
+        return bool(
+            self.truncated
+            or self.finish_reason.casefold() == "length"
+            or self.completion_status.casefold() == "incomplete"
+            or self.incomplete_reason.strip()
+        )
 
 
 @dataclass(frozen=True)
@@ -40,6 +72,7 @@ class AnswerGuardContext:
     repository_context_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
     output_contract: OutputContract | None = None
+    provider_completion: ProviderCompletion | None = None
 
     @property
     def repository_validation_required(self) -> bool:
@@ -120,6 +153,13 @@ class AnswerGuard:
                 )
         if include("task_completeness"):
             checks.append(_task_completeness(answer, context.task_contract))
+        if context.provider_completion is not None:
+            checks.append(QualityCheck(
+                "provider_completion",
+                "failed" if context.provider_completion.incomplete else "passed",
+                "provider_output_incomplete"
+                if context.provider_completion.incomplete else "",
+            ))
         if context.output_contract and context.output_contract.required:
             checks.extend(validate_output_contract(answer, context.output_contract))
         if context.repository_context_used:

@@ -602,7 +602,7 @@ def test_unrelated_pro_request_with_saved_knowledge_calls_provider(monkeypatch):
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_PERSISTENT_KNOWLEDGE_ENABLED", "true")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user("knowledge-unrelated", "knowledge-u@example.com")
     _approve(int(user.id))

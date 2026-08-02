@@ -45,6 +45,7 @@ class VerifiedGenerator:
         verify_final: Callable[
             [str, AnswerQualityResult | None], AnswerQualityResult
         ] | None = None,
+        canonicalize: Callable[[str], str] | None = None,
     ) -> GeneratedAnswer:
         def status(value: str) -> None:
             if on_status:
@@ -53,6 +54,8 @@ class VerifiedGenerator:
         _check_cancelled(cancellation_signal)
         if self.policy.mode == "direct":
             response = generate_draft(on_delta)
+            if canonicalize is not None:
+                response = replace(response, text=canonicalize(response.text))
             _check_cancelled(cancellation_signal)
             quality = verify(response.text) if verify else None
             if verify_final is not None:
@@ -73,6 +76,8 @@ class VerifiedGenerator:
                 raise GenerationCancelled()
 
         response = generate_draft(buffer)
+        if canonicalize is not None:
+            response = replace(response, text=canonicalize(response.text))
         _check_cancelled(cancellation_signal)
         status("verifying_sources")
         quality = verify(response.text) if verify else None
@@ -84,7 +89,13 @@ class VerifiedGenerator:
             repaired = repair(response.text, quality)
             _check_cancelled(cancellation_signal)
             if repaired is not None:
-                response = repaired
+                response = replace(
+                    repaired,
+                    text=(
+                        canonicalize(repaired.text)
+                        if canonicalize is not None else repaired.text
+                    ),
+                )
                 quality = (
                     verify_repaired(response.text, quality)
                     if verify_repaired else verify(response.text) if verify else quality

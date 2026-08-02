@@ -464,7 +464,7 @@ def test_shadow_rollout_preserves_cache_prompt_provider_and_billing(monkeypatch)
     cache_lookups: list[tuple[int, str, str | None]] = []
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response",
-        lambda user_id, message, language: (
+        lambda user_id, message, language, **_kwargs: (
             cache_lookups.append((user_id, message, language)) or None
         ),
     )
@@ -687,6 +687,7 @@ def test_general_availability_private_context_never_enters_global_cache(
     values = {
         "cancelled": False,
         "truncated": False,
+        "incomplete": False,
         "continuation_control": False,
         "used_memory": False,
         "used_profile": False,
@@ -774,6 +775,7 @@ def test_rejected_results_never_enter_global_cache(
         ),
         cancelled=cancelled,
         truncated=truncated,
+        incomplete=False,
         continuation_control=False,
         used_memory=False,
         used_profile=False,
@@ -787,6 +789,32 @@ def test_rejected_results_never_enter_global_cache(
     assert case
     assert eligible is False
     assert reason == expected_reason
+
+
+def test_incomplete_provider_output_never_enters_global_cache():
+    eligible, reason = _global_cache_admission(
+        WebTurnOptimization(
+            optimization_route="provider_standalone",
+            is_contextual_followup=False,
+            cache_eligible=True,
+            cache_scope="global",
+            cache_scope_reason="public_standalone",
+        ),
+        cancelled=False,
+        truncated=False,
+        incomplete=True,
+        continuation_control=False,
+        used_memory=False,
+        used_profile=False,
+        used_temporary_documents=False,
+        used_persistent_knowledge=False,
+        used_repository=False,
+        used_private_sources=False,
+        explicit_memory_write=False,
+        answer_quality=None,
+    )
+    assert eligible is False
+    assert reason == "incomplete_response"
 
 
 def test_release_state_configuration_and_telemetry_are_safe():

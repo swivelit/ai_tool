@@ -183,6 +183,18 @@ export function bulletLines(value: string): string[] {
   ))
 }
 
+export function hasAffirmativeWaitAdvice(value: string): boolean {
+  const text = String(value)
+  for (const match of text.matchAll(/\bwait\s+(?:for|until)\b/giu)) {
+    const prefix = text.slice(Math.max(0, (match.index ?? 0) - 40), match.index)
+    if (/\b(?:do not|don't|never|must not|should not|cannot|can't)\s*$/iu.test(prefix)) {
+      continue
+    }
+    return true
+  }
+  return false
+}
+
 export function percentile(values: number[], percentileValue: number): number | null {
   if (!values.length) return null
   const sorted = [...values].sort((left, right) => left - right)

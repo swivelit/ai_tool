@@ -12,7 +12,9 @@ from app.billing.errors import PaymentValidationError
 from app.database import SessionLocal
 from app.models import UsageCharge, WebAnswerCheck, WebUsageStage
 from app.web_ai.evidence.models import EvidenceItem, EvidencePack
-from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
+from app.web_ai.generation.answer_guard import (
+    AnswerGuard, AnswerGuardContext, ProviderCompletion,
+)
 from app.web_ai.generation.generator import VerifiedGenerator
 from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_quality
@@ -70,7 +72,12 @@ def _response(text: str) -> AIProviderResponse:
         intent="general",
         input_tokens=8,
         output_tokens=4,
-        raw={"usage_actual": True},
+        raw={
+            "usage_actual": True,
+            "finish_reason": "stop",
+            "completion_status": "complete",
+            "truncated": False,
+        },
     )
 
 
@@ -187,6 +194,34 @@ def test_structural_repetition_and_duplicate_section_checks():
     assert statuses["repetition"] == "failed"
     assert statuses["duplicate_sections"] == "failed"
     assert result.status == "unverified"
+
+
+@pytest.mark.parametrize(
+    "completion",
+    (
+        ProviderCompletion(finish_reason="length"),
+        ProviderCompletion(truncated=True),
+        ProviderCompletion(completion_status="incomplete"),
+        ProviderCompletion(incomplete_reason="max_output_tokens"),
+    ),
+)
+def test_provider_incompleteness_can_never_be_verified(completion):
+    result = AnswerGuard().check(
+        "A complete-looking answer.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Answer the question.",
+            verified_buffered=True,
+            provider_completion=completion,
+        ),
+    )
+
+    assert result.status == "unverified"
+    assert any(
+        check.check_type == "provider_completion"
+        and check.status == "failed"
+        for check in result.checks
+    )
 
 
 def test_invented_citation_and_missing_coverage_are_rejected():
@@ -340,6 +375,162 @@ def test_repair_is_called_at_most_once():
     assert result.repair_attempts == 1
 
 
+def _execute_contract_turn(monkeypatch, *, slug, prompt, answers):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user(slug, f"{slug}@example.com")
+    _fund(int(user.id))
+    calls = 0
+
+    class Provider:
+        def complete(self, request, route):
+            nonlocal calls
+            answer = answers[min(calls, len(answers) - 1)]
+            calls += 1
+            return _response(answer)
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message=prompt,
+        request_id=f"{slug}-request", thread_id=None, reply_language="en",
+    )
+    prepared.triag_settings = TriagSettings(
+        enabled=True,
+        shadow_mode=False,
+        answer_guard_enabled=True,
+        verified_streaming_enabled=True,
+        answer_repair_enabled=True,
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider: Provider()}
+    )
+    return completed, calls
+
+
+def test_malformed_bullets_are_repaired_and_final_text_is_verified(monkeypatch):
+    prompt = (
+        "Explain retries. Use exactly four bullet points and use no more "
+        "than 140 words."
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-bullets",
+        prompt=prompt,
+        answers=[
+            "Retries should be handled carefully.",
+            "- Define one operation.\n- Reuse one key.\n- Store the result.\n- Return it on retry.",
+        ],
+    )
+    assert calls == 2
+    assert completed.message.content.count("\n-") == 3
+    assert completed.message.quality["status"] == "verified"
+
+
+def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):
+    prompt = (
+        "Return exactly two fenced Python code blocks.\n\n"
+        "The first block must begin with:\n\n# pricing.py\n\n"
+        "The second block must begin with:\n\n# test_pricing.py\n"
+    )
+    draft = (
+        "Here is the result.\n```python\n# pricing.py\npass\n```\n"
+        "```python\n# test_pricing.py\npass\n```\n"
+        "```python\n# extra.py\npass\n```"
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch, slug="contract-fences", prompt=prompt, answers=[draft]
+    )
+    assert calls == 1
+    assert completed.message.content.count("```python") == 2
+    assert "extra.py" not in completed.message.content
+    assert completed.message.quality["status"] == "verified"
+
+
+def test_prose_wrapped_json_is_canonicalized_before_persistence(monkeypatch):
+    prompt = (
+        "Return only valid JSON with exactly these keys:\n\n"
+        "- answer\n- reason\n- confidence\n\nDo not use Markdown fences."
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-json",
+        prompt=prompt,
+        answers=[
+            'Result: ```json\n{"answer":true,"reason":"prime","confidence":1}\n```'
+        ],
+    )
+    assert calls == 1
+    assert json.loads(completed.message.content)["answer"] is True
+    assert completed.message.quality["status"] == "verified"
+
+
+def test_invalid_contract_repair_remains_unverified_and_runs_once(monkeypatch):
+    prompt = "Explain retries using exactly four bullet points."
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-invalid-repair",
+        prompt=prompt,
+        answers=["Draft paragraph.", "Still a paragraph."],
+    )
+    assert calls == 2
+    assert completed.message.content == "Still a paragraph."
+    assert completed.message.quality["status"] == "unverified"
+
+
+def test_incomplete_provider_metadata_is_persisted_as_unverified(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user(
+        "phase3-incomplete-output", "phase3-incomplete-output@example.com"
+    )
+    _fund(int(user.id))
+
+    class Provider:
+        def complete(self, request, route):
+            response = _response("A complete-looking but truncated answer.")
+            response.raw.update({
+                "finish_reason": "length",
+                "completion_status": "incomplete",
+                "incomplete_reason": "max_output_tokens",
+                "truncated": True,
+            })
+            return response
+
+    request_id = "phase3-incomplete-output-request"
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain a complex topic in detail.",
+        request_id=request_id, thread_id=None, reply_language="en",
+    )
+    prepared.triag_settings = TriagSettings(
+        enabled=True,
+        shadow_mode=False,
+        answer_guard_enabled=True,
+        verified_streaming_enabled=True,
+        answer_repair_enabled=False,
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider: Provider()}
+    )
+
+    assert completed.message.quality["status"] == "unverified"
+    assert any(
+        check["type"] == "provider_completion" and check["status"] == "failed"
+        for check in completed.message.quality["checks"]
+    )
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebAnswerCheck).where(
+            WebAnswerCheck.request_id == request_id,
+        )).one()
+        assert json.loads(assistant.safe_metadata_json)[
+            "quality_outcome"
+        ] == "unverified"
+
+
 class _Signal:
     cancelled = False
 
@@ -471,7 +662,7 @@ def test_no_repair_provider_call_when_reservation_expansion_fails(
     monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
     monkeypatch.setenv("WEB_ANSWER_GUARD_REPAIR_ENABLED", "true")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
         "app.web_api.chat_service._expand_phase3_reservation",
@@ -549,7 +740,7 @@ def test_verifier_contract_is_bounded_simple_and_strict(monkeypatch):
 
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user("phase3-contract", "p3-contract@example.com")
     _fund(int(user.id))
@@ -595,7 +786,7 @@ def test_verifier_unavailable_is_terminal_and_incomplete_usage_is_billed_once(
 ):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user(
         f"phase3-verifier-{mode}", f"p3-verifier-{mode}@example.com"
@@ -682,7 +873,7 @@ def test_verifier_unavailable_is_terminal_and_incomplete_usage_is_billed_once(
 def test_repair_runs_before_the_single_paid_verifier(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user("phase3-final-verify", "p3-final@example.com")
     _fund(int(user.id))
@@ -742,7 +933,7 @@ def test_generation_and_repair_settle_parent_exactly_once(monkeypatch):
     monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
     monkeypatch.setenv("WEB_ANSWER_GUARD_REPAIR_ENABLED", "true")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user(
         "phase3-exact-settlement", "p3-settlement@example.com"

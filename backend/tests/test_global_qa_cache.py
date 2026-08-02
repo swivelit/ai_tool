@@ -28,6 +28,7 @@ from sqlmodel import SQLModel, select
 from app.web_api.chat_service import (
     _cache_response, execute_web_turn, prepare_web_turn,
 )
+from app.web_ai.generation.output_contract import OutputContract
 
 
 def _stub_openai_pipeline(monkeypatch, calls: list[str]):
@@ -154,6 +155,7 @@ def test_web_semantic_hit_precedes_chat_provider_invocation(monkeypatch):
         lambda *_args, **_kwargs: [1.0, 0.0],
     )
     user = create_test_user("semantic-web", "semantic-web@example.com")
+    compatibility = "semantic-web-compatible"
     with SessionLocal() as session:
         row = GlobalQACache(
             canonical_question="What is a FIFO queue?",
@@ -161,7 +163,8 @@ def test_web_semantic_hit_precedes_chat_provider_invocation(monkeypatch):
             answer="FIFO serves the oldest queued item first.",
             answer_language="en", scope="global", status="approved",
             hit_count=2, distinct_user_count=2, observed_question_count=2,
-            source_question_hashes_json="[]", answer_hash="semantic-web",
+            source_question_hashes_json=json.dumps([compatibility]),
+            answer_hash="semantic-web",
             embedding_json="[1,0]", embedding_kind="openai:test",
             embedding_norm=1.0, real_embedding_json="[1,0]",
             real_embedding_norm=1.0, real_embedding_kind="openai:test",
@@ -182,7 +185,9 @@ def test_web_semantic_hit_precedes_chat_provider_invocation(monkeypatch):
         )
     assert semantic and semantic["cache_hit_kind"] == "semantic"
     cached_response = _cache_response(
-        int(user.id), "Explain first-in-first-out ordering", "en"
+        int(user.id), "Explain first-in-first-out ordering", "en",
+        output_contract=OutputContract(), answer_class="normal",
+        cache_compatibility_hash=compatibility,
     )
     assert cached_response is not None
     assert cached_response.raw["cache_hit_kind"] == "semantic"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from decimal import Decimal
+import hashlib
 import json
 import logging
 import os
@@ -48,14 +49,19 @@ from ..models import (
 from ..web_ai.evidence.models import EvidencePack
 from ..web_ai.evidence.pack_builder import cap_evidence_pack, evidence_prompt
 from ..web_ai.execution_plan import ExecutionPlan
-from ..web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
+from ..web_ai.generation.answer_guard import (
+    ANSWER_GUARD_VERSION, AnswerGuard, AnswerGuardContext, ProviderCompletion,
+)
 from ..web_ai.generation.generator import VerifiedGenerator
 from ..web_ai.generation.models import (
     AnswerQualityResult, RepositoryValidationMode,
 )
 from ..web_ai.generation.output_contract import (
     OutputContract,
+    canonicalize_output_contract,
     extract_output_contract,
+    output_contract_hash,
+    validate_output_contract,
 )
 from ..web_ai.generation.repair import build_repair_request
 from ..web_ai.persistence import (
@@ -462,6 +468,7 @@ def _global_cache_admission(
     *,
     cancelled: bool,
     truncated: bool,
+    incomplete: bool,
     continuation_control: bool,
     used_memory: bool,
     used_profile: bool,
@@ -490,6 +497,7 @@ def _global_cache_admission(
     reason = (
         "cancelled_response" if cancelled else
         "truncated_response" if truncated else
+        "incomplete_response" if incomplete else
         "continuation_control" if continuation_control else
         "used_memory" if used_memory else
         "used_profile" if used_profile else
@@ -815,7 +823,53 @@ def _max_provider_attempts() -> int:
         return 1
 
 
-def _cache_response(user_id: int, message: str, reply_language: str | None) -> AIProviderResponse | None:
+def _cache_compatibility_hash(
+    *,
+    prompt_schema_version: str,
+    policy_version: str,
+    output_contract: OutputContract,
+) -> str:
+    payload = json.dumps({
+        "prompt_schema_version": str(prompt_schema_version or "v1")[:80],
+        "policy_version": str(policy_version or "unknown")[:80],
+        "output_contract_hash": output_contract_hash(output_contract),
+        "answer_guard_version": ANSWER_GUARD_VERSION,
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _enforce_final_output_contract_quality(
+    answer: str,
+    contract: OutputContract,
+    quality: AnswerQualityResult | None,
+) -> AnswerQualityResult | None:
+    """Make the persisted quality describe the exact final displayed string."""
+    if not contract.required or quality is None:
+        return quality
+    contract_checks = validate_output_contract(answer, contract)
+    checks = tuple(
+        check for check in quality.checks
+        if not check.check_type.startswith("output_contract_")
+    ) + contract_checks
+    failed = any(
+        check.status in {"failed", "error"} for check in contract_checks
+    )
+    return replace(
+        quality,
+        status="unverified" if failed else quality.status,
+        checks=checks,
+    )
+
+
+def _cache_response(
+    user_id: int,
+    message: str,
+    reply_language: str | None,
+    *,
+    output_contract: OutputContract,
+    answer_class: str,
+    cache_compatibility_hash: str,
+) -> AIProviderResponse | None:
     if not _env_bool("WEB_CACHE_BEFORE_BILLING_ENABLED", True):
         return None
     try:
@@ -840,12 +894,24 @@ def _cache_response(user_id: int, message: str, reply_language: str | None) -> A
             hit = lookup_approved_global_cache(
                 cache_session, message, reply_language, user_id=user_id,
                 query_embedding=token_bundle,
+                cache_compatibility_hash=cache_compatibility_hash,
+                exact_only=(
+                    output_contract.required
+                    or answer_class in {"detailed", "long_form"}
+                ),
             )
     except Exception:
         return None
     if not hit or not str(hit.get("answer") or "").strip():
         return None
-    answer = str(hit["answer"]).strip()
+    answer = canonicalize_output_contract(
+        str(hit["answer"]).strip(), output_contract
+    )
+    if any(
+        check.status in {"failed", "error"}
+        for check in validate_output_contract(answer, output_contract)
+    ):
+        return None
     return AIProviderResponse(
         text=answer, provider="cache", model=None, route="global_knowledge_cache",
         reason="approved_global_cache_hit",
@@ -859,6 +925,10 @@ def _cache_response(user_id: int, message: str, reply_language: str | None) -> A
             "provider_attempts": 0,
             "provider_calls_with_usage": 0,
             "fallback_attempted": False,
+            "finish_reason": "stop",
+            "completion_status": "complete",
+            "truncated": False,
+            "incomplete_reason": "",
         },
     )
 
@@ -1554,7 +1624,14 @@ def prepare_web_turn(
             "prompt_cache_version": os.getenv("WEB_PROMPT_CACHE_VERSION", "v1"),
             "cache_scope": preliminary.cache_scope,
             "cache_scope_reason": preliminary.cache_scope_reason,
+            "output_contract": output_contract.as_metadata(),
         }
+        cache_compatibility_hash = _cache_compatibility_hash(
+            prompt_schema_version=str(base_metadata["prompt_cache_version"]),
+            policy_version=request_triag_settings.policy_version,
+            output_contract=output_contract,
+        )
+        base_metadata["cache_compatibility_hash"] = cache_compatibility_hash
         if rollout_decision is not None:
             base_metadata.update(rollout_decision.safe_metadata)
         if continuation_packet is not None and continuation_chain is not None:
@@ -1932,7 +2009,14 @@ def prepare_web_turn(
             and regenerate_target is None
             and continuation_row is None
         ):
-            cached = _cache_response(user_id, model_message, reply_language)
+            cached = _cache_response(
+                user_id,
+                model_message,
+                reply_language,
+                output_contract=output_contract,
+                answer_class=preliminary.answer_class,
+                cache_compatibility_hash=cache_compatibility_hash,
+            )
             if cached is not None:
                 metrics = {
                     **preliminary.metrics,
@@ -1946,7 +2030,8 @@ def prepare_web_turn(
                 )
                 ai_request = AIRequest(
                     user_id=user_id, message=model_message, reply_language=reply_language,
-                    channel="text", request_id=request_id, metadata=base_metadata,
+                    channel="text", request_id=request_id,
+                    metadata=base_metadata,
                 )
                 route = AIRoute(
                     "cache", None, "global_knowledge_cache", "approved_global_cache_hit",
@@ -3446,6 +3531,13 @@ def execute_web_turn(
             raise GenerationCancelled()
         if prepared.precomputed_response is not None:
             response = prepared.precomputed_response
+            if output_contract.required:
+                response = replace(
+                    response,
+                    text=canonicalize_output_contract(
+                        response.text, output_contract
+                    ),
+                )
             if guard_enabled:
                 prepared.answer_quality = AnswerGuard().check(
                     response.text,
@@ -3454,6 +3546,9 @@ def execute_web_turn(
                         task_contract=prepared.ai_request.message,
                         evidence_pack=prepared.retrieval_context,
                         output_contract=output_contract,
+                        provider_completion=ProviderCompletion.from_raw(
+                            response.raw
+                        ),
                     ),
                 )
             if (
@@ -3524,7 +3619,7 @@ def execute_web_turn(
             def generate_draft(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
-                nonlocal streamed_by_provider
+                nonlocal streamed_by_provider, guard_context
                 _phase3_stage(
                     prepared,
                     stage_name="generation",
@@ -3650,6 +3745,10 @@ def execute_web_turn(
                     input_tokens=draft.input_tokens,
                     output_tokens=draft.output_tokens,
                     reserved_micros=prepared.reserved_micros,
+                )
+                guard_context = replace(
+                    guard_context,
+                    provider_completion=ProviderCompletion.from_raw(draft.raw),
                 )
                 return draft
 
@@ -3964,6 +4063,7 @@ def execute_web_turn(
             def repair(
                 answer: str, quality: AnswerQualityResult
             ) -> AIProviderResponse | None:
+                nonlocal guard_context
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -3981,6 +4081,7 @@ def execute_web_turn(
                     failed_checks=quality.failed_checks,
                     evidence_pack=prepared.retrieval_context,
                     task_contract=prepared.ai_request.message,
+                    output_contract=output_contract,
                 )
                 repair_route = replace(
                     prepared.route,
@@ -4103,6 +4204,12 @@ def execute_web_turn(
                     output_tokens=repaired.output_tokens,
                     reserved_micros=reserved,
                 )
+                guard_context = replace(
+                    guard_context,
+                    provider_completion=ProviderCompletion.from_raw(
+                        repaired.raw
+                    ),
+                )
                 return repaired
 
             def verify_repaired(
@@ -4153,6 +4260,11 @@ def execute_web_turn(
                     "cancellation_signal"
                 ),
                 verify_final=verify_final,
+                canonicalize=(
+                    lambda value: canonicalize_output_contract(
+                        value, output_contract
+                    )
+                ) if output_contract.required else None,
             )
             response = generated.response
             prepared.answer_quality = generated.quality
@@ -4178,6 +4290,10 @@ def execute_web_turn(
                 )
                 if on_delta:
                     on_delta(response.text)
+        if guard_enabled and output_contract.required:
+            prepared.answer_quality = _enforce_final_output_contract_quality(
+                response.text, output_contract, prepared.answer_quality
+            )
         if (
             on_delta
             and not streamed_by_provider
@@ -4395,6 +4511,9 @@ def execute_web_turn(
                 response.raw.get("completion_status")
                 or ("cancelled" if cancelled else "unknown")
             ),
+            "incomplete_reason": str(
+                response.raw.get("incomplete_reason") or ""
+            )[:80],
         })
         response.raw.update(optimization_metrics)
         safe_sources = (
@@ -4426,6 +4545,9 @@ def execute_web_turn(
             ).strip()
         )
         response_is_truncated = bool(response.raw.get("truncated"))
+        response_is_incomplete = ProviderCompletion.from_raw(
+            response.raw
+        ).incomplete
         planned_sources = set(
             prepared.execution_plan.retrieval_sources
             if prepared.execution_plan is not None else ()
@@ -4434,6 +4556,7 @@ def execute_web_turn(
             prepared.optimization,
             cancelled=cancelled,
             truncated=response_is_truncated,
+            incomplete=response_is_incomplete,
             continuation_control=bool(
                 prepared.ai_request.metadata.get("is_continuation_control")
             ),
@@ -4706,6 +4829,11 @@ def execute_web_turn(
                 response.text,
                 response.model,
                 request_id=prepared.request_id,
+                cache_compatibility_hash=str(
+                    prepared.ai_request.metadata.get(
+                        "cache_compatibility_hash"
+                    ) or ""
+                ) or None,
             )
 
         _run_post_turn_operation(

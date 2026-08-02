@@ -1594,7 +1594,7 @@ def test_structured_document_sources_survive_sse_done_and_persistence(
     monkeypatch.setenv("WEB_ROLLOUT_TRIAG_MODE", "all_eligible")
     monkeypatch.setenv("WEB_ROLLOUT_ANSWER_GUARD_MODE", "all_eligible")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user(
         "structured-sources", "structured-sources@example.com"

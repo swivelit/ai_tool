@@ -40,6 +40,7 @@ class CacheWriterAgent:
         answer: str,
         model_used: Optional[str],
         request_id: Optional[str] = None,
+        cache_compatibility_hash: Optional[str] = None,
     ) -> dict:
         from ...global_qa_cache import _record_backend_openai_answer_impl
 
@@ -53,4 +54,5 @@ class CacheWriterAgent:
             decision.safe_answer or answer,
             model_used,
             request_id=request_id,
+            cache_compatibility_hash=cache_compatibility_hash,
         )

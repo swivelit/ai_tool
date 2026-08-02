@@ -18,6 +18,50 @@ from .time_utils import utc_now
 logger = logging.getLogger(__name__)
 
 
+def pgvector_upsert_statement():
+    """Build the PostgreSQL upsert with dialect-safe named parameters."""
+    return text(
+        """
+        INSERT INTO vector_store_entries
+            (user_id, source_type, source_id, content_hash, content_text, embedding_json, embedding, updated_at)
+        VALUES
+            (:user_id, :source_type, :source_id, :content_hash, :content_text,
+             CAST(:embedding_json AS JSONB), CAST(:embedding AS vector), :updated_at)
+        ON CONFLICT (content_hash)
+        DO UPDATE SET
+            content_text = EXCLUDED.content_text,
+            embedding_json = EXCLUDED.embedding_json,
+            embedding = EXCLUDED.embedding,
+            updated_at = EXCLUDED.updated_at
+        """
+    )
+
+
+def pgvector_search_statement(*, filter_source_types: bool):
+    """Build the PostgreSQL similarity query without PostgreSQL cast shorthand.
+
+    ``:name::type`` is parsed inconsistently by SQLAlchemy ``text()`` and can
+    leave an unresolved token in the SQL sent to psycopg. Explicit ``CAST``
+    keeps every value parameterized and also gives PostgreSQL an unambiguous
+    array type for the source filter.
+    """
+    source_filter = (
+        " AND source_type = ANY(CAST(:source_types AS TEXT[]))"
+        if filter_source_types else ""
+    )
+    return text(
+        f"""
+        SELECT source_type, source_id, content_text, updated_at,
+               1 - (embedding <=> CAST(:embedding AS vector)) AS score_semantic
+        FROM vector_store_entries
+        WHERE (:user_id IS NULL OR user_id = :user_id)
+        {source_filter}
+        ORDER BY embedding <=> CAST(:embedding AS vector)
+        LIMIT :limit
+        """
+    )
+
+
 class VectorStore:
     def __init__(self, engine: Any, *, backend: str = "auto") -> None:
         self.engine = engine
@@ -140,33 +184,26 @@ class VectorStore:
             return
 
         vector_literal = "[" + ",".join(f"{float(v):.8f}" for v in embedding) + "]"
-        session.exec(
-            text(
-                """
-                INSERT INTO vector_store_entries
-                    (user_id, source_type, source_id, content_hash, content_text, embedding_json, embedding, updated_at)
-                VALUES
-                    (:user_id, :source_type, :source_id, :content_hash, :content_text, CAST(:embedding_json AS JSONB), :embedding::vector, :updated_at)
-                ON CONFLICT (content_hash)
-                DO UPDATE SET
-                    content_text = EXCLUDED.content_text,
-                    embedding_json = EXCLUDED.embedding_json,
-                    embedding = EXCLUDED.embedding,
-                    updated_at = EXCLUDED.updated_at
-                """
-            ),
-            params={
-                "user_id": user_id,
-                "source_type": source_type,
-                "source_id": source_id,
-                "content_hash": content_hash,
-                "content_text": content_text,
-                "embedding_json": json.dumps([float(v) for v in embedding], ensure_ascii=False),
-                "embedding": vector_literal,
-                "updated_at": updated_at,
-            },
-        )
-        session.commit()
+        try:
+            session.exec(
+                pgvector_upsert_statement(),
+                params={
+                    "user_id": user_id,
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "content_hash": content_hash,
+                    "content_text": content_text,
+                    "embedding_json": json.dumps(
+                        [float(v) for v in embedding], ensure_ascii=False
+                    ),
+                    "embedding": vector_literal,
+                    "updated_at": updated_at,
+                },
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
     def search(
         self,
@@ -219,30 +256,22 @@ class VectorStore:
             )[: max(1, int(limit))]
 
         vector_literal = "[" + ",".join(f"{float(v):.8f}" for v in query_embedding) + "]"
-        source_filter_sql = ""
         params: Dict[str, Any] = {
             "user_id": user_id,
             "embedding": vector_literal,
             "limit": max(1, int(limit)),
         }
         if source_types:
-            source_filter_sql = " AND source_type = ANY(:source_types)"
             params["source_types"] = list(source_types)
 
-        rows = session.exec(
-            text(
-                f"""
-                SELECT source_type, source_id, content_text, updated_at,
-                       1 - (embedding <=> :embedding::vector) AS score_semantic
-                FROM vector_store_entries
-                WHERE (:user_id IS NULL OR user_id = :user_id)
-                {source_filter_sql}
-                ORDER BY embedding <=> :embedding::vector
-                LIMIT :limit
-                """
-            ),
-            params=params,
-        ).all()
+        try:
+            rows = session.exec(
+                pgvector_search_statement(filter_source_types=bool(source_types)),
+                params=params,
+            ).all()
+        except Exception:
+            session.rollback()
+            raise
 
         results: List[Dict[str, Any]] = []
         for row in rows:

@@ -554,7 +554,7 @@ def test_live_hybrid_lexical_path_freezes_messages_and_persists_safe_sources(
     monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
     monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     reset_upload_store_for_tests()
     user = create_test_user(
@@ -646,7 +646,7 @@ def test_unknown_phase2_failure_uses_structured_lexical_sources_and_safe_telemet
     monkeypatch.setenv("WEB_RAG_HYBRID_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "false")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     reset_upload_store_for_tests()
     user = create_test_user(
@@ -736,7 +736,7 @@ def test_live_dense_calls_have_reserved_and_settled_usage_stage(monkeypatch):
     monkeypatch.setenv("WEB_RAG_DENSE_ENABLED", "true")
     monkeypatch.setenv("WEB_RAG_EMBEDDING_DIMENSIONS", "64")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     reset_upload_store_for_tests()
     user = create_test_user(
@@ -827,7 +827,7 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
     monkeypatch.setenv("WEB_RAG_EMBEDDING_DIMENSIONS", "64")
     monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     reset_upload_store_for_tests()
     user = create_test_user(

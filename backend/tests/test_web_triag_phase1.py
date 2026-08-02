@@ -266,7 +266,7 @@ def test_shadow_plan_does_not_change_messages_route_or_reservation(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     reservations: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -347,7 +347,7 @@ def test_disabled_flag_never_invokes_shadow_planner(monkeypatch):
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user(
         "triag-disabled", "triag-disabled@example.com"
@@ -367,7 +367,7 @@ def test_shadow_mode_preserves_settled_billing_and_provider_call_count(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "app.web_api.chat_service._cache_response", lambda *args: None
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
     )
     user = create_test_user(
         "triag-shadow-billing", "triag-shadow-billing@example.com"

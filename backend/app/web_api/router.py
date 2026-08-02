@@ -585,6 +585,7 @@ def _serialize_message(
                     }
                     else None
                 ),
+                "repair_attempted": raw_quality.get("repair_attempted") is True,
             }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,

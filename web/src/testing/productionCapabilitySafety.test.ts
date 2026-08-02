@@ -8,6 +8,7 @@ import {
   countSentences,
   countWords,
   evaluateWebhookArchitecture,
+  hasAffirmativeWaitAdvice,
   parseSseEventOrder,
   percentile,
   productionCapabilityGate,
@@ -102,6 +103,17 @@ describe('production capability safety', () => {
     expect(result.postgresAuthoritative).toBe(true)
     expect(result.nonPostgresAuthoritativeClaim).toBe(false)
     expect(result.missingAreas).toEqual([])
+  })
+
+  it('distinguishes urgent do-not-wait guidance from unsafe delay advice', () => {
+    expect(hasAffirmativeWaitAdvice(
+      'Call emergency services now; do not wait for a routine appointment.',
+    )).toBe(false)
+    expect(hasAffirmativeWaitAdvice(
+      'Do not wait until symptoms worsen. Call the local emergency number.',
+    )).toBe(false)
+    expect(hasAffirmativeWaitAdvice('Wait for your next appointment.')).toBe(true)
+    expect(hasAffirmativeWaitAdvice('Wait until tomorrow.')).toBe(true)
   })
 
   it('accepts the requested must-not authority wording', () => {

@@ -7,12 +7,20 @@ import pytest
 from app.ai.prompts import build_provider_messages
 from app.ai.types import AIRequest, AIRoute
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
+from app.web_ai.generation.models import QualityCheck
 from app.web_ai.generation.output_contract import (
     OutputContract,
+    canonicalize_output_contract,
     extract_output_contract,
     validate_output_contract,
 )
 from app.web_ai.streaming_policy import select_streaming_policy
+from app.web_ai.generation.repair import build_repair_request
+from app.web_api.chat_service import (
+    _cache_compatibility_hash,
+    _cache_response,
+    _enforce_final_output_contract_quality,
+)
 
 
 B01 = (
@@ -102,6 +110,36 @@ def test_fence_count_language_and_prefixes_are_mandatory():
     )
 
 
+def test_safe_canonicalization_removes_json_and_fence_wrappers_only():
+    json_contract = extract_output_contract(C03)
+    wrapped = (
+        'Result follows:\n```json\n'
+        '{"answer":true,"reason":"prime","confidence":1}\n```'
+    )
+    canonical_json = canonicalize_output_contract(wrapped, json_contract)
+    assert json.loads(canonical_json) == {
+        "answer": True, "reason": "prime", "confidence": 1,
+    }
+    assert all(
+        item.status == "passed"
+        for item in validate_output_contract(canonical_json, json_contract)
+    )
+
+    fence_contract = extract_output_contract(B02)
+    answer = (
+        "Intro\n```python\n# pricing.py\npass\n```\n"
+        "```python\n# test_pricing.py\npass\n```\n"
+        "```python\n# unrelated.py\npass\n```\nOutro"
+    )
+    canonical_fences = canonicalize_output_contract(answer, fence_contract)
+    assert canonical_fences.count("```python") == 2
+    assert "unrelated.py" not in canonical_fences
+    assert all(
+        item.status == "passed"
+        for item in validate_output_contract(canonical_fences, fence_contract)
+    )
+
+
 def test_sentence_question_story_and_no_title_contracts():
     assert all(check.status == "passed" for check in validate_output_contract(
         "ஒன்று. இரண்டு. மூன்று. நான்கு. ஐந்து.", extract_output_contract(C07)
@@ -177,3 +215,139 @@ def test_metadata_parser_rejects_untyped_values():
         "unknown": "ignored",
     })
     assert not contract.required
+
+
+def test_old_cached_prose_cannot_satisfy_json_only_contract(monkeypatch):
+    observed = {}
+
+    def lookup(*args, **kwargs):
+        observed.update(kwargs)
+        return {
+            "answer": 'The answer is {"answer":true,"reason":"prime"}.',
+            "answer_language": "en",
+        }
+
+    monkeypatch.setenv("WEB_CACHE_BEFORE_BILLING_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.global_qa_cache.lookup_approved_global_cache", lookup
+    )
+    monkeypatch.setattr(
+        "app.global_qa_cache.token_hash_embedding_for_global_cache",
+        lambda _message: ([0.1], 0.1, "token_hash_v1"),
+    )
+
+    response = _cache_response(
+        1,
+        C03,
+        "en",
+        output_contract=extract_output_contract(C03),
+        answer_class="normal",
+        cache_compatibility_hash="compatibility-test",
+    )
+
+    assert response is None
+    assert observed["exact_only"] is True
+    assert observed["cache_compatibility_hash"] == "compatibility-test"
+
+
+def test_detailed_and_long_form_cache_lookups_are_exact_only(monkeypatch):
+    observed: list[bool] = []
+
+    def lookup(*args, **kwargs):
+        observed.append(kwargs["exact_only"])
+        return None
+
+    monkeypatch.setenv("WEB_CACHE_BEFORE_BILLING_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.global_qa_cache.lookup_approved_global_cache", lookup
+    )
+    monkeypatch.setattr(
+        "app.global_qa_cache.token_hash_embedding_for_global_cache",
+        lambda _message: ([0.1], 0.1, "token_hash_v1"),
+    )
+    for answer_class in ("detailed", "long_form"):
+        assert _cache_response(
+            1,
+            "A unique architecture question",
+            "en",
+            output_contract=OutputContract(),
+            answer_class=answer_class,
+            cache_compatibility_hash="compatible",
+        ) is None
+
+    assert observed == [True, True]
+
+
+def test_cache_compatibility_changes_with_prompt_policy_and_contract():
+    plain = OutputContract()
+    constrained = extract_output_contract(C03)
+    baseline = _cache_compatibility_hash(
+        prompt_schema_version="prompt-v1",
+        policy_version="policy-v1",
+        output_contract=plain,
+    )
+    variants = {
+        _cache_compatibility_hash(
+            prompt_schema_version="prompt-v2",
+            policy_version="policy-v1",
+            output_contract=plain,
+        ),
+        _cache_compatibility_hash(
+            prompt_schema_version="prompt-v1",
+            policy_version="policy-v2",
+            output_contract=plain,
+        ),
+        _cache_compatibility_hash(
+            prompt_schema_version="prompt-v1",
+            policy_version="policy-v1",
+            output_contract=constrained,
+        ),
+    }
+    assert baseline not in variants
+    assert len(variants) == 3
+
+
+def test_repair_prompt_contains_the_exact_typed_contract_and_no_commentary_rule():
+    contract = extract_output_contract(C03)
+    repair = build_repair_request(
+        user_id=1,
+        request_id="contract-repair",
+        reply_language="en",
+        current_answer="Answer: yes",
+        failed_checks=(QualityCheck(
+            "output_contract_json_only", "failed", "json_only_failed"
+        ),),
+        evidence_pack=None,
+        task_contract=C03,
+        output_contract=contract,
+    )
+    messages = repair.request.metadata["provider_messages"]
+    rendered = "\n".join(str(item["content"]) for item in messages)
+    assert "Return only the repaired final answer" in rendered
+    assert "Use exactly these JSON keys: answer, reason, confidence" in rendered
+    assert repair.request.metadata["output_contract"] == contract.as_metadata()
+
+
+def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():
+    contract = extract_output_contract(B01)
+    claimed = AnswerGuard().check(
+        "- one\n- two\n- three\n- four",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract=B01,
+            verified_buffered=True,
+            output_contract=contract,
+        ),
+    )
+    assert claimed.status == "verified"
+
+    enforced = _enforce_final_output_contract_quality(
+        "One paragraph that violates the contract.", contract, claimed
+    )
+    assert enforced is not None
+    assert enforced.status == "unverified"
+    assert any(
+        check.check_type == "output_contract_bullet_count"
+        and check.status == "failed"
+        for check in enforced.checks
+    )

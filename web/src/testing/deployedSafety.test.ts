@@ -176,6 +176,24 @@ test('production capability search distinguishes API, index, UI, and opening fai
   expect(search).toContain('toHaveClass(/active/')
 })
 
+test('production capability safe summary includes content-free completion diagnostics', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  for (const field of [
+    'cache_hit:item.cacheHit',
+    'cache_hit_kind:item.cacheHitKind',
+    'finish_reason:item.finishReason',
+    'completion_status:item.completionStatus',
+    'output_contract_check_status_counts:item.outputContractCheckStatusCounts',
+    'repair_attempted:item.repairAttempted',
+    'generation_stage_count:item.generationStageCount',
+    'repair_stage_count:item.repairStageCount',
+    'persisted_quality_status:item.persistedQualityStatus',
+    'sse_quality_status:item.sseQualityStatus',
+  ]) expect(spec).toContain(field)
+})
+
 test('mandatory exact-format failures cannot retain passed status', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',

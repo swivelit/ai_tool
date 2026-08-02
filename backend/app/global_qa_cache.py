@@ -1145,7 +1145,15 @@ def _row_to_hit(row: GlobalQACache, score: float) -> dict:
     }
 
 
-def _row_lookup_safe(row: GlobalQACache, question: str, language: Optional[str], now: datetime, *, user_hash: Optional[str]) -> bool:
+def _row_lookup_safe(
+    row: GlobalQACache,
+    question: str,
+    language: Optional[str],
+    now: datetime,
+    *,
+    user_hash: Optional[str],
+    cache_compatibility_hash: Optional[str] = None,
+) -> bool:
     if row.status != "approved":
         return False
     if float(row.confidence or 0.0) <= 0.0:
@@ -1157,6 +1165,11 @@ def _row_lookup_safe(row: GlobalQACache, question: str, language: Optional[str],
     if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
         return False
     if language and row.answer_language not in {language, "en"}:
+        return False
+    if (
+        cache_compatibility_hash
+        and cache_compatibility_hash not in _source_hashes(row)
+    ):
         return False
     scope = _row_scope(row)
     if scope == _USER_SCOPE:
@@ -1180,6 +1193,7 @@ def _semantic_vector_lookup(
     now: datetime,
     *,
     scope: str,
+    cache_compatibility_hash: Optional[str] = None,
 ) -> Optional[dict]:
     query_vector = cached_text_embedding(question, route="global_qa_semantic_query")
     if not query_vector:
@@ -1203,7 +1217,8 @@ def _semantic_vector_lookup(
         if row is None or _row_scope(row) != scope:
             continue
         if not _row_lookup_safe(
-            row, question, language, now, user_hash=user_hash
+            row, question, language, now, user_hash=user_hash,
+            cache_compatibility_hash=cache_compatibility_hash,
         ):
             continue
         row_real = _load_row_real_embedding(row)
@@ -1232,6 +1247,8 @@ def _semantic_lookup_after_exact_miss(
     language: Optional[str],
     user_hash: Optional[str],
     now: datetime,
+    *,
+    cache_compatibility_hash: Optional[str] = None,
 ) -> Optional[dict]:
     normalized = normalize_question(question)
     scopes = [(_USER_SCOPE, user_hash)] if user_hash else []
@@ -1255,7 +1272,8 @@ def _semantic_lookup_after_exact_miss(
             )
         exact = session.exec(statement.order_by(GlobalQACache.updated_at.desc())).first()
         if exact is not None and _row_lookup_safe(
-            exact, question, language, now, user_hash=user_hash
+            exact, question, language, now, user_hash=user_hash,
+            cache_compatibility_hash=cache_compatibility_hash,
         ):
             _touch_cache_hit(session, exact, now)
             return _row_to_hit(exact, 1.0)
@@ -1267,6 +1285,7 @@ def _semantic_lookup_after_exact_miss(
             user_hash,
             now,
             scope=scope,
+            cache_compatibility_hash=cache_compatibility_hash,
         )
         if semantic is not None:
             return semantic
@@ -1301,6 +1320,7 @@ def _lookup_hot_cache(
     now: datetime,
     *,
     scope: str,
+    cache_compatibility_hash: Optional[str] = None,
 ) -> Optional[dict]:
     cache = _hot_cache()
     for key in _hot_lookup_keys_for_scope(question, language, scope=scope, user_id_hash=user_hash):
@@ -1326,7 +1346,10 @@ def _lookup_hot_cache(
             except Exception:
                 pass
             continue
-        if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
+        if not _row_lookup_safe(
+            row, question, language, now, user_hash=user_hash,
+            cache_compatibility_hash=cache_compatibility_hash,
+        ):
             try:
                 cache.delete(key)
             except Exception:
@@ -1347,6 +1370,9 @@ def lookup_approved_global_cache(
     reply_language: Optional[str] = None,
     user_id: Any = None,
     query_embedding: Any = None,
+    *,
+    cache_compatibility_hash: Optional[str] = None,
+    exact_only: bool = False,
 ) -> Optional[dict]:
     if not _enabled() or not str(question or "").strip():
         return None
@@ -1381,18 +1407,53 @@ def lookup_approved_global_cache(
     language = _answer_language(reply_language)
     now = utc_now()
     user_hash = stable_user_hash(user_id) if user_id is not None else None
+    if exact_only:
+        normalized = normalize_question(question)
+        scopes = [(_USER_SCOPE, user_hash)] if user_hash else []
+        scopes.append((_GLOBAL_SCOPE, None))
+        for scope, required_hash in scopes:
+            statement = (
+                select(GlobalQACache)
+                .where(GlobalQACache.status == "approved")
+                .where(GlobalQACache.normalized_question == normalized)
+            )
+            if scope == _USER_SCOPE:
+                statement = statement.where(
+                    GlobalQACache.scope == _USER_SCOPE,
+                    GlobalQACache.user_id_hash == required_hash,
+                )
+            else:
+                statement = statement.where(or_(
+                    GlobalQACache.scope == _GLOBAL_SCOPE,
+                    GlobalQACache.scope == None,  # noqa: E711
+                ))
+            for row in session.exec(
+                statement.order_by(GlobalQACache.updated_at.desc())
+            ).all():
+                if _row_lookup_safe(
+                    row, question, language, now, user_hash=user_hash,
+                    cache_compatibility_hash=cache_compatibility_hash,
+                ):
+                    _touch_cache_hit(session, row, now)
+                    return _row_to_hit(row, 1.0)
+        return None
     if user_hash:
-        hot_user_hit = _lookup_hot_cache(session, question, language, user_hash, now, scope=_USER_SCOPE)
+        hot_user_hit = _lookup_hot_cache(
+            session, question, language, user_hash, now, scope=_USER_SCOPE,
+            cache_compatibility_hash=cache_compatibility_hash,
+        )
         if hot_user_hit is not None:
             return hot_user_hit
     if _semantic_enabled():
         hot_global_hit = _lookup_hot_cache(
-            session, question, language, user_hash, now, scope=_GLOBAL_SCOPE
+            session, question, language, user_hash, now, scope=_GLOBAL_SCOPE,
+            cache_compatibility_hash=cache_compatibility_hash,
         )
         if hot_global_hit is not None:
             return hot_global_hit
         return _semantic_lookup_after_exact_miss(
-            session, question, language, user_hash, now
+            session, question, language, user_hash, now,
+            cache_compatibility_hash=cache_compatibility_hash,
         )
     query_bundle: Optional[Dict[str, Any]] = None
     try:
@@ -1428,7 +1489,10 @@ def lookup_approved_global_cache(
             query_bundle = _query_embedding_bundle(question, query_embedding)
         scored: List[Tuple[GlobalQACache, float]] = []
         for row in rows:
-            if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
+            if not _row_lookup_safe(
+                row, question, language, now, user_hash=user_hash,
+                cache_compatibility_hash=cache_compatibility_hash,
+            ):
                 continue
             score = _score_row_against_query(row, question, query_bundle)
             if score > 0:
@@ -1469,7 +1533,10 @@ def lookup_approved_global_cache(
         _populate_hot_cache_for_row(best)
         return _row_to_hit(best, best_score)
 
-    hot_global_hit = _lookup_hot_cache(session, question, language, user_hash, now, scope=_GLOBAL_SCOPE)
+    hot_global_hit = _lookup_hot_cache(
+        session, question, language, user_hash, now, scope=_GLOBAL_SCOPE,
+        cache_compatibility_hash=cache_compatibility_hash,
+    )
     if hot_global_hit is not None:
         return hot_global_hit
 
@@ -1612,6 +1679,7 @@ def _upsert_user_scoped_cache_row(
     answer: str,
     model_used: Optional[str],
     q_hash: str,
+    cache_compatibility_hash: Optional[str],
     a_hash: str,
     safe_variant: Optional[str],
     safe_aliases: List[str],
@@ -1640,7 +1708,10 @@ def _upsert_user_scoped_cache_row(
             hit_count=1,
             distinct_user_count=1,
             observed_question_count=1,
-            source_question_hashes_json=json.dumps([q_hash], ensure_ascii=False),
+            source_question_hashes_json=json.dumps(
+                [value for value in (q_hash, cache_compatibility_hash) if value],
+                ensure_ascii=False,
+            ),
             observed_safe_questions_json=_dump_json_list([safe_variant] if safe_variant else []),
             aliases_json=_dump_json_list(safe_aliases),
             answer_hash=a_hash,
@@ -1662,6 +1733,11 @@ def _upsert_user_scoped_cache_row(
         hashes = _source_hashes(row)
         if q_hash not in hashes:
             hashes.append(q_hash)
+        if (
+            cache_compatibility_hash
+            and cache_compatibility_hash not in hashes
+        ):
+            hashes.append(cache_compatibility_hash)
         observed_safe_questions = _load_json_list(getattr(row, "observed_safe_questions_json", "[]"))
         if safe_variant:
             observed_safe_questions.append(safe_variant)
@@ -1701,6 +1777,7 @@ def _record_backend_openai_answer_impl(
     answer: str,
     model_used: Optional[str],
     request_id: Optional[str] = None,
+    cache_compatibility_hash: Optional[str] = None,
 ) -> dict:
     if not _enabled():
         return {"ok": False, "skipped": True, "reason": "disabled"}
@@ -1777,6 +1854,7 @@ def _record_backend_openai_answer_impl(
             answer=answer,
             model_used=model_used,
             q_hash=q_hash,
+            cache_compatibility_hash=cache_compatibility_hash,
             a_hash=a_hash,
             safe_variant=safe_variant,
             safe_aliases=safe_aliases,
@@ -1799,7 +1877,10 @@ def _record_backend_openai_answer_impl(
             hit_count=1,
             distinct_user_count=1,
             observed_question_count=1,
-            source_question_hashes_json=json.dumps([q_hash], ensure_ascii=False),
+            source_question_hashes_json=json.dumps(
+                [value for value in (q_hash, cache_compatibility_hash) if value],
+                ensure_ascii=False,
+            ),
             observed_safe_questions_json=_dump_json_list([safe_variant] if safe_variant else []),
             aliases_json=_dump_json_list(safe_aliases),
             answer_hash=a_hash,
@@ -1824,6 +1905,11 @@ def _record_backend_openai_answer_impl(
         hashes = _source_hashes(candidate)
         if q_hash not in hashes:
             hashes.append(q_hash)
+        if (
+            cache_compatibility_hash
+            and cache_compatibility_hash not in hashes
+        ):
+            hashes.append(cache_compatibility_hash)
         observed_safe_questions = _load_json_list(getattr(candidate, "observed_safe_questions_json", "[]"))
         if safe_variant:
             observed_safe_questions.append(safe_variant)
@@ -1937,6 +2023,7 @@ def record_backend_openai_answer(
     answer: str,
     model_used: Optional[str],
     request_id: Optional[str] = None,
+    cache_compatibility_hash: Optional[str] = None,
 ) -> dict:
     try:
         from .ai.agents.cache_writer_agent import CacheWriterAgent
@@ -1948,6 +2035,7 @@ def record_backend_openai_answer(
             answer=answer,
             model_used=model_used,
             request_id=request_id,
+            cache_compatibility_hash=cache_compatibility_hash,
         )
     except ImportError:
         return _record_backend_openai_answer_impl(
@@ -1957,6 +2045,7 @@ def record_backend_openai_answer(
             answer,
             model_used,
             request_id=request_id,
+            cache_compatibility_hash=cache_compatibility_hash,
         )
 
 
