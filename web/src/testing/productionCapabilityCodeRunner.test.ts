@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assertPythonTestRuntimeAvailable,
   extractPythonBlocks,
   extractUnifiedDiff,
   testGeneratedDiscountPython,
@@ -61,6 +62,7 @@ diff --git a/src/orderService.js b/src/orderService.js
 
 describe('production capability isolated code runners', () => {
   it('extracts and executes only the allowlisted Python test command', async () => {
+    await assertPythonTestRuntimeAvailable()
     expect(extractPythonBlocks(pythonAnswer)).toHaveLength(2)
     const result = await testGeneratedDiscountPython(pythonAnswer)
     expect(result.command).toBe('python -m pytest -q')

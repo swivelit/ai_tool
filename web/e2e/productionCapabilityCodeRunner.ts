@@ -32,6 +32,23 @@ function rejected(reasonCode: string, command: string): IsolatedRunResult {
   }
 }
 
+export async function assertPythonTestRuntimeAvailable(): Promise<void> {
+  try {
+    await execute('python', ['-m', 'pytest', '--version'], {
+      timeout:10_000,
+      maxBuffer:MAX_OUTPUT_BYTES,
+      env:{
+        PATH:process.env.PATH,
+        PYTHONDONTWRITEBYTECODE:'1',
+        PYTHONNOUSERSITE:'1',
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD:'1',
+      },
+    })
+  } catch {
+    throw new Error('python_test_runtime_unavailable')
+  }
+}
+
 export function extractPythonBlocks(markdown: string): string[] {
   return [...String(markdown).matchAll(/```python\s*\n([\s\S]*?)```/gi)]
     .map(match => match[1].replace(/\s+$/, ''))

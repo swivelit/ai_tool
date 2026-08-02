@@ -51,6 +51,7 @@ import {
   scannedPdf,
 } from './productionCapabilityFixtures'
 import {
+  assertPythonTestRuntimeAvailable,
   testGeneratedDiscountPython,
   testRepositoryPatch,
   type IsolatedRunResult,
@@ -550,8 +551,32 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   test.setTimeout(TEST_TIMEOUT_MS)
   const gate = productionCapabilityGate(process.env)
   const runId = newCapabilityRunId()
-  const privateRoot = resolve(process.cwd(), 'test-results/swico-capability-private', runId)
   const safeSummaryPath = resolve(process.cwd(), 'test-results/production-capability-summary.json')
+  try {
+    await assertPythonTestRuntimeAvailable()
+  } catch {
+    await mkdir(resolve(process.cwd(), 'test-results'), { recursive:true })
+    await writeFile(safeSummaryPath, JSON.stringify({
+      run_id:runId,
+      backend_release:'not_read',
+      batch:gate.batch,
+      primary_failure:'python_test_runtime_unavailable',
+      counts:{ total:0, passed:0, failed:0, skipped:0 },
+      overall_score:null,
+      chat_debit_micros:0,
+      voice_debit_micros:0,
+      cleanup:{ status:'not_required', reason_codes:[] },
+      scenarios:[],
+      workflows:[{
+        id:'PREFLIGHT-PYTHON-TEST-RUNTIME',
+        status:'failed',
+        reason_codes:['python_test_runtime_unavailable'],
+        request_ids:[],
+      }],
+    }, null, 2), { mode:0o600 })
+    throw new Error('python_test_runtime_unavailable')
+  }
+  const privateRoot = resolve(process.cwd(), 'test-results/swico-capability-private', runId)
   await mkdir(privateRoot, { recursive:true })
   const results: QuestionResult[] = []
   const workflowResults: WorkflowResult[] = []
