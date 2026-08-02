@@ -89,8 +89,53 @@ jobs:
           PRODUCTION_CAPABILITY_CONFIRMATION: ${{ inputs.production_capability_confirmation }}
           PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS: ${{ inputs.production_capability_max_chat_debit_micros }}
           PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS: ${{ inputs.production_capability_max_voice_debit_micros }}
-          PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL }}
+          PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL || secrets.PLAYWRIGHT_API_BASE_URL }}
+          PLAYWRIGHT_API_BASE_URL_SOURCE: ${{ vars.PLAYWRIGHT_API_BASE_URL && 'environment_variable' || secrets.PLAYWRIGHT_API_BASE_URL && 'environment_secret_fallback' || 'missing' }}
         run: |
+          write_api_base_preflight_summary() {
+            mkdir -p web/test-results
+            SAFE_FAILURE_REASON="$1" \
+            API_BASE_SOURCE="$PLAYWRIGHT_API_BASE_URL_SOURCE" \
+            node - <<'NODE'
+          const { writeFileSync } = require('node:fs')
+          writeFileSync(
+            'web/test-results/production-capability-summary.json',
+            JSON.stringify({
+              preflight_status:'failed',
+              safe_failure_reason:process.env.SAFE_FAILURE_REASON,
+              playwright_api_base_url_source:process.env.API_BASE_SOURCE,
+            }, null, 2),
+            { mode:0o600 },
+          )
+          NODE
+          }
+          echo "PLAYWRIGHT_API_BASE_URL source: $PLAYWRIGHT_API_BASE_URL_SOURCE"
+          if [[ "$PLAYWRIGHT_API_BASE_URL_SOURCE" == 'environment_secret_fallback' ]]; then
+            echo '::warning title=Production capability configuration::Move PLAYWRIGHT_API_BASE_URL to GitHub Settings -> Environments -> production-triag -> Environment variables.'
+          fi
+          if [[ "$PLAYWRIGHT_API_BASE_URL_SOURCE" == 'missing' || -z "${PLAYWRIGHT_API_BASE_URL:-}" ]]; then
+            write_api_base_preflight_summary 'playwright_api_base_url_missing'
+            echo 'playwright_api_base_url_missing' >&2
+            exit 1
+          fi
+          if ! node - <<'NODE'
+          let valid = false
+          try {
+            const raw = process.env.PLAYWRIGHT_API_BASE_URL.trim()
+            const parsed = new URL(raw)
+            valid = parsed.protocol === 'https:'
+              && Boolean(parsed.hostname)
+              && !parsed.username && !parsed.password
+              && !parsed.search && !parsed.hash
+              && !raw.includes('?') && !raw.includes('#')
+          } catch {}
+          if (!valid) process.exit(1)
+          NODE
+          then
+            write_api_base_preflight_summary 'playwright_api_base_url_invalid'
+            echo 'playwright_api_base_url_invalid' >&2
+            exit 1
+          fi
           if [[ "$PRODUCTION_CAPABILITY_CONFIRMATION" != 'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS' ]]; then
             echo 'production-capability requires the exact billable capability confirmation' >&2
             exit 1
@@ -102,26 +147,6 @@ jobs:
               exit 1
             fi
           done
-          if [[ -z "${PLAYWRIGHT_API_BASE_URL:-}" ]]; then
-            echo 'PLAYWRIGHT_API_BASE_URL is required for production-capability' >&2
-            exit 1
-          fi
-          node - <<'NODE'
-          let valid = false
-          try {
-            const raw = process.env.PLAYWRIGHT_API_BASE_URL.trim()
-            const parsed = new URL(raw)
-            valid = parsed.protocol === 'https:'
-              && Boolean(parsed.hostname)
-              && !parsed.username && !parsed.password
-              && !parsed.search && !parsed.hash
-              && !raw.includes('?') && !raw.includes('#')
-          } catch {}
-          if (!valid) {
-            process.stderr.write('PLAYWRIGHT_API_BASE_URL must be a safe absolute HTTPS base URL\n')
-            process.exit(1)
-          }
-          NODE
       - name: Install web dependencies
         run: npm ci
         working-directory: web
@@ -142,7 +167,7 @@ jobs:
         env:
           PLAYWRIGHT_MODE: ${{ inputs.mode }}
           PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
-          PLAYWRIGHT_API_BASE_URL: ${{ inputs.mode == 'production-capability' && vars.PLAYWRIGHT_API_BASE_URL || '' }}
+          PLAYWRIGHT_API_BASE_URL: ${{ inputs.mode == 'production-capability' && (vars.PLAYWRIGHT_API_BASE_URL || secrets.PLAYWRIGHT_API_BASE_URL) || '' }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
           E2E_SECOND_TEST_EMAIL: ${{ secrets.E2E_SECOND_TEST_EMAIL }}
@@ -216,8 +241,21 @@ jobs:
           MODE: ${{ inputs.mode }}
           BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
           TEST_RESULT: ${{ steps.playwright.outputs.result }}
+          PLAYWRIGHT_API_BASE_URL_SOURCE: ${{ vars.PLAYWRIGHT_API_BASE_URL && 'environment_variable' || secrets.PLAYWRIGHT_API_BASE_URL && 'environment_secret_fallback' || 'missing' }}
         run: |
           if [[ "$MODE" == 'production-capability' && -f web/test-results/production-capability-summary.json ]]; then
+            api_preflight_reason=$(node -e "const summary=require('./web/test-results/production-capability-summary.json'); process.stdout.write(String(summary.safe_failure_reason || ''))")
+            if [[ "$api_preflight_reason" == 'playwright_api_base_url_missing' || "$api_preflight_reason" == 'playwright_api_base_url_invalid' ]]; then
+              node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const summary = require('./web/test-results/production-capability-summary.json')
+          for (const [label, value] of [
+            ['preflight status', summary.preflight_status],
+            ['safe failure reason', summary.safe_failure_reason],
+            ['API base source', summary.playwright_api_base_url_source],
+          ]) process.stdout.write(`- ${label}: ${String(value ?? 'unknown').slice(0, 160)}\n`)
+          NODE
+              exit 0
+            fi
             parity_status=$(node -e "const summary=require('./web/test-results/production-capability-summary.json'); process.stdout.write(String(summary.deployment_parity_status || ''))")
             if [[ "$parity_status" == 'backend_release_mismatch' || "$parity_status" == 'backend_release_unavailable' ]]; then
               node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
@@ -231,6 +269,7 @@ jobs:
             ['backend endpoint hostname', summary.backend_endpoint_hostname],
             ['last HTTP status', summary.last_http_status],
             ['safe failure reason', summary.safe_failure_reason],
+            ['API base source', process.env.PLAYWRIGHT_API_BASE_URL_SOURCE],
           ]) process.stdout.write(`- ${label}: ${String(value ?? 'unknown').slice(0, 160)}\n`)
           NODE
               exit 0
@@ -329,6 +368,7 @@ jobs:
             ['backend endpoint hostname', summary.backend_endpoint_hostname],
             ['last HTTP status', summary.last_http_status],
             ['safe failure reason', summary.safe_failure_reason],
+            ['API base source', process.env.PLAYWRIGHT_API_BASE_URL_SOURCE],
             ['batch', summary.batch],
             ['overall score', summary.overall_score],
             ['chat debit micros', summary.chat_debit_micros],

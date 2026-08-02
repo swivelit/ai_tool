@@ -14,19 +14,27 @@ operator steps in order:
 4. Run `backend/scripts/triag_release_check.py` against the deployment.
 5. Launch the `production-capability` mode only after those checks pass.
 
-Configure the public backend origin in GitHub before the run:
+Configure the production acceptance Environment in GitHub before the run:
 
 ```text
 GitHub Settings
 -> Environments
 -> production-triag
--> Environment variables
--> PLAYWRIGHT_API_BASE_URL=https://ai-tool-rrau.onrender.com
+
+Environment secrets:
+- E2E_TEST_EMAIL
+- E2E_TEST_PASSWORD
+- PLAYWRIGHT_BASE_URL
+
+Environment variables:
+- PLAYWRIGHT_API_BASE_URL=https://ai-tool-rrau.onrender.com
 ```
 
 `PLAYWRIGHT_API_BASE_URL` is a public URL, not a credential. It identifies the
 backend API origin independently of `PLAYWRIGHT_BASE_URL`, which remains the
-website UI origin.
+website UI origin. The workflow prefers the Environment variable. A same-named
+Environment secret remains a temporary compatibility fallback and produces a
+non-failing migration warning; move it to Environment variables.
 
 The benchmark compares the workflow's `GITHUB_SHA` with the public backend
 release SHA before login or production state creation. It checks immediately,

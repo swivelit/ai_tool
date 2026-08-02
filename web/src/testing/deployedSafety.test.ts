@@ -235,15 +235,63 @@ test('deployment mismatch GitHub summary is restricted to parity fields', () => 
     'backend_endpoint_hostname', 'last_http_status', 'safe_failure_reason',
   ]) expect(mismatchSummary).toContain(field)
   for (const unsafeField of [
-    'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD', 'bootstrap', 'BASE_URL',
+    'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD', 'bootstrap', 'process.env.BASE_URL',
   ]) expect(mismatchSummary).not.toContain(unsafeField)
   expect(mismatchSummary).toContain("backend_release_unavailable")
   expect(mismatchSummary).toContain('exit 0')
-  expect(workflow).toContain(
-    'PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL }}',
+})
+
+test('production capability resolves the API base safely before Playwright', () => {
+  const workflow = readFileSync(
+    resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',
   )
-  expect(workflow).toContain(
-    "inputs.mode == 'production-capability' && vars.PLAYWRIGHT_API_BASE_URL || ''",
+  const confirmationStart = workflow.indexOf(
+    '- name: Confirm production capability benchmark',
+  )
+  const playwrightStart = workflow.indexOf(
+    '- name: Run selected deployed Playwright suite',
+  )
+  const confirmation = workflow.slice(confirmationStart, playwrightStart)
+  const resolution =
+    'vars.PLAYWRIGHT_API_BASE_URL || secrets.PLAYWRIGHT_API_BASE_URL'
+  expect(confirmationStart).toBeGreaterThan(0)
+  expect(playwrightStart).toBeGreaterThan(confirmationStart)
+  expect(confirmation).toContain(
+    `PLAYWRIGHT_API_BASE_URL: \${{ ${resolution} }}`,
+  )
+  expect(resolution.indexOf('vars.')).toBeLessThan(
+    resolution.indexOf('secrets.'),
+  )
+  expect(confirmation).toContain(
+    "vars.PLAYWRIGHT_API_BASE_URL && 'environment_variable'",
+  )
+  expect(confirmation).toContain(
+    "secrets.PLAYWRIGHT_API_BASE_URL && 'environment_secret_fallback'",
+  )
+  expect(confirmation).toContain(
+    "|| 'missing'",
+  )
+  expect(confirmation).toContain(
+    '::warning title=Production capability configuration::Move PLAYWRIGHT_API_BASE_URL',
+  )
+  expect(confirmation).toContain(
+    "write_api_base_preflight_summary 'playwright_api_base_url_missing'",
+  )
+  expect(confirmation).toContain(
+    "write_api_base_preflight_summary 'playwright_api_base_url_invalid'",
+  )
+  expect(confirmation).toContain("parsed.protocol === 'https:'")
+  expect(confirmation).toContain('!parsed.username && !parsed.password')
+  expect(confirmation).toContain('!parsed.search && !parsed.hash')
+  expect(confirmation).toContain('exit 1')
+  const outputLines = confirmation.split('\n').filter(line => (
+    /echo|printf|stdout|stderr/u.test(line)
+  )).join('\n')
+  expect(outputLines).not.toMatch(
+    /\$(?:\{PLAYWRIGHT_API_BASE_URL\}|PLAYWRIGHT_API_BASE_URL(?![A-Z0-9_]))/u,
+  )
+  expect(confirmation).toContain(
+    "playwright_api_base_url_source:process.env.API_BASE_SOURCE",
   )
 })
 
