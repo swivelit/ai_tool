@@ -2,12 +2,16 @@ import {
   assertUsableTokenCredits, AuthenticatedDeployedApi,
   deleteGeneratedKnowledgeDocument,
   deleteGeneratedRepository, deleteGeneratedThread, deleteGeneratedUpload,
-  productionRequestViolation, restoreProfile, restoreUsagePreferences,
+  isPostChatStreamRequest, isPostChatStreamResponse,
+  observePlaywrightPromise, productionRequestViolation,
+  restoreProfile, restoreUsagePreferences, runCleanupActionSafely,
   ThreadCleanupError,
-  waitForDeployedWorkspace,
+  waitForDeployedWorkspace, writeFinalSafetyReports,
   type ApiResult, type DeployedApi, type RestorableProfile, type RestorableUsagePreferences,
 } from './deployedSafety'
-import type { APIRequestContext, Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import type { APIRequestContext, Page, Request, Response } from '@playwright/test'
 
 function workspacePage(options: {
   composerVisible?: boolean
@@ -87,6 +91,100 @@ test('production-readonly rejects Swico API mutations and sensitive endpoints', 
   expect(productionRequestViolation('https://identitytoolkit.googleapis.com/v1/accounts', 'POST')).toBeNull()
   expect(productionRequestViolation('https://api.example.test/api/web/bootstrap', 'GET')).toBeNull()
   expect(productionRequestViolation('https://api.example.test/api/webhook', 'POST')).toBeNull()
+})
+
+test('chat-stream Request matching uses Request.method directly', () => {
+  const method = vi.fn(() => 'POST')
+  const requestAccessor = vi.fn(() => {
+    throw new Error('Request.request must not be called')
+  })
+  const request = {
+    url:() => 'https://swico.example/api/web/chat/stream',
+    method,
+    request:requestAccessor,
+  } as unknown as Request
+  expect(isPostChatStreamRequest(request)).toBe(true)
+  expect(method).toHaveBeenCalledOnce()
+  expect(requestAccessor).not.toHaveBeenCalled()
+})
+
+test('chat-stream Response matching uses Response.request method', () => {
+  const method = vi.fn(() => 'POST')
+  const request = { method } as unknown as Request
+  const requestAccessor = vi.fn(() => request)
+  const response = {
+    url:() => 'https://swico.example/api/web/chat/stream',
+    request:requestAccessor,
+  } as unknown as Response
+  expect(isPostChatStreamResponse(response)).toBe(true)
+  expect(requestAccessor).toHaveBeenCalledOnce()
+  expect(method).toHaveBeenCalledOnce()
+})
+
+test('production capability workflows use typed chat observers only', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  for (const [observer, matcher] of [
+    ['editRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
+    ['editResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
+    ['regenerateRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
+    ['regenerateResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
+    ['continuationRequestPromise', 'waitForRequest(isPostChatStreamRequest)'],
+    ['continuationResponsePromise', 'waitForResponse(isPostChatStreamResponse)'],
+  ]) {
+    expect(spec).toContain(
+      `const ${observer} = observePlaywrightPromise(page.${matcher})`,
+    )
+  }
+  const cancellation = spec.slice(
+    spec.indexOf('let cancellationRequestId'),
+    spec.indexOf("workflowResults.push({ id:'J-DISCONNECT-RECOVERY'"),
+  )
+  expect(cancellation).toContain(
+    'const requestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))',
+  )
+  expect(cancellation).toContain(
+    'const responsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))',
+  )
+  const requestObservers = [...spec.matchAll(/waitForRequest\(([\s\S]{0,120})/g)]
+  expect(requestObservers).toHaveLength(5)
+  expect(requestObservers.every(match => match[1].includes('isPostChatStreamRequest'))).toBe(true)
+  expect(spec).not.toMatch(/waitForRequest\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>[\s\S]{0,300}?\.request\(\)/)
+})
+
+test('observed Playwright promises remain rejectable when consumed', async () => {
+  const observed = observePlaywrightPromise(Promise.reject(new Error('observer_failed')))
+  await expect(observed).rejects.toThrow('observer_failed')
+})
+
+test('tier cleanup failure preserves the primary failure and still writes the safe summary', async () => {
+  const cleanupErrors: string[] = []
+  let laterCleanupRan = false
+  let writtenSummary: { primary_failure: string | null; cleanup: readonly string[] } | null = null
+  await runCleanupActionSafely(cleanupErrors, 'tier_restore_failed', async () => {
+    throw new Error('tier restoration transport failed')
+  })
+  await runCleanupActionSafely(cleanupErrors, 'profile_restore_failed', async () => {
+    laterCleanupRan = true
+  })
+  const result = await writeFinalSafetyReports({
+    primaryFailure:'chat_request_observer_failed',
+    cleanupErrors,
+    preliminaryReports:[],
+    buildSafeSummary:errors => ({
+      primary_failure:'chat_request_observer_failed',
+      cleanup:[...errors],
+    }),
+    writeSafeSummary:async summary => { writtenSummary = summary },
+  })
+  expect(laterCleanupRan).toBe(true)
+  expect(result.primaryFailure).toBe('chat_request_observer_failed')
+  expect(result.safeSummaryWritten).toBe(true)
+  expect(writtenSummary).toEqual({
+    primary_failure:'chat_request_observer_failed',
+    cleanup:['tier_restore_failed'],
+  })
 })
 
 test('staging cleanup restores every mutable profile field', async () => {

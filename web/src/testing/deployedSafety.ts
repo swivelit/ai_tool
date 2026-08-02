@@ -1,9 +1,77 @@
-import type { APIRequestContext, Page } from '@playwright/test'
+import type { APIRequestContext, Page, Request, Response } from '@playwright/test'
 
 export type ApiResult<T> = { status: number; data: T | null }
 
 export interface DeployedApi {
   request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<T>>
+}
+
+const CHAT_STREAM_PATH = '/api/web/chat/stream'
+
+export function isPostChatStreamRequest(request: Request): boolean {
+  return new URL(request.url()).pathname === CHAT_STREAM_PATH
+    && request.method() === 'POST'
+}
+
+export function isPostChatStreamResponse(response: Response): boolean {
+  return new URL(response.url()).pathname === CHAT_STREAM_PATH
+    && response.request().method() === 'POST'
+}
+
+export function observePlaywrightPromise<T>(promise: Promise<T>): Promise<T> {
+  void promise.catch(() => undefined)
+  return promise
+}
+
+const SAFE_REASON_CODE = /^[a-z][a-z0-9_]{0,79}$/
+
+function boundedReasonCode(reasonCode: string, fallback: string): string {
+  return SAFE_REASON_CODE.test(reasonCode) ? reasonCode : fallback
+}
+
+export async function runCleanupActionSafely(
+  cleanupErrors: string[],
+  reasonCode: string,
+  action: () => Promise<void>,
+): Promise<void> {
+  try {
+    await action()
+  } catch {
+    cleanupErrors.push(boundedReasonCode(reasonCode, 'cleanup_action_failed'))
+  }
+}
+
+export async function writeFinalSafetyReports<T>(options: {
+  primaryFailure: string | null
+  cleanupErrors: string[]
+  preliminaryReports: Array<{ reasonCode: string; write: () => Promise<void> }>
+  buildSafeSummary: (cleanupErrors: readonly string[]) => T
+  writeSafeSummary: (summary: T) => Promise<void>
+}): Promise<{
+  primaryFailure: string | null
+  cleanupErrors: string[]
+  safeSummaryWritten: boolean
+}> {
+  for (const report of options.preliminaryReports) {
+    await runCleanupActionSafely(
+      options.cleanupErrors,
+      boundedReasonCode(report.reasonCode, 'private_report_write_failed'),
+      report.write,
+    )
+  }
+  const summary = options.buildSafeSummary(options.cleanupErrors)
+  let safeSummaryWritten = true
+  try {
+    await options.writeSafeSummary(summary)
+  } catch {
+    safeSummaryWritten = false
+    options.cleanupErrors.push('safe_summary_write_failed')
+  }
+  return {
+    primaryFailure:options.primaryFailure,
+    cleanupErrors:options.cleanupErrors,
+    safeSummaryWritten,
+  }
 }
 
 export type DeployedMultipartFile = {
@@ -105,10 +173,10 @@ export async function loginDeployed<TBootstrap>(
   if (!email) throw new Error('E2E_TEST_EMAIL must be configured')
   if (!password) throw new Error('E2E_TEST_PASSWORD must be configured')
   await page.goto('/')
-  const bootstrapResponse = page.waitForResponse(response => (
+  const bootstrapResponse = observePlaywrightPromise(page.waitForResponse(response => (
     new URL(response.url()).pathname === '/api/web/bootstrap'
     && response.status() === 200
-  ))
+  )))
   await page.getByLabel('Email address').fill(email)
   await page.getByLabel('Password', { exact:true }).fill(password)
   await page.getByRole('button', { name:'Sign in' }).click()

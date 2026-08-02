@@ -6,9 +6,14 @@ import {
   deleteGeneratedRepository,
   deleteGeneratedThread,
   deleteGeneratedUpload,
+  isPostChatStreamRequest,
+  isPostChatStreamResponse,
   loginDeployed,
   logoutDeployed,
+  observePlaywrightPromise,
   restoreProfile,
+  runCleanupActionSafely,
+  writeFinalSafetyReports,
   type AuthenticatedDeployedApi,
   type DeployedApi,
   type RestorableProfile,
@@ -435,10 +440,10 @@ async function selectTier(page: Page, target: CapabilityTier): Promise<void> {
     await selector.getByRole('button').click()
     const choice = selector.locator(`[data-tier-id="${target}"]`)
     if (await choice.isDisabled()) throw new Error(`tier_unavailable:${target}`)
-    const response = page.waitForResponse(value => (
+    const response = observePlaywrightPromise(page.waitForResponse(value => (
       new URL(value.url()).pathname === '/api/web/settings/assistant'
       && value.request().method() === 'PATCH'
-    ))
+    )))
     await choice.click()
     if ((await response).status() !== 200) throw new Error(`tier_selection_failed:${target}`)
   }
@@ -489,10 +494,10 @@ async function uploadThroughComposer(
   uploadPace: PaceGate,
 ): Promise<FixtureUpload> {
   await uploadPace.wait()
-  const response = page.waitForResponse(value => (
+  const response = observePlaywrightPromise(page.waitForResponse(value => (
     new URL(value.url()).pathname === '/api/web/uploads'
     && value.request().method() === 'POST'
-  ), { timeout:60_000 })
+  ), { timeout:60_000 }))
   await page.getByLabel('Upload files').setInputFiles(file)
   const observed = await response
   const body = await observed.json().catch(() => ({})) as FixtureUpload
@@ -505,10 +510,10 @@ async function uploadRepositoryThroughComposer(
   page: Page, runId: string, uploadPace: PaceGate,
 ): Promise<string> {
   await uploadPace.wait()
-  const response = page.waitForResponse(value => (
+  const response = observePlaywrightPromise(page.waitForResponse(value => (
     new URL(value.url()).pathname === '/api/web/repositories'
     && value.request().method() === 'POST'
-  ), { timeout:60_000 })
+  ), { timeout:60_000 }))
   await page.getByLabel('Upload code repository').setInputFiles({
     name:`swico-capability-${runId}.zip`, mimeType:'application/zip',
     buffer:pricingRepositoryZip(runId),
@@ -641,19 +646,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const before = walletValues(walletBeforeResponse)
     const startedAt = Date.now()
     const startedAtUtc = new Date(startedAt).toISOString()
-    const requestPromise = page.waitForRequest(request => (
-      new URL(request.url()).pathname === '/api/web/chat/stream'
-      && request.method() === 'POST'
-    ), { timeout:30_000 })
-    const responsePromise = page.waitForResponse(response => (
-      new URL(response.url()).pathname === '/api/web/chat/stream'
-      && response.request().method() === 'POST'
-    ), { timeout:60_000 })
+    const requestPromise = observePlaywrightPromise(page.waitForRequest(
+      isPostChatStreamRequest, { timeout:30_000 },
+    ))
+    const responsePromise = observePlaywrightPromise(page.waitForResponse(
+      isPostChatStreamResponse, { timeout:60_000 },
+    ))
     const virtualUploadPromise = options.virtualText
-      ? page.waitForResponse(response => (
+      ? observePlaywrightPromise(page.waitForResponse(response => (
         new URL(response.url()).pathname === '/api/web/uploads/text'
         && response.request().method() === 'POST'
-      ), { timeout:60_000 })
+      ), { timeout:60_000 }))
       : null
     await page.getByLabel('Message Swico').fill(options.composerText ?? question.prompt)
     if (options.virtualText) {
@@ -848,8 +851,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         await d01User.getByLabel('Edit message').fill('I am building an inventory API with Django, MySQL, and Valkey. The stock-reservation endpoint occasionally applies the same reservation twice after a client retry. Keep these details in this thread.')
         budget.assertRequestMayStart('chat')
         await chatPace.wait()
-        const editRequestPromise = page.waitForRequest(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
-        const editResponsePromise = page.waitForResponse(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
+        const editRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
+        const editResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
         await d01User.getByRole('button', { name:'Save and regenerate' }).click()
         const editRequest = await editRequestPromise
         const editRequestId = String((editRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
@@ -872,8 +875,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         }
         budget.assertRequestMayStart('chat')
         await chatPace.wait()
-        const regenerateRequestPromise = page.waitForRequest(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
-        const regenerateResponsePromise = page.waitForResponse(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
+        const regenerateRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
+        const regenerateResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
         await page.locator('.message.assistant').last().getByRole('button', { name:'Regenerate answer' }).click()
         const regenerateRequest = await regenerateRequestPromise
         const regenerateRequestId = String((regenerateRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
@@ -915,8 +918,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const before = long.rawMarkdown
       budget.assertRequestMayStart('chat')
       await chatPace.wait()
-      const continuationRequestPromise = page.waitForRequest(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
-      const continuationResponsePromise = page.waitForResponse(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
+      const continuationRequestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
+      const continuationResponsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
       await button.click()
       const continuationRequest = await continuationRequestPromise
       const continuationRequestId = String((continuationRequest.postDataJSON() as Record<string, unknown>).request_id ?? '')
@@ -1172,10 +1175,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         const first = feedbackCandidates.nth(0)
         const second = feedbackCandidates.nth(1)
         const requests = [await first.getAttribute('data-request-id'), await second.getAttribute('data-request-id')].filter((value): value is string => Boolean(value))
-        const upResponse = page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST')
+        const upResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST'))
         await first.getByRole('button', { name:'Good answer' }).click()
         const up = await upResponse
-        const downResponse = page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST')
+        const downResponse = observePlaywrightPromise(page.waitForResponse(value => new URL(value.url()).pathname.includes('/feedback') && value.request().method() === 'POST'))
         await second.getByRole('button', { name:'Bad answer' }).click()
         const down = await downResponse
         workflowResults.push({ id:'J-FEEDBACK', status:up.status() === 200 && down.status() === 200 ? 'passed' : 'failed', reasonCodes:up.status() === 200 && down.status() === 200 ? ['owner_scoped_feedback_saved'] : ['feedback_http_failure'], requestIds:requests, severity:up.status() === 200 && down.status() === 200 ? null : 'P2' })
@@ -1225,18 +1228,20 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       workflowResults.push({ id:'J-REQUEST-IDEMPOTENCY', status:pass ? 'passed' : 'failed', reasonCodes:pass ? ['same_request_id_replayed_once'] : ['same_request_id_duplicate_state'], requestIds:[idempotencyTarget.requestId!], severity:pass ? null : 'P0' })
     }
 
+    let cancellationRequestId: string | null = null
     try {
       budget.assertRequestMayStart('chat')
       await freshChat(page)
       await selectTier(page, 'pro')
       await chatPace.wait()
-      const requestPromise = page.waitForRequest(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
-      const responsePromise = page.waitForResponse(value => new URL(value.url()).pathname === '/api/web/chat/stream' && value.request().method() === 'POST')
+      const requestPromise = observePlaywrightPromise(page.waitForRequest(isPostChatStreamRequest))
+      const responsePromise = observePlaywrightPromise(page.waitForResponse(isPostChatStreamResponse))
       await page.getByLabel('Message Swico').fill(`For cancellation audit ${runId}, produce a long, detailed analysis of idempotent distributed transaction recovery with at least 100 separately numbered points.`)
       await page.getByRole('button', { name:'Send message' }).click()
       const request = await requestPromise
       const payload = request.postDataJSON() as Record<string, unknown>
       const requestId = String(payload.request_id ?? '')
+      cancellationRequestId = requestId
       benchmarkRequestIds.add(requestId)
       const stop = page.getByTestId('stop-generation-button')
       await expect(stop).toHaveAttribute('data-cancellation-ready', 'true', { timeout:90_000 })
@@ -1253,7 +1258,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         && ['cancelled', 'complete'].includes(audit.cancellation_state)
       workflowResults.push({ id:'J-CANCELLATION', status:pass ? 'passed' : 'failed', reasonCodes:pass ? ['bounded_cancellation_settled'] : ['cancellation_settlement_inconsistent'], requestIds:[requestId], severity:pass ? null : 'P0' })
     } catch (error) {
-      workflowResults.push({ id:'J-CANCELLATION', status:'failed', reasonCodes:[safeHarnessReason(error)], requestIds:[], severity:'P2' })
+      workflowResults.push({ id:'J-CANCELLATION', status:'failed', reasonCodes:[safeHarnessReason(error)], requestIds:cancellationRequestId ? [cancellationRequestId] : [], severity:'P2' })
     }
 
     workflowResults.push({ id:'J-DISCONNECT-RECOVERY', status:'skipped', reasonCodes:['existing_production_helpers_do_not_expose_safe_stream_disconnect_injection'], requestIds:[], severity:null })
@@ -1387,64 +1392,80 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   } finally {
     if (api) {
       for (const id of generatedMemoryIds) {
-        try {
+        await runCleanupActionSafely(cleanupErrors, 'memory_delete_failed', async () => {
           const deleted = await api.request('DELETE', `/api/web/settings/memory/${encodeURIComponent(id)}`)
-          if (deleted.status !== 204 && deleted.status !== 404) cleanupErrors.push(`memory_delete:${id}`)
-        } catch { cleanupErrors.push(`memory_delete:${id}`) }
+          if (deleted.status !== 204 && deleted.status !== 404) throw new Error('memory_delete_failed')
+        })
       }
       for (const id of generatedKnowledgeIds) {
-        try { await deleteGeneratedKnowledgeDocument(api, id, originalKnowledgeIds) } catch { cleanupErrors.push(`knowledge_delete:${id}`) }
+        await runCleanupActionSafely(cleanupErrors, 'knowledge_delete_failed', () => (
+          deleteGeneratedKnowledgeDocument(api!, id, originalKnowledgeIds)
+        ))
       }
       for (const id of generatedRepositoryIds) {
-        try {
+        await runCleanupActionSafely(cleanupErrors, 'repository_delete_failed', async () => {
           await deleteGeneratedRepository(api, id)
           deletedRepositoryIds.add(id)
-        } catch { cleanupErrors.push(`repository_delete:${id}`) }
+        })
       }
       for (const id of generatedUploadIds) {
-        try {
+        await runCleanupActionSafely(cleanupErrors, 'upload_delete_failed', async () => {
           await deleteGeneratedUpload(api, id)
           deletedUploadIds.add(id)
-        } catch { cleanupErrors.push(`upload_delete:${id}`) }
+        })
       }
       for (const id of generatedThreadIds) {
-        if (originalThreads.has(id)) { cleanupErrors.push(`generated_thread_matches_original:${id}`); continue }
-        try {
+        if (originalThreads.has(id)) { cleanupErrors.push('generated_thread_matches_original'); continue }
+        await runCleanupActionSafely(cleanupErrors, 'thread_delete_failed', async () => {
           await deleteGeneratedThread(api, id, new Set(originalThreads.keys()), generatedThreadIds)
           await new Promise(resolveWait => setTimeout(resolveWait, 2_100))
-        } catch { cleanupErrors.push(`thread_delete:${id}`) }
+        })
       }
       if (originalTier) {
-        const restored = await api.request('PATCH', '/api/web/settings/assistant', { tier:originalTier })
-        if (restored.status !== 200) cleanupErrors.push('tier_restore_failed')
+        await runCleanupActionSafely(cleanupErrors, 'tier_restore_failed', async () => {
+          const restored = await api!.request('PATCH', '/api/web/settings/assistant', { tier:originalTier })
+          if (restored.status !== 200) throw new Error('tier_restore_failed')
+        })
       }
       if (originalProfile) {
-        try { await restoreProfile(api, originalProfile) } catch { cleanupErrors.push('profile_restore_failed') }
+        await runCleanupActionSafely(cleanupErrors, 'profile_restore_failed', () => (
+          restoreProfile(api!, originalProfile!)
+        ))
       }
       if (originalMemory) {
-        const restored = await api.request('PATCH', '/api/web/settings/memory', { enabled:originalMemory.enabled })
-        if (restored.status !== 200) cleanupErrors.push('memory_state_restore_failed')
+        await runCleanupActionSafely(cleanupErrors, 'memory_state_restore_failed', async () => {
+          const restored = await api!.request('PATCH', '/api/web/settings/memory', { enabled:originalMemory!.enabled })
+          if (restored.status !== 200) throw new Error('memory_state_restore_failed')
+        })
       }
-      try {
+      await runCleanupActionSafely(cleanupErrors, 'thread_cleanup_verification_failed', async () => {
         const remaining = new Set([...(await allThreads(api, false)), ...(await allThreads(api, true))].map(item => item.id))
-        for (const id of originalThreads.keys()) if (!remaining.has(id)) cleanupErrors.push(`original_thread_missing:${id}`)
-        for (const id of generatedThreadIds) if (remaining.has(id)) cleanupErrors.push(`generated_thread_remains:${id}`)
+        for (const id of originalThreads.keys()) if (!remaining.has(id)) cleanupErrors.push('original_thread_missing')
+        for (const id of generatedThreadIds) if (remaining.has(id)) cleanupErrors.push('generated_thread_remains')
+      })
+      await runCleanupActionSafely(cleanupErrors, 'knowledge_cleanup_verification_failed', async () => {
         const knowledge = await api.request<{ items: KnowledgeDocument[] }>('GET', '/api/web/knowledge')
         const remainingKnowledge = new Set(knowledge.data?.items.map(item => item.id) ?? [])
-        for (const id of originalKnowledgeIds) if (!remainingKnowledge.has(id)) cleanupErrors.push(`original_knowledge_missing:${id}`)
-        for (const id of createdKnowledgeIds) if (remainingKnowledge.has(id)) cleanupErrors.push(`generated_knowledge_remains:${id}`)
+        for (const id of originalKnowledgeIds) if (!remainingKnowledge.has(id)) cleanupErrors.push('original_knowledge_missing')
+        for (const id of createdKnowledgeIds) if (remainingKnowledge.has(id)) cleanupErrors.push('generated_knowledge_remains')
+      })
+      await runCleanupActionSafely(cleanupErrors, 'memory_cleanup_verification_failed', async () => {
         const remainingMemory = await api.request<MemorySettings>('GET', '/api/web/settings/memory')
         const remainingMemoryIds = new Set(remainingMemory.data?.items.map(item => item.id) ?? [])
-        for (const id of createdMemoryIds) if (remainingMemoryIds.has(id)) cleanupErrors.push(`generated_memory_remains:${id}`)
-        for (const id of createdRepositoryIds) if (!deletedRepositoryIds.has(id)) cleanupErrors.push(`repository_delete_unconfirmed:${id}`)
-        for (const id of createdUploadIds) if (!deletedUploadIds.has(id)) cleanupErrors.push(`upload_delete_unconfirmed:${id}`)
+        for (const id of createdMemoryIds) if (remainingMemoryIds.has(id)) cleanupErrors.push('generated_memory_remains')
+      })
+      for (const id of createdRepositoryIds) if (!deletedRepositoryIds.has(id)) cleanupErrors.push('repository_delete_unconfirmed')
+      for (const id of createdUploadIds) if (!deletedUploadIds.has(id)) cleanupErrors.push('upload_delete_unconfirmed')
+      await runCleanupActionSafely(cleanupErrors, 'wallet_reconciliation_failed', async () => {
         finalWallet = walletValues(await readWallet(api))
-        for (const requestId of benchmarkRequestIds) {
+      })
+      for (const requestId of benchmarkRequestIds) {
+        await runCleanupActionSafely(cleanupErrors, 'usage_cleanup_verification_failed', async () => {
           const audit = await pollAudit(api, requestId)
-          if (audit.orphaned_active_reservation || audit.active_usage_stage_names.length) cleanupErrors.push(`active_usage:${requestId}`)
-        }
-      } catch { cleanupErrors.push('cleanup_verification_failed') }
-      try { await logoutDeployed(page) } catch { cleanupErrors.push('logout_failed') }
+          if (audit.orphaned_active_reservation || audit.active_usage_stage_names.length) cleanupErrors.push('active_usage_remains')
+        })
+      }
+      await runCleanupActionSafely(cleanupErrors, 'logout_failed', () => logoutDeployed(page))
     }
 
     const debit = {
@@ -1469,7 +1490,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const settledResults = results.filter(item => item.requestId)
     const accepted = results.filter(item => item.status === 'passed')
     const rate = (numerator: number, denominator: number) => denominator ? Number((numerator * 100 / denominator).toFixed(2)) : null
-    const safeSummary = {
+    const buildSafeSummary = (finalCleanupErrors: readonly string[]) => ({
       run_id:runId,
       commit_sha:process.env.GITHUB_SHA?.slice(0, 40) ?? 'local',
       backend_release:backendRelease(),
@@ -1482,7 +1503,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       chat_debit_micros:debit.chat,
       voice_debit_micros:debit.voice,
       observed_authoritative_charges:budget.snapshot(),
-      cleanup:{ status:cleanupErrors.length ? 'incomplete' : 'complete', reason_codes:cleanupErrors.map(value => value.split(':', 1)[0]) },
+      cleanup:{ status:finalCleanupErrors.length ? 'incomplete' : 'complete', reason_codes:[...finalCleanupErrors] },
       scenarios:results.map(item => ({
         scenario_id:item.scenarioId, question_id:item.questionId, status:item.status,
         score:item.score, request_id:item.requestId, reason_codes:item.reasonCodes,
@@ -1521,7 +1542,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         p50_total_ms:percentile(results.flatMap(item => item.totalResponseMs === null ? [] : [item.totalResponseMs]), 50),
         p95_total_ms:percentile(results.flatMap(item => item.totalResponseMs === null ? [] : [item.totalResponseMs]), 95),
       },
-    }
+    })
     const privateDetails = {
       run_id:runId,
       bootstrap:{
@@ -1549,10 +1570,24 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       })),
       cleanup:{ errors:cleanupErrors, final_wallet:finalWallet, debit },
     }
-    await writeFile(join(privateRoot, 'detailed-results.json'), JSON.stringify(privateDetails, null, 2), { mode:0o600 })
     const qa = results.map(item => `## ${item.scenarioId}\n\nExpected: ${item.expected}\n\nScore: ${item.score}\n\nStatus: ${item.status} (${item.reasonCodes.join(', ')})\n\nSwico answer:\n\n${item.visibleAnswer || '[NOT RUN]'}\n`).join('\n')
-    await writeFile(join(privateRoot, 'questions-and-answers.md'), `# Swico capability benchmark ${runId}\n\n${qa}`, { mode:0o600 })
-    await writeFile(safeSummaryPath, JSON.stringify(safeSummary, null, 2), { mode:0o600 })
+    const finalReports = await writeFinalSafetyReports({
+      primaryFailure,
+      cleanupErrors,
+      preliminaryReports:[
+        {
+          reasonCode:'private_details_write_failed',
+          write:() => writeFile(join(privateRoot, 'detailed-results.json'), JSON.stringify(privateDetails, null, 2), { mode:0o600 }),
+        },
+        {
+          reasonCode:'private_answers_write_failed',
+          write:() => writeFile(join(privateRoot, 'questions-and-answers.md'), `# Swico capability benchmark ${runId}\n\n${qa}`, { mode:0o600 }),
+        },
+      ],
+      buildSafeSummary,
+      writeSafeSummary:summary => writeFile(safeSummaryPath, JSON.stringify(summary, null, 2), { mode:0o600 }),
+    })
+    primaryFailure = finalReports.primaryFailure
   }
 
   expect(primaryFailure, `primary=${primaryFailure} cleanup=${cleanupErrors.join(',')}`).toBeNull()
