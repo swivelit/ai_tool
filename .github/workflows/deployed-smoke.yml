@@ -4,13 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: staging, production-readonly, or production-triag
+        description: staging, production-readonly, production-triag, or production-capability
         required: true
         default: staging
         type: choice
-        options: [staging, production-readonly, production-triag]
+        options: [staging, production-readonly, production-triag, production-capability]
       production_write_confirmation:
         description: Type I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION for production-triag
+        required: false
+        type: string
+      production_capability_confirmation:
+        description: Exact billable production-capability confirmation
+        required: false
+        type: string
+      production_capability_batch:
+        description: Capability benchmark batch
+        required: false
+        default: core
+        type: choice
+        options: [core, context, rag, repository, voice-ui, all]
+      production_capability_max_chat_debit_micros:
+        description: Positive maximum cumulative Chat debit in micro-INR
+        required: false
+        type: string
+      production_capability_max_voice_debit_micros:
+        description: Positive maximum cumulative Voice debit in micro-INR
         required: false
         type: string
 
@@ -18,16 +36,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.mode == 'production-triag' && 'production-triag-acceptance' || format('deployed-smoke-{0}', inputs.mode) }}
+  group: ${{ inputs.mode == 'production-triag' && 'production-triag-acceptance' || inputs.mode == 'production-capability' && 'production-capability-benchmark' || format('deployed-smoke-{0}', inputs.mode) }}
   cancel-in-progress: false
 
 jobs:
   playwright:
     runs-on: ubuntu-latest
     environment:
-      name: ${{ inputs.mode }}
+      name: ${{ inputs.mode == 'production-capability' && 'production-triag' || inputs.mode }}
       deployment: false
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.mode == 'production-capability' && 180 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,6 +78,25 @@ jobs:
             echo 'production-triag requires the exact production write confirmation' >&2
             exit 1
           fi
+      - name: Confirm production capability benchmark
+        if: inputs.mode == 'production-capability'
+        shell: bash
+        env:
+          PRODUCTION_CAPABILITY_CONFIRMATION: ${{ inputs.production_capability_confirmation }}
+          PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS: ${{ inputs.production_capability_max_chat_debit_micros }}
+          PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS: ${{ inputs.production_capability_max_voice_debit_micros }}
+        run: |
+          if [[ "$PRODUCTION_CAPABILITY_CONFIRMATION" != 'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS' ]]; then
+            echo 'production-capability requires the exact billable capability confirmation' >&2
+            exit 1
+          fi
+          for name in PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS; do
+            value=${!name:-}
+            if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+              echo "$name must be a positive integer" >&2
+              exit 1
+            fi
+          done
       - name: Install web dependencies
         run: npm ci
         working-directory: web
@@ -79,17 +116,26 @@ jobs:
           PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          E2E_SECOND_TEST_EMAIL: ${{ secrets.E2E_SECOND_TEST_EMAIL }}
+          E2E_SECOND_TEST_PASSWORD: ${{ secrets.E2E_SECOND_TEST_PASSWORD }}
           PRODUCTION_TRIAG_CONFIRMATION: ${{ inputs.production_write_confirmation }}
+          PRODUCTION_CAPABILITY_CONFIRMATION: ${{ inputs.production_capability_confirmation }}
+          PRODUCTION_CAPABILITY_BATCH: ${{ inputs.production_capability_batch }}
+          PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS: ${{ inputs.production_capability_max_chat_debit_micros }}
+          PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS: ${{ inputs.production_capability_max_voice_debit_micros }}
         run: |
           case "$PLAYWRIGHT_MODE" in
             staging) test_file='e2e/deployed-smoke.spec.ts' ;;
             production-readonly) test_file='e2e/deployed-readonly.spec.ts' ;;
             production-triag) test_file='e2e/production-triag.spec.ts' ;;
+            production-capability) test_file='e2e/production-capability.spec.ts' ;;
             *) echo 'Unsupported deployed test mode' >&2; exit 2 ;;
           esac
           set +e
           if [[ "$PLAYWRIGHT_MODE" == 'production-triag' ]]; then
             npx playwright test "$test_file" --project=chromium --workers=1 --timeout=1200000
+          elif [[ "$PLAYWRIGHT_MODE" == 'production-capability' ]]; then
+            npx playwright test "$test_file" --project=chromium --workers=1 --timeout=10800000
           else
             npx playwright test "$test_file" --project=chromium --project=mobile-chromium
           fi
@@ -99,7 +145,7 @@ jobs:
           echo "result=$result" >> "$GITHUB_OUTPUT"
           exit "$status"
       - name: Upload private failure diagnostics
-        if: failure() && inputs.mode != 'production-triag'
+        if: failure() && inputs.mode != 'production-triag' && inputs.mode != 'production-capability'
         uses: actions/upload-artifact@v4
         with:
           name: deployed-playwright-failure-${{ github.run_id }}
@@ -126,6 +172,14 @@ jobs:
             web/test-results/production-triag-summary.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload safe production capability summary
+        if: always() && inputs.mode == 'production-capability'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-capability-safe-summary-${{ github.run_id }}
+          path: web/test-results/production-capability-summary.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Write safe test summary
         if: always()
         shell: bash
@@ -143,6 +197,8 @@ jobs:
             echo "- commit SHA: $GITHUB_SHA"
             if [[ "$MODE" == 'production-triag' ]]; then
               echo "- Chromium desktop result: $result"
+            elif [[ "$MODE" == 'production-capability' ]]; then
+              echo "- Chromium serial capability result: $result"
             else
               echo "- desktop/mobile result: $result"
             fi
@@ -207,6 +263,30 @@ jobs:
               if (counts) fields.push(`${name}=${counts}`)
             }
             process.stdout.write(`- ${item.scenario}: ${fields.join(', ')}\n`)
+          }
+          NODE
+          fi
+          if [[ "$MODE" == 'production-capability' && -f web/test-results/production-capability-summary.json ]]; then
+            node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const summary = require('./web/test-results/production-capability-summary.json')
+          process.stdout.write('\n### Production capability safe summary\n\n')
+          for (const [label, value] of [
+            ['run ID', summary.run_id],
+            ['backend release', summary.backend_release],
+            ['batch', summary.batch],
+            ['overall score', summary.overall_score],
+            ['chat debit micros', summary.chat_debit_micros],
+            ['voice debit micros', summary.voice_debit_micros],
+            ['cleanup', summary.cleanup?.status],
+          ]) process.stdout.write(`- ${label}: ${String(value ?? 'unknown').slice(0, 160)}\n`)
+          process.stdout.write('\n### Scenario states\n\n')
+          for (const item of summary.scenarios || []) {
+            const ids = item.request_id ? item.request_id : 'none'
+            process.stdout.write(`- ${item.scenario_id}: status=${item.status}, score=${item.score}, request_id=${ids}, reason=${(item.reason_codes || []).join('|')}\n`)
+          }
+          process.stdout.write('\n### Workflow states\n\n')
+          for (const item of summary.workflows || []) {
+            process.stdout.write(`- ${item.id}: status=${item.status}, request_ids=${(item.request_ids || []).join(',') || 'none'}, reason=${(item.reason_codes || []).join('|')}\n`)
           }
           NODE
           fi

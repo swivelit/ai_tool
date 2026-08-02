@@ -12,6 +12,14 @@ test('deployed mode uses one worker and a real HTTPS origin', () => {
     deployedBaseUrl:'https://production.example.test',
     workers:1,
   })
+  expect(resolvePlaywrightRuntime({
+    PLAYWRIGHT_MODE:'production-capability',
+    PLAYWRIGHT_BASE_URL:'https://production.example.test/',
+  })).toEqual({
+    mode:'production-capability',
+    deployedBaseUrl:'https://production.example.test',
+    workers:1,
+  })
 })
 
 test('local mode retains default worker behaviour and no deployed server', () => {

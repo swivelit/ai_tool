@@ -9,16 +9,22 @@ export default defineConfig({
   forbidOnly: true,
   retries: 0,
   workers,
-  reporter: process.env.PLAYWRIGHT_MODE === 'production-triag'
+  reporter: ['production-triag', 'production-capability'].includes(
+    process.env.PLAYWRIGHT_MODE ?? '',
+  )
     ? 'line'
     : process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'line',
   use: {
     baseURL: deployedBaseUrl ?? 'http://127.0.0.1:4173',
     // Native traces include request headers and DOM snapshots. The writable
     // production suite emits a deliberately content-free trace instead.
-    trace: process.env.PLAYWRIGHT_MODE === 'production-triag'
+    trace: ['production-triag', 'production-capability'].includes(
+      process.env.PLAYWRIGHT_MODE ?? '',
+    )
       ? 'off' : 'retain-on-failure',
-    screenshot: process.env.PLAYWRIGHT_MODE === 'production-triag'
+    screenshot: ['production-triag', 'production-capability'].includes(
+      process.env.PLAYWRIGHT_MODE ?? '',
+    )
       ? 'off' : 'only-on-failure',
     video: 'off',
   },

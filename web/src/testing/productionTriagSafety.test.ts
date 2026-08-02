@@ -52,7 +52,9 @@ test('production test and GitHub command use matching 20-minute timeouts', () =>
   expect(workflow).toContain(
     'npx playwright test "$test_file" --project=chromium --workers=1 --timeout=1200000',
   )
-  expect(workflow).toContain('timeout-minutes: 30')
+  expect(workflow).toContain(
+    "timeout-minutes: ${{ inputs.mode == 'production-capability' && 180 || 30 }}",
+  )
   expect(workflow).toContain('subreason=${subreason}')
   expect(workflow).toContain('fresh_chat_reason=${freshChatReason}')
   expect(workflow).toContain('fresh_chat_strategy=${freshChatStrategy}')

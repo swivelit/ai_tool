@@ -6,6 +6,12 @@ export interface DeployedApi {
   request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<T>>
 }
 
+export type DeployedMultipartFile = {
+  name: string
+  mimeType: string
+  buffer: Buffer
+}
+
 export class AuthenticatedDeployedApi implements DeployedApi {
   constructor(
     private readonly requestContext: APIRequestContext,
@@ -44,6 +50,29 @@ export class AuthenticatedDeployedApi implements DeployedApi {
     } catch {
       // Optional or malformed JSON must not turn an observed HTTP status into
       // a transport failure. Callers still receive and validate non-2xx status.
+      return { status, data:null }
+    }
+  }
+
+  async requestMultipart<T>(
+    path: string,
+    multipart: Record<string, string | number | boolean | DeployedMultipartFile>,
+  ): Promise<ApiResult<T>> {
+    const response = await this.requestContext.post(`${this.origin}${path}`, {
+      headers: {
+        Authorization: this.authorization,
+        Accept: 'application/json',
+      },
+      multipart,
+    })
+    const status = response.status()
+    const contentType = response.headers()['content-type'] ?? ''
+    if (!contentType.includes('application/json')) return { status, data:null }
+    const body = await response.body()
+    if (!body.length) return { status, data:null }
+    try {
+      return { status, data:JSON.parse(body.toString('utf8')) as T }
+    } catch {
       return { status, data:null }
     }
   }

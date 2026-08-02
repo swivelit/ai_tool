@@ -1,5 +1,5 @@
 export type PlaywrightRuntime = {
-  mode: 'local' | 'staging' | 'production-readonly' | 'production-triag'
+  mode: 'local' | 'staging' | 'production-readonly' | 'production-triag' | 'production-capability'
   deployedBaseUrl: string | undefined
   workers: 1 | undefined
 }
@@ -7,8 +7,8 @@ export type PlaywrightRuntime = {
 export function resolvePlaywrightRuntime(env: Record<string, string | undefined>): PlaywrightRuntime {
   const rawBaseUrl = env.PLAYWRIGHT_BASE_URL?.trim().replace(/\/$/, '')
   const mode = (env.PLAYWRIGHT_MODE ?? (rawBaseUrl ? 'staging' : 'local')) as PlaywrightRuntime['mode']
-  if (!['local', 'staging', 'production-readonly', 'production-triag'].includes(mode)) {
-    throw new Error('PLAYWRIGHT_MODE must be local, staging, production-readonly, or production-triag')
+  if (!['local', 'staging', 'production-readonly', 'production-triag', 'production-capability'].includes(mode)) {
+    throw new Error('PLAYWRIGHT_MODE must be local, staging, production-readonly, production-triag, or production-capability')
   }
   if (mode === 'local') {
     if (rawBaseUrl) throw new Error('PLAYWRIGHT_BASE_URL selects deployed mode and cannot be used with PLAYWRIGHT_MODE=local')

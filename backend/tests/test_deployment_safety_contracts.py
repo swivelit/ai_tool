@@ -306,10 +306,15 @@ def test_workflow_selects_exact_test_file_for_each_mode():
     assert "staging) test_file='e2e/deployed-smoke.spec.ts'" in source
     assert "production-readonly) test_file='e2e/deployed-readonly.spec.ts'" in source
     assert "production-triag) test_file='e2e/production-triag.spec.ts'" in source
+    assert "production-capability) test_file='e2e/production-capability.spec.ts'" in source
     assert 'npx playwright test "$test_file" --project=chromium --project=mobile-chromium' in source
     assert 'npx playwright test "$test_file" --project=chromium --workers=1' in source
     assert "I_UNDERSTAND_THIS_WRITES_TO_PRODUCTION" in source
-    assert "environment:\n      name: ${{ inputs.mode }}" in source
+    assert "I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS" in source
+    assert (
+        "environment:\n      name: ${{ inputs.mode == 'production-capability' "
+        "&& 'production-triag' || inputs.mode }}"
+    ) in source
     assert "retention-days: 7" in source
     assert "RENDER_API_KEY" not in source
     assert source.index("python scripts/check-web-security-headers.py") < source.index('npx playwright test "$test_file"')
@@ -324,12 +329,20 @@ def test_workflow_has_read_only_permissions_and_concurrency_protection():
         "group": (
             "${{ inputs.mode == 'production-triag' && "
             "'production-triag-acceptance' || "
+            "inputs.mode == 'production-capability' && "
+            "'production-capability-benchmark' || "
             "format('deployed-smoke-{0}', inputs.mode) }}"
         ),
         "cancel-in-progress": False,
     }
     environment = data["jobs"]["playwright"]["environment"]
-    assert environment == {"name": "${{ inputs.mode }}", "deployment": False}
+    assert environment == {
+        "name": (
+            "${{ inputs.mode == 'production-capability' && "
+            "'production-triag' || inputs.mode }}"
+        ),
+        "deployment": False,
+    }
 
 
 def test_workflow_does_not_print_secret_values():
