@@ -7,10 +7,14 @@ import {
   bulletLines,
   countSentences,
   countWords,
+  deploymentParitySafeSummary,
+  deploymentShasMatch,
+  enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
   hasAffirmativeWaitAdvice,
   parseSseEventOrder,
   percentile,
+  pollDeploymentParity,
   productionCapabilityGate,
   redactPotentialSecrets,
   tierEvidenceMatches,
@@ -28,6 +32,85 @@ const valid = {
 }
 
 describe('production capability safety', () => {
+  const fullSha = 'b14f183691b93c36be4693937407d8d6f986b55f'
+
+  it('matches only validated full or prefix deployment SHAs', () => {
+    expect(deploymentShasMatch(fullSha, fullSha)).toBe(true)
+    expect(deploymentShasMatch(fullSha.toUpperCase(), 'B14F183691B9')).toBe(true)
+    expect(deploymentShasMatch(fullSha, 'b29f237ba34d')).toBe(false)
+    expect(deploymentShasMatch(fullSha, 'release-b14f183691b9')).toBe(false)
+    expect(deploymentShasMatch(fullSha, 'b14f18')).toBe(false)
+    expect(deploymentShasMatch(fullSha, '')).toBe(false)
+    expect(deploymentShasMatch(fullSha, undefined)).toBe(false)
+  })
+
+  it('polls immediately and eventually observes deployment parity', async () => {
+    let clock = 0
+    const releases = ['b29f237ba34d', 'b14f183691b9']
+    const result = await pollDeploymentParity({
+      expectedCommitSha:fullSha,
+      readBackendRelease:async () => releases.shift() ?? null,
+      intervalMs:20_000,
+      maxWaitMs:600_000,
+      now:() => clock,
+      wait:async milliseconds => { clock += milliseconds },
+    })
+    expect(result).toEqual({
+      expectedCommitSha:fullSha,
+      observedBackendRelease:'b14f183691b9',
+      status:'matched', checks:2, elapsedWaitMs:20_000,
+    })
+  })
+
+  it('times out without treating missing or malformed releases as matches', async () => {
+    let clock = 0
+    const result = await pollDeploymentParity({
+      expectedCommitSha:fullSha,
+      readBackendRelease:async () => 'not-a-release',
+      intervalMs:20_000,
+      maxWaitMs:40_000,
+      now:() => clock,
+      wait:async milliseconds => { clock += milliseconds },
+    })
+    expect(result).toEqual({
+      expectedCommitSha:fullSha,
+      observedBackendRelease:null,
+      status:'backend_release_mismatch', checks:2, elapsedWaitMs:40_000,
+    })
+  })
+
+  it('writes only safe parity fields and stops work after a mismatch', async () => {
+    let questionExecuted = false
+    let written: unknown = null
+    const privateBootstrap = {
+      token:'must-not-appear', profile:{ email:'private@example.invalid' },
+    }
+    await expect((async () => {
+      await enforceProductionDeploymentParity({
+        expectedCommitSha:fullSha,
+        readBackendRelease:async () => 'b29f237ba34d',
+        maxWaitMs:0,
+        now:() => 0,
+        writeSafeFailure:async summary => { written = summary },
+      })
+      questionExecuted = true
+    })()).rejects.toThrow('backend_release_mismatch')
+    expect(questionExecuted).toBe(false)
+    expect(Object.keys(written as Record<string, unknown>)).toEqual([
+      'expected_commit_sha', 'observed_backend_release',
+      'deployment_parity_status', 'deployment_parity_checks',
+      'deployment_parity_elapsed_wait_ms',
+    ])
+    const serialized = JSON.stringify(written)
+    expect(serialized).not.toContain(privateBootstrap.token)
+    expect(serialized).not.toContain(privateBootstrap.profile.email)
+    expect(written).toEqual(deploymentParitySafeSummary({
+      expectedCommitSha:fullSha,
+      observedBackendRelease:'b29f237ba34d',
+      status:'backend_release_mismatch', checks:1, elapsedWaitMs:0,
+    }))
+  })
+
   it('requires every production gate and positive integer caps', () => {
     expect(productionCapabilityGate(valid)).toEqual({
       batch:'rag', chatDebitCapMicros:1000, voiceDebitCapMicros:2000,

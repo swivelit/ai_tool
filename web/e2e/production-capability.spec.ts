@@ -32,6 +32,8 @@ import {
   bulletLines,
   countSentences,
   countWords,
+  deploymentParitySafeSummary,
+  enforceProductionDeploymentParity,
   evaluateWebhookArchitecture,
   hasAffirmativeWaitAdvice,
   newCapabilityRunId,
@@ -668,6 +670,25 @@ function skippedResult(
   }
 }
 
+async function readDeployedBackendRelease(
+  page: Page, timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const response = await page.request.get('/api/version', {
+      failOnStatusCode:false,
+      timeout:timeoutMs,
+    })
+    if (response.status() !== 200) return null
+    const body = await response.json().catch(() => null) as {
+      backend_release_sha?: unknown
+    } | null
+    return typeof body?.backend_release_sha === 'string'
+      ? body.backend_release_sha : null
+  } catch {
+    return null
+  }
+}
+
 test('production-safe standalone Swico capability benchmark', async ({ page, context }) => {
   test.setTimeout(TEST_TIMEOUT_MS)
   const gate = productionCapabilityGate(process.env)
@@ -697,6 +718,16 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }, null, 2), { mode:0o600 })
     throw new Error('python_test_runtime_unavailable')
   }
+  const deploymentParity = await enforceProductionDeploymentParity({
+    expectedCommitSha:process.env.GITHUB_SHA,
+    readBackendRelease:timeoutMs => readDeployedBackendRelease(page, timeoutMs),
+    writeSafeFailure:async summary => {
+      await mkdir(resolve(process.cwd(), 'test-results'), { recursive:true })
+      await writeFile(
+        safeSummaryPath, JSON.stringify(summary, null, 2), { mode:0o600 },
+      )
+    },
+  })
   const privateRoot = resolve(process.cwd(), 'test-results/swico-capability-private', runId)
   await mkdir(privateRoot, { recursive:true })
   const results: QuestionResult[] = []
@@ -1725,6 +1756,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       run_id:runId,
       commit_sha:process.env.GITHUB_SHA?.slice(0, 40) ?? 'local',
       backend_release:backendRelease(),
+      ...deploymentParitySafeSummary(deploymentParity),
       batch:gate.batch,
       primary_failure:primaryFailure,
       counts:{ total:results.length, passed, failed, skipped },

@@ -194,6 +194,47 @@ test('production capability safe summary includes content-free completion diagno
   ]) expect(spec).toContain(field)
 })
 
+test('production capability deployment parity gates authentication and questions', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const parity = spec.indexOf('await enforceProductionDeploymentParity({')
+  const privateState = spec.indexOf('const privateRoot =')
+  const authentication = spec.indexOf(
+    'const authenticated = await loginProductionTriag<Bootstrap>',
+  )
+  const firstQuestion = spec.indexOf(
+    "if (batchIncludes(gate.batch, 'core')) await runCore()",
+  )
+  expect(parity).toBeGreaterThan(0)
+  expect(parity).toBeLessThan(privateState)
+  expect(parity).toBeLessThan(authentication)
+  expect(parity).toBeLessThan(firstQuestion)
+  expect(spec).toContain('expectedCommitSha:process.env.GITHUB_SHA')
+  expect(spec).toContain("page.request.get('/api/version'")
+})
+
+test('deployment mismatch GitHub summary is restricted to parity fields', () => {
+  const workflow = readFileSync(
+    resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',
+  )
+  const start = workflow.indexOf(
+    `if [[ "$MODE" == 'production-capability' && -f web/test-results/production-capability-summary.json ]]; then`,
+  )
+  const end = workflow.indexOf('hostname=$(node -e', start)
+  const mismatchSummary = workflow.slice(start, end)
+  expect(start).toBeGreaterThan(0)
+  for (const field of [
+    'expected_commit_sha', 'observed_backend_release',
+    'deployment_parity_status', 'deployment_parity_checks',
+    'deployment_parity_elapsed_wait_ms',
+  ]) expect(mismatchSummary).toContain(field)
+  for (const unsafeField of [
+    'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD', 'bootstrap', 'BASE_URL',
+  ]) expect(mismatchSummary).not.toContain(unsafeField)
+  expect(mismatchSummary).toContain('exit 0')
+})
+
 test('mandatory exact-format failures cannot retain passed status', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',

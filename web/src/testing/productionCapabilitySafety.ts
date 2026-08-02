@@ -11,6 +11,7 @@ export type ProductionCapabilityBatch =
   typeof PRODUCTION_CAPABILITY_BATCHES[number]
 
 export type CapabilityEnvironment = {
+  GITHUB_SHA?: string
   PLAYWRIGHT_BASE_URL?: string
   E2E_TEST_EMAIL?: string
   E2E_TEST_PASSWORD?: string
@@ -18,6 +19,147 @@ export type CapabilityEnvironment = {
   PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS?: string
   PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS?: string
   PRODUCTION_CAPABILITY_BATCH?: string
+}
+
+const DEPLOYMENT_SHA_PATTERN = /^[0-9a-f]{7,40}$/
+
+export type DeploymentParityStatus = 'matched' | 'backend_release_mismatch'
+
+export type DeploymentParityResult = {
+  expectedCommitSha: string | null
+  observedBackendRelease: string | null
+  status: DeploymentParityStatus
+  checks: number
+  elapsedWaitMs: number
+}
+
+export type DeploymentParitySafeSummary = {
+  expected_commit_sha: string | null
+  observed_backend_release: string | null
+  deployment_parity_status: DeploymentParityStatus
+  deployment_parity_checks: number
+  deployment_parity_elapsed_wait_ms: number
+}
+
+export class DeploymentParityError extends Error {
+  readonly reasonCode = 'backend_release_mismatch'
+
+  constructor(readonly result: DeploymentParityResult) {
+    super(
+      'backend_release_mismatch: deploy the latest commit to the ai_tool '
+      + 'Render service, verify that the Render branch is main, and rerun '
+      + 'after the backend release matches',
+    )
+    this.name = 'DeploymentParityError'
+  }
+}
+
+export function normalizeDeploymentSha(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return DEPLOYMENT_SHA_PATTERN.test(normalized) ? normalized : null
+}
+
+export function deploymentShasMatch(
+  expectedCommitSha: unknown,
+  observedBackendRelease: unknown,
+): boolean {
+  const expected = normalizeDeploymentSha(expectedCommitSha)
+  const observed = normalizeDeploymentSha(observedBackendRelease)
+  if (!expected || !observed) return false
+  return expected.startsWith(observed) || observed.startsWith(expected)
+}
+
+export async function pollDeploymentParity(options: {
+  expectedCommitSha: unknown
+  readBackendRelease: (timeoutMs: number) => Promise<unknown>
+  intervalMs?: number
+  maxWaitMs?: number
+  now?: () => number
+  wait?: (milliseconds: number) => Promise<void>
+}): Promise<DeploymentParityResult> {
+  const intervalMs = options.intervalMs ?? 20_000
+  const maxWaitMs = options.maxWaitMs ?? 10 * 60_000
+  const now = options.now ?? Date.now
+  const wait = options.wait ?? (
+    milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+  )
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error('deployment_parity_interval_invalid')
+  }
+  if (!Number.isFinite(maxWaitMs) || maxWaitMs < 0) {
+    throw new Error('deployment_parity_max_wait_invalid')
+  }
+  const expected = normalizeDeploymentSha(options.expectedCommitSha)
+  if (!expected) {
+    return {
+      expectedCommitSha:null, observedBackendRelease:null,
+      status:'backend_release_mismatch', checks:0, elapsedWaitMs:0,
+    }
+  }
+  const startedAt = now()
+  let checks = 0
+  let observed: string | null = null
+  while (true) {
+    const elapsedBeforeCheck = Math.max(0, now() - startedAt)
+    if (checks > 0 && elapsedBeforeCheck >= maxWaitMs) {
+      return {
+        expectedCommitSha:expected, observedBackendRelease:observed,
+        status:'backend_release_mismatch', checks,
+        elapsedWaitMs:elapsedBeforeCheck,
+      }
+    }
+    checks += 1
+    try {
+      const remainingMs = Math.max(1, maxWaitMs - elapsedBeforeCheck)
+      observed = normalizeDeploymentSha(
+        await options.readBackendRelease(Math.min(30_000, remainingMs)),
+      )
+    } catch {
+      observed = null
+    }
+    const elapsedWaitMs = Math.max(0, now() - startedAt)
+    if (deploymentShasMatch(expected, observed)) {
+      return {
+        expectedCommitSha:expected, observedBackendRelease:observed,
+        status:'matched', checks, elapsedWaitMs,
+      }
+    }
+    if (elapsedWaitMs >= maxWaitMs) {
+      return {
+        expectedCommitSha:expected, observedBackendRelease:observed,
+        status:'backend_release_mismatch', checks, elapsedWaitMs,
+      }
+    }
+    await wait(Math.min(intervalMs, maxWaitMs - elapsedWaitMs))
+  }
+}
+
+export function deploymentParitySafeSummary(
+  result: DeploymentParityResult,
+): DeploymentParitySafeSummary {
+  return {
+    expected_commit_sha:result.expectedCommitSha,
+    observed_backend_release:result.observedBackendRelease,
+    deployment_parity_status:result.status,
+    deployment_parity_checks:result.checks,
+    deployment_parity_elapsed_wait_ms:result.elapsedWaitMs,
+  }
+}
+
+export async function enforceProductionDeploymentParity(options: {
+  expectedCommitSha: unknown
+  readBackendRelease: (timeoutMs: number) => Promise<unknown>
+  writeSafeFailure: (summary: DeploymentParitySafeSummary) => Promise<void>
+  intervalMs?: number
+  maxWaitMs?: number
+  now?: () => number
+  wait?: (milliseconds: number) => Promise<void>
+}): Promise<DeploymentParityResult> {
+  const result = await pollDeploymentParity(options)
+  if (result.status === 'matched') return result
+  await options.writeSafeFailure(deploymentParitySafeSummary(result))
+  throw new DeploymentParityError(result)
 }
 
 export type CapabilityGate = {

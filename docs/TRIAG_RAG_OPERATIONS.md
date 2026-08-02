@@ -3,6 +3,27 @@
 Release acceptance metadata is recorded in
 [TRIAG_RAG_RELEASE_CLOSEOUT.md](TRIAG_RAG_RELEASE_CLOSEOUT.md).
 
+## Production capability deployment parity
+
+Before launching the production-capability benchmark, perform these Render
+operator steps in order:
+
+1. Deploy the `ai_tool` service from the latest commit on the `main` branch.
+2. Deploy the `swico-web` service from the latest commit on the `main` branch.
+3. Verify that `/api/version` reports the expected backend commit SHA.
+4. Run `backend/scripts/triag_release_check.py` against the deployment.
+5. Launch the `production-capability` mode only after those checks pass.
+
+The benchmark compares the workflow's `GITHUB_SHA` with the public backend
+release SHA before login or production state creation. It checks immediately,
+then every 20 seconds for at most 10 minutes to allow bounded Render deployment
+propagation. A persistent mismatch fails closed with
+`backend_release_mismatch`; deploy the latest commit to the `ai_tool` Render
+service, verify that its Render branch is `main`, and rerun after the backend
+release matches. The web deployment currently exposes no safe build SHA, so
+frontend release parity remains an operator-verified prerequisite rather than
+an automated assertion.
+
 ## Runtime status
 
 Startup validates the two booleans, bounded policy version, and built-in tier
