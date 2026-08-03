@@ -208,6 +208,14 @@ jobs:
             web/test-results
           if-no-files-found: ignore
           retention-days: 7
+      - name: Upload private failure diagnostics
+        if: failure() && inputs.mode == 'production-capability'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-capability-startup-diagnostic-${{ github.run_id }}
+          path: web/test-results/swico-capability-private/*/startup-failure-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload redacted production TRIAG trace on failure
         if: failure() && inputs.mode == 'production-triag'
         uses: actions/upload-artifact@v4
@@ -269,6 +277,11 @@ jobs:
             ['backend endpoint hostname', summary.backend_endpoint_hostname],
             ['last HTTP status', summary.last_http_status],
             ['safe failure reason', summary.safe_failure_reason],
+            ['login status', summary.login_status],
+            ['startup snapshot status', summary.startup_snapshot_status],
+            ['failed startup step', summary.failed_startup_step],
+            ['scenarios started', summary.scenarios_started],
+            ['production writes started', summary.production_writes_started],
             ['API base source', process.env.PLAYWRIGHT_API_BASE_URL_SOURCE],
           ]) process.stdout.write(`- ${label}: ${String(value ?? 'unknown').slice(0, 160)}\n`)
           NODE

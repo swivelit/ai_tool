@@ -53,6 +53,13 @@ import {
   type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
 import {
+  StartupSnapshotError,
+  snapshotProductionAccountState,
+  type StartupFailureDiagnostic,
+  type StartupSnapshotReasonCode,
+  type StartupSnapshotStep,
+} from '../src/testing/productionCapabilityStartup'
+import {
   CORE_QUESTIONS,
   CONTEXT_QUESTIONS,
   RAG_QUESTIONS,
@@ -882,6 +889,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
   const uploadPace = new PaceGate(UPLOAD_START_INTERVAL_MS)
   const budget = new DebitBudget(gate.chatDebitCapMicros, gate.voiceDebitCapMicros)
+  let loginStatus: 'not_started' | 'passed' = 'not_started'
+  let startupSnapshotStatus: 'not_started' | 'in_progress' | 'complete' | 'failed' = 'not_started'
+  let failedStartupStep: StartupSnapshotStep | null = null
+  let startupFailureReason: StartupSnapshotReasonCode | null = null
+  let startupFailureDiagnostic: StartupFailureDiagnostic | null = null
+  let scenariosStarted = false
+  let productionWritesStarted = false
   let checkpointCleanupStatus = 'not_started'
   let checkpointQueue = Promise.resolve()
   scheduleCheckpoint = () => {
@@ -895,6 +909,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ...workflowResults.map(item => [item.id, item.status] as const),
       ]),
       current_debit_totals:budget.snapshot(),
+      login_status:loginStatus,
+      startup_snapshot_status:startupSnapshotStatus,
+      failed_startup_step:failedStartupStep,
+      safe_failure_reason:startupFailureReason,
+      scenarios_started:scenariosStarted,
+      production_writes_started:productionWritesStarted,
       cleanup_status:checkpointCleanupStatus,
       last_progress_timestamp:lastProgressTimestamp,
     }
@@ -949,6 +969,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
     if (Date.now() >= executionDeadline) throw new Error('batch_deadline_exceeded')
+    scenariosStarted = true
+    scheduleCheckpoint()
     const question = materializeQuestion(source, runId)
     const activeScenarioId = scenarioId(question)
     const questionDeadline = Math.min(
@@ -970,6 +992,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const threadsBefore = createsFreshThread
       ? new Set((await allThreads(api, false)).map(thread => thread.id))
       : null
+    productionWritesStarted = true
+    scheduleCheckpoint()
     const selectedTierEvidence = await selectTier(page, api, tier)
     budget.assertRequestMayStart('chat')
     await chatPace.wait()
@@ -1916,24 +1940,65 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     )
     api = authenticated.api
     bootstrap = authenticated.bootstrap
+    loginStatus = 'passed'
     progress('login_passed', 'startup', null)
-    originalTier = bootstrap.assistant.tier
-    const active = await allThreads(api, false)
-    const archived = await allThreads(api, true)
-    originalThreads = new Map([...active.map(item => [item.id, false] as const), ...archived.map(item => [item.id, true] as const)])
-    const profile = await api.request<RestorableProfile>('GET', '/api/web/settings/profile')
-    if (profile.status !== 200 || !profile.data) throw new Error('profile_snapshot_failed')
-    originalProfile = profile.data
-    const memory = await api.request<MemorySettings>('GET', '/api/web/settings/memory')
-    if (memory.status !== 200 || !memory.data) throw new Error('memory_snapshot_failed')
-    originalMemory = memory.data
-    const knowledge = await api.request<{ items: KnowledgeDocument[] }>('GET', '/api/web/knowledge')
-    if (knowledge.status !== 200 || !knowledge.data) throw new Error('knowledge_snapshot_failed')
-    originalKnowledgeIds = new Set(knowledge.data.items.map(item => item.id))
-    originalWallet = walletValues(await readWallet(api))
-    const ledger = await api.request<{ items: Array<{ id: string }> }>('GET', '/api/web/billing/ledger?limit=1&offset=0')
-    if (ledger.status !== 200) throw new Error('ledger_snapshot_failed')
-    originalLedgerId = ledger.data?.items[0]?.id ?? null
+    startupSnapshotStatus = 'in_progress'
+    scheduleCheckpoint()
+    try {
+      const snapshot = await snapshotProductionAccountState({
+        api,
+        tier:bootstrap.assistant.tier,
+        knowledgeEnabled:bootstrap.features.web_knowledge_library,
+        onProgress:(state, step) => {
+          progress(
+            state === 'start'
+              ? 'startup_snapshot_start' : 'startup_snapshot_complete',
+            'startup_snapshot', step,
+          )
+          scheduleCheckpoint()
+        },
+        onFailureDiagnostic:async diagnostic => {
+          startupFailureDiagnostic = diagnostic
+          failedStartupStep = diagnostic.failing_startup_step
+          startupFailureReason = diagnostic.safe_reason_code
+          startupSnapshotStatus = 'failed'
+          try {
+            await writeFile(
+              join(privateRoot, 'startup-failure-diagnostic.json'),
+              JSON.stringify(diagnostic, null, 2),
+              { mode:0o600 },
+            )
+          } catch {
+            cleanupErrors.push('startup_failure_diagnostic_write_failed')
+          }
+          scheduleCheckpoint()
+          await checkpointQueue
+        },
+      })
+      originalTier = snapshot.tier
+      originalThreads = new Map([
+        ...snapshot.activeThreadIds.map(id => [id, false] as const),
+        ...snapshot.archivedThreadIds.map(id => [id, true] as const),
+      ])
+      originalProfile = snapshot.profile
+      originalMemory = snapshot.memory
+      originalKnowledgeIds = new Set(snapshot.knowledgeDocumentIds)
+      originalWallet = snapshot.walletValues
+      originalLedgerId = snapshot.latestLedgerId
+      startupSnapshotStatus = 'complete'
+      scheduleCheckpoint()
+      await checkpointQueue
+    } catch (error) {
+      startupSnapshotStatus = 'failed'
+      if (error instanceof StartupSnapshotError) {
+        failedStartupStep = error.diagnostic.failing_startup_step
+        startupFailureReason = error.reasonCode
+      }
+      primaryFailure ??= startupFailureReason ?? safeHarnessReason(error)
+      scheduleCheckpoint()
+      await checkpointQueue
+      throw error
+    }
     // loginProductionTriag proves this is the dedicated internal production
     // acceptance account and that the content-free admin audit is available.
 
@@ -2135,6 +2200,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ...deploymentParitySafeSummary(deploymentParity),
       batch:gate.batch,
       primary_failure:primaryFailure,
+      safe_failure_reason:startupFailureReason
+        ?? deploymentParity.safeFailureReason,
+      login_status:loginStatus,
+      startup_snapshot_status:startupSnapshotStatus,
+      failed_startup_step:failedStartupStep,
+      scenarios_started:scenariosStarted,
+      production_writes_started:productionWritesStarted,
       counts:{ total:results.length, passed, failed, skipped },
       overall_score:overallScore,
       scores_by_category:groupScores('category'),
@@ -2218,6 +2290,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         knowledge_document_ids:[...originalKnowledgeIds], wallet:originalWallet,
         most_recent_ledger_id:originalLedgerId,
       },
+      startup_failure_diagnostic:startupFailureDiagnostic,
       results,
       workflow_results:workflowResults,
       render_log_correlation:results.filter(item => item.requestId).map(item => ({

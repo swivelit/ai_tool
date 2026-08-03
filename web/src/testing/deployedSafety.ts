@@ -1,6 +1,10 @@
 import type { APIRequestContext, Page, Request, Response } from '@playwright/test'
 
-export type ApiResult<T> = { status: number; data: T | null }
+export type ApiResult<T> = {
+  status: number
+  data: T | null
+  contentType?: string | null
+}
 
 export type DeployedApiRequestOptions = { timeoutMilliseconds?: number }
 
@@ -199,23 +203,29 @@ export class AuthenticatedDeployedApi implements DeployedApi {
     )
     const status = response.status()
     if (status === 204 || status === 205) {
-      return { status, data:null }
+      return { status, data:null, contentType:null }
     }
     const contentType = response.headers()['content-type'] ?? ''
     if (!contentType.includes('application/json')) {
-      return { status, data:null }
+      return { status, data:null, contentType:contentType || null }
     }
     const bodyBytes = await withBoundedTimeout(
       () => response.body(), Math.max(1, deadline - Date.now()),
       'deployed_api_timeout',
     )
-    if (bodyBytes.length === 0) return { status, data:null }
+    if (bodyBytes.length === 0) return {
+      status, data:null, contentType:contentType || null,
+    }
     try {
-      return { status, data:JSON.parse(bodyBytes.toString('utf8')) as T }
+      return {
+        status,
+        data:JSON.parse(bodyBytes.toString('utf8')) as T,
+        contentType:contentType || null,
+      }
     } catch {
       // Optional or malformed JSON must not turn an observed HTTP status into
       // a transport failure. Callers still receive and validate non-2xx status.
-      return { status, data:null }
+      return { status, data:null, contentType:contentType || null }
     }
   }
 
@@ -242,16 +252,22 @@ export class AuthenticatedDeployedApi implements DeployedApi {
     )
     const status = response.status()
     const contentType = response.headers()['content-type'] ?? ''
-    if (!contentType.includes('application/json')) return { status, data:null }
+    if (!contentType.includes('application/json')) {
+      return { status, data:null, contentType:contentType || null }
+    }
     const body = await withBoundedTimeout(
       () => response.body(), Math.max(1, deadline - Date.now()),
       'deployed_api_timeout',
     )
-    if (!body.length) return { status, data:null }
+    if (!body.length) return { status, data:null, contentType:contentType || null }
     try {
-      return { status, data:JSON.parse(body.toString('utf8')) as T }
+      return {
+        status,
+        data:JSON.parse(body.toString('utf8')) as T,
+        contentType:contentType || null,
+      }
     } catch {
-      return { status, data:null }
+      return { status, data:null, contentType:contentType || null }
     }
   }
 }

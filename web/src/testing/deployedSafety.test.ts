@@ -451,7 +451,7 @@ test('application/json 204 with an empty body returns null without parsing', asy
     requestContext, 'https://redacted.invalid', 'Bearer redacted',
   )
   await expect(api.request('DELETE', '/api/web/threads/generated'))
-    .resolves.toEqual({ status:204, data:null })
+    .resolves.toEqual({ status:204, data:null, contentType:null })
   expect(response.json).not.toHaveBeenCalled()
   expect(response.body).not.toHaveBeenCalled()
 })
@@ -469,9 +469,13 @@ test('malformed optional JSON preserves both successful and failure statuses', a
     requestContext, 'https://redacted.invalid', 'Bearer redacted',
   )
   await expect(api.request('GET', '/api/web/optional'))
-    .resolves.toEqual({ status:200, data:null })
+    .resolves.toEqual({
+      status:200, data:null, contentType:'application/json; charset=utf-8',
+    })
   await expect(api.request('GET', '/api/web/failure'))
-    .resolves.toEqual({ status:503, data:null })
+    .resolves.toEqual({
+      status:503, data:null, contentType:'application/json; charset=utf-8',
+    })
 })
 
 test('generated-thread deletion safely accepts a verified 404', async () => {

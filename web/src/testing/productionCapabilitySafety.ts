@@ -24,6 +24,8 @@ export function capabilityEffectiveTimeoutMs(
 export type CapabilityProgressKind =
   | 'parity_passed'
   | 'login_passed'
+  | 'startup_snapshot_start'
+  | 'startup_snapshot_complete'
   | 'question_start'
   | 'question_complete'
   | 'workflow_start'
