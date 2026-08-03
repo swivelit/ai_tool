@@ -16,6 +16,12 @@ export type PollableCapabilityAudit = {
   active_usage_stage_names: string[]
 }
 
+export type CancellationReadyCapabilityAudit = PollableCapabilityAudit & {
+  cache_hit: boolean
+  generation_stage_count: number
+  provider_call_count: number
+}
+
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const result: T[][] = []
   for (let index = 0; index < items.length; index += size) {
@@ -28,6 +34,107 @@ export function capabilityAuditIsTerminal(audit: PollableCapabilityAudit): boole
   return !audit.orphaned_active_reservation
     && audit.active_usage_stage_names.length === 0
     && ['complete', 'cancelled', 'failed'].includes(audit.cancellation_state)
+}
+
+export function capabilityAuditHasActiveProviderGeneration(
+  audit: CancellationReadyCapabilityAudit,
+): boolean {
+  return audit.cancellation_state === 'active'
+    && audit.cache_hit === false
+    && audit.generation_stage_count > 0
+    && audit.active_usage_stage_names.includes('generation')
+}
+
+export async function readCapabilityAuditsOnce<T extends PollableCapabilityAudit>(options: {
+  api: CapabilityAuditTransport
+  requestIds: readonly string[]
+  timeoutMilliseconds?: number
+  concurrency?: number
+  now?: () => number
+}): Promise<Map<string, T>> {
+  const uniqueIds = [...new Set(options.requestIds)]
+    .filter(id => /^[0-9a-f-]{36}$/i.test(id))
+  if (uniqueIds.length === 0) return new Map()
+  const now = options.now ?? Date.now
+  const deadline = now() + (options.timeoutMilliseconds ?? 15_000)
+  const batches = chunks(uniqueIds, TRIAG_REQUEST_AUDIT_BATCH_LIMIT)
+  const concurrency = Math.max(1, Math.min(4, options.concurrency ?? 3))
+  const result = new Map<string, T>()
+  let nextBatch = 0
+  const workers = Array.from(
+    { length:Math.min(concurrency, batches.length) },
+    async () => {
+      while (nextBatch < batches.length) {
+        const batch = batches[nextBatch++]
+        const remaining = Math.max(1, deadline - now())
+        const response = await options.api.request<{ results: T[] }>(
+          'POST', '/api/web/admin/triag-request-audit',
+          { request_ids:batch },
+          { timeoutMilliseconds:remaining },
+        )
+        if (response.status !== 200 || !response.data) {
+          throw new Error('request_audit_timeout')
+        }
+        for (const audit of response.data.results) {
+          if (batch.includes(audit.request_id)) result.set(audit.request_id, audit)
+        }
+      }
+    },
+  )
+  await Promise.all(workers)
+  return result
+}
+
+export async function forceCancelActiveCapabilityRequests<
+  T extends CancellationReadyCapabilityAudit,
+>(options: {
+  api: CapabilityAuditTransport
+  requestIds: readonly string[]
+  timeoutMilliseconds?: number
+  now?: () => number
+  wait?: (milliseconds: number) => Promise<void>
+}): Promise<{
+  audits: Map<string, T>
+  cancellationAttemptedIds: string[]
+  cancellationFailedIds: string[]
+}> {
+  const now = options.now ?? Date.now
+  const deadline = now() + (options.timeoutMilliseconds ?? 75_000)
+  const snapshot = await readCapabilityAuditsOnce<T>({
+    api:options.api,
+    requestIds:options.requestIds,
+    timeoutMilliseconds:Math.max(1, deadline - now()),
+    now,
+  })
+  const cancellationAttemptedIds = [...snapshot]
+    .filter(([, audit]) => !capabilityAuditIsTerminal(audit))
+    .map(([requestId]) => requestId)
+  const cancellationFailedIds: string[] = []
+  let nextCancellation = 0
+  const cancellationWorkers = Array.from(
+    { length:Math.min(3, cancellationAttemptedIds.length) },
+    async () => {
+      while (nextCancellation < cancellationAttemptedIds.length) {
+        const requestId = cancellationAttemptedIds[nextCancellation++]
+        const response = await options.api.request<unknown>(
+          'POST', `/api/web/chat/requests/${encodeURIComponent(requestId)}/cancel`,
+          undefined, { timeoutMilliseconds:Math.max(1, deadline - now()) },
+        ).catch(() => ({ status:0, data:null }))
+        if (response.status < 200 || response.status >= 300) {
+          cancellationFailedIds.push(requestId)
+        }
+      }
+    }
+  )
+  await Promise.all(cancellationWorkers)
+  const audits = await pollCapabilityAudits<T>({
+    api:options.api,
+    requestIds:options.requestIds,
+    timeoutMilliseconds:Math.max(1, deadline - now()),
+    now,
+    wait:options.wait,
+  })
+  return { audits, cancellationAttemptedIds, cancellationFailedIds }
 }
 
 export async function pollCapabilityAudits<T extends PollableCapabilityAudit>(options: {

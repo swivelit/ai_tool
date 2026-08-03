@@ -35,6 +35,7 @@ import {
   bulletLines,
   capabilityAnswerRepresentationCounts,
   capabilityEffectiveTimeoutMs,
+  capabilitySafeFailureReason,
   countSentences,
   countMarkdownWords,
   countWords,
@@ -50,14 +51,17 @@ import {
   productionCapabilityGate,
   redactPotentialSecrets,
   releaseShaFromVersionPayload,
+  remainingCapabilitySseBodyTimeoutMs,
   tierEvidenceMatches,
   weightedScore,
   type CapabilityTierEvidence,
   type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
 import {
+  capabilityAuditHasActiveProviderGeneration,
   capabilityAuditIsTerminal,
   cleanupUsageAuditReasons,
+  forceCancelActiveCapabilityRequests,
   pollCapabilityAudits,
 } from '../src/testing/productionCapabilityAudit'
 import {
@@ -92,6 +96,7 @@ import {
   testRepositoryPatch,
   type IsolatedRunResult,
 } from './productionCapabilityCodeRunner'
+import { SENTENCE_VALIDATOR_VERSION } from '../src/testing/sentenceSegmentation'
 
 test.skip(
   process.env.PLAYWRIGHT_MODE !== 'production-capability',
@@ -292,6 +297,11 @@ type QuestionResult = {
     missingAreas: string[]
     authorityClassification: 'postgres_authoritative' | 'non_postgres_authoritative' | 'ambiguous'
   }
+  sentenceValidation?: {
+    observedSentenceCount: number
+    containsTamilScript: boolean
+    validatorVersion: string
+  }
 }
 
 type FixtureUpload = { id: string; name: string; warnings?: string[] }
@@ -454,7 +464,7 @@ function evaluation(
       if (!/contradict|cannot|impossible/i.test(value)) fail('contradiction_explanation_wrong')
       if (occurrences(structure, '?') !== 3) formatFail('not_exactly_three_questions')
       break
-    case 'C07': if (countSentences(structure) !== 5 || !/[\u0B80-\u0BFF]/u.test(value)) formatFail('tamil_five_sentences_failed'); break
+    case 'C07': if (countSentences(structure) !== 5 || !/[\u0B80-\u0BFF]/u.test(structure)) formatFail('tamil_five_sentences_failed'); break
     case 'C08': if (!containsAll(value, ['17 November 2031', 'Madurai', 'Meera', '₹4.25 crore'])) fail('translation_details_lost'); break
     case 'C09':
       if (countMarkdownWords(structure) !== 120 || occurrences(structure.toLocaleLowerCase(), 'blue umbrella') !== 1 || lastWord(structure.toLocaleLowerCase()) !== 'home') formatFail('micro_story_constraints_failed')
@@ -611,15 +621,9 @@ async function pollCancellationActive(
     if (current && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)) {
       return { state:'terminal', audit:current }
     }
-    if (current?.cancellation_state === 'active' && (
-      current.active_usage_stage_names.length > 0
-      || ['reserving', 'reserved', 'exempt_pending'].some(
-        status => (current.charge_status_counts[status] ?? 0) > 0,
-      )
-    ) && current.provider_call_count > 0
-      && current.generation_stage_count > 0
-      && current.cache_hit === false
-    ) return { state:'active', audit:current }
+    if (current && capabilityAuditHasActiveProviderGeneration(current)) {
+      return { state:'active', audit:current }
+    }
     await new Promise(resolveWait => setTimeout(resolveWait, 300))
   }
   return { state:'timeout', audit:null }
@@ -964,7 +968,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       login_status:loginStatus,
       startup_snapshot_status:startupSnapshotStatus,
       failed_startup_step:failedStartupStep,
-      safe_failure_reason:startupFailureReason,
+      safe_failure_reason:capabilitySafeFailureReason({
+        startupFailureReason,
+        deploymentParityFailureReason:deploymentParity.safeFailureReason,
+        acceptanceFailed:Boolean(
+          results.some(item => item.status === 'failed')
+          || workflowResults.some(item => item.status === 'failed')
+          || cleanupErrors.length > 0
+        ),
+      }),
       scenarios_started:scenariosStarted,
       production_writes_started:productionWritesStarted,
       cleanup_status:checkpointCleanupStatus,
@@ -1098,11 +1110,42 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const response = await responsePromise.catch(() => {
       throw new Error('chat_response_not_observed')
     })
+    // Drain the SSE response immediately, but observe the user-visible and
+    // authoritative terminal states before consuming the complete body. A
+    // verified long-form response may legitimately take much longer than the
+    // short JSON-response timeout used elsewhere in this harness.
+    const sseBodyObserver = observePlaywrightPromise(response.body())
+    void sseBodyObserver.catch(() => undefined)
+    const auditObserver = observePlaywrightPromise(
+      pollAudit(api, requestId, remaining(QUESTION_DEADLINE_MS)),
+    )
+    const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
+    const assistantVisible = await assistant.waitFor({
+      state:'visible', timeout:remaining(QUESTION_DEADLINE_MS),
+    }).then(() => true, () => false)
+    let firstVisibleDeltaMs: number | null = null
+    if (assistantVisible) {
+      const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
+      while (Date.now() < firstDeltaDeadline) {
+        const text = await visibleAnswer(assistant).catch(() => '')
+        if (text) { firstVisibleDeltaMs = Date.now() - startedAt; break }
+        if (!await assistant.evaluate(element => element.classList.contains('streaming'))) break
+        await new Promise(resolveWait => setTimeout(resolveWait, 50))
+      }
+      await expect(assistant).not.toHaveClass(/streaming/, {
+        timeout:remaining(QUESTION_DEADLINE_MS),
+      }).catch(() => {
+        throw new Error('assistant_ui_timeout')
+      })
+    }
+    const audit = await auditObserver.catch(() => {
+      throw new Error('request_audit_timeout')
+    })
     let rawSse = ''
     try {
       rawSse = (await withBoundedTimeout(
-        () => response.body(),
-        remaining(RESPONSE_BODY_TIMEOUT_MS),
+        () => sseBodyObserver,
+        remainingCapabilitySseBodyTimeoutMs(questionDeadline, Date.now()),
         'response_body_timeout',
       )).toString('utf8')
     } catch {
@@ -1111,10 +1154,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const terminalErrors = sseData(rawSse, 'error').map(
       value => String(value.code ?? 'sse_error').slice(0, 100),
     )
-    const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
-    const assistantVisible = await assistant.waitFor({
-      state:'visible', timeout:remaining(QUESTION_DEADLINE_MS),
-    }).then(() => true, () => false)
     if (!assistantVisible) {
       if (terminalErrors.includes('provider_safety_rejected')) {
         throw new Error('provider_safety_rejected')
@@ -1124,19 +1163,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       }
       throw new Error('assistant_ui_timeout')
     }
-    let firstVisibleDeltaMs: number | null = null
-    const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
-    while (Date.now() < firstDeltaDeadline) {
-      const text = await visibleAnswer(assistant).catch(() => '')
-      if (text) { firstVisibleDeltaMs = Date.now() - startedAt; break }
-      if (!await assistant.evaluate(element => element.classList.contains('streaming'))) break
-      await new Promise(resolveWait => setTimeout(resolveWait, 50))
-    }
-    await expect(assistant).not.toHaveClass(/streaming/, {
-      timeout:remaining(300_000),
-    }).catch(() => {
-      throw new Error('assistant_ui_timeout')
-    })
     const endedAt = Date.now()
     const endedAtUtc = new Date(endedAt).toISOString()
     const events = parseSseEventOrder(rawSse)
@@ -1166,9 +1192,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const sources = await sourceRows(assistant)
     const persistedSourceIds = new Set((raw?.sources ?? []).map(source => source.id))
     const invalidCitation = sources.some(source => !persistedSourceIds.has(source.id))
-    const audit = await pollAudit(api, requestId, remaining(60_000)).catch(() => {
-      throw new Error('request_audit_timeout')
-    })
     const payloadTier = typeof payload.tier === 'string' ? payload.tier : null
     const tierEvidence: CapabilityTierEvidence = {
       expectedTier:tier,
@@ -1319,6 +1342,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
                 ? 'postgres_authoritative' as const : 'ambiguous' as const,
           }
         })(),
+      } : {}),
+      ...(question.id === 'C07' ? {
+        sentenceValidation:{
+          observedSentenceCount:countSentences(rawRedacted.text),
+          containsTamilScript:/[\u0B80-\u0BFF]/u.test(rawRedacted.text),
+          validatorVersion:SENTENCE_VALIDATOR_VERSION,
+        },
       } : {}),
     }
     results.push(result)
@@ -2404,7 +2434,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       // resource deletion cannot consume its entire global deadline first.
       let usageTransportFailed = false
       const usageAuditIds = [...benchmarkRequestIds]
-      const usageAudits = await pollCapabilityAudits<Audit>({
+      const forcedTerminal = await forceCancelActiveCapabilityRequests<Audit>({
+        api,
+        requestIds:usageAuditIds,
+        timeoutMilliseconds:Math.min(75_000, cleanupRemaining(75_000)),
+      }).catch(() => null)
+      if (forcedTerminal?.cancellationFailedIds.length) {
+        cleanupErrors.push('active_usage_remains')
+      }
+      const usageAudits = forcedTerminal?.audits ?? await pollCapabilityAudits<Audit>({
         api,
         requestIds:usageAuditIds,
         timeoutMilliseconds:Math.min(75_000, cleanupRemaining(75_000)),
@@ -2545,8 +2583,16 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ...deploymentParitySafeSummary(deploymentParity),
       batch:gate.batch,
       primary_failure:primaryFailure,
-      safe_failure_reason:startupFailureReason
-        ?? deploymentParity.safeFailureReason,
+      safe_failure_reason:capabilitySafeFailureReason({
+        startupFailureReason,
+        deploymentParityFailureReason:deploymentParity.safeFailureReason,
+        acceptanceFailed:Boolean(
+          primaryFailure
+          || failed > 0
+          || workflowResults.some(item => item.status === 'failed')
+          || finalCleanupErrors.length > 0
+        ),
+      }),
       login_status:loginStatus,
       startup_snapshot_status:startupSnapshotStatus,
       failed_startup_step:failedStartupStep,
@@ -2584,6 +2630,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         contract_disagreement_checks:item.contractDisagreementChecks,
         persisted_quality_status:item.persistedQualityStatus,
         sse_quality_status:item.sseQualityStatus,
+        ...(item.sentenceValidation ? {
+          sentence_validation:{
+            observed_sentence_count:item.sentenceValidation.observedSentenceCount,
+            contains_tamil_script:item.sentenceValidation.containsTamilScript,
+            validator_version:item.sentenceValidation.validatorVersion,
+          },
+        } : {}),
         ...(item.tierEvidence ? {
           tier_evidence:{
             expected_tier:item.tierEvidence.expectedTier,

@@ -179,7 +179,8 @@ test('production capability browser waits and cleanup are independently bounded'
   expect(spec).toContain('const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS')
   expect(spec).toContain('const executionDeadline = testStartedAt')
   expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
-  expect(spec).toContain('const usageAudits = await pollCapabilityAudits<Audit>({')
+  expect(spec).toContain('forceCancelActiveCapabilityRequests<Audit>({')
+  expect(spec).toContain('const usageAudits = forcedTerminal?.audits ?? await pollCapabilityAudits<Audit>({')
   expect(spec).not.toMatch(/for \(const requestId of benchmarkRequestIds\)[\s\S]{0,300}pollAudit/)
   expect(spec).toContain('const heartbeat = setInterval(')
   expect(spec).toContain('completed_scenario_ids:')
@@ -298,6 +299,71 @@ test('production capability safe summary includes content-free completion diagno
     'persisted_quality_status:item.persistedQualityStatus',
     'sse_quality_status:item.sseQualityStatus',
   ]) expect(spec).toContain(field)
+})
+
+test('long chat streams are observed through UI and audit before bounded body consumption', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const bodyObserver = spec.indexOf(
+    'const sseBodyObserver = observePlaywrightPromise(response.body())',
+  )
+  const assistantObserver = spec.indexOf(
+    'const assistantVisible = await assistant.waitFor', bodyObserver,
+  )
+  const auditTerminal = spec.indexOf(
+    'const audit = await auditObserver.catch', assistantObserver,
+  )
+  const bodyConsumption = spec.indexOf(
+    '() => sseBodyObserver', auditTerminal,
+  )
+  expect(bodyObserver).toBeGreaterThan(0)
+  expect(bodyObserver).toBeLessThan(assistantObserver)
+  expect(assistantObserver).toBeLessThan(auditTerminal)
+  expect(auditTerminal).toBeLessThan(bodyConsumption)
+  expect(spec.slice(bodyObserver, bodyConsumption)).not.toContain(
+    'remaining(RESPONSE_BODY_TIMEOUT_MS)',
+  )
+  expect(spec).toContain(
+    'remainingCapabilitySseBodyTimeoutMs(questionDeadline, Date.now())',
+  )
+})
+
+test('Tamil capability validation uses persisted Markdown for count and script', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    "case 'C07': if (countSentences(structure) !== 5 || !/[\\u0B80-\\u0BFF]/u.test(structure))",
+  )
+  expect(spec).not.toContain(
+    "case 'C07': if (countSentences(structure) !== 5 || !/[\\u0B80-\\u0BFF]/u.test(value))",
+  )
+  expect(spec).toContain(
+    'observed_sentence_count:item.sentenceValidation.observedSentenceCount',
+  )
+  expect(spec).toContain(
+    'contains_tamil_script:item.sentenceValidation.containsTamilScript',
+  )
+  expect(spec).toContain(
+    'validator_version:item.sentenceValidation.validatorVersion',
+  )
+})
+
+test('cleanup force-cancels benchmark-owned active requests before final usage audit', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const cleanup = spec.indexOf("progress('cleanup_start'")
+  const forceCancel = spec.indexOf(
+    'forceCancelActiveCapabilityRequests<Audit>', cleanup,
+  )
+  const usageEvaluation = spec.indexOf(
+    'cleanupUsageDiagnostics.missing_request_ids', forceCancel,
+  )
+  expect(cleanup).toBeGreaterThan(0)
+  expect(forceCancel).toBeGreaterThan(cleanup)
+  expect(usageEvaluation).toBeGreaterThan(forceCancel)
 })
 
 test('production capability deployment parity gates authentication and questions', () => {

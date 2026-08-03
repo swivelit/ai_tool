@@ -18,6 +18,7 @@ from app.web_ai.generation.answer_guard import (
 from app.web_ai.generation.generator import VerifiedGenerator
 from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_quality
+from app.web_ai.request_audit import build_request_audit
 from app.web_ai.settings import TriagSettings
 from app.web_ai.streaming_policy import StreamingPolicy
 from app.web_ai.triage import AttachmentMetadata, TriageInput, build_execution_plan
@@ -504,6 +505,93 @@ def test_invalid_contract_repair_remains_unverified_and_runs_once(monkeypatch):
     assert calls == 2
     assert completed.message.content == "Still a paragraph."
     assert completed.message.quality["status"] == "unverified"
+
+
+def test_exact_120_word_contract_repair_persists_visible_verified_text(
+    monkeypatch,
+):
+    prompt = (
+        "Write a micro-story of exactly 120 words. Include the phrase "
+        "\u201cblue umbrella\u201d exactly once. End with the word \u201chome\u201d. "
+        "Do not include a title."
+    )
+    prefix = [
+        "At", "the", "railway", "station", "a", "blue", "umbrella", "rested",
+    ]
+    malformed = " ".join(prefix + ["quietly"] * 115 + ["home"])
+    repaired = " ".join(prefix + ["quietly"] * 111 + ["home"])
+    assert len(malformed.split()) == 124
+    assert len(repaired.split()) == 120
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-exact-120-visible",
+        prompt=prompt,
+        answers=[malformed, repaired],
+    )
+
+    assert calls == 2
+    assert completed.message.content == repaired
+    assert completed.message.content.strip()
+    assert len(completed.message.content.split()) == 120
+    assert completed.message.quality["status"] == "verified"
+
+
+def test_tamil_sentence_and_script_contract_repair_agrees_with_request_audit(
+    monkeypatch,
+):
+    prompt = (
+        "ஒளிச்சேர்க்கை எப்படி வேலை செய்கிறது? "
+        "ஐந்து எளிய தமிழ் வாக்கியங்களில் விளக்கவும்."
+    )
+    repaired = "ஒன்று. இரண்டு. மூன்று. நான்கு. ஐந்து."
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-tamil-script",
+        prompt=prompt,
+        answers=["One. Two. Three. Four. Five.", repaired],
+    )
+
+    assert calls == 2
+    assert completed.message.content == repaired
+    assert completed.message.quality["status"] == "verified"
+    checks = {
+        check["type"]: check
+        for check in completed.message.quality["checks"]
+    }
+    assert checks["output_contract_sentence_count"]["status"] == "passed"
+    assert checks["output_contract_required_script"]["status"] == "passed"
+    with SessionLocal() as session:
+        persisted = session.exec(select(WebAnswerCheck).where(
+            WebAnswerCheck.request_id == "contract-tamil-script-request"
+        )).one()
+        safe_metadata = json.loads(persisted.safe_metadata_json)
+        audit = build_request_audit(
+            session, request_ids=["contract-tamil-script-request"]
+        )
+    persisted_checks = {
+        check["check_type"]: check
+        for check in safe_metadata["quality_checks"]
+    }
+    assert persisted_checks["output_contract_sentence_count"] == {
+        "check_type": "output_contract_sentence_count",
+        "check_status": "passed",
+        "expected_sentence_count": 5,
+        "observed_sentence_count": 5,
+        "validator_version": "2026-08-03.1",
+    }
+    assert persisted_checks["output_contract_required_script"] == {
+        "check_type": "output_contract_required_script",
+        "check_status": "passed",
+        "contains_tamil_script": 1,
+        "validator_version": "2026-08-03.1",
+    }
+    assert audit is not None
+    assert audit[0]["quality_status"] == "verified"
+    assert audit[0]["persisted_quality_status"] == "verified"
+    assert audit[0]["output_contract_check_status_counts"] == {
+        "passed": 2,
+    }
 
 
 def test_incomplete_provider_metadata_is_persisted_as_unverified(monkeypatch):

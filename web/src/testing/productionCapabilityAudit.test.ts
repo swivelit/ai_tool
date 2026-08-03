@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  capabilityAuditHasActiveProviderGeneration,
   cleanupUsageAuditReasons,
+  forceCancelActiveCapabilityRequests,
   pollCapabilityAudits,
   TRIAG_REQUEST_AUDIT_BATCH_LIMIT,
 } from './productionCapabilityAudit'
@@ -94,5 +96,60 @@ describe('production capability request-audit batching', () => {
       'usage_audit_nonterminal_requests',
       'active_usage_remains',
     ])
+  })
+
+  it('accepts a running generation stage before provider calls are settled', () => {
+    expect(capabilityAuditHasActiveProviderGeneration({
+      ...terminalAudit(requestId(1)),
+      cancellation_state:'active',
+      active_usage_stage_names:['generation'],
+      cache_hit:false,
+      generation_stage_count:1,
+      provider_call_count:0,
+    })).toBe(true)
+  })
+
+  it('force-cancels a benchmark-owned nonterminal generation before terminal audit', async () => {
+    const id = requestId(1)
+    const posts: string[] = []
+    let cancelled = false
+    let clock = 0
+    const api = {
+      async request<T>(
+        _method: 'POST', path: string, body: unknown,
+      ) {
+        posts.push(path)
+        if (path.endsWith('/cancel')) {
+          cancelled = true
+          return { status:200, data:{ status:'cancelling' } as T }
+        }
+        const ids = (body as { request_ids: string[] }).request_ids
+        return {
+          status:200,
+          data:{
+            results:ids.map(value => cancelled
+              ? terminalAudit(value)
+              : {
+                ...terminalAudit(value),
+                cancellation_state:'active',
+                active_usage_stage_names:['generation'],
+                cache_hit:false,
+                generation_stage_count:1,
+              }),
+          } as T,
+        }
+      },
+    }
+
+    const result = await forceCancelActiveCapabilityRequests({
+      api, requestIds:[id], timeoutMilliseconds:5_000,
+      now:() => clock,
+      wait:async milliseconds => { clock += milliseconds },
+    })
+
+    expect(result.cancellationAttemptedIds).toEqual([id])
+    expect(result.cancellationFailedIds).toEqual([])
+    expect(result.audits.get(id)?.cancellation_state).toBe('complete')
+    expect(posts).toContain(`/api/web/chat/requests/${id}/cancel`)
   })
 })

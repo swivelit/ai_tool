@@ -86,6 +86,12 @@ class OpenAIProvider(AIProvider):
             estimated_input_tokens=int(request.metadata.get("estimated_prompt_tokens") or 0) or None,
             prompt_cache_key=stable_prompt_cache_key(request, route),
             answer_class=answer_class,
+            strict_output_contract=(
+                request.metadata.get("strict_output_contract") is True
+            ),
+            minimum_visible_output_tokens=request.metadata.get(
+                "minimum_visible_output_tokens"
+            ),
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)

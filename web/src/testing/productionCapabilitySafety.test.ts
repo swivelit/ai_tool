@@ -11,6 +11,7 @@ import {
   bulletLines,
   capabilityAnswerRepresentationCounts,
   capabilityEffectiveTimeoutMs,
+  capabilitySafeFailureReason,
   countSentences,
   countWords,
   deploymentParitySafeSummary,
@@ -25,6 +26,7 @@ import {
   percentile,
   pollDeploymentParity,
   productionCapabilityGate,
+  remainingCapabilitySseBodyTimeoutMs,
   redactPotentialSecrets,
   releaseShaFromVersionPayload,
   tierEvidenceMatches,
@@ -56,6 +58,32 @@ describe('production capability safety', () => {
     expect(capabilityEffectiveTimeoutMs('core')).toBeLessThan(
       capabilityEffectiveTimeoutMs('all'),
     )
+  })
+
+  it('uses the remaining question deadline for a long terminal SSE body', () => {
+    const started = 10_000
+    const deadline = started + 6 * 60_000
+    expect(remainingCapabilitySseBodyTimeoutMs(
+      deadline, started + 90_000,
+    )).toBe(270_000)
+  })
+
+  it('reports acceptance failure after successful deployment parity', () => {
+    expect(capabilitySafeFailureReason({
+      startupFailureReason:null,
+      deploymentParityFailureReason:null,
+      acceptanceFailed:true,
+    })).toBe('capability_acceptance_failed')
+    expect(capabilitySafeFailureReason({
+      startupFailureReason:'wallet_snapshot_failed',
+      deploymentParityFailureReason:null,
+      acceptanceFailed:true,
+    })).toBe('wallet_snapshot_failed')
+    expect(capabilitySafeFailureReason({
+      startupFailureReason:null,
+      deploymentParityFailureReason:'backend_release_mismatch',
+      acceptanceFailed:true,
+    })).toBe('backend_release_mismatch')
   })
 
   it('formats progress without admitting prompts, answers, or credentials', () => {

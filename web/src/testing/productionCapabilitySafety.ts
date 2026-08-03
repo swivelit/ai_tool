@@ -21,6 +21,23 @@ export function capabilityEffectiveTimeoutMs(
     : PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS
 }
 
+export function remainingCapabilitySseBodyTimeoutMs(
+  questionDeadlineMilliseconds: number,
+  nowMilliseconds: number,
+): number {
+  return Math.max(1, questionDeadlineMilliseconds - nowMilliseconds)
+}
+
+export function capabilitySafeFailureReason(input: {
+  startupFailureReason: string | null
+  deploymentParityFailureReason: string | null
+  acceptanceFailed: boolean
+}): string | null {
+  return input.startupFailureReason
+    ?? input.deploymentParityFailureReason
+    ?? (input.acceptanceFailed ? 'capability_acceptance_failed' : null)
+}
+
 export type CapabilityAnswerRepresentationCounts = {
   visibleBulletCount: number
   rawBulletCount: number

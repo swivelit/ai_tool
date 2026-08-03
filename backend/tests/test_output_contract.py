@@ -67,7 +67,7 @@ Do not include a title."""
         (C03, {"json_only": True, "exact_json_keys": ("answer", "reason", "confidence")}),
         (C04, {"exact_bullet_count": 3, "max_words_per_bullet": 12}),
         (C06, {"exact_question_count": 3}),
-        (C07, {"exact_sentence_count": 5}),
+        (C07, {"exact_sentence_count": 5, "required_script": "tamil"}),
         (C09, {"exact_word_count": 120, "required_final_word": "home"}),
     ),
 )
@@ -160,6 +160,40 @@ def test_sentence_question_story_and_no_title_contracts():
     assert all(check.status == "passed" for check in validate_output_contract(
         story, extract_output_contract(C09)
     ))
+
+
+def test_tamil_script_is_a_first_class_mandatory_contract():
+    tamil_contract = extract_output_contract(
+        "Explain photosynthesis in exactly five Tamil sentences."
+    )
+    assert tamil_contract.required_script == "tamil"
+    non_tamil = validate_output_contract(
+        "One. Two. Three. Four. Five.", tamil_contract
+    )
+    script_check = next(
+        check for check in non_tamil
+        if check.check_type == "output_contract_required_script"
+    )
+    assert script_check.status == "failed"
+    assert dict(script_check.observations) == {
+        "contains_tamil_script": 0,
+        "validator_version": "2026-08-03.1",
+    }
+
+    tamil = "ஒன்று. இரண்டு. மூன்று. நான்கு. ஐந்து."
+    checks = validate_output_contract(tamil, tamil_contract)
+    assert all(check.status == "passed" for check in checks)
+    sentence_check = next(
+        check for check in checks
+        if check.check_type == "output_contract_sentence_count"
+    )
+    assert dict(sentence_check.observations)["observed_sentence_count"] == 5
+
+
+def test_tamil_wording_adds_the_same_script_contract():
+    contract = extract_output_contract(C07)
+    assert contract.exact_sentence_count == 5
+    assert contract.required_script == "tamil"
 
 
 def test_failed_mandatory_contract_is_unverified_and_telemetred():

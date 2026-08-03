@@ -74,6 +74,7 @@ _ALLOWED_KEYS = frozenset(
         "check_status",
         "expected_sentence_count",
         "observed_sentence_count",
+        "contains_tamil_script",
         "validator_version",
         "repair_attempted",
         "verifier_used",

@@ -53,6 +53,7 @@ class OutputContract:
     json_only: bool = False
     exact_json_keys: tuple[str, ...] = ()
     exact_sentence_count: int | None = None
+    required_script: str | None = None
     exact_question_count: int | None = None
     exact_word_count: int | None = None
     required_phrase: str | None = None
@@ -71,6 +72,7 @@ class OutputContract:
             self.json_only,
             bool(self.exact_json_keys),
             self.exact_sentence_count is not None,
+            self.required_script is not None,
             self.exact_question_count is not None,
             self.exact_word_count is not None,
             self.required_phrase_count is not None,
@@ -88,6 +90,7 @@ class OutputContract:
             self.json_only
             or self.exact_word_count is not None
             or self.exact_sentence_count is not None
+            or self.required_script is not None
             or self.exact_bullet_count is not None
             or self.exact_fenced_block_count is not None
             or self.required_final_word is not None
@@ -127,6 +130,8 @@ class OutputContract:
             raw = value.get(key)
             if isinstance(raw, str):
                 bounded[key] = raw[:160]
+        if str(value.get("required_script") or "").casefold() == "tamil":
+            bounded["required_script"] = "tamil"
         for key in ("json_only", "no_title", "no_introductory_prose"):
             bounded[key] = value.get(key) is True
         prefixes = value.get("fenced_block_prefixes")
@@ -221,6 +226,12 @@ def extract_output_contract(message: str) -> OutputContract:
     ) or re.search(r"(ஐந்து)\s+.{0,20}வாக்கியங்களில்", text)
     if match:
         sentence_count = _number(match.group(1))
+    required_script = None
+    if (
+        re.search(r"\bTamil\b[^.\n]{0,40}\bsentences?\b", text, re.IGNORECASE)
+        or ("தமிழ்" in text and "வாக்கிய" in text)
+    ):
+        required_script = "tamil"
 
     question_count = None
     match = re.search(
@@ -273,6 +284,7 @@ def extract_output_contract(message: str) -> OutputContract:
         json_only=json_only,
         exact_json_keys=exact_json_keys,
         exact_sentence_count=sentence_count,
+        required_script=required_script,
         exact_question_count=question_count,
         exact_word_count=exact_word_count,
         required_phrase=required_phrase,
@@ -317,6 +329,11 @@ def output_contract_instruction(contract: OutputContract) -> str:
         rules.append("Use exactly these JSON keys: " + ", ".join(contract.exact_json_keys) + ".")
     if contract.exact_sentence_count is not None:
         rules.append(f"Use exactly {contract.exact_sentence_count} sentences.")
+    if contract.required_script == "tamil":
+        rules.append(
+            "Write the answer in Tamil script; non-Tamil sentences do not "
+            "satisfy this contract."
+        )
     if contract.exact_question_count is not None:
         rules.append(f"Include exactly {contract.exact_question_count} questions.")
     if contract.exact_word_count is not None:
@@ -488,6 +505,17 @@ def validate_output_contract(
             observations=(
                 ("expected_sentence_count", contract.exact_sentence_count),
                 ("observed_sentence_count", observed),
+                ("validator_version", SENTENCE_VALIDATOR_VERSION),
+            ),
+        ))
+    if contract.required_script == "tamil":
+        contains_tamil_script = bool(re.search(r"[\u0B80-\u0BFF]", value))
+        checks.append(QualityCheck(
+            "output_contract_required_script",
+            "passed" if contains_tamil_script else "failed",
+            "" if contains_tamil_script else "required_tamil_script_failed",
+            observations=(
+                ("contains_tamil_script", int(contains_tamil_script)),
                 ("validator_version", SENTENCE_VALIDATOR_VERSION),
             ),
         ))

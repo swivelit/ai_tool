@@ -445,6 +445,23 @@ def test_provider_complete_uses_answer_class_from_route_metadata():
     assert client.responses.calls[0]["reasoning"] == {"effort": "low"}
 
 
+def test_provider_complete_forwards_strict_repair_visible_output_metadata():
+    client = _Client()
+    request = _request("normal")
+    request.metadata.update({
+        "strict_output_contract": True,
+        "minimum_visible_output_tokens": 228,
+    })
+
+    OpenAIProvider(client).complete(
+        request, _route(max_output_tokens=420)
+    )
+
+    call = client.responses.calls[0]
+    assert call["reasoning"] == {"effort": "none"}
+    assert call["max_output_tokens"] == 420
+
+
 def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
     assert openai_web_reasoning_effort(
