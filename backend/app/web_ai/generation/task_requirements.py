@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.4"
+TASK_REQUIREMENT_VERSION = "2026-08-03.5"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -204,7 +204,7 @@ def _architecture_mechanism(
         "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b",
         "reconciliation": r"\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b",
         "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b",
-        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\btests?\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\btests?\b",
+        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b",
     }
     if area_identifier == "pseudocode" and re.search(
         r"```[\s\S]*?```", raw_value
@@ -250,24 +250,18 @@ def evaluate_architecture_coverage(
         heading_present = section is not None
         section_value = section.normalized_value if section else ""
         raw_section_value = section.raw_value if section else ""
+        semantic_value = (
+            section_value if heading_present else normalized_fallback
+        )
+        raw_semantic_value = (
+            raw_section_value if heading_present else raw_fallback
+        )
         if area_identifier == "duplicate_handling":
-            section_mechanism, section_stable = _duplicate_semantics(
-                section_value
-            )
-            fallback_mechanism, fallback_stable = _duplicate_semantics(
-                normalized_fallback
-            )
-            mechanism = section_mechanism or fallback_mechanism
-            stable = section_stable or fallback_stable
+            mechanism, stable = _duplicate_semantics(semantic_value)
             passed = mechanism or stable
         else:
-            mechanism = (
-                _architecture_mechanism(
-                    area_identifier, section_value, raw_section_value
-                )
-                or _architecture_mechanism(
-                    area_identifier, normalized_fallback, raw_fallback
-                )
+            mechanism = _architecture_mechanism(
+                area_identifier, semantic_value, raw_semantic_value
             )
             stable = False
             passed = mechanism
@@ -545,17 +539,28 @@ class TaskRequirementContract:
                 "reuse an identifier, return the stored/original result, or prevent "
                 "a second charge or duplicate processing."
             )
-        if self.authoritative_store:
+        if self.authoritative_store and self.forbidden_authoritative_stores:
             rules.append(
-                f"State explicitly that {self.authoritative_store} is the "
-                "authoritative source of truth or system of record."
+                f"Use one dedicated sentence stating that "
+                f"{self.authoritative_store} is the system of record."
             )
-        if self.forbidden_authoritative_stores:
             rules.append(
-                "State explicitly that these stores are non-authoritative and "
-                "do not own canonical durable state: "
+                "Use a separate dedicated sentence explicitly naming every "
+                "non-authoritative store: "
                 + ", ".join(self.forbidden_authoritative_stores) + "."
             )
+        else:
+            if self.authoritative_store:
+                rules.append(
+                    f"State explicitly that {self.authoritative_store} is the "
+                    "authoritative source of truth or system of record."
+                )
+            if self.forbidden_authoritative_stores:
+                rules.append(
+                    "State explicitly that these stores are non-authoritative and "
+                    "do not own canonical durable state: "
+                    + ", ".join(self.forbidden_authoritative_stores) + "."
+                )
         if self.comparison_terms:
             rules.append(
                 "Explicitly compare all named alternatives: "

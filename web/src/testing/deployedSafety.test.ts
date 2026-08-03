@@ -159,6 +159,10 @@ test('production capability workflows use typed chat observers only', () => {
   expect(cancellation).toContain('boundedCancellationSettlementReason')
   expect(cancellation).toContain('cancel_post_observed')
   expect(cancellation).toContain('cancel_http_status')
+  expect(cancellation).toContain('cancel_attempt_1_http_status')
+  expect(cancellation).toContain('cancel_attempt_2_http_status')
+  expect(cancellation).toContain('shouldRetryCapabilityCancellation')
+  expect(cancellation).toContain("await page.waitForTimeout(Math.min(1_000")
   expect(cancellation).toContain('request_already_completed')
   expect(cancellation).toContain('terminal_audit_state')
   for (const reason of [
@@ -215,6 +219,10 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).toContain('pre_repair_failed_check_identifiers')
   expect(spec).toContain('repair_trigger_area_identifiers')
   expect(spec).toContain('post_repair_failed_check_identifiers')
+  expect(spec).toContain('const architecture = evaluateWebhookArchitecture(structure)')
+  expect(spec.match(/evaluateWebhookArchitecture\(rawRedacted\.text\)/g))
+    .toHaveLength(2)
+  expect(spec).not.toContain('evaluateWebhookArchitecture(redacted.text)')
   expect(spec).toContain('representationCounts:capabilityAnswerRepresentationCounts(')
   expect(spec).toContain("const cancellationMarker = `CANCEL-${randomUUID()}`")
   expect(spec).not.toContain('For cancellation audit ${runId}')
@@ -225,7 +233,7 @@ test('production capability uses persisted Markdown for structural scoring and b
   )
 })
 
-test('raw Markdown and rendered architecture fixtures have identical coverage', () => {
+test('targeted architecture fixtures use the shared coverage expectations', () => {
   const fixtures = JSON.parse(readFileSync(
     resolve(process.cwd(), '../shared-fixtures/capability-semantics.json'),
     'utf8',
@@ -236,13 +244,13 @@ test('raw Markdown and rendered architecture fixtures have identical coverage', 
   }> }
   for (const id of [
     'subsections-numbered-lists', 'rendered-innertext-no-markers',
+    'empty-headed-section-not-rescued', 'test-plan-scenario-phrasing',
   ]) {
     const fixture = fixtures.architecture_coverage.find(item => item.id === id)
     expect(fixture, id).toBeDefined()
     const result = evaluateWebhookArchitecture(fixture?.text ?? '')
-    expect(result.missingAreas, id).toEqual([])
     expect(result.missingAreas, id).toEqual(fixture?.missing_areas)
-    expect(result.validatorVersion, id).toBe('2026-08-03.4')
+    expect(result.validatorVersion, id).toBe('2026-08-03.5')
   }
 })
 

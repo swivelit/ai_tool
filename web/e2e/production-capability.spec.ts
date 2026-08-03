@@ -53,6 +53,7 @@ import {
   redactPotentialSecrets,
   releaseShaFromVersionPayload,
   remainingCapabilitySseBodyTimeoutMs,
+  shouldRetryCapabilityCancellation,
   tierEvidenceMatches,
   weightedScore,
   type CapabilityTierEvidence,
@@ -463,7 +464,7 @@ function evaluation(
       }
       break
     case 'B03': {
-      const architecture = evaluateWebhookArchitecture(value)
+      const architecture = evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
         reasons.push('architecture_sections_missing')
@@ -1309,7 +1310,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
     let architectureContractDisagreement = false
     if (question.id === 'B03') {
-      const architecture = evaluateWebhookArchitecture(redacted.text)
+      const architecture = evaluateWebhookArchitecture(rawRedacted.text)
       const browserMissing = [...architecture.missingAreas].sort()
       const backendMissing = [
         ...audit.architecture_missing_area_identifiers,
@@ -1419,7 +1420,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       tierEvidence,
       ...(question.id === 'B03' ? {
         architectureEvaluation:(() => {
-          const architecture = evaluateWebhookArchitecture(redacted.text)
+          const architecture = evaluateWebhookArchitecture(rawRedacted.text)
           return {
             missingAreas:architecture.missingAreas,
             backendMissingAreas:audit.architecture_missing_area_identifiers,
@@ -2152,6 +2153,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       active_usage_stage_names:'',
       cancel_post_observed:false,
       cancel_http_status:null,
+      cancel_attempt_count:0,
+      cancel_attempt_1_http_status:null,
+      cancel_attempt_2_http_status:null,
       cancel_response_status:'unknown',
       request_already_completed:false,
       terminal_audit_state:'not_started',
@@ -2254,13 +2258,34 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const cancelRequest = await cancelRequestPromise.catch(() => null)
       cancellationDiagnostics.cancel_post_observed = Boolean(cancelRequest)
       const cancelResponse = await cancelResponsePromise.catch(() => null)
-      cancellationDiagnostics.cancel_http_status = cancelResponse?.status() ?? null
-      if (!cancelResponse || cancelResponse.status() < 200 || cancelResponse.status() >= 300) {
+      let cancelStatusCode = cancelResponse?.status() ?? null
+      let cancelBody = cancelResponse && cancelStatusCode !== null
+        && cancelStatusCode >= 200 && cancelStatusCode < 300
+        ? await boundedResponseJson<{ status?: unknown }>(cancelResponse) ?? {}
+        : {}
+      cancellationDiagnostics.cancel_attempt_count = 1
+      cancellationDiagnostics.cancel_attempt_1_http_status = cancelStatusCode
+      if (shouldRetryCapabilityCancellation(cancelStatusCode)) {
+        await page.waitForTimeout(Math.min(1_000, assertWithinDeadline()))
+        cancellationDiagnostics.cancel_attempt_count = 2
+        const retryResult = await api.request<{ status?: unknown }>(
+          'POST', `/api/web/chat/requests/${requestId}/cancel`, undefined,
+          { timeoutMilliseconds:Math.min(30_000, assertWithinDeadline()) },
+        ).catch(() => null)
+        cancellationDiagnostics.cancel_post_observed = true
+        cancellationDiagnostics.cancel_attempt_2_http_status =
+          retryResult?.status ?? null
+        cancelStatusCode = retryResult?.status ?? null
+        cancelBody = retryResult?.data ?? {}
+      }
+      cancellationDiagnostics.cancel_http_status = cancelStatusCode
+      if (
+        cancelStatusCode === null
+        || cancelStatusCode < 200
+        || cancelStatusCode >= 300
+      ) {
         throw new Error('cancel_http_failed')
       }
-      const cancelBody = await boundedResponseJson<{ status?: unknown }>(
-        cancelResponse,
-      ) ?? {}
       const cancelStatus = boundedCancellationResponseStatus(cancelBody.status)
       cancellationDiagnostics.cancel_response_status = cancelStatus
       if (['completed', 'already_terminal'].includes(cancelStatus)) {

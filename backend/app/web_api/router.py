@@ -4076,7 +4076,9 @@ async def cancel_chat_request(
         UsageCharge.request_id == request_id, UsageCharge.user_id == user.id
     )).first()
     if charge is None:
-        raise HTTPException(404, "Generation request not found")
+        with _active_generations_lock:
+            _pending_generation_cancellations[request_id] = int(user.id)
+        return {"status": "cancelling", "request_id": request_id}
     queued = False
     with _active_generations_lock:
         active = _active_generations.get(request_id)
@@ -4092,19 +4094,35 @@ async def cancel_chat_request(
         active[1].cancel()
         deadline = asyncio.get_running_loop().time() + float(os.getenv("WEB_CANCELLATION_WAIT_SECONDS", "10"))
         while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.05)
-            with SessionLocal() as check_session:
-                current = check_session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
-                if current and current.status in {
-                    "released", "settled", "billing_exempt", "failed",
-                }:
-                    assistant = check_session.exec(select(WebChatMessage).where(
-                        WebChatMessage.request_id == request_id,
-                        WebChatMessage.user_id == user.id,
-                        WebChatMessage.role == "assistant",
+            await asyncio.sleep(0.2)
+            try:
+                with SessionLocal() as check_session:
+                    current = check_session.exec(select(UsageCharge).where(
+                        UsageCharge.request_id == request_id
                     )).first()
-                    stopped = current.status == "released" or (assistant is not None and assistant.status == "cancelled")
-                    return {"status": "stopped" if stopped else "completed", "request_id": request_id}
+                    if current and current.status in {
+                        "released", "settled", "billing_exempt", "failed",
+                    }:
+                        assistant = check_session.exec(select(
+                            WebChatMessage
+                        ).where(
+                            WebChatMessage.request_id == request_id,
+                            WebChatMessage.user_id == user.id,
+                            WebChatMessage.role == "assistant",
+                        )).first()
+                        stopped = (
+                            current.status == "released"
+                            or (
+                                assistant is not None
+                                and assistant.status == "cancelled"
+                            )
+                        )
+                        return {
+                            "status": "stopped" if stopped else "completed",
+                            "request_id": request_id,
+                        }
+            except Exception:
+                return {"status": "cancelling", "request_id": request_id}
         return {"status": "cancelling", "request_id": request_id}
     if active is None and charge.status in {
         "released", "settled", "billing_exempt", "failed",

@@ -31,6 +31,7 @@ import {
   remainingCapabilitySseBodyTimeoutMs,
   redactPotentialSecrets,
   releaseShaFromVersionPayload,
+  shouldRetryCapabilityCancellation,
   tierEvidenceMatches,
   weightedScore,
 } from './productionCapabilitySafety'
@@ -78,6 +79,15 @@ const valid = {
 describe('production capability safety', () => {
   const fullSha = 'b14f183691b93c36be4693937407d8d6f986b55f'
   const endpointHostname = 'api.example.test'
+
+  it('retries cancellation only for missing, 404, or server responses', () => {
+    for (const status of [null, 404, 500, 503]) {
+      expect(shouldRetryCapabilityCancellation(status)).toBe(true)
+    }
+    for (const status of [200, 201, 400, 401, 403, 409, 422, 499]) {
+      expect(shouldRetryCapabilityCancellation(status)).toBe(false)
+    }
+  })
 
   it('gives core a smaller effective deadline than the complete benchmark', () => {
     expect(capabilityEffectiveTimeoutMs('core')).toBe(
@@ -451,12 +461,12 @@ describe('production capability safety', () => {
   })
 
   it('shares all architecture coverage semantics with the backend', () => {
-    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.4')
+    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.5')
     for (const fixture of semanticFixtures.architecture_coverage) {
       const result = evaluateWebhookArchitecture(fixture.text)
       expect(result.coveredAreas, fixture.id).toEqual(fixture.covered_areas)
       expect(result.missingAreas, fixture.id).toEqual(fixture.missing_areas)
-      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.4')
+      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.5')
       const duplicate = result.areaEvaluations.find(
         area => area.areaIdentifier === 'duplicate_handling',
       )

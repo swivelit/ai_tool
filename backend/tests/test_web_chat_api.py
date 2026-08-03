@@ -1282,6 +1282,89 @@ def test_accepted_pre_worker_cancellation_is_queued_and_releases_once():
     }
 
 
+def test_cancel_before_charge_is_visible_queues_owner_scoped_request():
+    from app.auth import AuthUser
+    from app.web_api.router import (
+        _pending_generation_cancellations,
+        cancel_chat_request,
+    )
+
+    user = create_test_user(
+        "pre-charge-cancel", "pre-charge-cancel@example.com"
+    )
+    request_id = "8319ef7a-1883-4d4b-9862-fabb6fa78cc9"
+    auth = AuthUser(
+        firebase_uid="pre-charge-cancel",
+        email="pre-charge-cancel@example.com",
+        email_verified=True,
+    )
+    try:
+        with SessionLocal() as session:
+            result = asyncio.run(cancel_chat_request(
+                request_id, session=session, auth=auth,
+            ))
+        assert result == {
+            "status": "cancelling", "request_id": request_id,
+        }
+        assert _pending_generation_cancellations[request_id] == int(user.id)
+    finally:
+        _pending_generation_cancellations.pop(request_id, None)
+
+
+def test_cancel_settlement_poll_db_failure_returns_cancelling(monkeypatch):
+    from app.ai.providers.base import GenerationCancellation
+    from app.auth import AuthUser
+    from app.web_api import router as web_router
+
+    user = create_test_user(
+        "cancel-poll-failure", "cancel-poll-failure@example.com"
+    )
+    request_id = "9319ef7a-1883-4d4b-9862-fabb6fa78cc9"
+    auth = AuthUser(
+        firebase_uid="cancel-poll-failure",
+        email="cancel-poll-failure@example.com",
+        email_verified=True,
+    )
+    with SessionLocal() as session:
+        session.add(UsageCharge(
+            request_id=request_id,
+            user_id=int(user.id),
+            provider="swico",
+            model="swico",
+            status="reserved",
+        ))
+        session.commit()
+
+    cancellation = GenerationCancellation()
+    with web_router._active_generations_lock:
+        web_router._active_generations[request_id] = (
+            int(user.id), cancellation,
+        )
+
+    class BrokenSessionContext:
+        def __enter__(self):
+            raise RuntimeError("transient database read failure")
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        web_router, "SessionLocal", lambda: BrokenSessionContext()
+    )
+    try:
+        with SessionLocal() as session:
+            result = asyncio.run(web_router.cancel_chat_request(
+                request_id, session=session, auth=auth,
+            ))
+        assert result == {
+            "status": "cancelling", "request_id": request_id,
+        }
+        assert cancellation.cancelled is True
+    finally:
+        with web_router._active_generations_lock:
+            web_router._active_generations.pop(request_id, None)
+
+
 def test_cancelled_error_releases_with_cancellation_reason_and_reraises():
     from app.web_ai.request_audit import build_request_audit
 

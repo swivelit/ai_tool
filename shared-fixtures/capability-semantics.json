@@ -179,6 +179,24 @@
       "duplicate_heading_present": false,
       "duplicate_semantic_mechanism_present": true,
       "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "empty-headed-section-not-rescued",
+      "text": "PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.\n### 1. Database tables and unique constraints\nUse event tables with a UNIQUE provider event ID.\n### 2. Transaction boundaries\nUse one atomic transaction and commit or rollback together.\n### 3. Event and payment state transitions\nUse monotonic payment state transitions.\n### 4. Pseudocode\nWorker pseudocode begins a transaction and processes the event.\n### 5. Duplicate-event handling\n### 6. Out-of-order handling\nStore late out-of-order events until their monotonic state permits them.\n### 7. Failure recovery\nUse a retryable inbox for crash recovery.\n### 8. Reconciliation\nRun a reconciliation audit job.\n### 9. Security checks\nPerform HMAC signature verification and replay-window checks.\n### 10. A focused test plan\nRun concurrency and failure-injection integration tests.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": ["duplicate_handling"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": false,
+      "duplicate_stable_side_effect_outcome_present": false
+    },
+    {
+      "id": "test-plan-scenario-phrasing",
+      "text": "### 1. Database tables and unique constraints\nUse webhook event tables with a UNIQUE provider event ID.\n### 2. Transaction boundaries\nUse one atomic transaction and commit or rollback.\n### 3. Event and payment state transitions\nUse monotonic state transitions and a status rank.\n### 4. Pseudocode\nThe worker flow begins a transaction, inserts the event, and commits.\n### 5. Duplicate-event handling\nUse INSERT ON CONFLICT DO NOTHING for an already processed event.\n### 6. Out-of-order handling\nIgnore stale or older events that arrive late and allow only forward-only ordering.\n### 7. Failure recovery\nRequeue pending events after a crash and resume expired leases.\n### 8. Reconciliation\nRun a reconciliation audit job against PostgreSQL.\n### 9. Security checks\nVerify the raw-body HMAC signature and replay window.\n### 10. Focused test plan\nCover duplicates, concurrency, and crash recovery scenarios.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": [],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
     }
   ]
 }

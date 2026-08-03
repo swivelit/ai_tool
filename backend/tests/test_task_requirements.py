@@ -58,7 +58,7 @@ def test_b01_semantic_requirements_require_definition_and_retry_example():
 
 
 def test_python_and_browser_share_capability_semantic_fixtures():
-    assert TASK_REQUIREMENT_VERSION == "2026-08-03.4"
+    assert TASK_REQUIREMENT_VERSION == "2026-08-03.5"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"
     cases = json.loads(fixture.read_text(encoding="utf-8"))
     for case in cases["idempotency"]:
@@ -101,7 +101,7 @@ def test_python_and_browser_share_capability_semantic_fixtures():
         assert duplicate.stable_side_effect_outcome_present is case[
             "duplicate_stable_side_effect_outcome_present"
         ], case["id"]
-        assert result.validator_version == "2026-08-03.4", case["id"]
+        assert result.validator_version == "2026-08-03.5", case["id"]
 
 
 def test_architecture_headings_without_semantics_remain_unverified():
@@ -194,7 +194,11 @@ def test_authoritative_store_constraint_is_extracted_and_verified():
     contract = extract_task_requirements(prompt)
     assert contract.authoritative_store == "PostgreSQL"
     assert contract.forbidden_authoritative_stores == ("Redis", "Valkey")
-    assert "non-authoritative" in contract.prompt_instruction(1_000)
+    instruction = contract.prompt_instruction(1_000)
+    assert "one dedicated sentence" in instruction
+    assert "PostgreSQL is the system of record" in instruction
+    assert "separate dedicated sentence" in instruction
+    assert "Redis, Valkey" in instruction
     checks = validate_task_requirements(
         "PostgreSQL is the system of record. "
         "Redis and Valkey are non-authoritative caches.",

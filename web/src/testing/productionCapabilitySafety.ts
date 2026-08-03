@@ -617,7 +617,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.4'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.5'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -794,7 +794,7 @@ function architectureMechanism(
     failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b/u,
     reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/u,
     security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b/u,
-    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\btests?\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\btests?\b/u,
+    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b/u,
   }
   if (area === 'pseudocode' && /```[\s\S]*?```/u.test(rawValue)) return true
   if (area === 'state_transitions' && /(?:->|→|=>)/u.test(rawValue)) return true
@@ -833,32 +833,25 @@ export function evaluateWebhookArchitecture(
     && !nonPostgresAuthoritativeClaim
   const areaEvaluations = WEBHOOK_ARCHITECTURE_AREAS.map(areaIdentifier => {
     const section = sections.get(areaIdentifier)
-    const semanticValue = section?.normalizedValue ?? ''
-    const rawSemanticValue = section?.rawValue ?? ''
+    const headingPresent = section !== undefined
+    const semanticValue = section?.normalizedValue ?? normalizedFallback
+    const rawSemanticValue = section?.rawValue ?? rawFallback
     if (areaIdentifier === 'duplicate_handling') {
-      const sectionDuplicate = duplicateArchitectureSemantics(semanticValue)
-      const fallbackDuplicate = duplicateArchitectureSemantics(
-        normalizedFallback,
-      )
+      const duplicate = duplicateArchitectureSemantics(semanticValue)
       return {
         areaIdentifier,
-        headingPresent:section !== undefined,
-        semanticMechanismPresent:
-          sectionDuplicate.mechanism || fallbackDuplicate.mechanism,
-        stableSideEffectOutcomePresent:
-          sectionDuplicate.stableOutcome || fallbackDuplicate.stableOutcome,
-        passed:sectionDuplicate.mechanism || fallbackDuplicate.mechanism
-          || sectionDuplicate.stableOutcome || fallbackDuplicate.stableOutcome,
+        headingPresent,
+        semanticMechanismPresent:duplicate.mechanism,
+        stableSideEffectOutcomePresent:duplicate.stableOutcome,
+        passed:duplicate.mechanism || duplicate.stableOutcome,
       }
     }
     const mechanism = architectureMechanism(
       areaIdentifier, semanticValue, rawSemanticValue,
-    ) || architectureMechanism(
-      areaIdentifier, normalizedFallback, rawFallback,
     )
     return {
       areaIdentifier,
-      headingPresent:section !== undefined,
+      headingPresent,
       semanticMechanismPresent:mechanism,
       stableSideEffectOutcomePresent:false,
       passed:mechanism,
@@ -878,6 +871,12 @@ export function evaluateWebhookArchitecture(
     areaEvaluations,
     validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
   }
+}
+
+export function shouldRetryCapabilityCancellation(
+  status: number | null,
+): boolean {
+  return status === null || status === 404 || (status >= 500 && status <= 599)
 }
 
 export type CapabilityTierEvidence = {
