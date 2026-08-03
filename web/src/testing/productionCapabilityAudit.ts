@@ -37,6 +37,7 @@ export async function pollCapabilityAudits<T extends PollableCapabilityAudit>(op
   concurrency?: number
   now?: () => number
   wait?: (milliseconds: number) => Promise<void>
+  onTransportFailure?: () => void
 }): Promise<Map<string, T>> {
   const uniqueIds = [...new Set(options.requestIds)]
     .filter(id => /^[0-9a-f-]{36}$/i.test(id))
@@ -66,6 +67,7 @@ export async function pollCapabilityAudits<T extends PollableCapabilityAudit>(op
             { request_ids:batch },
             { timeoutMilliseconds:Math.min(15_000, remaining) },
           ).catch(() => ({ status:0, data:null }))
+          if (response.status === 0) options.onTransportFailure?.()
           for (const audit of response.data?.results ?? []) {
             if (batch.includes(audit.request_id)) last.set(audit.request_id, audit)
           }
@@ -84,4 +86,30 @@ export async function pollCapabilityAudits<T extends PollableCapabilityAudit>(op
 
   if (last.size === uniqueIds.length) return last
   throw new Error('request_audit_timeout')
+}
+
+export function cleanupUsageAuditReasons<T extends PollableCapabilityAudit>(
+  requestIds: readonly string[],
+  audits: ReadonlyMap<string, T>,
+): string[] {
+  const expected = [...new Set(requestIds)].filter(
+    id => /^[0-9a-f-]{36}$/i.test(id),
+  )
+  const missing = expected.filter(id => !audits.has(id))
+  const nonterminal = expected.filter(id => {
+    const audit = audits.get(id)
+    return Boolean(audit && !capabilityAuditIsTerminal(audit))
+  })
+  const active = expected.filter(id => {
+    const audit = audits.get(id)
+    return Boolean(
+      audit?.orphaned_active_reservation
+      || audit?.active_usage_stage_names.length,
+    )
+  })
+  return [
+    ...(missing.length ? ['usage_audit_missing_requests'] : []),
+    ...(nonterminal.length ? ['usage_audit_nonterminal_requests'] : []),
+    ...(active.length ? ['active_usage_remains'] : []),
+  ]
 }

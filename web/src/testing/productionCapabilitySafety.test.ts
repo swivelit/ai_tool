@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   DebitBudget,
   PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
@@ -416,5 +418,14 @@ describe('production capability safety', () => {
       visibleWordCount:5,
       rawWordCount:5,
     })
+  })
+
+  it('uses the shared sentence segmentation fixtures', () => {
+    const cases = JSON.parse(readFileSync(resolve(
+      process.cwd(), '../shared-fixtures/sentence-segmentation.json',
+    ), 'utf8')) as Array<{ id: string; text: string; count: number }>
+    for (const fixture of cases) {
+      expect(countSentences(fixture.text), fixture.id).toBe(fixture.count)
+    }
   })
 })

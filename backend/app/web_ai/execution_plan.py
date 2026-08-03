@@ -35,6 +35,8 @@ class ExecutionPlan:
     deterministic: bool
     streaming_mode: StreamingMode
     planned_usage_stages: tuple[str, ...]
+    required_deliverable_count: int = 0
+    semantic_requirement_kinds: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.expected_provider_calls < 0 or self.expected_provider_calls > 4:
@@ -45,6 +47,8 @@ class ExecutionPlan:
             raise ValueError("deterministic plans cannot call a provider")
         if self.max_output_tokens < 0:
             raise ValueError("max_output_tokens must be non-negative")
+        if not 0 <= self.required_deliverable_count <= 20:
+            raise ValueError("required_deliverable_count is outside the bound")
 
     @property
     def sanitized_metadata(self) -> dict[str, object]:
@@ -62,5 +66,7 @@ class ExecutionPlan:
             "deterministic": self.deterministic,
             "streaming_mode": self.streaming_mode,
             "planned_usage_stages": list(self.planned_usage_stages),
+            "required_deliverable_count": self.required_deliverable_count,
+            "semantic_requirement_kinds": list(self.semantic_requirement_kinds),
             "allocation": self.token_allocation.sanitized_metadata,
         }

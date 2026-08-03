@@ -16,6 +16,9 @@ from .models import (
     AnswerQualityResult, QualityCheck, RepositoryValidationMode,
 )
 from .output_contract import OutputContract, validate_output_contract
+from .task_requirements import (
+    TaskRequirementContract, validate_task_requirements,
+)
 from .quality_gate import build_quality_result
 from ..code_quality.result_parser import RepositoryValidationResult
 
@@ -72,6 +75,7 @@ class AnswerGuardContext:
     repository_context_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
     output_contract: OutputContract | None = None
+    task_requirements: TaskRequirementContract | None = None
     provider_completion: ProviderCompletion | None = None
 
     @property
@@ -162,6 +166,12 @@ class AnswerGuard:
             ))
         if context.output_contract and context.output_contract.required:
             checks.extend(validate_output_contract(answer, context.output_contract))
+        if context.task_requirements and context.task_requirements.required:
+            checks.extend(
+                check for check in validate_task_requirements(
+                    answer, context.task_requirements
+                ) if include(check.check_type)
+            )
         if context.repository_context_used:
             checks.append(QualityCheck(
                 "repository_context", "passed", ""

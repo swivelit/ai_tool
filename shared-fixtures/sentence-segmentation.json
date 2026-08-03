@@ -1,0 +1,8 @@
+[
+  {"id":"english","text":"One sentence. Two sentences! Three?","count":3},
+  {"id":"tamil_periods","text":"தாவரங்கள் சூரிய ஒளியைப் பெறுகின்றன. அவை நீரையும் எடுத்துக்கொள்கின்றன. ஆக்சிஜன் வெளியேறுகிறது.","count":3},
+  {"id":"indic_danda","text":"முதல் வாக்கியம்। இரண்டாவது வாக்கியம்॥","count":2},
+  {"id":"lines","text":"First line\nSecond line\nThird line","count":3},
+  {"id":"repeated","text":"Really?! Yes... Done!!","count":3},
+  {"id":"abbreviation","text":"Dr. Meera uses e.g. one safe example. It works.","count":2}
+]

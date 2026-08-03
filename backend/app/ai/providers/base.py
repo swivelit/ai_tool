@@ -92,6 +92,14 @@ class GenerationIncomplete(RuntimeError):
         }
 
 
+class ProviderSafetyRejected(RuntimeError):
+    """Stable internal signal for a provider-side safety refusal."""
+
+    def __init__(self, response: AIProviderResponse) -> None:
+        super().__init__("Swico safety policy rejected the requested generation")
+        self.response = response
+
+
 class ProviderStreamInterrupted(RuntimeError):
     """A retryable transport interruption, optionally after visible output."""
 

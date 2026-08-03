@@ -571,6 +571,12 @@ def tracked_openai_generation(
                     reasoning_effort = openai_web_reasoning_effort(
                         answer_class,
                         max_output_tokens=output_tokens,
+                        strict_visible_format=(
+                            extra.get("strict_output_contract") is True
+                        ),
+                        minimum_visible_output_tokens=extra.get(
+                            "minimum_visible_output_tokens"
+                        ),
                     )
                     request_kwargs: dict[str, Any] = {
                         "model": selection.model,

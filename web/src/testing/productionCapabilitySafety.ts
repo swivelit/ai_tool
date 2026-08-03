@@ -507,11 +507,7 @@ export function countMarkdownWords(value: string): number {
   return countWords(semanticLines.join('\n'))
 }
 
-export function countSentences(value: string): number {
-  const text = String(value).trim()
-  if (!text) return 0
-  return text.match(/[^.!?\n]+[.!?](?=\s|$)/gu)?.length ?? 0
-}
+export { sharedSentenceCount as countSentences } from './sentenceSegmentation'
 
 export function bulletLines(value: string): string[] {
   return String(value).split(/\r?\n/).filter(line => (

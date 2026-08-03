@@ -262,6 +262,7 @@ export function boundedCancellationResponseStatus(
 }
 
 export type CapabilityCancellationReasonCode =
+  | 'cancellation_precondition_not_met'
   | 'stop_button_not_ready'
   | 'request_completed_before_cancel'
   | 'cancel_http_failed'

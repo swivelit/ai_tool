@@ -7,6 +7,9 @@ import re
 from typing import Any
 
 from .models import QualityCheck
+from .sentence_segmentation import (
+    SENTENCE_VALIDATOR_VERSION, count_sentences,
+)
 
 
 _NUMBER_WORDS = {
@@ -78,6 +81,33 @@ class OutputContract:
 
     def as_metadata(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def strict_visible_format(self) -> bool:
+        return bool(
+            self.json_only
+            or self.exact_word_count is not None
+            or self.exact_sentence_count is not None
+            or self.exact_bullet_count is not None
+            or self.exact_fenced_block_count is not None
+            or self.required_final_word is not None
+        )
+
+    @property
+    def minimum_visible_output_tokens(self) -> int:
+        """Conservative visible-token reserve for strict output contracts."""
+        estimates = [64]
+        if self.exact_word_count is not None:
+            estimates.append(int(self.exact_word_count * 1.7) + 24)
+        if self.exact_sentence_count is not None:
+            estimates.append(self.exact_sentence_count * 28 + 24)
+        if self.exact_bullet_count is not None:
+            estimates.append(self.exact_bullet_count * 52 + 24)
+        if self.exact_fenced_block_count is not None:
+            estimates.append(self.exact_fenced_block_count * 180 + 32)
+        if self.json_only:
+            estimates.append(max(96, len(self.exact_json_keys) * 32 + 32))
+        return min(6_000, max(estimates)) if self.required else 0
 
     @classmethod
     def from_metadata(cls, value: object) -> "OutputContract":
@@ -450,12 +480,17 @@ def validate_output_contract(
             )
 
     if contract.exact_sentence_count is not None:
-        sentences = re.findall(r"[^.!?\n]+[.!?](?=\s|$)", value)
-        add(
-            "sentence_count",
-            len(sentences) == contract.exact_sentence_count,
-            "exact_sentence_count_failed",
-        )
+        observed = count_sentences(value)
+        checks.append(QualityCheck(
+            "output_contract_sentence_count",
+            "passed" if observed == contract.exact_sentence_count else "failed",
+            "" if observed == contract.exact_sentence_count else "exact_sentence_count_failed",
+            observations=(
+                ("expected_sentence_count", contract.exact_sentence_count),
+                ("observed_sentence_count", observed),
+                ("validator_version", SENTENCE_VALIDATOR_VERSION),
+            ),
+        ))
     if contract.exact_question_count is not None:
         add(
             "question_count",

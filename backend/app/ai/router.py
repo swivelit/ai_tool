@@ -45,13 +45,18 @@ class AIProviderRouter:
         }
         max_output_tokens = _max_output_tokens(request.message)
 
-        if intent.intent in {"unsafe_or_sensitive", "urgent_medical_emergency"}:
+        if intent.intent in {
+            "unsafe_or_sensitive", "urgent_medical_emergency",
+            "harmful_credential_abuse",
+        }:
             return AIRoute(
                 provider="blocked",
                 model=None,
                 route=(
                     "medical_emergency_guidance"
                     if intent.intent == "urgent_medical_emergency"
+                    else "credential_abuse_safety_block"
+                    if intent.intent == "harmful_credential_abuse"
                     else "safety_block"
                 ),
                 reason=intent.reason,

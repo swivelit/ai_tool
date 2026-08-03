@@ -149,10 +149,10 @@ test('production capability workflows use typed chat observers only', () => {
     /cancellationResponseObserver\s*=\s*observePlaywrightPromise\(page\.waitForResponse\(\s*isPostChatStreamResponse/,
   )
   const requestObservers = [...spec.matchAll(/waitForRequest\(([\s\S]{0,120})/g)]
-  expect(requestObservers).toHaveLength(6)
+  expect(requestObservers).toHaveLength(7)
   expect(requestObservers.filter(
     match => match[1].includes('isPostChatStreamRequest'),
-  )).toHaveLength(5)
+  )).toHaveLength(6)
   expect(spec).not.toMatch(/waitForRequest\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>[\s\S]{0,300}?\.request\(\)/)
   expect(cancellation).toContain('boundedCancellationResponseStatus')
   expect(cancellation).toContain('boundedCancellationSettlementReason')
@@ -179,7 +179,7 @@ test('production capability browser waits and cleanup are independently bounded'
   expect(spec).toContain('const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS')
   expect(spec).toContain('const executionDeadline = testStartedAt')
   expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
-  expect(spec).toContain('const audits = await pollAudits(api, [...benchmarkRequestIds], timeout)')
+  expect(spec).toContain('const usageAudits = await pollCapabilityAudits<Audit>({')
   expect(spec).not.toMatch(/for \(const requestId of benchmarkRequestIds\)[\s\S]{0,300}pollAudit/)
   expect(spec).toContain('const heartbeat = setInterval(')
   expect(spec).toContain('completed_scenario_ids:')
@@ -198,8 +198,8 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).toContain('const structure = rawMarkdown.trim()')
   for (const reason of [
     'chat_request_not_observed', 'chat_response_not_observed',
-    'assistant_message_timeout', 'response_body_timeout',
-    'raw_message_read_failed', 'request_audit_timeout',
+    'assistant_ui_timeout', 'response_body_timeout',
+    'assistant_persistence_missing', 'request_audit_timeout',
     'wallet_read_failed', 'tier_audit_unavailable',
     'copy_control_missing', 'clipboard_mismatch',
     'download_control_missing', 'response_download_timeout',
@@ -209,6 +209,10 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).not.toContain('response_tools_harness_failure')
   expect(spec).toContain('contract_validation_disagreement')
   expect(spec).toContain('representationCounts:capabilityAnswerRepresentationCounts(')
+  expect(spec).toContain("const cancellationMarker = `CANCEL-${randomUUID()}`")
+  expect(spec).not.toContain('For cancellation audit ${runId}')
+  expect(spec).toContain("throw new Error('cancellation_precondition_not_met')")
+  expect(spec).toContain("candidate.status !== 'passed'")
   expect(spec).toMatch(
     /case 'B03':[\s\S]{0,500}architecture_sections_missing[\s\S]{0,100}mandatoryConstraintFailed = true/,
   )

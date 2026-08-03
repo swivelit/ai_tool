@@ -37,6 +37,8 @@ _ALLOWED_KEYS = frozenset(
         "deterministic",
         "streaming_mode",
         "planned_usage_stages",
+        "required_deliverable_count",
+        "semantic_requirement_kinds",
         "allocation",
         "prompt_ceiling",
         "fixed_tokens",
@@ -70,6 +72,9 @@ _ALLOWED_KEYS = frozenset(
         "quality_checks",
         "check_type",
         "check_status",
+        "expected_sentence_count",
+        "observed_sentence_count",
+        "validator_version",
         "repair_attempted",
         "verifier_used",
         "attempt_number",
@@ -99,6 +104,7 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
         {
             "general",
             "unsafe_or_sensitive",
+            "harmful_credential_abuse",
             "file_retrieval",
             "creative_tool",
             "document",
@@ -215,6 +221,9 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
     "attachment_media_categories": frozenset(
         {"text", "image", "audio", "video", "application", "other"}
     ),
+    "semantic_requirement_kinds": frozenset(
+        {"definition", "example", "deliverables", "comparison", "subquestions"}
+    ),
     "reason_codes": frozenset(
         {
             "deterministic_swico_brand",
@@ -222,6 +231,7 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "deterministic_thanks",
             "deterministic_capabilities",
             "safety_block",
+            "credential_abuse_safety_block",
             "unsupported_web_capability",
             "provider_contextual",
             "provider_standalone",

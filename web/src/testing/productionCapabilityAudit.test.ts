@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cleanupUsageAuditReasons,
   pollCapabilityAudits,
   TRIAG_REQUEST_AUDIT_BATCH_LIMIT,
 } from './productionCapabilityAudit'
@@ -75,5 +76,23 @@ describe('production capability request-audit batching', () => {
     })
 
     expect(posted).toEqual([ids, [ids[1]]])
+  })
+
+  it('reports missing, nonterminal, and active cleanup audits independently', () => {
+    const ids = [requestId(1), requestId(2), requestId(3)]
+    const audits = new Map([
+      [ids[0], terminalAudit(ids[0])],
+      [ids[1], {
+        ...terminalAudit(ids[1]),
+        cancellation_state:'active',
+        orphaned_active_reservation:true,
+        active_usage_stage_names:['generation'],
+      }],
+    ])
+    expect(cleanupUsageAuditReasons(ids, audits)).toEqual([
+      'usage_audit_missing_requests',
+      'usage_audit_nonterminal_requests',
+      'active_usage_remains',
+    ])
   })
 })

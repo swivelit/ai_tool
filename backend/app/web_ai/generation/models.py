@@ -23,6 +23,7 @@ class QualityCheck:
     check_type: str
     status: QualityCheckStatus
     reason_code: str = ""
+    observations: tuple[tuple[str, int | str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.check_type or len(self.check_type) > 64:
@@ -31,8 +32,13 @@ class QualityCheck:
             raise ValueError("reason_code must be bounded")
 
     @property
-    def safe_summary(self) -> dict[str, str]:
-        return {"type": self.check_type, "status": self.status}
+    def safe_summary(self) -> dict[str, object]:
+        summary: dict[str, object] = {
+            "type": self.check_type, "status": self.status,
+        }
+        if self.observations:
+            summary["observations"] = dict(self.observations)
+        return summary
 
 
 @dataclass(frozen=True)

@@ -428,6 +428,33 @@ def test_malformed_bullets_are_repaired_and_final_text_is_verified(monkeypatch):
     assert completed.message.quality["status"] == "verified"
 
 
+def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
+    prompt = (
+        "Explain idempotency in payment APIs to a junior developer. Use exactly "
+        "four bullet points, include one concrete retry example, and use no more "
+        "than 140 words."
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-semantic-b01",
+        prompt=prompt,
+        answers=[
+            "- Use a key.\n- Store a result.\n- Return it.\n- Avoid duplicates.",
+            "- Idempotency in payment APIs means one logical payment has one result.\n"
+            "- Store a unique key with the result.\n"
+            "- For example, retry POST /payments with key RETRY-1 and return the first result.\n"
+            "- This prevents a duplicate charge.",
+        ],
+    )
+    assert calls == 2
+    assert completed.message.quality["status"] == "verified"
+    check_types = {
+        check["type"] for check in completed.message.quality["checks"]
+    }
+    assert "task_requirement_definition" in check_types
+    assert "task_requirement_example" in check_types
+
+
 def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):
     prompt = (
         "Return exactly two fenced Python code blocks.\n\n"
@@ -729,6 +756,105 @@ def test_phase2_insufficient_evidence_quality_remains_deterministic():
         ),
     )
     assert result.status == "insufficient_evidence"
+
+
+def test_zero_visible_strict_output_uses_only_one_accounted_fallback(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
+    )
+    user = create_test_user("strict-visible-fallback", "strict-visible-fallback@example.com")
+    _fund(int(user.id))
+    calls = 0
+
+    class Provider:
+        def complete(self, request, route):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise GenerationIncomplete(
+                    completion_status="incomplete",
+                    incomplete_reason="max_output_tokens",
+                    finish_reason="length",
+                    input_tokens=20,
+                    output_tokens=40,
+                    reasoning_tokens=40,
+                    visible_characters=0,
+                    max_output_tokens=route.max_output_tokens,
+                    provider_usage_received=True,
+                )
+            return _response(
+                "One two three four five six seven eight nine home"
+            )
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message='Write exactly 10 words and end with the word "home".',
+        request_id="strict-visible-fallback-request",
+        thread_id=None,
+        reply_language="en",
+    )
+    prepared.triag_settings = TriagSettings(
+        enabled=True, shadow_mode=False, answer_guard_enabled=True,
+        verified_streaming_enabled=True, answer_repair_enabled=True,
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider:Provider()}
+    )
+    assert calls == 2
+    assert completed.message.content.endswith("home")
+    with SessionLocal() as session:
+        repair_stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "strict-visible-fallback-request",
+            WebUsageStage.stage_name == "repair",
+        )).all()
+        assert len(repair_stages) == 1
+
+
+def test_failed_zero_visible_fallback_persists_stable_unverified_answer(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
+    )
+    user = create_test_user("strict-visible-exhausted", "strict-visible-exhausted@example.com")
+    _fund(int(user.id))
+    calls = 0
+
+    class Provider:
+        def complete(self, request, route):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise GenerationIncomplete(
+                    completion_status="incomplete",
+                    incomplete_reason="max_output_tokens",
+                    finish_reason="length",
+                    input_tokens=20,
+                    output_tokens=40,
+                    reasoning_tokens=40,
+                    visible_characters=0,
+                    max_output_tokens=route.max_output_tokens,
+                    provider_usage_received=True,
+                )
+            return _response("")
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message='Write exactly 10 words and end with the word "home".',
+        request_id="strict-visible-exhausted-request",
+        thread_id=None,
+        reply_language="en",
+    )
+    prepared.triag_settings = TriagSettings(
+        enabled=True, shadow_mode=False, answer_guard_enabled=True,
+        verified_streaming_enabled=True, answer_repair_enabled=True,
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider:Provider()}
+    )
+    assert calls == 2
+    assert completed.message.content.startswith("Swico could not produce")
+    assert completed.message.quality["status"] == "unverified"
 
 
 def test_verifier_contract_is_bounded_simple_and_strict(monkeypatch):

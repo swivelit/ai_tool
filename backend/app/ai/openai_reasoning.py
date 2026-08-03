@@ -23,6 +23,8 @@ def openai_web_reasoning_effort(
     answer_class: object,
     *,
     max_output_tokens: object | None = None,
+    strict_visible_format: bool = False,
+    minimum_visible_output_tokens: object | None = None,
 ) -> Optional[str]:
     """Return the configured effort only for an explicitly classified turn."""
 
@@ -46,6 +48,12 @@ def openai_web_reasoning_effort(
         output_budget = max(0, int(max_output_tokens or 0))
     except (TypeError, ValueError):
         output_budget = 0
+    try:
+        visible_reserve = max(0, int(minimum_visible_output_tokens or 0))
+    except (TypeError, ValueError):
+        visible_reserve = 0
+    if strict_visible_format and visible_reserve:
+        return "none"
     # Responses reasoning tokens share max_output_tokens with visible output.
     # Under Lite/Standard-sized long-form ceilings, reserve that bounded budget
     # for the explicitly requested deliverable even when the general configured

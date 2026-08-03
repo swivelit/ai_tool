@@ -17,7 +17,9 @@ from sqlmodel import Session, select
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
-from ..ai.providers.base import GenerationCancelled, GenerationIncomplete
+from ..ai.providers.base import (
+    GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
+)
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
@@ -52,7 +54,7 @@ from ..web_ai.execution_plan import ExecutionPlan
 from ..web_ai.generation.answer_guard import (
     ANSWER_GUARD_VERSION, AnswerGuard, AnswerGuardContext, ProviderCompletion,
 )
-from ..web_ai.generation.generator import VerifiedGenerator
+from ..web_ai.generation.generator import GeneratedAnswer, VerifiedGenerator
 from ..web_ai.generation.models import (
     AnswerQualityResult, RepositoryValidationMode,
 )
@@ -63,6 +65,9 @@ from ..web_ai.generation.output_contract import (
     extract_output_contract,
     output_contract_hash,
     validate_output_contract,
+)
+from ..web_ai.generation.task_requirements import (
+    TaskRequirementContract, extract_task_requirements,
 )
 from ..web_ai.generation.repair import build_repair_request
 from ..web_ai.persistence import (
@@ -1384,6 +1389,7 @@ def prepare_web_turn(
                 "Do not repeat completed sections; finish all remaining steps end-to-end."
             )
         output_contract = extract_output_contract(model_message)
+        task_requirements = extract_task_requirements(model_message)
         display_attachments = [upload.display_metadata() for upload in uploads]
         visible_content = visible_message or (
             "Attached: " + ", ".join(upload.name for upload in uploads)
@@ -1626,6 +1632,12 @@ def prepare_web_turn(
             "cache_scope": preliminary.cache_scope,
             "cache_scope_reason": preliminary.cache_scope_reason,
             "output_contract": output_contract.as_metadata(),
+            "strict_output_contract": output_contract.strict_visible_format,
+            "minimum_visible_output_tokens": (
+                output_contract.minimum_visible_output_tokens
+            ),
+            "task_requirements": task_requirements.as_metadata(),
+            "task_requirements_hash": task_requirements.hash,
         }
         cache_compatibility_hash = _cache_compatibility_hash(
             prompt_schema_version=str(base_metadata["prompt_cache_version"]),
@@ -2290,7 +2302,16 @@ def prepare_web_turn(
             )
 
         if enabled:
-            route = replace(route, max_output_tokens=optimization.max_output_tokens)
+            # The frozen execution plan already combines request need, tier policy,
+            # answer-class configuration and the provider hard limit.
+            route = replace(
+                route,
+                max_output_tokens=(
+                    execution_plan.max_output_tokens
+                    if execution_plan is not None
+                    else optimization.max_output_tokens
+                ),
+            )
         provider_messages = _hard_budget_provider_messages(ai_request, route)
         serialized_prompt = serialize_provider_messages(provider_messages)
         if coordinator_decision is not None:
@@ -2616,6 +2637,14 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             "local emergency number or emergency services immediately, and have "
             "someone stay with the person if possible. I can’t diagnose the cause "
             "here, but do not wait for a routine appointment or online consultation."
+        )
+    elif route.intent == "harmful_credential_abuse":
+        text = (
+            "I can’t help steal passwords, bypass authentication, phish for "
+            "credentials, or take over another person’s account. If this is "
+            "your account, use the official password-reset or account-recovery "
+            "process, enable multi-factor authentication, review active sessions, "
+            "and contact the service’s security support if compromise is suspected."
         )
     elif route.provider == "blocked":
         text = "I can’t help with that request, but I can help with a safer alternative."
@@ -3510,6 +3539,9 @@ def execute_web_turn(
     output_contract = OutputContract.from_metadata(
         prepared.ai_request.metadata.get("output_contract")
     )
+    task_requirements = TaskRequirementContract.from_metadata(
+        prepared.ai_request.metadata.get("task_requirements")
+    )
     if on_status and guard_enabled:
         on_status("understanding_request")
         if prepared.retrieval_uploads:
@@ -3558,6 +3590,7 @@ def execute_web_turn(
                         task_contract=prepared.ai_request.message,
                         evidence_pack=prepared.retrieval_context,
                         output_contract=output_contract,
+                        task_requirements=task_requirements,
                         provider_completion=ProviderCompletion.from_raw(
                             response.raw
                         ),
@@ -3624,6 +3657,7 @@ def execute_web_turn(
                     ),
                 ),
                 output_contract=output_contract,
+                task_requirements=task_requirements,
             )
             guard = AnswerGuard()
             repository_validation_attempts = 0
@@ -3699,6 +3733,24 @@ def execute_web_turn(
                             model=prepared.route.model or "",
                             reserved_micros=prepared.reserved_micros,
                         )
+                    raise
+                except ProviderSafetyRejected as exc:
+                    rejected_price = _phase3_response_price(exc.response)
+                    phase3_prices.append((
+                        "generation", rejected_price,
+                        exc.response.input_tokens, exc.response.output_tokens,
+                    ))
+                    _phase3_stage(
+                        prepared,
+                        stage_name="generation",
+                        status="settled",
+                        provider=exc.response.provider,
+                        model=exc.response.model or "",
+                        price=rejected_price,
+                        input_tokens=exc.response.input_tokens,
+                        output_tokens=exc.response.output_tokens,
+                        reserved_micros=prepared.reserved_micros,
+                    )
                     raise
                 except GenerationCancelled as exc:
                     if exc.response is not None:
@@ -4094,10 +4146,12 @@ def execute_web_turn(
                     evidence_pack=prepared.retrieval_context,
                     task_contract=prepared.ai_request.message,
                     output_contract=output_contract,
+                    task_requirements=task_requirements,
                     answer_class=(
                         prepared.optimization.answer_class
                         if prepared.optimization else "normal"
                     ),
+                    max_output_tokens=prepared.route.max_output_tokens,
                 )
                 repair_route = replace(
                     prepared.route,
@@ -4265,23 +4319,87 @@ def execute_web_turn(
                 )
                 return result
 
-            generated = VerifiedGenerator(stream_policy).generate(
-                generate_draft=generate_draft,
-                verify=verify,
-                repair=repair if stream_policy.mode == "verified_buffered" else None,
-                verify_repaired=verify_repaired,
-                on_delta=on_delta,
-                on_status=on_status,
-                cancellation_signal=prepared.ai_request.metadata.get(
-                    "cancellation_signal"
-                ),
-                verify_final=verify_final,
-                canonicalize=(
-                    lambda value: canonicalize_output_contract(
-                        value, output_contract
+            try:
+                generated = VerifiedGenerator(stream_policy).generate(
+                    generate_draft=generate_draft,
+                    verify=verify,
+                    repair=repair if stream_policy.mode == "verified_buffered" else None,
+                    verify_repaired=verify_repaired,
+                    on_delta=on_delta,
+                    on_status=on_status,
+                    cancellation_signal=prepared.ai_request.metadata.get(
+                        "cancellation_signal"
+                    ),
+                    verify_final=verify_final,
+                    canonicalize=(
+                        lambda value: canonicalize_output_contract(
+                            value, output_contract
+                        )
+                    ) if output_contract.required else None,
+                )
+            except GenerationIncomplete as exc:
+                # A strict visible contract may consume its shared provider budget
+                # before emitting text. Use the single, already planned repair stage
+                # as a visible-output-safe fallback; never issue an untracked retry.
+                if not (
+                    output_contract.strict_visible_format
+                    and stream_policy.mode == "verified_buffered"
+                ):
+                    raise
+                incomplete_context = replace(
+                    guard_context,
+                    provider_completion=ProviderCompletion.from_raw(exc.metadata),
+                )
+                incomplete_quality = guard.check("", incomplete_context)
+                fallback = (
+                    repair("", incomplete_quality)
+                    if phase3_settings.answer_repair_enabled else None
+                )
+                if fallback is None or not fallback.text.strip():
+                    stable_text = (
+                        "Swico could not produce a complete visible answer within "
+                        "this request’s response limit. Please try a shorter request."
                     )
-                ) if output_contract.required else None,
-            )
+                    fallback = AIProviderResponse(
+                        text=stable_text,
+                        provider=prepared.route.provider,
+                        model=prepared.route.model,
+                        route=prepared.route.route,
+                        reason="generation_incomplete_no_visible_output",
+                        language=prepared.route.language,
+                        intent=prepared.route.intent,
+                        raw={
+                            **exc.metadata,
+                            "truncated": True,
+                            "provider_calls_with_usage": (
+                                1 if exc.metadata.get("provider_usage_received") else 0
+                            ),
+                        },
+                    )
+                    guard_context = incomplete_context
+                else:
+                    fallback = replace(
+                        fallback,
+                        text=canonicalize_output_contract(
+                            fallback.text, output_contract
+                        ),
+                    )
+                    guard_context = replace(
+                        guard_context,
+                        provider_completion=ProviderCompletion.from_raw(fallback.raw),
+                    )
+                fallback_quality = guard.check(
+                    fallback.text,
+                    guard_context,
+                    repair_attempted=True,
+                )
+                if on_delta:
+                    on_delta(fallback.text)
+                generated = GeneratedAnswer(
+                    response=fallback,
+                    quality=fallback_quality,
+                    repair_attempts=1,
+                )
             response = generated.response
             prepared.answer_quality = generated.quality
         elif prepared.route.provider in {"openai", "sarvam"}:
@@ -4302,6 +4420,7 @@ def execute_web_turn(
                         answer_class="normal",
                         task_contract=prepared.ai_request.message,
                         output_contract=output_contract,
+                        task_requirements=task_requirements,
                     ),
                 )
                 if on_delta:
@@ -4378,6 +4497,23 @@ def execute_web_turn(
             )).first()
             if user_message:
                 user_message.status = "retryable"
+                session.add(user_message)
+            _release_continuation_claim(session, prepared)
+            session.commit()
+        raise
+    except ProviderSafetyRejected:
+        if phase3_prices:
+            _settle_incomplete_phase3_parent(prepared, phase3_prices)
+        else:
+            _release_pre_provider_cancellation(prepared)
+        with SessionLocal() as session:
+            user_message = session.exec(select(WebChatMessage).where(
+                WebChatMessage.user_id == prepared.user_id,
+                WebChatMessage.request_id == prepared.request_id,
+                WebChatMessage.role == "user",
+            )).first()
+            if user_message:
+                user_message.status = "failed"
                 session.add(user_message)
             _release_continuation_claim(session, prepared)
             session.commit()

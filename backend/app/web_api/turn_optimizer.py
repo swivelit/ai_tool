@@ -449,6 +449,8 @@ def _local_route(intent: str) -> str:
         return f"deterministic_{intent}"
     if intent == "unsafe_or_sensitive":
         return "safety_block"
+    if intent == "harmful_credential_abuse":
+        return "credential_abuse_safety_block"
     if intent == "urgent_medical_emergency":
         return "medical_emergency_guidance"
     if intent in {

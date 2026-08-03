@@ -78,6 +78,13 @@ def test_extracts_typed_output_contracts(prompt, expected):
         assert getattr(contract, key) == value
 
 
+def test_strict_contract_reserves_visible_output_without_global_reasoning_change():
+    story = extract_output_contract(C09)
+    assert story.strict_visible_format is True
+    assert 200 <= story.minimum_visible_output_tokens <= 420
+    assert OutputContract().minimum_visible_output_tokens == 0
+
+
 def test_bullet_and_json_contracts_validate_deterministically():
     bullets = "\n".join(f"- concise item {index}" for index in range(1, 5))
     assert all(check.status == "passed" for check in validate_output_contract(

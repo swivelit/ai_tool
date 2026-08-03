@@ -12,6 +12,7 @@ from .settings import TriagSettings
 from .telemetry.metadata import sanitize_metadata
 from .tier_policy import tier_policy_for
 from .token_allocator import DynamicTokenAllocator
+from .generation.task_requirements import extract_task_requirements
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ def build_execution_plan(
         previous_topic=triage_input.previous_topic,
         continuity=triage_input.continuity,
     )
+    task_requirements = extract_task_requirements(triage_input.message)
     deterministic = bool(optimization.local_intent)
     repository_task = bool(
         re.search(
@@ -336,6 +338,16 @@ def build_execution_plan(
                 )
                 if included
             )
+        ),
+        required_deliverable_count=len(task_requirements.deliverables),
+        semantic_requirement_kinds=tuple(
+            name for name, present in (
+                ("definition", bool(task_requirements.definition_topics)),
+                ("example", task_requirements.concrete_example),
+                ("deliverables", bool(task_requirements.deliverables)),
+                ("comparison", bool(task_requirements.comparison_terms)),
+                ("subquestions", bool(task_requirements.explicit_subquestion_count)),
+            ) if present
         ),
     )
 

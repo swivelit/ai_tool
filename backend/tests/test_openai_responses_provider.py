@@ -12,8 +12,10 @@ from app.ai.completion_quality import incomplete_markdown_reason
 from app.ai.openai_reasoning import (
     OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
 )
-from app.ai.providers.base import GenerationIncomplete, ProviderStreamInterrupted
-from app.ai.providers.openai_provider import OpenAIProvider
+from app.ai.providers.base import (
+    GenerationIncomplete, ProviderSafetyRejected, ProviderStreamInterrupted,
+)
+from app.ai.providers.openai_provider import OpenAIProvider, _response_contains_refusal
 from app.ai.types import AIRequest, AIRoute
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
@@ -180,6 +182,34 @@ def test_responses_stream_maps_incomplete_max_output_to_truncation():
     assert response.raw["truncated"] is True
     assert response.raw["completion_status"] == "incomplete"
     assert response.text == "partial answer"
+
+
+def test_provider_refusal_raises_stable_internal_safety_signal():
+    refusal = type(
+        "Event", (), {
+            "type":"response.refusal.delta",
+            "delta":"external provider refusal with https://provider.invalid/policy",
+            "response":None,
+        },
+    )()
+    client = _Client()
+    client.responses = _Recorder([
+        refusal, _terminal_event(_final(text="")),
+    ])
+    with pytest.raises(ProviderSafetyRejected) as excinfo:
+        OpenAIProvider(client).stream_complete(
+            _request(), _route(), lambda _delta: None,
+        )
+    assert "provider.invalid" not in str(excinfo.value)
+
+
+def test_nonstreaming_refusal_blocks_are_detected_without_reading_their_text():
+    response = {
+        "output":[{"content":[{
+            "type":"refusal", "refusal":"unsafe external wording",
+        }]}],
+    }
+    assert _response_contains_refusal(response) is True
 
 
 def test_stream_budget_rejection_makes_zero_provider_calls(monkeypatch):
@@ -434,6 +464,15 @@ def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
         _request("long_form"), route, lambda _delta: None
     )
     assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
+
+
+def test_strict_visible_contract_disables_reasoning_for_visible_reserve():
+    assert openai_web_reasoning_effort(
+        "normal",
+        max_output_tokens=420,
+        strict_visible_format=True,
+        minimum_visible_output_tokens=228,
+    ) == "none"
 
 
 def test_invalid_web_reasoning_effort_is_rejected(monkeypatch):

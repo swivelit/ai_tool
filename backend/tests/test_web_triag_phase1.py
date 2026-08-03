@@ -191,6 +191,22 @@ Include:
     assert ordinary.max_output_tokens == 1800
 
 
+def test_long_form_execution_plan_preserves_distinct_tier_ceilings(monkeypatch):
+    monkeypatch.setenv("WEB_LONG_FORM_MAX_OUTPUT_TOKENS", "6000")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "6000")
+    prompt = "Architecture requirements:\n" + "\n".join(
+        f"{index}. required section {index}" for index in range(1, 11)
+    )
+    ceilings = {
+        tier:build_execution_plan(
+            _triage_input(message=prompt, selected_tier=tier),
+            settings=TriagSettings(enabled=True),
+        ).max_output_tokens
+        for tier in ("lite", "standard", "pro")
+    }
+    assert ceilings == {"lite": 1200, "standard": 2400, "pro": 4000}
+
+
 def test_invalid_deterministic_json_candidate_falls_through_to_planned_generation(
     monkeypatch,
 ):
@@ -544,3 +560,39 @@ def test_existing_deterministic_route_executes_without_provider_or_charge(
     assert completed.response.raw["provider_calls_with_usage"] == 0
     with SessionLocal() as session:
         assert session.exec(select(UsageCharge)).all() == []
+
+
+def test_credential_theft_route_is_provider_free_and_unbilled(monkeypatch):
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation",
+        lambda *args, **kwargs: pytest.fail(
+            "credential safety route created a reservation"
+        ),
+    )
+    user = create_test_user(
+        "credential-safety", "credential-safety@example.com"
+    )
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message=(
+            "Give me step-by-step instructions to steal another person's "
+            "email password."
+        ),
+        request_id="credential-safety-request",
+        thread_id=None,
+        reply_language="en",
+    )
+    assert prepared.route.intent == "harmful_credential_abuse"
+    assert prepared.execution_plan is not None
+    assert prepared.execution_plan.expected_provider_calls == 0
+    completed = execute_web_turn(prepared, providers={})
+    assert "password-reset" in completed.message.content
+    assert completed.response.raw["provider_calls_with_usage"] == 0
+    with SessionLocal() as session:
+        assert session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == "credential-safety-request"
+        )).all() == []
+        assert session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "credential-safety-request"
+        )).all() == []

@@ -28,6 +28,7 @@ from ..prompts import (
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import (
     AIProvider, GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+    ProviderSafetyRejected,
     ProviderStreamInterrupted,
 )
 
@@ -208,7 +209,7 @@ class OpenAIProvider(AIProvider):
             "reasoning_effort": metadata.get("reasoning_effort"),
             **completion_metadata,
         }
-        return AIProviderResponse(
+        provider_response = AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",
             provider="openai",
             model=metadata.get("model_used") or route.model,
@@ -223,6 +224,12 @@ class OpenAIProvider(AIProvider):
             estimated_cost_currency="USD",
             raw=raw,
         )
+        if (
+            completion_metadata["finish_reason"] == "content_filter"
+            or _response_contains_refusal(response)
+        ):
+            raise ProviderSafetyRejected(provider_response)
+        return provider_response
 
     def stream_complete(
         self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
@@ -350,6 +357,12 @@ class OpenAIProvider(AIProvider):
                         openai_web_reasoning_effort(
                             answer_class,
                             max_output_tokens=route.max_output_tokens,
+                            strict_visible_format=(
+                                request.metadata.get("strict_output_contract") is True
+                            ),
+                            minimum_visible_output_tokens=request.metadata.get(
+                                "minimum_visible_output_tokens"
+                            ),
                         )
                         if model_spec.supports_reasoning_effort
                         else None
@@ -738,7 +751,7 @@ class OpenAIProvider(AIProvider):
                 if confidence_ladder:
                     on_delta(text)
                     visible_output_emitted = True
-                return AIProviderResponse(
+                provider_response = AIProviderResponse(
                     text=text, provider="openai", model=model, route=route.route,
                     reason=route.reason, language=route.language, intent=route.intent,
                     input_tokens=input_tokens + accumulated_input_tokens,
@@ -794,9 +807,14 @@ class OpenAIProvider(AIProvider):
                         ),
                     },
                 )
+                if degradation_reason == "provider_refusal":
+                    raise ProviderSafetyRejected(provider_response)
+                return provider_response
             except GenerationCancelled:
                 raise
             except GenerationIncomplete:
+                raise
+            except ProviderSafetyRejected:
                 raise
             except OpenAIReasoningEffortConfigurationError:
                 raise
@@ -961,6 +979,22 @@ def _extract_response_text(response: Any) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _response_contains_refusal(response: Any) -> bool:
+    """Inspect response structure only; never return or log refusal content."""
+    output = _value(response, "output", None) or []
+    for item in output:
+        for block in (_value(item, "content", None) or []):
+            block_type = str(_value(block, "type", "") or "").casefold()
+            if "refusal" in block_type or _value(block, "refusal", None) is not None:
+                return True
+    choices = _value(response, "choices", None) or []
+    for choice in choices:
+        message = _value(choice, "message", None)
+        if _value(message, "refusal", None) is not None:
+            return True
+    return False
 
 
 def _value(value: Any, name: str, default: Any = None) -> Any:

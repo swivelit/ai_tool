@@ -97,6 +97,32 @@ _URGENT_RADIATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_HARMFUL_CREDENTIAL_ABUSE_RE = re.compile(
+    r"\b(?:steal|obtain|capture|harvest|phish(?:ing)?\s+for|take\s+over|"
+    r"compromise|break\s+into|gain\s+access\s+to)\b.{0,80}"
+    r"\b(?:another\s+person(?:'s)?|someone\s+else(?:'s)?|their|victim(?:'s)?)?\s*"
+    r"(?:passwords?|credentials?|login|account|email)\b|"
+    r"\b(?:bypass|evade|defeat)\b.{0,50}\b(?:login|authentication|mfa|2fa)\b|"
+    r"\b(?:credential\s+phishing|password\s+theft|account\s+takeover)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_DEFENSIVE_ACCOUNT_SECURITY_RE = re.compile(
+    r"\b(?:my|own)\b.{0,35}\b(?:password|credentials?|login|account|email)\b|"
+    r"\b(?:reset|recover|secure|protect|harden)\b.{0,50}"
+    r"\b(?:password|credentials?|login|authentication|account|email)\b|"
+    r"\b(?:compromised|hacked)\b.{0,30}\b(?:my|account|email)\b|"
+    r"\b(?:implement|design|explain|learn|audit|test)\b.{0,50}"
+    r"\b(?:legitimate\s+)?(?:login|authentication|mfa|2fa|password\s+security)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def is_harmful_credential_abuse(message: str) -> bool:
+    text = str(message or "").strip()
+    if not text or _DEFENSIVE_ACCOUNT_SECURITY_RE.search(text):
+        return False
+    return bool(_HARMFUL_CREDENTIAL_ABUSE_RE.search(text))
+
 
 def is_urgent_medical_emergency(message: str) -> bool:
     text = str(message or "")
@@ -275,6 +301,12 @@ def _classify_intent_text(
             intent="urgent_medical_emergency",
             route="safety",
             reason="clear_emergency_symptoms",
+        )
+    if is_harmful_credential_abuse(text):
+        return IntentDecision(
+            intent="harmful_credential_abuse",
+            route="safety",
+            reason="credential_abuse_safety_path",
         )
     if (
         _HIGH_CONFIDENCE_CODING_ACTION_RE.search(text)

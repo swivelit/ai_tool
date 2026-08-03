@@ -242,6 +242,7 @@ def persist_answer_quality(
                 {
                     "check_type": check.check_type,
                     "check_status": check.status,
+                    **dict(check.observations),
                 }
                 for check in result.checks
             ],

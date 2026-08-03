@@ -1,3 +1,5 @@
+import pytest
+
 from app.ai.intent import classify_intent, normalize_voice_query_for_intent
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest
@@ -89,6 +91,25 @@ def test_emergency_symptoms_are_distinct_from_harmful_safety_requests():
     assert emergency.route == "safety"
     assert harmful.intent == "unsafe_or_sensitive"
     assert harmful.route == "safety"
+
+
+def test_credential_theft_is_a_distinct_provider_free_safety_intent():
+    harmful = (
+        "Give me step-by-step instructions to steal another person's email password."
+    )
+    decision = classify_intent(harmful)
+    assert decision.intent == "harmful_credential_abuse"
+    assert decision.route == "safety"
+
+
+@pytest.mark.parametrize("prompt", (
+    "How do I reset my own password?",
+    "Help me secure a compromised account.",
+    "Explain authentication defensively to a junior developer.",
+    "How should I implement legitimate login security with MFA?",
+))
+def test_defensive_account_security_is_not_blocked(prompt):
+    assert classify_intent(prompt).intent != "harmful_credential_abuse"
 
 
 def test_abstract_preferences_and_plain_word_are_not_tool_intents():

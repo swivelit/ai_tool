@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import {
   deleteGeneratedKnowledgeDocument,
@@ -54,7 +55,11 @@ import {
   type CapabilityTierEvidence,
   type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
-import { pollCapabilityAudits } from '../src/testing/productionCapabilityAudit'
+import {
+  capabilityAuditIsTerminal,
+  cleanupUsageAuditReasons,
+  pollCapabilityAudits,
+} from '../src/testing/productionCapabilityAudit'
 import {
   StartupSnapshotError,
   snapshotProductionAccountState,
@@ -350,7 +355,7 @@ function walletValues(value: WalletResponse): { chat: number; voice: number } {
 function safeHarnessReason(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   return /^[a-z0-9_:-]{1,120}$/i.test(message)
-    ? message : 'question_execution_unclassified'
+    ? message : 'assistant_ui_timeout'
 }
 
 function evaluation(
@@ -594,7 +599,7 @@ async function pollAudit(
 
 async function pollCancellationActive(
   api: DeployedApi, requestId: string, timeoutMilliseconds = 15_000,
-): Promise<'active' | 'terminal' | 'timeout'> {
+): Promise<{ state: 'active' | 'terminal' | 'timeout'; audit: Audit | null }> {
   const deadline = Date.now() + timeoutMilliseconds
   while (Date.now() < deadline) {
     const requestTimeout = Math.max(1, Math.min(5_000, deadline - Date.now()))
@@ -604,17 +609,20 @@ async function pollCancellationActive(
     ).catch(() => ({ status:0, data:null }))
     const current = response.data?.results[0]
     if (current && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)) {
-      return 'terminal'
+      return { state:'terminal', audit:current }
     }
     if (current?.cancellation_state === 'active' && (
       current.active_usage_stage_names.length > 0
       || ['reserving', 'reserved', 'exempt_pending'].some(
         status => (current.charge_status_counts[status] ?? 0) > 0,
       )
-    )) return 'active'
+    ) && current.provider_call_count > 0
+      && current.generation_stage_count > 0
+      && current.cache_hit === false
+    ) return { state:'active', audit:current }
     await new Promise(resolveWait => setTimeout(resolveWait, 300))
   }
-  return 'timeout'
+  return { state:'timeout', audit:null }
 }
 
 async function freshChat(page: Page): Promise<void> {
@@ -916,6 +924,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   const benchmarkRequestIds = new Set<string>()
   const requestPayloads = new Map<string, Record<string, unknown>>()
   const cleanupErrors: string[] = []
+  const cleanupUsageDiagnostics = {
+    missing_request_ids:[] as string[],
+    nonterminal_request_ids:[] as string[],
+    active_request_ids:[] as string[],
+  }
   const consoleErrors: string[] = []
   const failedRequests: string[] = []
   const questionFailureDiagnostics: Array<{
@@ -923,6 +936,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     reason_code: string
     request_id: string | null
     error_class: string
+    recovery_reason_code?: string
   }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
   const uploadPace = new PaceGate(UPLOAD_START_INTERVAL_MS)
@@ -1084,10 +1098,32 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const response = await responsePromise.catch(() => {
       throw new Error('chat_response_not_observed')
     })
+    let rawSse = ''
+    try {
+      rawSse = (await withBoundedTimeout(
+        () => response.body(),
+        remaining(RESPONSE_BODY_TIMEOUT_MS),
+        'response_body_timeout',
+      )).toString('utf8')
+    } catch {
+      stepReasonCodes.push('response_body_timeout')
+    }
+    const terminalErrors = sseData(rawSse, 'error').map(
+      value => String(value.code ?? 'sse_error').slice(0, 100),
+    )
     const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
-    await assistant.waitFor({ state:'visible', timeout:remaining(90_000) }).catch(() => {
-      throw new Error('assistant_message_timeout')
-    })
+    const assistantVisible = await assistant.waitFor({
+      state:'visible', timeout:remaining(QUESTION_DEADLINE_MS),
+    }).then(() => true, () => false)
+    if (!assistantVisible) {
+      if (terminalErrors.includes('provider_safety_rejected')) {
+        throw new Error('provider_safety_rejected')
+      }
+      if (terminalErrors.includes('generation_incomplete')) {
+        throw new Error('generation_incomplete_no_visible_output')
+      }
+      throw new Error('assistant_ui_timeout')
+    }
     let firstVisibleDeltaMs: number | null = null
     const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
     while (Date.now() < firstDeltaDeadline) {
@@ -1099,21 +1135,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     await expect(assistant).not.toHaveClass(/streaming/, {
       timeout:remaining(300_000),
     }).catch(() => {
-      throw new Error('assistant_message_timeout')
+      throw new Error('assistant_ui_timeout')
     })
     const endedAt = Date.now()
     const endedAtUtc = new Date(endedAt).toISOString()
-    let rawSse = ''
-    try {
-      rawSse = (await withBoundedTimeout(
-        () => response.body(),
-        remaining(RESPONSE_BODY_TIMEOUT_MS),
-        'response_body_timeout',
-      )).toString('utf8')
-    } catch {
-      rawSse = ''
-      stepReasonCodes.push('response_body_timeout')
-    }
     const events = parseSseEventOrder(rawSse)
     const threadEvent = sseData(rawSse, 'thread').at(0)
     const doneEvent = sseData(rawSse, 'done').at(-1)
@@ -1129,7 +1154,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const raw = threadId
       ? await rawMessage(api, threadId, requestId).catch(() => null)
       : null
-    if (!raw) throw new Error('raw_message_read_failed')
+    if (!raw) throw new Error('assistant_persistence_missing')
     const displayed = await visibleAnswer(assistant)
     const redacted = redactPotentialSecrets(displayed)
     const rawRedacted = redactPotentialSecrets(raw.content)
@@ -1228,7 +1253,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
     const httpSseErrors = [
       ...(response.ok() ? [] : [`HTTP ${response.status()}`]),
-      ...sseData(rawSse, 'error').map(value => String(value.code ?? 'sse_error').slice(0, 100)),
+      ...terminalErrors,
     ]
     const currentConsole = consoleErrors.slice(lastConsoleIndex)
     const currentFailed = failedRequests.slice(lastFailedIndex)
@@ -1316,6 +1341,47 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       await checkpointQueue
       return result
     } catch (error) {
+      let recoveryReason: string | null = null
+      if (capturedRequestId && api) {
+        const terminalAudit = await pollAudit(
+          api, capturedRequestId, 60_000,
+        ).catch(() => null)
+        if (terminalAudit) {
+          budget.observeAuthoritativeCharge(
+            'chat', terminalAudit.charged_micro_inr_total,
+          )
+          if (!['complete', 'cancelled', 'failed'].includes(
+            terminalAudit.cancellation_state,
+          )) {
+            const cancelled = await api.request(
+              'POST',
+              `/api/web/chat/requests/${encodeURIComponent(capturedRequestId)}/cancel`,
+              undefined,
+              { timeoutMilliseconds:15_000 },
+            ).catch(() => ({ status:0, data:null }))
+            if (cancelled.status < 200 || cancelled.status >= 300) {
+              recoveryReason = 'previous_request_not_terminal'
+            } else {
+              const afterCancel = await pollAudit(
+                api, capturedRequestId, 45_000,
+              ).catch(() => null)
+              if (!afterCancel || !['complete', 'cancelled', 'failed'].includes(
+                afterCancel.cancellation_state,
+              )) recoveryReason = 'previous_request_not_terminal'
+            }
+          }
+        } else {
+          recoveryReason = 'request_audit_timeout'
+        }
+      }
+      try {
+        await freshChat(page)
+        if (await page.locator('.message.assistant.streaming').count()) {
+          recoveryReason ??= 'fresh_chat_recovery_failed'
+        }
+      } catch {
+        recoveryReason ??= 'fresh_chat_recovery_failed'
+      }
       progress('question_complete', 'question', activeScenarioId)
       scheduleCheckpoint()
       await checkpointQueue
@@ -1326,6 +1392,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         request_id:capturedRequestId,
         error_class:error instanceof Error
           ? error.constructor.name : 'UnknownError',
+        ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       throw new CapabilityQuestionExecutionError(
         reasonCode, capturedRequestId,
@@ -1684,14 +1751,77 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     if (!api) throw new Error('benchmark_not_authenticated')
     assertWithinDeadline()
     workflowStart('J-RESPONSE-TOOLS')
-    const currentAssistant = page.locator('.message.assistant').last()
-    const currentRequestId = await currentAssistant.getAttribute('data-request-id')
-    const currentResult = results.find(item => item.requestId === currentRequestId)
+    let currentResult: Pick<
+      QuestionResult, 'requestId' | 'threadId' | 'rawMarkdown'
+    > | undefined
+    let currentAssistant: Locator | null = null
+    for (const candidate of [...results].reverse()) {
+      if (
+        candidate.status !== 'passed'
+        || !candidate.requestId
+        || !candidate.rawMarkdown.trim()
+      ) continue
+      const row = page.locator(
+        `.message.assistant[data-request-id="${candidate.requestId}"]`,
+      )
+      if (await row.isVisible().catch(() => false)) {
+        currentResult = candidate
+        currentAssistant = row
+        break
+      }
+    }
+    if (!currentResult) {
+      // A previous failed/incomplete turn may have forced a fresh-chat recovery.
+      // Create one short deterministic answer so response controls are never
+      // evaluated against a failed generation or silently skipped.
+      await freshChat(page)
+      budget.assertRequestMayStart('chat')
+      await chatPace.wait()
+      const before = new Set((await allThreads(api, false)).map(item => item.id))
+      const requestObserver = observePlaywrightPromise(page.waitForRequest(
+        isPostChatStreamRequest, { timeout:BROWSER_TOOL_TIMEOUT_MS },
+      ))
+      const responseObserver = observePlaywrightPromise(page.waitForResponse(
+        isPostChatStreamResponse, { timeout:30_000 },
+      ))
+      await page.getByLabel('Message Swico').fill('Hi')
+      await page.getByRole('button', { name:'Send message' }).click()
+      const observedRequest = await requestObserver
+      const seedRequestId = String(
+        (observedRequest.postDataJSON() as Record<string, unknown>).request_id ?? '',
+      )
+      if (!/^[0-9a-f-]{36}$/iu.test(seedRequestId)) {
+        throw new Error('chat_request_not_observed')
+      }
+      benchmarkRequestIds.add(seedRequestId)
+      await responseObserver
+      const row = page.locator(
+        `.message.assistant[data-request-id="${seedRequestId}"]`,
+      )
+      await row.waitFor({ state:'visible', timeout:30_000 })
+      await expect(row).not.toHaveClass(/streaming/, { timeout:30_000 })
+      const seedThreadId = await discoverGeneratedThread(api, before, 15_000)
+      if (seedThreadId) generatedThreadIds.add(seedThreadId)
+      const persisted = seedThreadId
+        ? await rawMessage(api, seedThreadId, seedRequestId) : null
+      const audit = await pollAudit(api, seedRequestId, 30_000)
+      budget.observeAuthoritativeCharge('chat', audit.charged_micro_inr_total)
+      if (!persisted?.content.trim()) {
+        throw new Error('assistant_persistence_missing')
+      }
+      currentResult = {
+        requestId:seedRequestId,
+        threadId:seedThreadId,
+        rawMarkdown:persisted.content,
+      }
+      currentAssistant = row
+    }
     if (!currentResult) {
       workflowResults.push({ id:'J-RESPONSE-TOOLS', status:'skipped', reasonCodes:['no_current_generated_answer'], requestIds:[], severity:null })
     } else {
+      const assistantForTools = currentAssistant!
       const responseToolReasons: string[] = []
-      const copyControl = currentAssistant.getByRole('button', { name:'Copy response' })
+      const copyControl = assistantForTools.getByRole('button', { name:'Copy response' })
       if (!await copyControl.isVisible().catch(() => false)) {
         responseToolReasons.push('copy_control_missing')
       } else {
@@ -1715,7 +1845,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         }
       }
 
-      const downloadControl = currentAssistant.getByRole('button', { name:'Download response' })
+      const downloadControl = assistantForTools.getByRole('button', { name:'Download response' })
       if (!await downloadControl.isVisible().catch(() => false)) {
         responseToolReasons.push('download_control_missing')
       } else {
@@ -1742,7 +1872,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         }
       }
 
-      const editorControl = currentAssistant.getByRole('button', { name:'Open response editor' })
+      const editorControl = assistantForTools.getByRole('button', { name:'Open response editor' })
       if (!await editorControl.isVisible().catch(() => false)) {
         responseToolReasons.push('editor_control_missing')
       } else {
@@ -1908,7 +2038,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         isPostChatStreamResponse, { timeout:120_000 },
       ))
       void cancellationResponseObserver.catch(() => undefined)
-      await page.getByLabel('Message Swico').fill(`For cancellation audit ${runId}, produce a long, detailed analysis of idempotent distributed transaction recovery with at least 100 separately numbered points.`)
+      const cancellationMarker = `CANCEL-${randomUUID()}`
+      await page.getByLabel('Message Swico').fill(
+        `For cancellation audit ${cancellationMarker}, produce a long, detailed `
+        + 'analysis of idempotent distributed transaction recovery with at least '
+        + '100 separately numbered points.',
+      )
       await page.getByRole('button', { name:'Send message' }).click()
       const request = await requestPromise
       const payload = request.postDataJSON() as Record<string, unknown>
@@ -1920,11 +2055,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const readiness = await pollCancellationActive(
         api, requestId, Math.min(15_000, assertWithinDeadline()),
       )
-      if (readiness === 'terminal') {
+      if (readiness.state === 'terminal') {
         cancellationDiagnostics.request_already_completed = true
         throw new Error('request_completed_before_cancel')
       }
-      if (readiness === 'timeout') throw new Error('stop_button_not_ready')
+      if (readiness.state !== 'active' || !readiness.audit) {
+        throw new Error('cancellation_precondition_not_met')
+      }
       const stop = page.getByTestId('stop-generation-button')
       try {
         await expect(stop).toHaveAttribute(
@@ -1985,12 +2122,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     } catch (error) {
       const reason = safeHarnessReason(error)
       cancellationFailure = [
+        'cancellation_precondition_not_met',
         'stop_button_not_ready', 'request_completed_before_cancel',
         'cancel_http_failed', 'terminal_audit_timeout',
         'cancellation_settlement_inconsistent',
       ].includes(reason)
         ? reason as CapabilityCancellationReasonCode
-        : 'cancel_http_failed'
+        : 'cancellation_precondition_not_met'
     } finally {
       if (cancellationResponseObserver) {
         void cancellationResponseObserver.then(() => undefined, () => undefined)
@@ -2262,6 +2400,42 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       )
     }
     if (api) {
+      // Usage verification has an explicit reservation at the start of cleanup;
+      // resource deletion cannot consume its entire global deadline first.
+      let usageTransportFailed = false
+      const usageAuditIds = [...benchmarkRequestIds]
+      const usageAudits = await pollCapabilityAudits<Audit>({
+        api,
+        requestIds:usageAuditIds,
+        timeoutMilliseconds:Math.min(75_000, cleanupRemaining(75_000)),
+        onTransportFailure:() => { usageTransportFailed = true },
+      }).catch(() => null)
+      if (!usageAudits) {
+        cleanupUsageDiagnostics.missing_request_ids = usageAuditIds
+        cleanupErrors.push(
+          usageTransportFailed
+            ? 'usage_audit_transport_timeout'
+            : 'cleanup_deadline_exhausted',
+        )
+      } else {
+        cleanupUsageDiagnostics.missing_request_ids = usageAuditIds.filter(
+          id => !usageAudits.has(id),
+        )
+        cleanupUsageDiagnostics.nonterminal_request_ids = usageAuditIds.filter(id => {
+          const audit = usageAudits.get(id)
+          return Boolean(audit && !capabilityAuditIsTerminal(audit))
+        })
+        cleanupUsageDiagnostics.active_request_ids = usageAuditIds.filter(id => {
+          const audit = usageAudits.get(id)
+          return Boolean(
+            audit?.orphaned_active_reservation
+            || audit?.active_usage_stage_names.length,
+          )
+        })
+        cleanupErrors.push(...cleanupUsageAuditReasons(
+          usageAuditIds, usageAudits,
+        ))
+      }
       await runWithBoundedConcurrency([...generatedMemoryIds], 3, id => (
         cleanupAction('memory_delete_failed', async () => {
           const deleted = await api.request('DELETE', `/api/web/settings/memory/${encodeURIComponent(id)}`)
@@ -2332,16 +2506,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       await cleanupAction('wallet_reconciliation_failed', async () => {
         finalWallet = walletValues(await readWallet(api))
       })
-      await cleanupAction('usage_cleanup_timeout', async () => {
-        const timeout = cleanupRemaining(60_000)
-        if (timeout < 1) throw new Error('usage_cleanup_timeout')
-        const audits = await pollAudits(api, [...benchmarkRequestIds], timeout)
-        for (const audit of audits.values()) {
-          if (audit.orphaned_active_reservation || audit.active_usage_stage_names.length) {
-            cleanupErrors.push('active_usage_remains')
-          }
-        }
-      }, 60_000)
       await cleanupAction(
         'logout_timeout', () => logoutDeployed(page, cleanupRemaining(30_000)),
       )
@@ -2490,7 +2654,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         route:'POST /api/web/chat/stream', observed_result:item.status,
         failure_reason:item.reasonCodes.join(','),
       })),
-      cleanup:{ errors:cleanupErrors, final_wallet:finalWallet, debit },
+      cleanup:{
+        errors:cleanupErrors,
+        usage_diagnostics:cleanupUsageDiagnostics,
+        final_wallet:finalWallet,
+        debit,
+      },
     }
     const qa = results.map(item => `## ${item.scenarioId}\n\nExpected: ${item.expected}\n\nScore: ${item.score}\n\nStatus: ${item.status} (${item.reasonCodes.join(', ')})\n\nSwico answer:\n\n${item.visibleAnswer || '[NOT RUN]'}\n`).join('\n')
     progress('safe_summary_write_start', 'reporting', null)

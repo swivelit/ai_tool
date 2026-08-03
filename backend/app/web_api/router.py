@@ -52,6 +52,7 @@ from ..billing.topups import (
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import (
     GenerationCancellation, GenerationCancelled, GenerationIncomplete,
+    ProviderSafetyRejected,
     ProviderStreamInterrupted,
 )
 from ..ai.budget import enforce_provider_budget
@@ -3981,6 +3982,17 @@ async def chat_stream(
                     "Swico reached its response limit before it could start "
                     "the answer. Please retry."
                 ),
+            })
+        except ProviderSafetyRejected:
+            outcome = "safety_rejected"
+            terminal_exception_class = "ProviderSafetyRejected"
+            yield _sse("error", {
+                "code": "provider_safety_rejected",
+                "message": (
+                    "Swico can’t help with that request. I can help with "
+                    "account recovery and defensive security instead."
+                ),
+                "retryable": False,
             })
         except ProviderStreamInterrupted as exc:
             outcome = "error"

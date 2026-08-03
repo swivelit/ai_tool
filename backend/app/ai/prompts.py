@@ -11,6 +11,7 @@ from app.web_ai.generation.output_contract import (
     OutputContract,
     output_contract_instruction,
 )
+from app.web_ai.generation.task_requirements import TaskRequirementContract
 
 from .types import AIRequest, AIRoute
 from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
@@ -209,6 +210,11 @@ def _build_dynamic_system_instructions(
     )
     if contract_instruction:
         parts.append(contract_instruction)
+    requirement_instruction = TaskRequirementContract.from_metadata(
+        (request.metadata or {}).get("task_requirements")
+    ).prompt_instruction(route.max_output_tokens)
+    if requirement_instruction:
+        parts.append(requirement_instruction)
     life_context_present = bool(
         ((request.metadata or {}).get("client_context") or {}).get("life_context")
     )
