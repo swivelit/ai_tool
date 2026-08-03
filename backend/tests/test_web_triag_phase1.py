@@ -340,6 +340,10 @@ def test_settings_defaults_are_safe_and_disabled_is_healthy():
         enabled=False, shadow_mode=True, policy_version="v1"
     )
     assert settings.runtime_status["status"] == "disabled"
+    assert settings.task_repair_second_attempt_enabled is False
+    assert TriagSettings.from_environ({
+        "WEB_TASK_REPAIR_SECOND_ATTEMPT_ENABLED": "true",
+    }).task_repair_second_attempt_enabled is True
     with pytest.raises(TriagConfigurationError) as exc:
         TriagSettings.from_environ({"WEB_TRIAG_ENABLED": "secret-value"})
     assert "secret-value" not in str(exc.value)

@@ -617,7 +617,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.5'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.6'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -790,10 +790,10 @@ function architectureMechanism(
     transaction_boundaries:/\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b/u,
     state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic\w*[^.;]{0,40}transition\w*|transition\w*[^.;]{0,40}monotonic\w*|status rank)\b/u,
     pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction|def|function|return|commit|insert|select)\b/u,
-    out_of_order_handling:/\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only)\b/u,
+    out_of_order_handling:/\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only|out of sequence|earlier event\w*|arriv\w*[^.;]{0,40}(?:late|later|after|early)|(?:older|earlier|newer)[^.;]{0,40}(?:event|state|status|update)\w*|superseded|outdated|defer\w*|buffer\w*[^.;]{0,40}event\w*|(?:skip\w*|discard\w*|ignor\w*)[^.;]{0,50}(?:older|earlier|stale|outdated|out of order|out of sequence)|forward transition\w*|only forward|predecessor\w*|gap[^.;]{0,30}(?:close\w*|fill\w*))\b/u,
     failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b/u,
     reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/u,
-    security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b/u,
+    security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body|(?:verif\w*|validat\w*|authenticat\w*|recomput\w*|check\w*)[^.;]{0,50}(?:signature|hmac|digest|secret)|(?:signature|hmac|digest)[^.;]{0,50}(?:verif\w*|validat\w*|match\w*|mismatch\w*|reject\w*)|webhook secret|shared secret|x razorpay signature|constant time|timestamp[^.;]{0,40}(?:check\w*|validat\w*|reject\w*))\b/u,
     test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b/u,
   }
   if (area === 'pseudocode' && /```[\s\S]*?```/u.test(rawValue)) return true

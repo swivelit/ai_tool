@@ -110,6 +110,7 @@ class TriagSettings:
     verified_streaming_enabled: bool = False
     model_claim_verifier_enabled: bool = False
     answer_repair_enabled: bool = False
+    task_repair_second_attempt_enabled: bool = False
     verified_buffer_max_characters: int = 200_000
     repository_upload_enabled: bool = False
     repository_ttl_seconds: int = 3_600
@@ -161,6 +162,9 @@ class TriagSettings:
         )
         answer_repair = _parse_bool(
             env, "WEB_ANSWER_GUARD_REPAIR_ENABLED", False, errors
+        )
+        task_repair_second_attempt = _parse_bool(
+            env, "WEB_TASK_REPAIR_SECOND_ATTEMPT_ENABLED", False, errors
         )
         repository_upload = _parse_bool(
             env, "WEB_REPOSITORY_UPLOAD_ENABLED", False, errors
@@ -324,6 +328,7 @@ class TriagSettings:
             verified_streaming_enabled=verified_streaming,
             model_claim_verifier_enabled=model_verifier,
             answer_repair_enabled=answer_repair,
+            task_repair_second_attempt_enabled=task_repair_second_attempt,
             verified_buffer_max_characters=verified_buffer_max,
             repository_upload_enabled=repository_upload,
             repository_ttl_seconds=repository_ttl,

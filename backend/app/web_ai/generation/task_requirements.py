@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.5"
+TASK_REQUIREMENT_VERSION = "2026-08-03.6"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -130,9 +130,19 @@ class _ArchitectureSection:
     raw_value: str
 
 
-def _architecture_sections(
+@dataclass(frozen=True)
+class ArchitectureSectionSpan:
+    area_identifier: str
+    ordinal: int
+    label: str
+    start: int
+    heading_end: int
+    end: int
+
+
+def architecture_section_spans(
     answer: str,
-) -> tuple[dict[str, _ArchitectureSection], str, str]:
+) -> tuple[ArchitectureSectionSpan, ...]:
     value = str(answer or "")
     fenced_ranges = tuple(
         (match.start(), match.end())
@@ -142,7 +152,7 @@ def _architecture_sections(
         match for match in _ANSWER_NUMBERED.finditer(value)
         if not any(start <= match.start() < end for start, end in fenced_ranges)
     ]
-    accepted: list[tuple[str, re.Match[str]]] = []
+    accepted: list[tuple[str, int, re.Match[str]]] = []
     last_ordinal = 0
     for match in candidates:
         ordinal = int(match.group(1))
@@ -155,35 +165,94 @@ def _architecture_sections(
         expected_area = ARCHITECTURE_AREA_IDENTIFIERS[ordinal - 1]
         if area_identifier != expected_area:
             continue
-        accepted.append((expected_area, match))
+        accepted.append((expected_area, ordinal, match))
         last_ordinal = ordinal
+    return tuple(
+        ArchitectureSectionSpan(
+            area_identifier=area_identifier,
+            ordinal=ordinal,
+            label=match.group(2),
+            start=match.start(),
+            heading_end=match.end(),
+            end=(
+                accepted[index + 1][2].start()
+                if index + 1 < len(accepted) else len(value)
+            ),
+        )
+        for index, (area_identifier, ordinal, match) in enumerate(accepted)
+    )
+
+
+def _architecture_sections(
+    answer: str,
+) -> tuple[dict[str, _ArchitectureSection], str, str]:
+    value = str(answer or "")
+    spans = architecture_section_spans(value)
 
     sections: dict[str, _ArchitectureSection] = {}
-    for index, (area_identifier, match) in enumerate(accepted):
-        end = (
-            accepted[index + 1][1].start()
-            if index + 1 < len(accepted) else len(value)
-        )
+    for span in spans:
         label_parts = re.split(
             r"\s+(?:[-\u2010-\u2015\u2212]|:)\s+",
-            match.group(2), maxsplit=1,
+            span.label, maxsplit=1,
         )
         inline_detail = label_parts[1] if len(label_parts) == 2 else ""
-        raw_section = inline_detail + "\n" + value[match.end():end]
-        sections[area_identifier] = _ArchitectureSection(
+        raw_section = inline_detail + "\n" + value[
+            span.heading_end:span.end
+        ]
+        sections[span.area_identifier] = _ArchitectureSection(
             normalized_value=normalize_architecture_semantics(raw_section),
             raw_value=raw_section,
         )
 
     fallback_parts: list[str] = []
     cursor = 0
-    for _area_identifier, match in accepted:
-        fallback_parts.append(value[cursor:match.start()])
+    for span in spans:
+        fallback_parts.append(value[cursor:span.start])
         fallback_parts.append("\n")
-        cursor = match.end()
+        cursor = span.heading_end
     fallback_parts.append(value[cursor:])
     raw_fallback = "".join(fallback_parts)
     return sections, normalize_architecture_semantics(raw_fallback), raw_fallback
+
+
+def splice_architecture_section_repair(
+    prior_answer: str,
+    repair_answer: str,
+    expected_area_identifiers: tuple[str, ...],
+) -> str | None:
+    expected = tuple(dict.fromkeys(expected_area_identifiers))
+    if not expected:
+        return None
+    prior = str(prior_answer or "")
+    repair = str(repair_answer or "")
+    prior_spans = {
+        span.area_identifier: span
+        for span in architecture_section_spans(prior)
+    }
+    repair_spans = architecture_section_spans(repair)
+    if (
+        set(span.area_identifier for span in repair_spans) != set(expected)
+        or any(area not in prior_spans for area in expected)
+        or not repair_spans
+        or repair[:repair_spans[0].start].strip()
+    ):
+        return None
+    replacements = {
+        span.area_identifier: repair[span.start:span.end].strip()
+        for span in repair_spans
+    }
+    if any(not replacements.get(area) for area in expected):
+        return None
+    result = prior
+    for area_identifier in sorted(
+        expected, key=lambda area: prior_spans[area].start, reverse=True
+    ):
+        span = prior_spans[area_identifier]
+        replacement = replacements[area_identifier]
+        if span.end < len(prior) and not replacement.endswith(("\n", "\r")):
+            replacement += "\n"
+        result = result[:span.start] + replacement + result[span.end:]
+    return result
 
 
 def _architecture_mechanism(
@@ -200,10 +269,10 @@ def _architecture_mechanism(
         "transaction_boundaries": r"\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b",
         "state_transitions": r"\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic\w*[^.;]{0,40}transition\w*|transition\w*[^.;]{0,40}monotonic\w*|status rank)\b",
         "pseudocode": r"\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction|def|function|return|commit|insert|select)\b",
-        "out_of_order_handling": r"\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only)\b",
+        "out_of_order_handling": r"\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only|out of sequence|earlier event\w*|arriv\w*[^.;]{0,40}(?:late|later|after|early)|(?:older|earlier|newer)[^.;]{0,40}(?:event|state|status|update)\w*|superseded|outdated|defer\w*|buffer\w*[^.;]{0,40}event\w*|(?:skip\w*|discard\w*|ignor\w*)[^.;]{0,50}(?:older|earlier|stale|outdated|out of order|out of sequence)|forward transition\w*|only forward|predecessor\w*|gap[^.;]{0,30}(?:close\w*|fill\w*))\b",
         "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b",
         "reconciliation": r"\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b",
-        "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b",
+        "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body|(?:verif\w*|validat\w*|authenticat\w*|recomput\w*|check\w*)[^.;]{0,50}(?:signature|hmac|digest|secret)|(?:signature|hmac|digest)[^.;]{0,50}(?:verif\w*|validat\w*|match\w*|mismatch\w*|reject\w*)|webhook secret|shared secret|x razorpay signature|constant time|timestamp[^.;]{0,40}(?:check\w*|validat\w*|reject\w*))\b",
         "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b",
     }
     if area_identifier == "pseudocode" and re.search(

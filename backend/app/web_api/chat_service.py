@@ -68,9 +68,12 @@ from ..web_ai.generation.output_contract import (
 )
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
-    extract_task_requirements,
+    extract_task_requirements, splice_architecture_section_repair,
 )
-from ..web_ai.generation.repair import build_repair_request
+from ..web_ai.generation.repair import (
+    architecture_splice_area_identifiers,
+    build_repair_request,
+)
 from ..web_ai.persistence import (
     get_or_create_usage_stage,
     persist_answer_quality,
@@ -4246,7 +4249,10 @@ def execute_web_turn(
                     ),
                     max_output_tokens=prepared.route.max_output_tokens,
                     attempt_number=attempt_number,
-                    strict_format_correction=attempt_number == 2,
+                    strict_format_correction=(
+                        attempt_number == 2
+                        and output_contract.strict_visible_format
+                    ),
                 )
                 repair_route = replace(
                     prepared.route,
@@ -4372,6 +4378,14 @@ def execute_web_turn(
                         repaired.raw
                     ),
                 )
+                if contract.architecture_splice_areas:
+                    spliced = splice_architecture_section_repair(
+                        answer,
+                        repaired.text,
+                        contract.architecture_splice_areas,
+                    )
+                    if spliced is not None:
+                        repaired = replace(repaired, text=spliced)
                 return repaired
 
             def repair(
@@ -4392,7 +4406,7 @@ def execute_web_turn(
                 quality: AnswerQualityResult,
             ) -> bool:
                 failed = quality.failed_checks
-                return bool(
+                strict_format_retry = bool(
                     output_contract.strict_visible_format
                     and failed
                     and all(
@@ -4400,6 +4414,18 @@ def execute_web_turn(
                         for check in failed
                     )
                 )
+                current_architecture_areas = (
+                    failed_architecture_area_identifiers(quality)
+                )
+                splice_areas = architecture_splice_area_identifiers(failed)
+                architecture_retry = bool(
+                    phase3_settings.task_repair_second_attempt_enabled
+                    and current_architecture_areas
+                    and splice_areas == current_architecture_areas
+                    and len(current_architecture_areas)
+                    < len(repair_trigger_area_identifiers)
+                )
+                return strict_format_retry or architecture_retry
 
             def verify_repaired(
                 answer: str, prior: AnswerQualityResult

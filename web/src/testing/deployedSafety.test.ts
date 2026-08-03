@@ -245,12 +245,13 @@ test('targeted architecture fixtures use the shared coverage expectations', () =
   for (const id of [
     'subsections-numbered-lists', 'rendered-innertext-no-markers',
     'empty-headed-section-not-rescued', 'test-plan-scenario-phrasing',
+    'security-verb-form-phrasing', 'out-of-order-natural-phrasing',
   ]) {
     const fixture = fixtures.architecture_coverage.find(item => item.id === id)
     expect(fixture, id).toBeDefined()
     const result = evaluateWebhookArchitecture(fixture?.text ?? '')
     expect(result.missingAreas, id).toEqual(fixture?.missing_areas)
-    expect(result.validatorVersion, id).toBe('2026-08-03.5')
+    expect(result.validatorVersion, id).toBe('2026-08-03.6')
   }
 })
 

@@ -378,6 +378,7 @@ def test_repair_is_called_at_most_once():
 
 def _execute_contract_turn(
     monkeypatch, *, slug, prompt, answers, captured_requests=None,
+    task_repair_second_attempt_enabled=False,
 ):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setattr(
@@ -407,6 +408,9 @@ def _execute_contract_turn(
         answer_guard_enabled=True,
         verified_streaming_enabled=True,
         answer_repair_enabled=True,
+        task_repair_second_attempt_enabled=(
+            task_repair_second_attempt_enabled
+        ),
     )
     completed = execute_web_turn(
         prepared, providers={prepared.route.provider: Provider()}
@@ -571,11 +575,10 @@ Run a reconciliation audit job.
 Perform HMAC signature verification and replay-window checks.
 ### 10. A focused test plan
 Run concurrency and failure-injection integration tests."""
-    repaired = incomplete.replace(
-        "### 5. Duplicate-event handling\n",
+    repaired = (
         "### 5. Duplicate-event handling\n"
         "INSERT ON CONFLICT DO NOTHING for the unique provider event ID, then "
-        "return 200 without a second wallet credit.\n",
+        "return 200 without a second wallet credit."
     )
     captured_requests = []
     completed, calls = _execute_contract_turn(
@@ -590,6 +593,10 @@ Run concurrency and failure-injection integration tests."""
     repair_messages = captured_requests[1].metadata["provider_messages"]
     assert "duplicate_handling" in repair_messages[0]["content"]
     assert "heading alone is insufficient" in repair_messages[0]["content"]
+    assert "Return ONLY the failed architecture sections" in (
+        repair_messages[0]["content"]
+    )
+    assert "Cover all 10" not in repair_messages[1]["content"]
     assert completed.message.quality["status"] == "verified"
     with SessionLocal() as session:
         audit = build_request_audit(
@@ -601,6 +608,79 @@ Run concurrency and failure-injection integration tests."""
         "task_architecture_duplicate_handling"
     ]
     assert audit["repair_trigger_area_identifiers"] == ["duplicate_handling"]
+    assert audit["post_repair_failed_check_identifiers"] == []
+
+
+def test_second_architecture_splice_repair_is_bounded_and_flagged(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    draft = """PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.
+### 1. Database tables and unique constraints
+Use event tables with a UNIQUE provider event ID.
+### 2. Transaction boundaries
+Use one atomic transaction and commit or rollback.
+### 3. Event and payment state transitions
+Use monotonic state transitions and a status rank.
+### 4. Pseudocode
+The worker function inserts an event and commits.
+### 5. Duplicate-event handling
+Use INSERT ON CONFLICT DO NOTHING for an already processed event.
+### 6. Out-of-order handling
+Consider event timing carefully.
+### 7. Failure recovery
+Requeue pending events after a crash and resume expired leases.
+### 8. Reconciliation
+Run a reconciliation audit job against PostgreSQL.
+### 9. Security checks
+Protect the webhook.
+### 10. A focused test plan
+Cover duplicates, concurrency, and crash recovery scenarios."""
+    first_repair = """### 6. Out-of-order handling
+Events arriving out of sequence are deferred; outdated updates are discarded.
+### 9. Security checks
+Protect the webhook."""
+    second_repair = """### 9. Security checks
+Verify the X-Razorpay-Signature header against the webhook secret using a constant-time comparison."""
+    captured_requests = []
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-second-architecture-splice",
+        prompt=prompt,
+        answers=[draft, first_repair, second_repair],
+        captured_requests=captured_requests,
+        task_repair_second_attempt_enabled=True,
+    )
+    assert calls == 3
+    assert [request.request_id for request in captured_requests] == [
+        "contract-second-architecture-splice-request",
+        "contract-second-architecture-splice-request:repair:1",
+        "contract-second-architecture-splice-request:repair:2",
+    ]
+    assert completed.message.quality["status"] == "verified"
+    assert completed.message.content.count("### 6. Out-of-order handling") == 1
+    assert completed.message.content.count("### 9. Security checks") == 1
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session,
+            request_ids=["contract-second-architecture-splice-request"],
+        )[0]
+    assert audit["pre_repair_failed_check_identifiers"] == [
+        "task_architecture_out_of_order_handling",
+        "task_architecture_security_checks",
+    ]
     assert audit["post_repair_failed_check_identifiers"] == []
 
 

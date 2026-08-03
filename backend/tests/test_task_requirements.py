@@ -9,7 +9,8 @@ from app.web_ai.generation.task_requirements import (
     TASK_REQUIREMENT_VERSION, evaluate_architecture_coverage,
     evaluate_authority_semantics,
     evaluate_idempotency_semantics,
-    extract_task_requirements, validate_task_requirements,
+    extract_task_requirements, splice_architecture_section_repair,
+    validate_task_requirements,
 )
 
 
@@ -58,7 +59,7 @@ def test_b01_semantic_requirements_require_definition_and_retry_example():
 
 
 def test_python_and_browser_share_capability_semantic_fixtures():
-    assert TASK_REQUIREMENT_VERSION == "2026-08-03.5"
+    assert TASK_REQUIREMENT_VERSION == "2026-08-03.6"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"
     cases = json.loads(fixture.read_text(encoding="utf-8"))
     for case in cases["idempotency"]:
@@ -101,7 +102,7 @@ def test_python_and_browser_share_capability_semantic_fixtures():
         assert duplicate.stable_side_effect_outcome_present is case[
             "duplicate_stable_side_effect_outcome_present"
         ], case["id"]
-        assert result.validator_version == "2026-08-03.5", case["id"]
+        assert result.validator_version == "2026-08-03.6", case["id"]
 
 
 def test_architecture_headings_without_semantics_remain_unverified():
@@ -148,6 +149,44 @@ def test_architecture_headings_without_semantics_remain_unverified():
             task_requirements=contract,
         ),
     ).status == "unverified"
+
+
+def test_architecture_section_splice_preserves_passing_sections_byte_for_byte():
+    prior = """### 1. Database tables and unique constraints
+Use event tables with a UNIQUE provider event ID.
+### 2. Transaction boundaries
+Use one atomic transaction and commit or rollback.
+### 3. Event and payment state transitions
+Use monotonic state transitions and a status rank.
+### 4. Pseudocode
+The worker function inserts an event and commits.
+### 5. Duplicate-event handling
+Use INSERT ON CONFLICT DO NOTHING for an already processed event.
+### 6. Out-of-order handling
+Events arriving out of sequence are deferred; outdated updates are discarded.
+### 7. Failure recovery
+Requeue pending events after a crash and resume expired leases.
+### 8. Reconciliation
+Run a reconciliation audit job against PostgreSQL.
+### 9. Security checks
+Protect the webhook.
+### 10. A focused test plan
+Cover duplicates, concurrency, and crash recovery scenarios."""
+    repair = """### 9. Security checks
+Verify the X-Razorpay-Signature header against the webhook secret using a constant-time comparison."""
+    original_section_six = prior[
+        prior.index("### 6. Out-of-order handling"):
+        prior.index("### 7. Failure recovery")
+    ]
+    spliced = splice_architecture_section_repair(
+        prior, repair, ("security_checks",)
+    )
+    assert spliced is not None
+    assert spliced[
+        spliced.index("### 6. Out-of-order handling"):
+        spliced.index("### 7. Failure recovery")
+    ] == original_section_six
+    assert evaluate_architecture_coverage(spliced).missing_area_identifiers == ()
 
 
 def test_architecture_quality_observations_never_contain_answer_text():
