@@ -106,7 +106,7 @@ class TierPolicy:
 _BASE_POLICY: dict[TierId, dict[str, object]] = {
     "lite": {
         "max_prompt_tokens": 3_000,
-        "max_output_tokens": 1_200,
+        "max_output_tokens": 1_600,
         "max_history_tokens": 1_200,
         "max_memory_tokens": 450,
         "max_profile_tokens": 300,

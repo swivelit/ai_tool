@@ -120,8 +120,8 @@
     {
       "id": "unique-event-on-conflict",
       "text": "Use a UNIQUE provider_event_id. INSERT ON CONFLICT DO NOTHING and acknowledge the duplicate.",
-      "covered_areas": ["duplicate_handling"],
-      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "covered_areas": ["pseudocode", "duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
       "duplicate_heading_present": false,
       "duplicate_semantic_mechanism_present": true,
       "duplicate_stable_side_effect_outcome_present": true
@@ -156,11 +156,29 @@
     {
       "id": "retry-without-dedup-rejected",
       "text": "Retry the webhook after a transient failure.",
-      "covered_areas": [],
-      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "covered_areas": ["failure_recovery"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "reconciliation", "security_checks", "test_plan"],
       "duplicate_heading_present": false,
       "duplicate_semantic_mechanism_present": false,
       "duplicate_stable_side_effect_outcome_present": false
+    },
+    {
+      "id": "subsections-numbered-lists",
+      "text": "PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.\n### 1. Database tables and unique constraints\nUse webhook_events and wallet_ledger tables with a UNIQUE provider_event_id.\n### 2. Transaction boundaries\nUse one atomic transaction with SELECT FOR UPDATE, then commit or rollback.\n### 3. Event and payment state transitions\n1. RECEIVED -> AUTHORIZED\n2. CAPTURED → REFUNDED follows a monotonic status rank.\n### 4. Pseudocode\n```python\ndef apply_delivery(event):\n    insert(event)\n    commit()\n    return True\n```\n### 5. Duplicate-event handling\nA unique provider event ID uses INSERT ON CONFLICT DO NOTHING; an already processed event returns 200 without a second wallet credit.\n### 6. Out-of-order handling\n1. Ignore a stale or older event that arrives late.\n2. Apply only forward-only ordering transitions.\n### 7. Failure recovery\n1. Requeue pending events after a crash.\n2. A sweeper resumes an expired lease and retries safely.\n### 8. Reconciliation\nA reconciliation audit job compares provider records with PostgreSQL.\n### 9. Security checks\n1. Verify the raw-body HMAC signature and timestamp.\n2. Enforce the replay window before processing.\n### 10. Focused test plan\n1. Tests cover duplicate and concurrent deliveries.\n2. Tests cover crash recovery, refunds, replay, and out of order events.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": [],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "rendered-innertext-no-markers",
+      "text": "PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.\nDatabase tables and unique constraints\nUse webhook_events and wallet_ledger tables with a UNIQUE provider_event_id.\nTransaction boundaries\nUse one atomic transaction with SELECT FOR UPDATE, then commit or rollback.\nEvent and payment state transitions\nRECEIVED -> AUTHORIZED\nCAPTURED → REFUNDED follows a monotonic status rank.\nPseudocode\ndef apply_delivery(event):\ninsert(event)\ncommit()\nreturn True\nDuplicate-event handling\nA unique provider event ID uses INSERT ON CONFLICT DO NOTHING; an already processed event returns 200 without a second wallet credit.\nOut-of-order handling\nIgnore a stale or older event that arrives late.\nApply only forward-only ordering transitions.\nFailure recovery\nRequeue pending events after a crash.\nA sweeper resumes an expired lease and retries safely.\nReconciliation\nA reconciliation audit job compares provider records with PostgreSQL.\nSecurity checks\nVerify the raw-body HMAC signature and timestamp.\nEnforce the replay window before processing.\nFocused test plan\nTests cover duplicate and concurrent deliveries.\nTests cover crash recovery, refunds, replay, and out of order events.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": [],
+      "duplicate_heading_present": false,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
     }
   ]
 }

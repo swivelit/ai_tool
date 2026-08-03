@@ -204,7 +204,7 @@ def test_long_form_execution_plan_preserves_distinct_tier_ceilings(monkeypatch):
         ).max_output_tokens
         for tier in ("lite", "standard", "pro")
     }
-    assert ceilings == {"lite": 1200, "standard": 2400, "pro": 4000}
+    assert ceilings == {"lite": 1600, "standard": 2400, "pro": 4000}
 
 
 def test_invalid_deterministic_json_candidate_falls_through_to_planned_generation(

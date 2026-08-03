@@ -6,7 +6,8 @@ from pathlib import Path
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.generation.sentence_segmentation import count_sentences
 from app.web_ai.generation.task_requirements import (
-    evaluate_architecture_coverage, evaluate_authority_semantics,
+    TASK_REQUIREMENT_VERSION, evaluate_architecture_coverage,
+    evaluate_authority_semantics,
     evaluate_idempotency_semantics,
     extract_task_requirements, validate_task_requirements,
 )
@@ -57,6 +58,7 @@ def test_b01_semantic_requirements_require_definition_and_retry_example():
 
 
 def test_python_and_browser_share_capability_semantic_fixtures():
+    assert TASK_REQUIREMENT_VERSION == "2026-08-03.4"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"
     cases = json.loads(fixture.read_text(encoding="utf-8"))
     for case in cases["idempotency"]:
@@ -99,6 +101,7 @@ def test_python_and_browser_share_capability_semantic_fixtures():
         assert duplicate.stable_side_effect_outcome_present is case[
             "duplicate_stable_side_effect_outcome_present"
         ], case["id"]
+        assert result.validator_version == "2026-08-03.4", case["id"]
 
 
 def test_architecture_headings_without_semantics_remain_unverified():

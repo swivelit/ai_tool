@@ -617,7 +617,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.3'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.4'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -697,41 +697,70 @@ function architectureAreaFromLabel(
   return rules.find(([, patterns]) => patterns.some(pattern => pattern.test(value)))?.[0] ?? null
 }
 
-function architectureSections(answer: string): Map<
-  typeof WEBHOOK_ARCHITECTURE_AREAS[number], string
-> {
+type ArchitectureSection = { normalizedValue: string; rawValue: string }
+
+function architectureSections(answer: string): {
+  sections: Map<typeof WEBHOOK_ARCHITECTURE_AREAS[number], ArchitectureSection>
+  normalizedFallback: string
+  rawFallback: string
+} {
   const value = String(answer)
   const fencedRanges = [...value.matchAll(/```[\s\S]*?```/gu)].map(match => ({
     start:match.index ?? 0,
     end:(match.index ?? 0) + match[0].length,
   }))
-  const matches = [...value.matchAll(
+  const candidates = [...value.matchAll(
     /^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+(?:\*\*)?(.+?)(?:\*\*)?\s*$/gmu,
   )].filter(match => !fencedRanges.some(range => (
     range.start <= (match.index ?? 0) && (match.index ?? 0) < range.end
   )))
-  const sections = new Map<typeof WEBHOOK_ARCHITECTURE_AREAS[number], string>()
-  let lastMatchIndex = -1
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index]
+  const accepted: Array<{
+    areaIdentifier: typeof WEBHOOK_ARCHITECTURE_AREAS[number]
+    match: RegExpMatchArray
+  }> = []
+  let lastOrdinal = 0
+  for (const match of candidates) {
     const ordinal = Number(match[1])
-    if (ordinal < 1 || ordinal > WEBHOOK_ARCHITECTURE_AREAS.length) continue
+    if (ordinal <= lastOrdinal || ordinal > WEBHOOK_ARCHITECTURE_AREAS.length) {
+      continue
+    }
     const area = architectureAreaFromLabel(match[2] ?? '')
     const expectedArea = WEBHOOK_ARCHITECTURE_AREAS[ordinal - 1]
-    if (area !== expectedArea || index <= lastMatchIndex) continue
+    if (area !== expectedArea) continue
+    accepted.push({ areaIdentifier:expectedArea, match })
+    lastOrdinal = ordinal
+  }
+  const sections = new Map<
+    typeof WEBHOOK_ARCHITECTURE_AREAS[number], ArchitectureSection
+  >()
+  for (let index = 0; index < accepted.length; index += 1) {
+    const { areaIdentifier, match } = accepted[index]
     const start = (match.index ?? 0) + match[0].length
-    const end = matches[index + 1]?.index ?? value.length
+    const end = accepted[index + 1]?.match.index ?? value.length
     const labelParts = (match[2] ?? '').split(
       /\s+(?:[-\u2010-\u2015\u2212]|:)\s+/u,
       2,
     )
     const inlineDetail = labelParts.length === 2 ? labelParts[1] : ''
-    sections.set(expectedArea, normalizeArchitectureSemantics(
-      `${inlineDetail}\n${value.slice(start, end)}`,
-    ))
-    lastMatchIndex = index
+    const rawValue = `${inlineDetail}\n${value.slice(start, end)}`
+    sections.set(areaIdentifier, {
+      normalizedValue:normalizeArchitectureSemantics(rawValue),
+      rawValue,
+    })
   }
-  return sections
+  const fallbackParts: string[] = []
+  let cursor = 0
+  for (const { match } of accepted) {
+    fallbackParts.push(value.slice(cursor, match.index ?? 0), '\n')
+    cursor = (match.index ?? 0) + match[0].length
+  }
+  fallbackParts.push(value.slice(cursor))
+  const rawFallback = fallbackParts.join('')
+  return {
+    sections,
+    normalizedFallback:normalizeArchitectureSemantics(rawFallback),
+    rawFallback,
+  }
 }
 
 function duplicateArchitectureSemantics(value: string): {
@@ -746,6 +775,7 @@ function duplicateArchitectureSemantics(value: string): {
 function architectureMechanism(
   area: typeof WEBHOOK_ARCHITECTURE_AREAS[number],
   value: string,
+  rawValue: string,
 ): boolean {
   if (area === 'database_schema') {
     return hasAll(value, [
@@ -758,14 +788,16 @@ function architectureMechanism(
     RegExp
   > = {
     transaction_boundaries:/\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b/u,
-    state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic transition)\b/u,
-    pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction)\b/u,
-    out_of_order_handling:/\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state)\b/u,
-    failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash recovery|lease recovery)\b/u,
+    state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic\w*[^.;]{0,40}transition\w*|transition\w*[^.;]{0,40}monotonic\w*|status rank)\b/u,
+    pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction|def|function|return|commit|insert|select)\b/u,
+    out_of_order_handling:/\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only)\b/u,
+    failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b/u,
     reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/u,
     security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b/u,
-    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b/u,
+    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\btests?\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\btests?\b/u,
   }
+  if (area === 'pseudocode' && /```[\s\S]*?```/u.test(rawValue)) return true
+  if (area === 'state_transitions' && /(?:->|→|=>)/u.test(rawValue)) return true
   return area !== 'duplicate_handling' && patterns[area].test(value)
 }
 
@@ -773,8 +805,9 @@ export function evaluateWebhookArchitecture(
   answer: string,
 ): WebhookArchitectureEvaluation {
   const value = String(answer)
-  const normalizedValue = normalizeArchitectureSemantics(value)
-  const sections = architectureSections(value)
+  const {
+    sections, normalizedFallback, rawFallback,
+  } = architectureSections(value)
   const clauses = value.split(/(?<=[.!?;])\s+|\n+/u).filter(Boolean)
   const storeHasAuthority = (clause: string, store: string): boolean => {
     const authority = '(?:source of truth|system of record|authoritative(?: store| database)?|canonical(?: store| database)?|owns? (?:the )?durable state)'
@@ -800,18 +833,29 @@ export function evaluateWebhookArchitecture(
     && !nonPostgresAuthoritativeClaim
   const areaEvaluations = WEBHOOK_ARCHITECTURE_AREAS.map(areaIdentifier => {
     const section = sections.get(areaIdentifier)
-    const semanticValue = section ?? normalizedValue
+    const semanticValue = section?.normalizedValue ?? ''
+    const rawSemanticValue = section?.rawValue ?? ''
     if (areaIdentifier === 'duplicate_handling') {
-      const duplicate = duplicateArchitectureSemantics(semanticValue)
+      const sectionDuplicate = duplicateArchitectureSemantics(semanticValue)
+      const fallbackDuplicate = duplicateArchitectureSemantics(
+        normalizedFallback,
+      )
       return {
         areaIdentifier,
         headingPresent:section !== undefined,
-        semanticMechanismPresent:duplicate.mechanism,
-        stableSideEffectOutcomePresent:duplicate.stableOutcome,
-        passed:duplicate.mechanism || duplicate.stableOutcome,
+        semanticMechanismPresent:
+          sectionDuplicate.mechanism || fallbackDuplicate.mechanism,
+        stableSideEffectOutcomePresent:
+          sectionDuplicate.stableOutcome || fallbackDuplicate.stableOutcome,
+        passed:sectionDuplicate.mechanism || fallbackDuplicate.mechanism
+          || sectionDuplicate.stableOutcome || fallbackDuplicate.stableOutcome,
       }
     }
-    const mechanism = architectureMechanism(areaIdentifier, semanticValue)
+    const mechanism = architectureMechanism(
+      areaIdentifier, semanticValue, rawSemanticValue,
+    ) || architectureMechanism(
+      areaIdentifier, normalizedFallback, rawFallback,
+    )
     return {
       areaIdentifier,
       headingPresent:section !== undefined,

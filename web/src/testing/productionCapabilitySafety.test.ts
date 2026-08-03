@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   DebitBudget,
+  CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
   PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
   PRODUCTION_CAPABILITY_CONFIRMATION,
   PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS,
@@ -450,10 +451,12 @@ describe('production capability safety', () => {
   })
 
   it('shares all architecture coverage semantics with the backend', () => {
+    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.4')
     for (const fixture of semanticFixtures.architecture_coverage) {
       const result = evaluateWebhookArchitecture(fixture.text)
       expect(result.coveredAreas, fixture.id).toEqual(fixture.covered_areas)
       expect(result.missingAreas, fixture.id).toEqual(fixture.missing_areas)
+      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.4')
       const duplicate = result.areaEvaluations.find(
         area => area.areaIdentifier === 'duplicate_handling',
       )

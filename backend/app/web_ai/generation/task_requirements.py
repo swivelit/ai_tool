@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.3"
+TASK_REQUIREMENT_VERSION = "2026-08-03.4"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -124,43 +124,73 @@ def architecture_area_ids_for_contract(
     return ()
 
 
-def _architecture_sections(answer: str) -> dict[str, tuple[bool, str]]:
+@dataclass(frozen=True)
+class _ArchitectureSection:
+    normalized_value: str
+    raw_value: str
+
+
+def _architecture_sections(
+    answer: str,
+) -> tuple[dict[str, _ArchitectureSection], str, str]:
     value = str(answer or "")
     fenced_ranges = tuple(
         (match.start(), match.end())
         for match in re.finditer(r"```.*?```", value, re.DOTALL)
     )
-    matches = [
+    candidates = [
         match for match in _ANSWER_NUMBERED.finditer(value)
         if not any(start <= match.start() < end for start, end in fenced_ranges)
     ]
-    sections: dict[str, tuple[bool, str]] = {}
-    last_match_index = -1
-    for index, match in enumerate(matches):
+    accepted: list[tuple[str, re.Match[str]]] = []
+    last_ordinal = 0
+    for match in candidates:
         ordinal = int(match.group(1))
-        if ordinal < 1 or ordinal > len(ARCHITECTURE_AREA_IDENTIFIERS):
+        if (
+            ordinal <= last_ordinal
+            or ordinal > len(ARCHITECTURE_AREA_IDENTIFIERS)
+        ):
             continue
         area_identifier = _architecture_area_from_label(match.group(2))
         expected_area = ARCHITECTURE_AREA_IDENTIFIERS[ordinal - 1]
-        if area_identifier != expected_area or index <= last_match_index:
+        if area_identifier != expected_area:
             continue
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        accepted.append((expected_area, match))
+        last_ordinal = ordinal
+
+    sections: dict[str, _ArchitectureSection] = {}
+    for index, (area_identifier, match) in enumerate(accepted):
+        end = (
+            accepted[index + 1][1].start()
+            if index + 1 < len(accepted) else len(value)
+        )
         label_parts = re.split(
             r"\s+(?:[-\u2010-\u2015\u2212]|:)\s+",
             match.group(2), maxsplit=1,
         )
         inline_detail = label_parts[1] if len(label_parts) == 2 else ""
-        sections[expected_area] = (
-            True,
-            normalize_architecture_semantics(
-                inline_detail + "\n" + value[match.end():end]
-            ),
+        raw_section = inline_detail + "\n" + value[match.end():end]
+        sections[area_identifier] = _ArchitectureSection(
+            normalized_value=normalize_architecture_semantics(raw_section),
+            raw_value=raw_section,
         )
-        last_match_index = index
-    return sections
+
+    fallback_parts: list[str] = []
+    cursor = 0
+    for _area_identifier, match in accepted:
+        fallback_parts.append(value[cursor:match.start()])
+        fallback_parts.append("\n")
+        cursor = match.end()
+    fallback_parts.append(value[cursor:])
+    raw_fallback = "".join(fallback_parts)
+    return sections, normalize_architecture_semantics(raw_fallback), raw_fallback
 
 
-def _architecture_mechanism(area_identifier: str, value: str) -> bool:
+def _architecture_mechanism(
+    area_identifier: str,
+    value: str,
+    raw_value: str,
+) -> bool:
     if area_identifier == "database_schema":
         return bool(
             re.search(r"\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b", value)
@@ -168,14 +198,22 @@ def _architecture_mechanism(area_identifier: str, value: str) -> bool:
         )
     patterns = {
         "transaction_boundaries": r"\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b",
-        "state_transitions": r"\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic transition)\b",
-        "pseudocode": r"\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction)\b",
-        "out_of_order_handling": r"\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state)\b",
-        "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash recovery|lease recovery)\b",
+        "state_transitions": r"\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic\w*[^.;]{0,40}transition\w*|transition\w*[^.;]{0,40}monotonic\w*|status rank)\b",
+        "pseudocode": r"\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction|def|function|return|commit|insert|select)\b",
+        "out_of_order_handling": r"\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state|stale|older event|arrives late|ordering|forward only)\b",
+        "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b",
         "reconciliation": r"\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b",
         "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b",
-        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b",
+        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\btests?\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\btests?\b",
     }
+    if area_identifier == "pseudocode" and re.search(
+        r"```[\s\S]*?```", raw_value
+    ):
+        return True
+    if area_identifier == "state_transitions" and re.search(
+        r"(?:->|→|=>)", raw_value
+    ):
+        return True
     return bool(re.search(patterns[area_identifier], value))
 
 
@@ -205,18 +243,32 @@ def _duplicate_semantics(value: str) -> tuple[bool, bool]:
 def evaluate_architecture_coverage(
     answer: str,
 ) -> ArchitectureCoverageEvaluation:
-    normalized_answer = normalize_architecture_semantics(answer)
-    sections = _architecture_sections(answer)
+    sections, normalized_fallback, raw_fallback = _architecture_sections(answer)
     areas: list[ArchitectureAreaEvaluation] = []
     for area_identifier in ARCHITECTURE_AREA_IDENTIFIERS:
-        heading_present, section_value = sections.get(
-            area_identifier, (False, normalized_answer)
-        )
+        section = sections.get(area_identifier)
+        heading_present = section is not None
+        section_value = section.normalized_value if section else ""
+        raw_section_value = section.raw_value if section else ""
         if area_identifier == "duplicate_handling":
-            mechanism, stable = _duplicate_semantics(section_value)
+            section_mechanism, section_stable = _duplicate_semantics(
+                section_value
+            )
+            fallback_mechanism, fallback_stable = _duplicate_semantics(
+                normalized_fallback
+            )
+            mechanism = section_mechanism or fallback_mechanism
+            stable = section_stable or fallback_stable
             passed = mechanism or stable
         else:
-            mechanism = _architecture_mechanism(area_identifier, section_value)
+            mechanism = (
+                _architecture_mechanism(
+                    area_identifier, section_value, raw_section_value
+                )
+                or _architecture_mechanism(
+                    area_identifier, normalized_fallback, raw_fallback
+                )
+            )
             stable = False
             passed = mechanism
         areas.append(ArchitectureAreaEvaluation(

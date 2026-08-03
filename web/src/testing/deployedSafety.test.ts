@@ -13,6 +13,7 @@ import {
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { APIRequestContext, Page, Request, Response } from '@playwright/test'
+import { evaluateWebhookArchitecture } from './productionCapabilitySafety'
 
 function workspacePage(options: {
   composerVisible?: boolean
@@ -222,6 +223,27 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).toMatch(
     /case 'B03':[\s\S]{0,500}architecture_sections_missing[\s\S]{0,100}mandatoryConstraintFailed = true/,
   )
+})
+
+test('raw Markdown and rendered architecture fixtures have identical coverage', () => {
+  const fixtures = JSON.parse(readFileSync(
+    resolve(process.cwd(), '../shared-fixtures/capability-semantics.json'),
+    'utf8',
+  )) as { architecture_coverage: Array<{
+    id: string
+    text: string
+    missing_areas: string[]
+  }> }
+  for (const id of [
+    'subsections-numbered-lists', 'rendered-innertext-no-markers',
+  ]) {
+    const fixture = fixtures.architecture_coverage.find(item => item.id === id)
+    expect(fixture, id).toBeDefined()
+    const result = evaluateWebhookArchitecture(fixture?.text ?? '')
+    expect(result.missingAreas, id).toEqual([])
+    expect(result.missingAreas, id).toEqual(fixture?.missing_areas)
+    expect(result.validatorVersion, id).toBe('2026-08-03.4')
+  }
 })
 
 test('hanging deployed API requests fail with a bounded transport reason', async () => {
