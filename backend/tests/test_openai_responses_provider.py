@@ -1,5 +1,6 @@
 import logging
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -352,7 +353,7 @@ def test_web_reasoning_policy_defaults(monkeypatch):
         ("simple", "none"),
         ("normal", "low"),
         ("detailed", "low"),
-        ("long_form", "low"),
+        ("long_form", "none"),
     ],
 )
 def test_responses_stream_uses_web_reasoning_policy(
@@ -377,7 +378,7 @@ def test_responses_stream_uses_web_reasoning_policy(
         ("simple", "none"),
         ("normal", "medium"),
         ("detailed", "high"),
-        ("long_form", "low"),
+        ("long_form", "none"),
     ],
 )
 def test_responses_non_streaming_uses_same_web_reasoning_policy(
@@ -412,6 +413,27 @@ def test_provider_complete_uses_answer_class_from_route_metadata():
 
     assert response.text == "responses answer"
     assert client.responses.calls[0]["reasoning"] == {"effort": "low"}
+
+
+def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
+    assert openai_web_reasoning_effort(
+        "long_form", max_output_tokens=1200
+    ) == "none"
+    assert openai_web_reasoning_effort(
+        "long_form", max_output_tokens=2400
+    ) == "none"
+    assert openai_web_reasoning_effort(
+        "long_form", max_output_tokens=4000
+    ) == "low"
+
+    client = _Client()
+    client.responses = _Recorder([_terminal_event(_final())])
+    route = replace(_route(), max_output_tokens=2400)
+    OpenAIProvider(client).stream_complete(
+        _request("long_form"), route, lambda _delta: None
+    )
+    assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
 
 
 def test_invalid_web_reasoning_effort_is_rejected(monkeypatch):

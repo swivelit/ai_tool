@@ -21,6 +21,29 @@ export function capabilityEffectiveTimeoutMs(
     : PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS
 }
 
+export type CapabilityAnswerRepresentationCounts = {
+  visibleBulletCount: number
+  rawBulletCount: number
+  visibleFenceCount: number
+  rawFenceCount: number
+  visibleWordCount: number
+  rawWordCount: number
+}
+
+export function capabilityAnswerRepresentationCounts(
+  visibleText: string,
+  rawMarkdown: string,
+): CapabilityAnswerRepresentationCounts {
+  return {
+    visibleBulletCount:bulletLines(visibleText).length,
+    rawBulletCount:bulletLines(rawMarkdown).length,
+    visibleFenceCount:(visibleText.match(/```/gu) ?? []).length / 2,
+    rawFenceCount:(rawMarkdown.match(/```/gu) ?? []).length / 2,
+    visibleWordCount:countWords(visibleText),
+    rawWordCount:countMarkdownWords(rawMarkdown),
+  }
+}
+
 export type CapabilityProgressKind =
   | 'parity_passed'
   | 'login_passed'
@@ -474,6 +497,14 @@ export function redactPotentialSecrets(input: string): RedactionResult {
 
 export function countWords(value: string): number {
   return String(value).trim().match(/\S+/gu)?.length ?? 0
+}
+
+export function countMarkdownWords(value: string): number {
+  const semanticLines = String(value).split(/\r?\n/u).flatMap(line => {
+    if (/^\s*```[A-Za-z0-9_+.-]*\s*$/u.test(line)) return []
+    return [line.replace(/^\s*(?:[-*+] |\d+[.)]\s+)/u, '')]
+  })
+  return countWords(semanticLines.join('\n'))
 }
 
 export function countSentences(value: string): number {

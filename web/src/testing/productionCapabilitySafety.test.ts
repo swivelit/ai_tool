@@ -7,6 +7,7 @@ import {
   ProductionCapabilityGateError,
   batchIncludes,
   bulletLines,
+  capabilityAnswerRepresentationCounts,
   capabilityEffectiveTimeoutMs,
   countSentences,
   countWords,
@@ -401,5 +402,19 @@ describe('production capability safety', () => {
       expectedTier:'standard', uiTier:'standard', payloadTier:null,
       auditedTier:'lite',
     })).toBe(false)
+  })
+
+  it('keeps rendered text and persisted Markdown structural counts distinct', () => {
+    const visible = 'First item\nSecond item\n\nprint("ok")'
+    const raw = '- First item\n- Second item\n\n```python\nprint("ok")\n```'
+
+    expect(capabilityAnswerRepresentationCounts(visible, raw)).toEqual({
+      visibleBulletCount:0,
+      rawBulletCount:2,
+      visibleFenceCount:0,
+      rawFenceCount:1,
+      visibleWordCount:5,
+      rawWordCount:5,
+    })
   })
 })

@@ -59,6 +59,7 @@ from ..web_ai.generation.models import (
 from ..web_ai.generation.output_contract import (
     OutputContract,
     canonicalize_output_contract,
+    contract_compliant_candidate,
     extract_output_contract,
     output_contract_hash,
     validate_output_contract,
@@ -1876,6 +1877,17 @@ def prepare_web_turn(
                 request_id=request_id,
                 previous_topic=previous_safe_metadata.get("topic"),
             )
+            if deterministic is not None:
+                compliant_text = contract_compliant_candidate(
+                    deterministic.text, output_contract
+                )
+                if compliant_text is None:
+                    deterministic = None
+                else:
+                    deterministic = replace(
+                        deterministic, text=compliant_text,
+                        characters=len(compliant_text),
+                    )
             if deterministic is not None:
                 ai_request = AIRequest(
                     user_id=user_id,
@@ -4082,6 +4094,10 @@ def execute_web_turn(
                     evidence_pack=prepared.retrieval_context,
                     task_contract=prepared.ai_request.message,
                     output_contract=output_contract,
+                    answer_class=(
+                        prepared.optimization.answer_class
+                        if prepared.optimization else "normal"
+                    ),
                 )
                 repair_route = replace(
                     prepared.route,

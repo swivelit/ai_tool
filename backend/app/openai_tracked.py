@@ -568,7 +568,10 @@ def tracked_openai_generation(
             try:
                 if endpoint == "responses":
                     answer_class = extra.get("answer_class")
-                    reasoning_effort = openai_web_reasoning_effort(answer_class)
+                    reasoning_effort = openai_web_reasoning_effort(
+                        answer_class,
+                        max_output_tokens=output_tokens,
+                    )
                     request_kwargs: dict[str, Any] = {
                         "model": selection.model,
                         "input": _build_responses_input(messages, input_text),

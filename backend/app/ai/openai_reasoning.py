@@ -19,7 +19,11 @@ class OpenAIReasoningEffortConfigurationError(RuntimeError):
     """Raised when a configured website reasoning effort is unsupported."""
 
 
-def openai_web_reasoning_effort(answer_class: object) -> Optional[str]:
+def openai_web_reasoning_effort(
+    answer_class: object,
+    *,
+    max_output_tokens: object | None = None,
+) -> Optional[str]:
     """Return the configured effort only for an explicitly classified turn."""
 
     normalized_class = str(answer_class or "").strip().lower()
@@ -38,4 +42,18 @@ def openai_web_reasoning_effort(answer_class: object) -> Optional[str]:
             f"{name} must be one of: "
             + ", ".join(sorted(VALID_OPENAI_REASONING_EFFORTS))
         )
+    try:
+        output_budget = max(0, int(max_output_tokens or 0))
+    except (TypeError, ValueError):
+        output_budget = 0
+    # Responses reasoning tokens share max_output_tokens with visible output.
+    # Under Lite/Standard-sized long-form ceilings, reserve that bounded budget
+    # for the explicitly requested deliverable even when the general configured
+    # long-form effort is low. Larger Pro plans retain the configured effort.
+    if (
+        normalized_class == "long_form"
+        and 0 < output_budget <= 2_400
+        and effort not in {"none", "minimal"}
+    ):
+        return "none"
     return effort

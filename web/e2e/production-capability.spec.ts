@@ -32,8 +32,10 @@ import {
   DebitBudget,
   batchIncludes,
   bulletLines,
+  capabilityAnswerRepresentationCounts,
   capabilityEffectiveTimeoutMs,
   countSentences,
+  countMarkdownWords,
   countWords,
   deploymentParitySafeSummary,
   deploymentVersionUrl,
@@ -52,6 +54,7 @@ import {
   type CapabilityTierEvidence,
   type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
+import { pollCapabilityAudits } from '../src/testing/productionCapabilityAudit'
 import {
   StartupSnapshotError,
   snapshotProductionAccountState,
@@ -226,6 +229,16 @@ type QuestionResult = {
   expected: string
   answerCharacters: number
   answerWords: number
+  representationCounts: {
+    visibleBulletCount: number
+    rawBulletCount: number
+    visibleFenceCount: number
+    rawFenceCount: number
+    visibleWordCount: number
+    rawWordCount: number
+  }
+  contractValidationDisagreement: boolean
+  contractDisagreementChecks: string[]
   truncated: boolean | null
   continueAvailable: boolean | null
   sseEventOrder: string[]
@@ -270,6 +283,10 @@ type QuestionResult = {
   defectSeverity: 'P0' | 'P1' | 'P2' | 'P3' | null
   codeTest?: IsolatedRunResult
   tierEvidence?: CapabilityTierEvidence
+  architectureEvaluation?: {
+    missingAreas: string[]
+    authorityClassification: 'postgres_authoritative' | 'non_postgres_authoritative' | 'ambiguous'
+  }
 }
 
 type FixtureUpload = { id: string; name: string; warnings?: string[] }
@@ -279,6 +296,7 @@ type WorkflowResult = {
   reasonCodes: string[]
   requestIds: string[]
   severity: 'P0' | 'P1' | 'P2' | 'P3' | null
+  diagnostics?: Record<string, string | number | boolean | null>
 }
 
 class CheckpointingArray<T> extends Array<T> {
@@ -292,6 +310,17 @@ class CheckpointingArray<T> extends Array<T> {
     const length = super.push(...items)
     this.checkpoint(items)
     return length
+  }
+}
+
+class CapabilityQuestionExecutionError extends Error {
+  constructor(
+    reasonCode: string,
+    readonly requestId: string | null,
+    readonly errorClass: string,
+  ) {
+    super(reasonCode)
+    this.name = 'CapabilityQuestionExecutionError'
   }
 }
 
@@ -321,18 +350,19 @@ function walletValues(value: WalletResponse): { chat: number; voice: number } {
 function safeHarnessReason(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   return /^[a-z0-9_:-]{1,120}$/i.test(message)
-    ? message : 'scenario_harness_failure'
+    ? message : 'question_execution_unclassified'
 }
 
 function evaluation(
   question: CapabilityQuestion,
-  answer: string,
+  displayedAnswer: string,
+  rawMarkdown: string,
   audit: Audit,
   sources: QuestionResult['visibleSources'],
   codeTest?: IsolatedRunResult,
 ): Pick<QuestionResult, 'status' | 'score' | 'redistributedWeights' | 'reasonCodes' | 'defectSeverity'> {
-  const value = answer.trim()
-  const lower = value.toLocaleLowerCase()
+  const value = displayedAnswer.trim()
+  const structure = rawMarkdown.trim()
   const reasons: string[] = []
   let correctness = value ? 1 : 0
   let format = 1
@@ -370,21 +400,31 @@ function evaluation(
       || hasAffirmativeWaitAdvice(value)
     ) fail('medical_urgency_failed'); break
     case 'B01':
-      if (bulletLines(value).length !== 4) formatFail('not_exactly_four_bullets')
-      if (countWords(value) > 140) formatFail('over_140_words')
+      if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
+      if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       if (!/retry/i.test(value) || !/same|key|duplicate/i.test(value)) fail('retry_example_or_definition_missing')
       break
     case 'B02':
       if (!codeTest?.passed) fail(codeTest?.reasonCode ?? 'code_test_not_run')
       if (
-        (value.match(/```python/gi) ?? []).length !== 2
-        || (value.match(/```/g) ?? []).length !== 4
+        (structure.match(/```python/gi) ?? []).length !== 2
+        || (structure.match(/```/g) ?? []).length !== 4
       ) formatFail('not_exactly_two_python_fences')
+      {
+        const blocks = [...structure.matchAll(/```python\s*\n([\s\S]*?)```/gi)]
+        if (
+          !blocks[0]?.[1]?.trimStart().startsWith('# pricing.py')
+          || !blocks[1]?.[1]?.trimStart().startsWith('# test_pricing.py')
+        ) formatFail('python_fence_prefix_failed')
+      }
       break
     case 'B03': {
       const architecture = evaluateWebhookArchitecture(value)
       correctness = architecture.coveredAreas.length / 10
-      if (architecture.missingAreas.length) reasons.push('architecture_sections_missing')
+      if (architecture.missingAreas.length) {
+        reasons.push('architecture_sections_missing')
+        mandatoryConstraintFailed = true
+      }
       if (!architecture.postgresAuthoritative || architecture.nonPostgresAuthoritativeClaim) {
         fail('architecture_source_of_truth_error')
       }
@@ -394,28 +434,28 @@ function evaluation(
     case 'C02': if (!/772\.02/.test(value) || !containsAll(value, ['subtotal', 'discount', 'taxable', 'GST'])) fail('currency_stages_or_total_wrong'); break
     case 'C03':
       try {
-        const parsed = JSON.parse(value) as Record<string, unknown>
+        const parsed = JSON.parse(structure) as Record<string, unknown>
         if (Object.keys(parsed).sort().join(',') !== 'answer,confidence,reason') formatFail('json_keys_wrong')
       } catch { formatFail('invalid_json') }
-      if (/```/.test(value)) formatFail('json_markdown_fence')
+      if (/```/.test(structure)) formatFail('json_markdown_fence')
       break
     case 'C04': {
-      const bullets = bulletLines(value)
+      const bullets = bulletLines(structure)
       if (bullets.length !== 3 || bullets.some(line => countWords(line.replace(/^\s*[-*+]\s*/, '')) > 12)) formatFail('three_bullet_limit_failed')
       break
     }
     case 'C05': if (!containsAll(value, ['440', 'Region B', 'Region A', '25'])) fail('table_answers_wrong'); break
     case 'C06':
       if (!/contradict|cannot|impossible/i.test(value)) fail('contradiction_explanation_wrong')
-      if (occurrences(value, '?') !== 3) formatFail('not_exactly_three_questions')
+      if (occurrences(structure, '?') !== 3) formatFail('not_exactly_three_questions')
       break
-    case 'C07': if (countSentences(value) !== 5 || !/[\u0B80-\u0BFF]/u.test(value)) formatFail('tamil_five_sentences_failed'); break
+    case 'C07': if (countSentences(structure) !== 5 || !/[\u0B80-\u0BFF]/u.test(value)) formatFail('tamil_five_sentences_failed'); break
     case 'C08': if (!containsAll(value, ['17 November 2031', 'Madurai', 'Meera', '₹4.25 crore'])) fail('translation_details_lost'); break
     case 'C09':
-      if (countWords(value) !== 120 || occurrences(lower, 'blue umbrella') !== 1 || lastWord(lower) !== 'home') formatFail('micro_story_constraints_failed')
-      if (/[“”"]|^\s*[—–]\s+/mu.test(value)) formatFail('micro_story_dialogue_present')
+      if (countMarkdownWords(structure) !== 120 || occurrences(structure.toLocaleLowerCase(), 'blue umbrella') !== 1 || lastWord(structure.toLocaleLowerCase()) !== 'home') formatFail('micro_story_constraints_failed')
+      if (/[“”"]|^\s*[—–]\s+/mu.test(structure)) formatFail('micro_story_dialogue_present')
       {
-        const lines = value.split(/\r?\n/u).filter(line => line.trim())
+        const lines = structure.split(/\r?\n/u).filter(line => line.trim())
         const first = lines[0]?.trim() ?? ''
         if (
           /^#{1,6}\s+|^title\s*:/iu.test(first)
@@ -538,29 +578,9 @@ async function pollAudits(
   requestIds: readonly string[],
   timeoutMilliseconds = 60_000,
 ): Promise<Map<string, Audit>> {
-  const uniqueIds = [...new Set(requestIds)].filter(id => /^[0-9a-f-]{36}$/i.test(id))
-  if (uniqueIds.length === 0) return new Map()
-  const deadline = Date.now() + timeoutMilliseconds
-  const last = new Map<string, Audit>()
-  while (Date.now() < deadline) {
-    const requestTimeout = Math.max(1, Math.min(15_000, deadline - Date.now()))
-    const response = await api.request<{ results: Audit[] }>(
-      'POST', '/api/web/admin/triag-request-audit', { request_ids:uniqueIds },
-      { timeoutMilliseconds:requestTimeout },
-    ).catch(() => ({ status:0, data:null }))
-    for (const current of response.data?.results ?? []) last.set(current.request_id, current)
-    const terminal = uniqueIds.every(id => {
-      const current = last.get(id)
-      return current
-        && !current.orphaned_active_reservation
-        && current.active_usage_stage_names.length === 0
-        && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)
-    })
-    if (terminal) return last
-    await new Promise(resolveWait => setTimeout(resolveWait, 500))
-  }
-  if (last.size === uniqueIds.length) return last
-  throw new Error('request_audit_timeout')
+  return pollCapabilityAudits<Audit>({
+    api, requestIds, timeoutMilliseconds,
+  })
 }
 
 async function pollAudit(
@@ -755,8 +775,20 @@ function skippedResult(
     status, selectedTier:question.tier ?? 'not_run', requestId:null, threadId:null,
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
-    answerWords:0, truncated:null, continueAvailable:null, sseEventOrder:[],
+    answerWords:0,
+    representationCounts:{
+      visibleBulletCount:0, rawBulletCount:0,
+      visibleFenceCount:0, rawFenceCount:0,
+      visibleWordCount:0, rawWordCount:0,
+    },
+    contractValidationDisagreement:false,
+    contractDisagreementChecks:[],
+    truncated:null, continueAvailable:null, sseEventOrder:[],
     retrievalStatus:'not_run', qualityStatus:'not_run', sourceKindCounts:{},
+    persistedQualityStatus:'not_run', sseQualityStatus:'not_run',
+    cacheHit:false, cacheHitKind:'none', finishReason:'', completionStatus:'not_run',
+    outputContractCheckStatusCounts:{}, repairAttempted:false,
+    generationStageCount:0, repairStageCount:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
     invalidCitation:false,
     usageStageCount:0, usageStageStatusCounts:{}, activeUsageStageNames:[],
@@ -886,6 +918,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   const cleanupErrors: string[] = []
   const consoleErrors: string[] = []
   const failedRequests: string[] = []
+  const questionFailureDiagnostics: Array<{
+    scenario_id: string
+    reason_code: string
+    request_id: string | null
+    error_class: string
+  }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
   const uploadPace = new PaceGate(UPLOAD_START_INTERVAL_MS)
   const budget = new DebitBudget(gate.chatDebitCapMicros, gate.voiceDebitCapMicros)
@@ -965,7 +1003,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
 
   const executeQuestion = async (
     source: CapabilityQuestion,
-    options: { composerText?: string; virtualText?: boolean } = {},
+    options: {
+      composerText?: string
+      virtualText?: boolean
+      onRequestId?: (requestId: string) => void
+    } = {},
   ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
     if (Date.now() >= executionDeadline) throw new Error('batch_deadline_exceeded')
@@ -980,6 +1022,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       1, Math.min(maximum, questionDeadline - Date.now()),
     )
     progress('question_start', 'question', activeScenarioId)
+    const stepReasonCodes: string[] = []
     const tier = question.tier ?? 'standard'
     const createsFreshThread = question.freshThread
       || question.category === 'B'
@@ -997,7 +1040,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const selectedTierEvidence = await selectTier(page, api, tier)
     budget.assertRequestMayStart('chat')
     await chatPace.wait()
-    const walletBeforeResponse = await readWallet(api)
+    const walletBeforeResponse = await readWallet(api).catch(() => {
+      throw new Error('wallet_read_failed')
+    })
     const before = walletValues(walletBeforeResponse)
     const startedAt = Date.now()
     const startedAtUtc = new Date(startedAt).toISOString()
@@ -1027,15 +1072,22 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       generatedUploadIds.add(virtualUpload.id)
       createdUploadIds.add(virtualUpload.id)
     }
-    const request = await requestPromise
+    const request = await requestPromise.catch(() => {
+      throw new Error('chat_request_not_observed')
+    })
     const payload = request.postDataJSON() as Record<string, unknown>
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
     if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('request_id_missing')
+    options.onRequestId?.(requestId)
     benchmarkRequestIds.add(requestId)
     requestPayloads.set(requestId, payload)
-    const response = await responsePromise
+    const response = await responsePromise.catch(() => {
+      throw new Error('chat_response_not_observed')
+    })
     const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
-    await assistant.waitFor({ state:'visible', timeout:remaining(90_000) })
+    await assistant.waitFor({ state:'visible', timeout:remaining(90_000) }).catch(() => {
+      throw new Error('assistant_message_timeout')
+    })
     let firstVisibleDeltaMs: number | null = null
     const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
     while (Date.now() < firstDeltaDeadline) {
@@ -1046,6 +1098,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
     await expect(assistant).not.toHaveClass(/streaming/, {
       timeout:remaining(300_000),
+    }).catch(() => {
+      throw new Error('assistant_message_timeout')
     })
     const endedAt = Date.now()
     const endedAtUtc = new Date(endedAt).toISOString()
@@ -1056,7 +1110,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         remaining(RESPONSE_BODY_TIMEOUT_MS),
         'response_body_timeout',
       )).toString('utf8')
-    } catch { rawSse = '' }
+    } catch {
+      rawSse = ''
+      stepReasonCodes.push('response_body_timeout')
+    }
     const events = parseSseEventOrder(rawSse)
     const threadEvent = sseData(rawSse, 'thread').at(0)
     const doneEvent = sseData(rawSse, 'done').at(-1)
@@ -1069,10 +1126,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ) ?? ''
     }
     if (threadId) generatedThreadIds.add(threadId)
-    const raw = threadId ? await rawMessage(api, threadId, requestId) : null
+    const raw = threadId
+      ? await rawMessage(api, threadId, requestId).catch(() => null)
+      : null
+    if (!raw) throw new Error('raw_message_read_failed')
     const displayed = await visibleAnswer(assistant)
     const redacted = redactPotentialSecrets(displayed)
-    const rawRedacted = redactPotentialSecrets(raw?.content ?? displayed)
+    const rawRedacted = redactPotentialSecrets(raw.content)
     const secretCodes = [...new Set([...redacted.reasonCodes, ...rawRedacted.reasonCodes])]
     if (redacted.potentialSecret || rawRedacted.potentialSecret) {
       stopAfterSecret = true
@@ -1081,7 +1141,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const sources = await sourceRows(assistant)
     const persistedSourceIds = new Set((raw?.sources ?? []).map(source => source.id))
     const invalidCitation = sources.some(source => !persistedSourceIds.has(source.id))
-    const audit = await pollAudit(api, requestId, remaining(60_000))
+    const audit = await pollAudit(api, requestId, remaining(60_000)).catch(() => {
+      throw new Error('request_audit_timeout')
+    })
     const payloadTier = typeof payload.tier === 'string' ? payload.tier : null
     const tierEvidence: CapabilityTierEvidence = {
       expectedTier:tier,
@@ -1090,16 +1152,52 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       auditedTier:audit.selected_tier,
     }
     budget.observeAuthoritativeCharge('chat', audit.charged_micro_inr_total)
-    const walletAfterResponse = await readWallet(api)
+    const walletAfterResponse = await readWallet(api).catch(() => {
+      throw new Error('wallet_read_failed')
+    })
     const after = walletValues(walletAfterResponse)
     let codeTest: IsolatedRunResult | undefined
     if (question.id === 'B02') codeTest = await testGeneratedDiscountPython(raw?.content ?? displayed)
     if (question.id === 'G02') codeTest = await testRepositoryPatch(raw?.content ?? displayed)
-    const judged = evaluation(question, redacted.text, audit, sources, codeTest)
-    if (!tierEvidenceMatches(tierEvidence)) {
+    const judged = evaluation(
+      question, redacted.text, rawRedacted.text, audit, sources, codeTest,
+    )
+    if (audit.selected_tier === 'not_run') {
+      judged.status = 'failed'
+      judged.score = Math.min(judged.score, 60)
+      judged.reasonCodes.push('tier_audit_unavailable')
+      judged.defectSeverity = 'P2'
+    } else if (!tierEvidenceMatches(tierEvidence)) {
       judged.status = 'failed'
       judged.score = Math.min(judged.score, 60)
       judged.reasonCodes.push('audit_tier_mismatch')
+      judged.defectSeverity = 'P2'
+    }
+    if (stepReasonCodes.length) {
+      judged.status = 'failed'
+      judged.score = Math.min(judged.score, 65)
+      judged.reasonCodes.push(...stepReasonCodes)
+      judged.defectSeverity = 'P2'
+    }
+    const mandatoryStructureFailures = judged.reasonCodes.filter(reason => [
+      'not_exactly_four_bullets', 'over_140_words',
+      'not_exactly_two_python_fences', 'python_fence_prefix_failed',
+      'invalid_json', 'json_keys_wrong', 'json_markdown_fence',
+      'three_bullet_limit_failed', 'not_exactly_three_questions',
+      'tamil_five_sentences_failed', 'micro_story_constraints_failed',
+      'micro_story_dialogue_present', 'micro_story_title_present',
+    ].includes(reason))
+    const backendContractPassed = (
+      (audit.output_contract_check_status_counts.passed ?? 0) > 0
+      && (audit.output_contract_check_status_counts.failed ?? 0) === 0
+      && (audit.output_contract_check_status_counts.error ?? 0) === 0
+    )
+    const contractValidationDisagreement = backendContractPassed
+      && mandatoryStructureFailures.length > 0
+    if (contractValidationDisagreement) {
+      judged.status = 'failed'
+      judged.score = Math.min(judged.score, 60)
+      judged.reasonCodes.push('contract_validation_disagreement')
       judged.defectSeverity = 'P2'
     }
     if (secretCodes.length) {
@@ -1143,10 +1241,18 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
       answerCharacters:redacted.text.length, answerWords:countWords(redacted.text),
+      representationCounts:capabilityAnswerRepresentationCounts(
+        redacted.text, rawRedacted.text,
+      ),
+      contractValidationDisagreement,
+      contractDisagreementChecks:contractValidationDisagreement
+        ? mandatoryStructureFailures : [],
       truncated:typeof doneEvent?.truncated === 'boolean' ? doneEvent.truncated : raw?.truncated ?? null,
       continueAvailable:typeof doneEvent?.can_continue === 'boolean' ? doneEvent.can_continue : raw?.can_continue ?? null,
       sseEventOrder:events, retrievalStatus:audit.retrieval_status,
-      qualityStatus:audit.quality_status, sourceKindCounts:audit.source_kind_counts,
+      qualityStatus:contractValidationDisagreement
+        ? 'unverified' : audit.quality_status,
+      sourceKindCounts:audit.source_kind_counts,
       persistedQualityStatus:audit.persisted_quality_status,
       sseQualityStatus:String(qualityEvent?.status ?? 'not_run'),
       cacheHit:audit.cache_hit, cacheHitKind:audit.cache_hit_kind,
@@ -1177,6 +1283,18 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       defectSeverity:judged.defectSeverity,
       ...(codeTest ? { codeTest } : {}),
       tierEvidence,
+      ...(question.id === 'B03' ? {
+        architectureEvaluation:(() => {
+          const architecture = evaluateWebhookArchitecture(redacted.text)
+          return {
+            missingAreas:architecture.missingAreas,
+            authorityClassification:architecture.nonPostgresAuthoritativeClaim
+              ? 'non_postgres_authoritative' as const
+              : architecture.postgresAuthoritative
+                ? 'postgres_authoritative' as const : 'ambiguous' as const,
+          }
+        })(),
+      } : {}),
     }
     results.push(result)
     return result
@@ -1187,8 +1305,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     options: { composerText?: string; virtualText?: boolean } = {},
   ): Promise<QuestionResult> => {
     const activeScenarioId = scenarioId(materializeQuestion(source, runId))
+    let capturedRequestId: string | null = null
     try {
-      const result = await executeQuestion(source, options)
+      const result = await executeQuestion(source, {
+        ...options,
+        onRequestId:requestId => { capturedRequestId = requestId },
+      })
       progress('question_complete', 'question', activeScenarioId, result.requestId)
       scheduleCheckpoint()
       await checkpointQueue
@@ -1197,7 +1319,18 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       progress('question_complete', 'question', activeScenarioId)
       scheduleCheckpoint()
       await checkpointQueue
-      throw error
+      const reasonCode = safeHarnessReason(error)
+      questionFailureDiagnostics.push({
+        scenario_id:activeScenarioId,
+        reason_code:reasonCode,
+        request_id:capturedRequestId,
+        error_class:error instanceof Error
+          ? error.constructor.name : 'UnknownError',
+      })
+      throw new CapabilityQuestionExecutionError(
+        reasonCode, capturedRequestId,
+        error instanceof Error ? error.constructor.name : 'UnknownError',
+      )
     }
   }
 
@@ -1232,7 +1365,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         if (question.id === 'A01') deterministicGreetingPassed = result.status === 'passed'
       } catch (error) {
         const reason = safeHarnessReason(error)
-        results.push(skippedResult(materializeQuestion(question, runId), backendRelease(), 'failed', reason))
+        const failedResult = skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'failed', reason,
+        )
+        if (error instanceof CapabilityQuestionExecutionError) {
+          failedResult.requestId = error.requestId
+        }
+        results.push(failedResult)
         if (question.id === 'A01') deterministicGreetingPassed = false
       }
       if (question.id === 'A01' && !deterministicGreetingPassed) {
@@ -1551,31 +1690,40 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     if (!currentResult) {
       workflowResults.push({ id:'J-RESPONSE-TOOLS', status:'skipped', reasonCodes:['no_current_generated_answer'], requestIds:[], severity:null })
     } else {
-      try {
-        await withBoundedTimeout(
-          () => context.grantPermissions(['clipboard-read', 'clipboard-write']),
-          BROWSER_TOOL_TIMEOUT_MS,
-          'clipboard_timeout',
-        )
-        await currentAssistant.getByRole('button', { name:'Copy response' }).click({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        const clipboard = await withBoundedTimeout(
-          () => page.evaluate(() => navigator.clipboard.readText()),
-          BROWSER_TOOL_TIMEOUT_MS,
-          'clipboard_timeout',
-        )
-        const copyPassed = clipboard.trim() === currentResult.rawMarkdown.trim()
+      const responseToolReasons: string[] = []
+      const copyControl = currentAssistant.getByRole('button', { name:'Copy response' })
+      if (!await copyControl.isVisible().catch(() => false)) {
+        responseToolReasons.push('copy_control_missing')
+      } else {
+        try {
+          await withBoundedTimeout(
+            () => context.grantPermissions(['clipboard-read', 'clipboard-write']),
+            BROWSER_TOOL_TIMEOUT_MS,
+            'clipboard_mismatch',
+          )
+          await copyControl.click({ timeout:BROWSER_TOOL_TIMEOUT_MS })
+          const clipboard = await withBoundedTimeout(
+            () => page.evaluate(() => navigator.clipboard.readText()),
+            BROWSER_TOOL_TIMEOUT_MS,
+            'clipboard_mismatch',
+          )
+          if (clipboard.trim() !== currentResult.rawMarkdown.trim()) {
+            responseToolReasons.push('clipboard_mismatch')
+          }
+        } catch {
+          responseToolReasons.push('clipboard_mismatch')
+        }
+      }
 
-        let downloadPassed = false
-        let downloadTimedOut = false
+      const downloadControl = currentAssistant.getByRole('button', { name:'Download response' })
+      if (!await downloadControl.isVisible().catch(() => false)) {
+        responseToolReasons.push('download_control_missing')
+      } else {
         try {
           const downloadPromise = observePlaywrightPromise(page.waitForEvent(
             'download', { timeout:BROWSER_TOOL_TIMEOUT_MS },
           ))
-          await currentAssistant.getByRole('button', { name:'Download response' }).click({
-            timeout:BROWSER_TOOL_TIMEOUT_MS,
-          })
+          await downloadControl.click({ timeout:BROWSER_TOOL_TIMEOUT_MS })
           const download = await downloadPromise
           const downloadPath = await withBoundedTimeout(
             () => download.path(), BROWSER_TOOL_TIMEOUT_MS,
@@ -1586,50 +1734,60 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
               () => readFile(downloadPath, 'utf8'), BROWSER_TOOL_TIMEOUT_MS,
               'response_download_timeout',
             ) : ''
-          downloadPassed = downloaded.trim() === currentResult.rawMarkdown.trim()
+          if (downloaded.trim() !== currentResult.rawMarkdown.trim()) {
+            responseToolReasons.push('download_mismatch')
+          }
         } catch {
-          downloadTimedOut = true
+          responseToolReasons.push('response_download_timeout')
         }
-
-        const before = currentResult.rawMarkdown
-        await currentAssistant.getByRole('button', { name:'Open response editor' }).click({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        const editor = page.getByRole('dialog', { name:'Response editor' })
-        await editor.getByRole('button', { name:'Markdown source' }).click({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        const source = editor.getByLabel('Response Markdown source')
-        await source.fill(`${before}\n\nLOCAL-${runId}`, { timeout:BROWSER_TOOL_TIMEOUT_MS })
-        await editor.getByRole('button', { name:'Apply changes' }).click({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        await expect(editor.getByText(`LOCAL-${runId}`)).toBeVisible({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        await editor.getByRole('button', { name:'Close response editor' }).click({
-          timeout:BROWSER_TOOL_TIMEOUT_MS,
-        })
-        const persisted = currentResult.threadId
-          ? await rawMessage(api, currentResult.threadId, currentResult.requestId!) : null
-        const localOnly = persisted?.content === before
-        workflowResults.push({
-          id:'J-RESPONSE-TOOLS',
-          status:copyPassed && downloadPassed && localOnly ? 'passed' : 'failed',
-          reasonCodes:[
-            ...(copyPassed ? [] : ['clipboard_mismatch']),
-            ...(downloadPassed ? [] : [downloadTimedOut ? 'response_download_timeout' : 'download_mismatch']),
-            ...(localOnly ? [] : ['local_edit_mutated_server_message']),
-          ].length ? [
-            ...(copyPassed ? [] : ['clipboard_mismatch']),
-            ...(downloadPassed ? [] : [downloadTimedOut ? 'response_download_timeout' : 'download_mismatch']),
-            ...(localOnly ? [] : ['local_edit_mutated_server_message']),
-          ] : ['copy_download_editor_passed'],
-          requestIds:[currentResult.requestId!], severity:copyPassed && downloadPassed && localOnly ? null : 'P2',
-        })
-      } catch {
-        workflowResults.push({ id:'J-RESPONSE-TOOLS', status:'failed', reasonCodes:['response_tools_harness_failure'], requestIds:[currentResult.requestId!], severity:'P2' })
       }
+
+      const editorControl = currentAssistant.getByRole('button', { name:'Open response editor' })
+      if (!await editorControl.isVisible().catch(() => false)) {
+        responseToolReasons.push('editor_control_missing')
+      } else {
+        const before = currentResult.rawMarkdown
+        let editorApplied = false
+        try {
+          await editorControl.click({ timeout:BROWSER_TOOL_TIMEOUT_MS })
+          const editor = page.getByRole('dialog', { name:'Response editor' })
+          await editor.getByRole('button', { name:'Markdown source' }).click({
+            timeout:BROWSER_TOOL_TIMEOUT_MS,
+          })
+          await editor.getByLabel('Response Markdown source').fill(
+            `${before}\n\nLOCAL-${runId}`, { timeout:BROWSER_TOOL_TIMEOUT_MS },
+          )
+          await editor.getByRole('button', { name:'Apply changes' }).click({
+            timeout:BROWSER_TOOL_TIMEOUT_MS,
+          })
+          await expect(editor.getByText(`LOCAL-${runId}`)).toBeVisible({
+            timeout:BROWSER_TOOL_TIMEOUT_MS,
+          })
+          editorApplied = true
+          await editor.getByRole('button', { name:'Close response editor' }).click({
+            timeout:BROWSER_TOOL_TIMEOUT_MS,
+          })
+        } catch {
+          responseToolReasons.push('editor_apply_failed')
+        }
+        if (editorApplied) {
+          const persisted = currentResult.threadId
+            ? await rawMessage(api, currentResult.threadId, currentResult.requestId!).catch(() => null)
+            : null
+          if (persisted?.content !== before) {
+            responseToolReasons.push('raw_message_verification_failed')
+          }
+        }
+      }
+      const distinctReasons = [...new Set(responseToolReasons)]
+      workflowResults.push({
+        id:'J-RESPONSE-TOOLS',
+        status:distinctReasons.length ? 'failed' : 'passed',
+        reasonCodes:distinctReasons.length
+          ? distinctReasons : ['copy_download_editor_passed'],
+        requestIds:[currentResult.requestId!],
+        severity:distinctReasons.length ? 'P2' : null,
+      })
     }
 
     assertWithinDeadline()
@@ -1728,6 +1886,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     let cancellationThreadsBefore = new Set<string>()
     let cancellationChargeObserved = false
     let cancellationFailure: CapabilityCancellationReasonCode | null = null
+    const cancellationDiagnostics: Record<string, string | number | boolean | null> = {
+      cancel_post_observed:false,
+      cancel_http_status:null,
+      cancel_response_status:'unknown',
+      request_already_completed:false,
+      terminal_audit_state:'not_started',
+    }
     try {
       budget.assertRequestMayStart('chat')
       await freshChat(page)
@@ -1748,14 +1913,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const request = await requestPromise
       const payload = request.postDataJSON() as Record<string, unknown>
       const requestId = String(payload.request_id ?? '')
-      if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('cancel_http_failed')
+      if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('stop_button_not_ready')
       cancellationRequestId = requestId
       benchmarkRequestIds.add(requestId)
       requestPayloads.set(requestId, payload)
       const readiness = await pollCancellationActive(
         api, requestId, Math.min(15_000, assertWithinDeadline()),
       )
-      if (readiness === 'terminal') throw new Error('request_completed_before_cancel')
+      if (readiness === 'terminal') {
+        cancellationDiagnostics.request_already_completed = true
+        throw new Error('request_completed_before_cancel')
+      }
       if (readiness === 'timeout') throw new Error('stop_button_not_ready')
       const stop = page.getByTestId('stop-generation-button')
       try {
@@ -1767,25 +1935,35 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       } catch {
         throw new Error('stop_button_not_ready')
       }
+      const cancelRequestPromise = observePlaywrightPromise(page.waitForRequest(request => (
+        new URL(request.url()).pathname
+          === `/api/web/chat/requests/${requestId}/cancel`
+        && request.method() === 'POST'
+      ), { timeout:Math.min(30_000, assertWithinDeadline()) }))
       const cancelResponsePromise = observePlaywrightPromise(page.waitForResponse(response => (
         new URL(response.url()).pathname
           === `/api/web/chat/requests/${requestId}/cancel`
         && response.request().method() === 'POST'
       ), { timeout:Math.min(30_000, assertWithinDeadline()) }))
       await stop.click()
+      const cancelRequest = await cancelRequestPromise.catch(() => null)
+      cancellationDiagnostics.cancel_post_observed = Boolean(cancelRequest)
       const cancelResponse = await cancelResponsePromise.catch(() => null)
-      if (!cancelResponse || cancelResponse.status() !== 200) {
+      cancellationDiagnostics.cancel_http_status = cancelResponse?.status() ?? null
+      if (!cancelResponse || cancelResponse.status() < 200 || cancelResponse.status() >= 300) {
         throw new Error('cancel_http_failed')
       }
       const cancelBody = await boundedResponseJson<{ status?: unknown }>(
         cancelResponse,
       ) ?? {}
       const cancelStatus = boundedCancellationResponseStatus(cancelBody.status)
+      cancellationDiagnostics.cancel_response_status = cancelStatus
       if (['completed', 'already_terminal'].includes(cancelStatus)) {
+        cancellationDiagnostics.request_already_completed = true
         throw new Error('request_completed_before_cancel')
       }
       if (!['stopped', 'cancelling'].includes(cancelStatus)) {
-        throw new Error('cancel_http_failed')
+        throw new Error('cancellation_settlement_inconsistent')
       }
       const threadId = await discoverGeneratedThread(
         api, cancellationThreadsBefore,
@@ -1800,6 +1978,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       if (!['cancelled', 'complete', 'failed'].includes(audit.cancellation_state)) {
         throw new Error('terminal_audit_timeout')
       }
+      cancellationDiagnostics.terminal_audit_state = audit.cancellation_state
       budget.observeAuthoritativeCharge('chat', audit.charged_micro_inr_total)
       cancellationChargeObserved = true
       cancellationFailure = boundedCancellationSettlementReason(audit)
@@ -1822,6 +2001,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           Math.min(60_000, assertWithinDeadline()),
         ).catch(() => null)
         if (terminalAudit) {
+          cancellationDiagnostics.terminal_audit_state = terminalAudit.cancellation_state
           budget.observeAuthoritativeCharge('chat', terminalAudit.charged_micro_inr_total)
           cancellationChargeObserved = true
           if (!cancellationFailure) {
@@ -1843,6 +2023,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       requestIds:cancellationRequestId ? [cancellationRequestId] : [],
       severity:cancellationFailure === 'cancellation_settlement_inconsistent'
         ? 'P0' : cancellationFailure ? 'P2' : null,
+      diagnostics:cancellationDiagnostics,
     })
 
     assertWithinDeadline()
@@ -2229,6 +2410,14 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         repair_attempted:item.repairAttempted,
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
+        visible_bullet_count:item.representationCounts.visibleBulletCount,
+        raw_bullet_count:item.representationCounts.rawBulletCount,
+        visible_fence_count:item.representationCounts.visibleFenceCount,
+        raw_fence_count:item.representationCounts.rawFenceCount,
+        visible_word_count:item.representationCounts.visibleWordCount,
+        raw_word_count:item.representationCounts.rawWordCount,
+        contract_validation_disagreement:item.contractValidationDisagreement,
+        contract_disagreement_checks:item.contractDisagreementChecks,
         persisted_quality_status:item.persistedQualityStatus,
         sse_quality_status:item.sseQualityStatus,
         ...(item.tierEvidence ? {
@@ -2243,6 +2432,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       workflows:workflowResults.map(item => ({
         id:item.id, status:item.status, reason_codes:item.reasonCodes,
         request_ids:item.requestIds,
+        ...(item.diagnostics ? { diagnostics:item.diagnostics } : {}),
       })),
       tier_comparison:results.filter(item => ['B01', 'B02', 'B03', 'E01'].includes(item.questionId)).map(item => ({
         question_id:item.questionId, tier:item.selectedTier, status:item.status,
@@ -2291,6 +2481,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         most_recent_ledger_id:originalLedgerId,
       },
       startup_failure_diagnostic:startupFailureDiagnostic,
+      question_failure_diagnostics:questionFailureDiagnostics,
       results,
       workflow_results:workflowResults,
       render_log_correlation:results.filter(item => item.requestId).map(item => ({

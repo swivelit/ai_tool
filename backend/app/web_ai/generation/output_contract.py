@@ -504,3 +504,17 @@ def validate_output_contract(
             "introductory_prose_present",
         )
     return tuple(checks)
+
+
+def contract_compliant_candidate(
+    answer: str,
+    contract: OutputContract,
+) -> str | None:
+    """Return a semantics-preserving compliant candidate or reject it."""
+    value = canonicalize_output_contract(answer, contract)
+    if any(
+        check.status in {"failed", "error"}
+        for check in validate_output_contract(value, contract)
+    ):
+        return None
+    return value

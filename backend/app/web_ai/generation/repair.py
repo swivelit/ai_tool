@@ -24,6 +24,7 @@ def build_repair_request(
     evidence_pack: EvidencePack | None,
     task_contract: str,
     output_contract: OutputContract | None = None,
+    answer_class: str = "normal",
 ) -> RepairContract:
     failures = "\n".join(
         f"- {check.check_type}: {check.reason_code or 'failed'}"
@@ -61,7 +62,11 @@ def build_repair_request(
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "answer_class": "normal",
+            "answer_class": (
+                answer_class
+                if answer_class in {"simple", "normal", "detailed", "long_form"}
+                else "normal"
+            ),
             "max_provider_attempts": 1,
             "prompt_cache_enabled": False,
             "cache_scope": "disabled",

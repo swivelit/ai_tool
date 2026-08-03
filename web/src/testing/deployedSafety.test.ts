@@ -149,11 +149,17 @@ test('production capability workflows use typed chat observers only', () => {
     /cancellationResponseObserver\s*=\s*observePlaywrightPromise\(page\.waitForResponse\(\s*isPostChatStreamResponse/,
   )
   const requestObservers = [...spec.matchAll(/waitForRequest\(([\s\S]{0,120})/g)]
-  expect(requestObservers).toHaveLength(5)
-  expect(requestObservers.every(match => match[1].includes('isPostChatStreamRequest'))).toBe(true)
+  expect(requestObservers).toHaveLength(6)
+  expect(requestObservers.filter(
+    match => match[1].includes('isPostChatStreamRequest'),
+  )).toHaveLength(5)
   expect(spec).not.toMatch(/waitForRequest\s*\(\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>[\s\S]{0,300}?\.request\(\)/)
   expect(cancellation).toContain('boundedCancellationResponseStatus')
   expect(cancellation).toContain('boundedCancellationSettlementReason')
+  expect(cancellation).toContain('cancel_post_observed')
+  expect(cancellation).toContain('cancel_http_status')
+  expect(cancellation).toContain('request_already_completed')
+  expect(cancellation).toContain('terminal_audit_state')
   for (const reason of [
     'stop_button_not_ready', 'request_completed_before_cancel',
     'cancel_http_failed', 'terminal_audit_timeout',
@@ -180,6 +186,32 @@ test('production capability browser waits and cleanup are independently bounded'
   expect(spec).toContain('last_progress_timestamp:lastProgressTimestamp')
   expect(spec).toContain("progress('safe_summary_write_start'")
   expect(spec).toContain("progress('safe_summary_write_complete'")
+})
+
+test('production capability uses persisted Markdown for structural scoring and bounded reasons', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    'question, redacted.text, rawRedacted.text, audit, sources, codeTest',
+  )
+  expect(spec).toContain('const structure = rawMarkdown.trim()')
+  for (const reason of [
+    'chat_request_not_observed', 'chat_response_not_observed',
+    'assistant_message_timeout', 'response_body_timeout',
+    'raw_message_read_failed', 'request_audit_timeout',
+    'wallet_read_failed', 'tier_audit_unavailable',
+    'copy_control_missing', 'clipboard_mismatch',
+    'download_control_missing', 'response_download_timeout',
+    'download_mismatch', 'editor_control_missing',
+    'editor_apply_failed', 'raw_message_verification_failed',
+  ]) expect(spec).toContain(reason)
+  expect(spec).not.toContain('response_tools_harness_failure')
+  expect(spec).toContain('contract_validation_disagreement')
+  expect(spec).toContain('representationCounts:capabilityAnswerRepresentationCounts(')
+  expect(spec).toMatch(
+    /case 'B03':[\s\S]{0,500}architecture_sections_missing[\s\S]{0,100}mandatoryConstraintFailed = true/,
+  )
 })
 
 test('hanging deployed API requests fail with a bounded transport reason', async () => {

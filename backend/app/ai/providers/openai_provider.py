@@ -347,7 +347,10 @@ class OpenAIProvider(AIProvider):
                     )
                     model_spec = get_model_spec(model)
                     reasoning_effort = (
-                        openai_web_reasoning_effort(answer_class)
+                        openai_web_reasoning_effort(
+                            answer_class,
+                            max_output_tokens=route.max_output_tokens,
+                        )
                         if model_spec.supports_reasoning_effort
                         else None
                     )

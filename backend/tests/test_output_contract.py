@@ -11,6 +11,7 @@ from app.web_ai.generation.models import QualityCheck
 from app.web_ai.generation.output_contract import (
     OutputContract,
     canonicalize_output_contract,
+    contract_compliant_candidate,
     extract_output_contract,
     validate_output_contract,
 )
@@ -351,3 +352,23 @@ def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():
         and check.status == "failed"
         for check in enforced.checks
     )
+
+
+@pytest.mark.parametrize(
+    ("prompt", "candidate"),
+    [
+        (C03, "Paste the JSON you want me to validate."),
+        (B01, "A deterministic paragraph without bullet markers."),
+        (B02, "```python\n# pricing.py\npass\n```"),
+    ],
+)
+def test_contract_invalid_deterministic_candidates_are_rejected(prompt, candidate):
+    assert contract_compliant_candidate(
+        candidate, extract_output_contract(prompt)
+    ) is None
+
+
+def test_contract_compliant_deterministic_json_candidate_is_allowed():
+    contract = extract_output_contract(C03)
+    candidate = '{"answer":true,"reason":"divisors","confidence":1}'
+    assert contract_compliant_candidate(candidate, contract) == candidate

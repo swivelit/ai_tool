@@ -156,6 +156,73 @@ def test_deterministic_triage_route_plans_zero_provider_calls():
     assert plan.streaming_mode == "none"
 
 
+def test_ten_part_architecture_contract_gets_bounded_long_form_plan(monkeypatch):
+    monkeypatch.setenv("WEB_LONG_FORM_MAX_OUTPUT_TOKENS", "6000")
+    monkeypatch.setenv("WEB_DETAILED_MAX_OUTPUT_TOKENS", "1800")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "6000")
+    prompt = """Design an idempotent Razorpay webhook-processing architecture.
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan
+"""
+    long_form = build_execution_plan(
+        _triage_input(message=prompt, selected_tier="standard"),
+        settings=TriagSettings(enabled=True),
+    )
+    ordinary = build_execution_plan(
+        _triage_input(
+            message="Design a webhook architecture and explain its trade-offs.",
+            selected_tier="standard",
+        ),
+        settings=TriagSettings(enabled=True),
+    )
+
+    assert long_form.answer_class == "long_form"
+    assert long_form.max_output_tokens == 2400
+    assert ordinary.answer_class == "detailed"
+    assert ordinary.max_output_tokens == 1800
+
+
+def test_invalid_deterministic_json_candidate_falls_through_to_planned_generation(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_DETERMINISTIC_TOOLS_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None
+    )
+    user = create_test_user(
+        "contract-deterministic-fallback",
+        "contract-deterministic-fallback@example.com",
+    )
+    _fund(int(user.id))
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message=(
+            "Return only valid JSON with exactly these keys:\n\n"
+            "- answer\n- reason\n- confidence\n\n"
+            "Question: Is 29 a prime number? Do not use Markdown fences."
+        ),
+        request_id="contract-deterministic-fallback",
+        thread_id=None,
+        reply_language="en",
+    )
+
+    assert prepared.precomputed_response is None
+    assert prepared.route.provider in {"openai", "sarvam"}
+    assert prepared.reserved_micros > 0
+    assert prepared.execution_plan is not None
+    assert prepared.execution_plan.expected_provider_calls > 0
+
+
 def test_evidence_pack_enforces_owner_isolation():
     owner_item = EvidenceItem(
         evidence_id="one",
