@@ -88,7 +88,11 @@ def evidence_prompt(pack: EvidencePack) -> str:
         "do not provide enough support; do not guess."
         if pack.retrieval_status == "insufficient"
         else (
-            "Use only supported statements. Every factual answer section must "
+            "Use only supported statements. Before answering each requested fact, "
+            "locate direct support for that fact in the supplied evidence. If a "
+            "requested fact is absent, say explicitly that the sources do not provide "
+            "it; do not infer it, fill it from outside knowledge, or invent a value. "
+            "Every factual answer section must "
             "include one or more citations in the exact form [S1], [S2], using "
             "only the supplied S identifiers. Do not cite a source that does not "
             "support the statement."

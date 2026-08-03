@@ -88,6 +88,13 @@ describe('production capability isolated code runners', () => {
     expect(result.passed, JSON.stringify(result)).toBe(true)
   }, 25_000)
 
+  it('safely recounts stale unified-diff hunk sizes before applying', async () => {
+    const staleCounts = patchAnswer.replace('@@ -5,5 +5,8 @@', '@@ -5,5 +5,99 @@')
+    const result = await testRepositoryPatch(staleCounts)
+    expect(result.accepted, JSON.stringify(result)).toBe(true)
+    expect(result.passed, JSON.stringify(result)).toBe(true)
+  }, 25_000)
+
   it('rejects package and traversal modifications', () => {
     expect(validateRepositoryDiff('--- a/package.json\n+++ b/package.json\n'))
       .toBe('repository_forbidden_patch_content')

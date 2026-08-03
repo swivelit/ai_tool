@@ -9,16 +9,21 @@ from typing import Callable, Sequence
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
+from ..auth import is_internal_test_email
 from ..billing.errors import BillingError
 from ..billing.pricing import estimate_tokens, reserve_price, snapshot_json
 from ..billing.service import (
+    create_billing_exempt_usage,
     create_usage_reservation,
+    release_billing_exempt_usage,
     release_usage_reservation,
+    settle_billing_exempt_usage,
     settle_usage_reservation,
 )
 from ..models import (
     Job,
     UsageCharge,
+    User,
     WebKnowledgeChunk,
     WebKnowledgeDocument,
     WebUsageStage,
@@ -58,6 +63,17 @@ PaidEmbeddingProvider = Callable[[Sequence[str]], PaidEmbeddingResult]
 PaidEmbeddingProviderFactory = Callable[
     [Session, dict[str, object]], PaidEmbeddingProvider
 ]
+
+
+def _owner_billing_exempt(session: Session, owner_user_id: int) -> bool:
+    """Resolve background-job exemption from the backend-only account allowlist."""
+
+    owner = session.get(User, int(owner_user_id))
+    return bool(owner is not None and is_internal_test_email(owner.email))
+
+
+def _parent_is_billing_exempt(parent: UsageCharge) -> bool:
+    return bool(parent.billing_exemption_reason)
 
 
 def enqueue_knowledge_job(
@@ -513,7 +529,10 @@ def _accounted_embedding_stage(
                 UsageCharge.user_id == owner,
             )
         ).first()
-        if existing_parent is not None and existing_parent.status == "reserved":
+        if (
+            existing_parent is not None
+            and existing_parent.status in {"reserved", "exempt_pending"}
+        ):
             _release_embedding_attempt(
                 session,
                 stage=existing_stage,
@@ -526,27 +545,33 @@ def _accounted_embedding_stage(
     reserved = reserve_price(
         "openai", settings.embedding_model, input_tokens, 0
     )
+    reservation_kwargs = {
+        "request_id": request_id,
+        "user_id": owner,
+        "thread_id": None,
+        "provider": "openai",
+        "model": settings.embedding_model,
+        "pricing_snapshot_json": snapshot_json({
+            **reserved.snapshot,
+            "usage_stage": "knowledge_embedding",
+            "estimated_input_tokens": input_tokens,
+        }),
+        "swico_tier": str(payload.get("swico_tier") or "lite"),
+        "usage_kind": "chat",
+    }
     try:
-        parent = create_usage_reservation(
-            session,
-            request_id=request_id,
-            user_id=owner,
-            thread_id=None,
-            provider="openai",
-            model=settings.embedding_model,
-            reserved_micros=reserved.micros,
-            pricing_snapshot_json=snapshot_json({
-                **reserved.snapshot,
-                "usage_stage": "knowledge_embedding",
-                "estimated_input_tokens": input_tokens,
-            }),
-            swico_tier=str(payload.get("swico_tier") or "lite"),
-            usage_kind="chat",
+        parent = (
+            create_billing_exempt_usage(session, **reservation_kwargs)
+            if _owner_billing_exempt(session, owner)
+            else create_usage_reservation(
+                session, reserved_micros=reserved.micros,
+                **reservation_kwargs,
+            )
         )
     except (BillingError, SQLAlchemyError, ValueError):
         session.rollback()
         return None, None
-    if parent.status != "reserved" or parent.user_id != owner:
+    if parent.status not in {"reserved", "exempt_pending"} or parent.user_id != owner:
         session.rollback()
         return None, None
     payload["request_id"] = request_id
@@ -567,10 +592,16 @@ def _accounted_embedding_stage(
             },
         )
         if stage.status not in {"planned", "reserved"}:
-            release_usage_reservation(
-                session, parent.request_id,
-                reason="knowledge_embedding_stage_unavailable",
-            )
+            if _parent_is_billing_exempt(parent):
+                release_billing_exempt_usage(
+                    session, parent.request_id,
+                    reason="knowledge_embedding_stage_unavailable",
+                )
+            else:
+                release_usage_reservation(
+                    session, parent.request_id,
+                    reason="knowledge_embedding_stage_unavailable",
+                )
             session.commit()
             return None, None
         stage.usage_charge_id = parent.id
@@ -605,7 +636,7 @@ def _accounted_stage(
             UsageCharge.id == charge_id,
             UsageCharge.request_id == request_id,
             UsageCharge.user_id == owner,
-            UsageCharge.status == "reserved",
+            UsageCharge.status.in_(("reserved", "exempt_pending")),
         )
     ).first()
     if parent is None:
@@ -627,7 +658,7 @@ def _accounted_stage(
     if stage.usage_charge_id not in {None, parent.id}:
         return None, None
     if stage.status in {"running", "settled", "released", "failed"}:
-        if parent.status == "reserved":
+        if parent.status in {"reserved", "exempt_pending"}:
             _release_embedding_attempt(
                 session,
                 stage=stage,
@@ -665,7 +696,10 @@ def _release_embedding_attempt(
             separators=(",", ":"),
         )
         session.add(stage)
-    release_usage_reservation(session, parent.request_id, reason=reason)
+    if _parent_is_billing_exempt(parent):
+        release_billing_exempt_usage(session, parent.request_id, reason=reason)
+    else:
+        release_usage_reservation(session, parent.request_id, reason=reason)
     session.commit()
 
 
@@ -703,26 +737,29 @@ def _settle_paid_stage(
     session.add(stage)
     # Each background paid job owns one authoritative reservation. Settlement
     # is idempotent in billing.service and releases the unused reservation.
-    settle_usage_reservation(
-        session,
-        request_id=parent.request_id,
-        provider_cost_amount=result.native_cost_amount,
-        provider_cost_currency=result.native_cost_currency,
-        provider_cost_micros=max(0, int(result.micro_inr_cost)),
-        input_tokens=max(0, int(result.input_tokens)),
-        cached_input_tokens=0,
-        output_tokens=0,
-        usage_source="actual",
-        pricing_snapshot_json=json.dumps(
+    settlement = {
+        "request_id": parent.request_id,
+        "provider_cost_amount": result.native_cost_amount,
+        "provider_cost_currency": result.native_cost_currency,
+        "provider_cost_micros": max(0, int(result.micro_inr_cost)),
+        "input_tokens": max(0, int(result.input_tokens)),
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "usage_source": "actual",
+        "pricing_snapshot_json": json.dumps(
             {"stages": [stage.stage_name], "stage_count": 1},
             sort_keys=True,
             separators=(",", ":"),
         ),
-        usd_to_inr_rate=result.usd_to_inr_rate,
-        provider=result.provider,
-        model=result.model,
-        usage_kind="chat",
-    )
+        "usd_to_inr_rate": result.usd_to_inr_rate,
+        "provider": result.provider,
+        "model": result.model,
+        "usage_kind": "chat",
+    }
+    if _parent_is_billing_exempt(parent):
+        settle_billing_exempt_usage(session, **settlement)
+    else:
+        settle_usage_reservation(session, **settlement)
 
 
 def _validate_payload(payload: dict[str, object]) -> None:

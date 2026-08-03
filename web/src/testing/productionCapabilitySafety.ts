@@ -21,6 +21,12 @@ export function capabilityEffectiveTimeoutMs(
     : PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS
 }
 
+export function capabilityCleanupDeadlineMs(generatedThreadCount: number): number {
+  const count = Number.isFinite(generatedThreadCount)
+    ? Math.max(0, Math.floor(generatedThreadCount)) : 0
+  return Math.min(15 * 60_000, 5 * 60_000 + count * 4_000)
+}
+
 export function remainingCapabilitySseBodyTimeoutMs(
   questionDeadlineMilliseconds: number,
   nowMilliseconds: number,

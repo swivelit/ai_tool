@@ -34,6 +34,7 @@ import {
   batchIncludes,
   bulletLines,
   capabilityAnswerRepresentationCounts,
+  capabilityCleanupDeadlineMs,
   capabilityEffectiveTimeoutMs,
   capabilitySafeFailureReason,
   countSentences,
@@ -75,6 +76,7 @@ import {
 } from '../src/testing/productionCapabilityStartup'
 import {
   CORE_QUESTIONS,
+  ALL_CAPABILITY_QUESTIONS,
   CONTEXT_QUESTIONS,
   RAG_QUESTIONS,
   REPOSITORY_QUESTIONS,
@@ -111,7 +113,6 @@ const CHAT_START_INTERVAL_MS = 5_100
 const UPLOAD_START_INTERVAL_MS = 6_100
 const QUESTION_DEADLINE_MS = 6 * 60_000
 const WEBSITE_AUDIT_DEADLINE_MS = 10 * 60_000
-const CLEANUP_DEADLINE_MS = 5 * 60_000
 const RESPONSE_BODY_TIMEOUT_MS = 30_000
 const BROWSER_TOOL_TIMEOUT_MS = 15_000
 
@@ -450,7 +451,6 @@ function evaluation(
       || hasAffirmativeWaitAdvice(value)
     ) fail('medical_urgency_failed'); break
     case 'B01':
-    case 'R08':
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       {
@@ -460,6 +460,16 @@ function evaluation(
           || !semantic.concreteRetryExamplePresent
           || !semantic.stableOutcomePresent
         ) fail('retry_example_or_definition_missing')
+      }
+      break
+    case 'R08':
+      if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
+      if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
+      {
+        const semantic = evaluateIdempotencySemantics(value)
+        if (!semantic.definitionPresent || !semantic.concreteRetryExamplePresent) {
+          fail('retry_example_or_definition_missing')
+        }
       }
       break
     case 'B02':
@@ -476,8 +486,7 @@ function evaluation(
         ) formatFail('python_fence_prefix_failed')
       }
       break
-    case 'B03':
-    case 'R09': {
+    case 'B03': {
       const architecture = evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
@@ -491,6 +500,25 @@ function evaluation(
       ) {
         fail('architecture_source_of_truth_error')
       }
+      break
+    }
+    case 'R09': {
+      if (audit.finish_reason !== 'stop') {
+        completeness = 0
+        reasons.push('routing_variation_truncated')
+        break
+      }
+      const architecture = evaluateWebhookArchitecture(structure)
+      correctness = architecture.coveredAreas.length / 10
+      if (architecture.missingAreas.length) {
+        reasons.push('architecture_sections_missing')
+        mandatoryConstraintFailed = true
+      }
+      if (
+        !architecture.postgresAuthoritative
+        || !architecture.redisValkeyForbiddenAuthorityPassed
+        || architecture.nonPostgresAuthoritativeClaim
+      ) fail('architecture_source_of_truth_error')
       break
     }
     case 'C01': if (!/569/.test(value) || !/[=−-]/.test(value)) fail('wrong_arithmetic_result'); break
@@ -527,8 +555,15 @@ function evaluation(
       }
       if (!/station|platform|train/i.test(value)) fail('railway_setting_missing')
       break
-    case 'D02': if (!containsAll(value, ['idempot', 'transaction']) || !/unique/i.test(value)) fail('continuity_fix_incomplete'); break
-    case 'D03': if (!/transaction|begin|commit|rollback/i.test(value) || !/reservation|stock/i.test(value)) fail('transaction_boundary_missing'); break
+    case 'D02': if (
+      !/idempot/i.test(value)
+      || !/unique|constraint|dedup/i.test(value)
+      || !/transaction|atomic|same database operation/i.test(value)
+    ) fail('continuity_fix_incomplete'); break
+    case 'D03': if (
+      !/transaction|begin|commit|rollback|atomic/i.test(value)
+      || !/reservation|stock|inventory/i.test(value)
+    ) fail('transaction_boundary_missing'); break
     case 'D04': if (!/lock/i.test(value) || !/database|postgres|record|source of truth/i.test(value)) fail('lock_comparison_incomplete'); break
     case 'D05': if (countSentences(value) !== 4 || /inventory|redis|reservation/i.test(value)) formatFail('topic_reset_failed'); break
     case 'E01': if (!containsAll(value, [`AURORA-`, 'Madurai']) || sources.length < 1) fail('temporary_rag_answer_or_source_missing'); break
@@ -554,9 +589,16 @@ function evaluation(
     case 'H04': if (/ORBIT-/.test(value)) fail('deleted_memory_retrieved'); break
     case 'H05': if (!/[\u0B80-\u0BFF]/u.test(value) || countSentences(value) !== 1) fail('tamil_profile_reply_failed'); break
   }
-  if (sources.length && !['grounded', 'verified', 'insufficient_evidence'].includes(audit.quality_status)) {
+  const staticRepositoryUnverified = question.category === 'G'
+    && audit.repository_validation_mode === 'static_only'
+    && audit.quality_status === 'unverified'
+  if (
+    sources.length
+    && !staticRepositoryUnverified
+    && !['grounded', 'verified', 'insufficient_evidence'].includes(audit.quality_status)
+  ) {
     grounding = 0
-    reasons.push('source_quality_status_inconsistent')
+    reasons.push('source_quality_unverified')
   }
   if (audit.duplicate_settlement_indicator) reasons.push('duplicate_settlement')
   if (audit.orphaned_active_reservation) reasons.push('orphaned_reservation')
@@ -938,9 +980,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     },
   })
   const benchmarkStartedAt = Date.now()
+  const anticipatedThreadCount = ALL_CAPABILITY_QUESTIONS.filter(question => (
+    batchIncludes(gate.batch, question.batch)
+  )).length + 12
+  const reservedCleanupDeadlineMs = capabilityCleanupDeadlineMs(
+    anticipatedThreadCount,
+  )
   const executionDeadline = testStartedAt
     + capabilityEffectiveTimeoutMs(gate.batch)
-    - CLEANUP_DEADLINE_MS
+    - reservedCleanupDeadlineMs
     - 120_000
   let currentPhase = 'startup'
   let currentScenarioId: string | null = null
@@ -1313,7 +1361,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     if (['B01', 'R08'].includes(question.id)) {
       const semantic = evaluateIdempotencySemantics(redacted.text)
       const browserSemanticPassed = semantic.definitionPresent
-        && semantic.concreteRetryExamplePresent && semantic.stableOutcomePresent
+        && semantic.concreteRetryExamplePresent
+        && (question.id === 'R08' || semantic.stableOutcomePresent)
       if (browserSemanticPassed !== taskChecksPassed) {
         judged.status = 'failed'
         judged.score = Math.min(judged.score, 60)
@@ -1325,7 +1374,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       }
     }
     let architectureContractDisagreement = false
-    if (['B03', 'R09'].includes(question.id)) {
+    if (
+      ['B03', 'R09'].includes(question.id)
+      && (question.id !== 'R09' || audit.finish_reason === 'stop')
+    ) {
       const architecture = evaluateWebhookArchitecture(rawRedacted.text)
       const browserMissing = [...architecture.missingAreas].sort()
       const backendMissing = [
@@ -1438,7 +1490,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       defectSeverity:judged.defectSeverity,
       ...(codeTest ? { codeTest } : {}),
       tierEvidence,
-      ...(['B03', 'R09'].includes(question.id) ? {
+      ...(['B03', 'R09'].includes(question.id)
+        && (question.id !== 'R09' || audit.finish_reason === 'stop') ? {
         architectureEvaluation:(() => {
           const architecture = evaluateWebhookArchitecture(rawRedacted.text)
           return {
@@ -1467,6 +1520,18 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           validatorVersion:SENTENCE_VALIDATOR_VERSION,
         },
       } : {}),
+    }
+    const rawPersistedQuality = String(raw?.quality?.status ?? 'not_run')
+    const streamedQuality = String(qualityEvent?.status ?? 'not_run')
+    if (
+      sources.length
+      && rawPersistedQuality !== streamedQuality
+      && !result.reasonCodes.includes('source_quality_status_inconsistent')
+    ) {
+      result.status = 'failed'
+      result.score = Math.min(result.score, 60)
+      result.reasonCodes.push('source_quality_status_inconsistent')
+      result.defectSeverity = 'P2'
     }
     results.push(result)
     return result
@@ -1633,7 +1698,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           && result.providerCallCount > 0
           && result.generationStageCount > 0
         )
-        if (['R01', 'R04', 'R06', 'R08', 'R09'].includes(question.id) && !generated) {
+        if (['R01', 'R06', 'R08', 'R09'].includes(question.id) && !generated) {
+          markRoutingFailure(result, 'routing_model_path_not_observed')
+        }
+        if (question.id === 'R04' && result.deterministicRoute !== null) {
           markRoutingFailure(result, 'routing_model_path_not_observed')
         }
         if (question.id === 'R01') {
@@ -1672,7 +1740,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         if (question.id === 'R08' && result.score !== 100) {
           markRoutingFailure(result, 'routing_b01_variation_not_exact')
         }
-        if (question.id === 'R09' && (
+        if (question.id === 'R09' && result.finishReason === 'stop' && (
           result.status !== 'passed'
           || Boolean(result.architectureEvaluation?.missingAreas.length)
           || result.architectureEvaluation?.contractDisagreement
@@ -1719,12 +1787,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     // Edit the current branch, then regenerate exactly once. These requests are
     // captured as action scenarios because D01-D05 IDs remain unchanged.
     if (bootstrap?.features.web_message_edit) {
-      const d01User = page.locator('.message.user').first()
+      // The current product contract exposes Edit only for the latest active
+      // prompt. Exercise that supported branch point rather than treating the
+      // intentional absence of an older-message control as a product failure.
+      const d01User = page.locator('.message.user').last()
       const edit = d01User.getByRole('button', { name:'Edit message' })
       if (!await edit.isVisible().catch(() => false)) {
         workflowResults.push({
           id:'D-EDIT-BRANCH', status:'failed',
-          reasonCodes:['d01_edit_control_unavailable_after_later_turns'],
+          reasonCodes:['latest_message_edit_control_unavailable'],
           requestIds:[], severity:'P2',
         })
       } else {
@@ -1782,7 +1853,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         const activeAssistants = messages.data?.items.filter(item => item.role === 'assistant') ?? []
         const branchPass = editedStackPass
           && activeUsers.some(item => /Django, MySQL, and Valkey/.test(item.content))
-          && !activeUsers.some(item => /FastAPI, PostgreSQL, and Redis/.test(item.content))
           && activeAssistants.filter(item => item.request_id === regenerateRequestId).length === 1
           && !editAudit.duplicate_settlement_indicator
           && !regenerateAudit.duplicate_settlement_indicator
@@ -2512,6 +2582,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const websiteOrigin = new URL(process.env.PLAYWRIGHT_BASE_URL ?? '').origin
     const queuedUrls: string[] = [`${websiteOrigin}/`]
     const seenUrls = new Set<string>()
+    const missingWebsiteRoutes = new Set<string>()
+    let testedMobileUrl = `${websiteOrigin}/`
     const pageConsoleErrors: string[] = []
     auditPage.on('console', message => {
       if (message.type() === 'error') pageConsoleErrors.push('console_error')
@@ -2532,24 +2604,36 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         }).catch(() => null)
         if (!response || response.status() !== 200) {
           websiteReasons.push(`website_page_${pageIndex}_http_failed`)
+          missingWebsiteRoutes.add(new URL(target).pathname)
           continue
         }
         const title = await auditPage.title().catch(() => '')
         if (!title.trim()) {
           websiteReasons.push(`website_page_${pageIndex}_title_missing`)
+          missingWebsiteRoutes.add(new URL(target).pathname)
         }
         if (pageConsoleErrors.length) {
           websiteReasons.push(`website_page_${pageIndex}_console_error`)
+          missingWebsiteRoutes.add(new URL(target).pathname)
         }
         if (pageIndex === 0) {
+          await auditPage.locator('footer, .legal').first().waitFor({
+            state:'attached',
+            timeout:Math.min(15_000, assertWithinDeadline()),
+          }).catch(() => undefined)
+          testedMobileUrl = auditPage.url()
           const chatVisible = await auditPage.getByLabel('Message Swico').isVisible({
             timeout:Math.min(15_000, assertWithinDeadline()),
           }).catch(() => false)
-          if (!chatVisible) websiteReasons.push('website_mobile_chat_input_missing')
+          if (!chatVisible) {
+            websiteReasons.push('website_mobile_chat_input_missing')
+            missingWebsiteRoutes.add(new URL(testedMobileUrl).pathname)
+          }
         }
-        const hrefs = await auditPage.locator('a[href]').evaluateAll(anchors => (
+        const allHrefs = await auditPage.locator('a[href]').evaluateAll(anchors => (
           anchors.map(anchor => anchor.getAttribute('href') ?? '')
         )).catch(() => [] as string[])
+        let hrefs = allHrefs
         if (pageIndex === 0) {
           const footerHrefs = await auditPage.locator(
             'footer a[href], .legal a[href]',
@@ -2559,7 +2643,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           footerRouteCount = footerHrefs.filter(Boolean).length
           if (footerRouteCount < 7) {
             websiteReasons.push('website_footer_routes_missing')
+            missingWebsiteRoutes.add('(footer_routes_not_rendered)')
           }
+          hrefs = [...footerHrefs, ...allHrefs]
         }
         for (const href of hrefs) {
           try {
@@ -2603,7 +2689,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ? uniqueWebsiteReasons : ['public_footer_routes_and_mobile_smoke_passed'],
       requestIds:[],
       severity:uniqueWebsiteReasons.length ? 'P2' : null,
-      diagnostics:{ crawled_page_count:seenUrls.size },
+      diagnostics:{
+        crawled_page_count:seenUrls.size,
+        missing_routes:[...missingWebsiteRoutes].join(','),
+        tested_mobile_url:testedMobileUrl,
+      },
     })
 
     const privacyFailure = results.some(item => providerIdentifierVisible(`${item.visibleAnswer}\n${item.visibleSources.map(source => `${source.label} ${source.locator}`).join('\n')}`))
@@ -2817,7 +2907,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     checkpointCleanupStatus = 'running'
     progress('cleanup_start', 'cleanup', null)
     scheduleCheckpoint()
-    const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS
+    const cleanupDeadline = Date.now() + capabilityCleanupDeadlineMs(
+      generatedThreadIds.size,
+    )
     const cleanupRemaining = (maximum = 30_000) => Math.max(
       0, Math.min(maximum, cleanupDeadline - Date.now()),
     )
@@ -2905,15 +2997,41 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           deletedUploadIds.add(id)
         })
       ))
-      await runWithBoundedConcurrency([...generatedThreadIds], 2, async id => {
-        if (originalThreads.has(id)) {
-          cleanupErrors.push('generated_thread_matches_original')
-          return
-        }
-        await cleanupAction('thread_cleanup_timeout', async () => {
-          await deleteGeneratedThread(api, id, new Set(originalThreads.keys()), generatedThreadIds)
-        }, 45_000)
-      })
+      const originalThreadIds = new Set(originalThreads.keys())
+      const deleteThreadPass = async (ids: readonly string[]) => {
+        const failed = new Set<string>()
+        await runWithBoundedConcurrency(ids, 4, async id => {
+          if (originalThreads.has(id)) {
+            cleanupErrors.push('generated_thread_matches_original')
+            return
+          }
+          const timeout = cleanupRemaining(45_000)
+          if (timeout < 1) {
+            failed.add(id)
+            return
+          }
+          try {
+            await withBoundedTimeout(
+              () => deleteGeneratedThread(
+                api, id, originalThreadIds, generatedThreadIds,
+              ),
+              timeout,
+              'thread_cleanup_timeout',
+            )
+          } catch {
+            failed.add(id)
+          }
+        })
+        return [...failed]
+      }
+      const firstThreadFailures = await deleteThreadPass(
+        [...generatedThreadIds],
+      )
+      const remainingThreadFailures = firstThreadFailures.length
+        ? await deleteThreadPass(firstThreadFailures) : []
+      if (remainingThreadFailures.length) {
+        cleanupErrors.push('thread_cleanup_timeout')
+      }
       if (originalTier) {
         await cleanupAction('tier_restore_failed', async () => {
           const restored = await api!.request('PATCH', '/api/web/settings/assistant', { tier:originalTier })

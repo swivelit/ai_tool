@@ -87,6 +87,7 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         continuation_parent_message_id: data.continuation_parent_message_id ? String(data.continuation_parent_message_id) : null,
         continuation_root_message_id: data.continuation_root_message_id ? String(data.continuation_root_message_id) : null,
         continuation_segment_index: Number(data.continuation_segment_index ?? 0),
+        continuation_rewind_characters: Number(data.continuation_rewind_characters ?? 0),
       } : null }
     case 'status':
       return { ...state, phase: String(data.phase ?? '') }
@@ -143,6 +144,7 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
           continuation_root_message_id: data.continuation_root_message_id
             ? String(data.continuation_root_message_id) : state.assistant.continuation_root_message_id,
           continuation_segment_index: Number(data.continuation_segment_index ?? state.assistant.continuation_segment_index ?? 0),
+          continuation_rewind_characters: Number(data.continuation_rewind_characters ?? state.assistant.continuation_rewind_characters ?? 0),
           provenance: Array.isArray(data.provenance)
             ? data.provenance.map(String).filter(value => [
               'memory', 'document', 'cached_answer', 'semantic_cache', 'backend_tool', 'web_search',

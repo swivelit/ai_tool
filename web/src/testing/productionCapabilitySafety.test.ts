@@ -11,6 +11,7 @@ import {
   batchIncludes,
   bulletLines,
   capabilityAnswerRepresentationCounts,
+  capabilityCleanupDeadlineMs,
   capabilityEffectiveTimeoutMs,
   capabilitySafeFailureReason,
   countSentences,
@@ -102,6 +103,12 @@ describe('production capability safety', () => {
     expect(capabilityEffectiveTimeoutMs('core')).toBeLessThan(
       capabilityEffectiveTimeoutMs('all'),
     )
+  })
+
+  it('scales cleanup for generated threads and caps the global budget', () => {
+    expect(capabilityCleanupDeadlineMs(0)).toBe(5 * 60_000)
+    expect(capabilityCleanupDeadlineMs(71)).toBe(5 * 60_000 + 71 * 4_000)
+    expect(capabilityCleanupDeadlineMs(10_000)).toBe(15 * 60_000)
   })
 
   it('uses the remaining question deadline for a long terminal SSE body', () => {

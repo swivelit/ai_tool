@@ -231,10 +231,10 @@ export async function testRepositoryPatch(markdown: string): Promise<IsolatedRun
     const patchPath = join(directory, 'answer.diff')
     await writeFile(patchPath, diff, { mode:0o600 })
     try {
-      await execute('git', ['apply', '--check', '--whitespace=error-all', patchPath], {
+      await execute('git', ['apply', '--check', '--recount', '--whitespace=error-all', patchPath], {
         cwd:directory, timeout:5_000, maxBuffer:MAX_OUTPUT_BYTES,
       })
-      await execute('git', ['apply', '--whitespace=error-all', patchPath], {
+      await execute('git', ['apply', '--recount', '--whitespace=error-all', patchPath], {
         cwd:directory, timeout:5_000, maxBuffer:MAX_OUTPUT_BYTES,
       })
     } catch (error) {

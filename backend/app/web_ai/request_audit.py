@@ -492,7 +492,11 @@ def build_request_audit(
         ):
             check_metadata = _safe_json(str(metadata_json or "{}"))
             candidate = check_metadata.get("quality_outcome")
-            if candidate in _QUALITY_STATUSES:
+            # The persisted assistant message is the user-visible source of
+            # truth and the SSE quality event is built from the same snapshot.
+            # Answer-check rows remain a compatibility fallback for requests
+            # created before message quality metadata was persisted.
+            if candidate in _QUALITY_STATUSES and quality_status == "not_run":
                 quality_status = str(candidate)
             candidate_mode = check_metadata.get("repository_validation_mode")
             if candidate_mode in _REPOSITORY_VALIDATION_MODES:

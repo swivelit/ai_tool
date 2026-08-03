@@ -327,6 +327,38 @@ it('hides continuation controls and manages parent/child Continue buttons', () =
   expect(screen.getByRole('button', { name:'Continue response' })).toBeEnabled()
 })
 
+it('renders and exports a continuation chain as one stitched Markdown document', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable:true, value:{ writeText },
+  })
+  const parent = message('stitched-root', {
+    content:'```html\n<section>\n  <p>partial',
+    truncated:true,
+    can_continue:false,
+  })
+  const child = message('stitched-child', {
+    content:'  <p>complete</p>\n</section>\n```',
+    continuation_parent_message_id:parent.id,
+    continuation_root_message_id:parent.id,
+    continuation_segment_index:1,
+    continuation_rewind_characters:'  <p>partial'.length,
+  })
+  const { container } = render(<Conversation
+    messages={[parent, child]} retry={vi.fn()} suggest={vi.fn()}
+  />)
+  expect(container.querySelectorAll('.message.assistant')).toHaveLength(1)
+  expect(container.querySelectorAll('.code-block')).toHaveLength(1)
+  expect(container.querySelector('.code-block code')?.textContent).toContain(
+    '<p>complete</p>',
+  )
+  fireEvent.click(screen.getByRole('button', { name:'Copy response' }))
+  await act(async () => undefined)
+  expect(writeText).toHaveBeenCalledWith(
+    '```html\n<section>\n  <p>complete</p>\n</section>\n```',
+  )
+})
+
 it('edits only the latest active user message with accessible save and cancel controls', () => {
   const editMessage = vi.fn()
   const userMessage = { ...message('user-latest'), role:'user' as const, content:'Original question' }
@@ -490,4 +522,21 @@ it('keeps assistant text visible with accessible voice controls and credit recov
   expect(screen.getByText('Answer voice')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name:'Top up' }))
   expect(addCredits).toHaveBeenCalled()
+})
+
+it('offers voice generation for a completed text answer with a safe turn id', () => {
+  const generateVoice = vi.fn()
+  const textMessage = {
+    ...message('text-voice'),
+    input_mode:'text' as const,
+    voice_turn_id:'00000000-0000-4000-8000-000000000001',
+  }
+  render(<Conversation
+    messages={[textMessage]} retry={vi.fn()} suggest={vi.fn()}
+    generateVoice={generateVoice}
+  />)
+  fireEvent.click(screen.getByRole('button', { name:'Play voice reply' }))
+  expect(generateVoice).toHaveBeenCalledWith(
+    'text-voice', '00000000-0000-4000-8000-000000000001',
+  )
 })

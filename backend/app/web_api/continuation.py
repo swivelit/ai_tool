@@ -56,6 +56,7 @@ class ContinuationPacket:
     text: str
     render_prefix: str
     fence_state: MarkdownFenceState
+    rewind_characters: int = 0
 
 
 def metadata_dict(row: WebChatMessage) -> dict[str, object]:
@@ -234,30 +235,39 @@ def build_continuation_packet(
     outline_text = "\n".join(dict.fromkeys(outline))[:2_500]
 
     combined = "\n".join(segment.content for segment in chain.segments)
-    retained_tail = combined[-max(1, tail_characters):]
-    if len(retained_tail) < len(combined):
+    partial_line = ""
+    resumable = combined
+    if combined and not combined.endswith(("\n", "\r")):
+        boundary = combined.rfind("\n") + 1
+        partial_line = combined[boundary:]
+        resumable = combined[:boundary]
+    retained_tail = resumable[-max(1, tail_characters):]
+    if len(retained_tail) < len(resumable):
         retained_tail = "[Earlier response text omitted before this exact tail]\n" + retained_tail
 
-    state = chain.fence_state
+    state = markdown_fence_state(resumable)
     fence_text = (
         f"Open fence: character={state.fence_character!r}, length={state.fence_length}, "
         f"language={state.language or 'plain'}, opening_position={state.opening_position}."
         if state.is_open else "No fenced code block is currently open."
     )
     instruction = (
-        "Continue exactly from the stopping boundary below. Do not repeat completed "
-        "sections or previous code. Finish the remaining requested work."
+        "Continue at the line boundary immediately before the incomplete terminal "
+        "line. Return that line as a complete replacement, then finish the remaining "
+        "requested work. Do not repeat any earlier completed line or section."
     )
     if state.is_open:
         instruction += (
-            " The website renders this continuation as a separate Markdown document. "
-            "Begin with the matching opening fence before new code, do not repeat old "
-            "code, and close the fence when that code section is complete."
+            " The website joins this segment to the prior Markdown document. Continue "
+            "inside the already-open fence without opening another fence, and close it "
+            "when that code section is complete."
         )
+    partial_line_text = partial_line or "(the prior response ended at a line boundary)"
     packet = (
         f"CURRENT CONTINUATION INSTRUCTION\n{instruction}\n\n"
         f"ORIGINAL USER REQUEST AND REQUIREMENTS\n{root_excerpt}\n\n"
         f"EXACT TERMINAL RESPONSE TAIL\n{retained_tail}\n\n"
+        f"INCOMPLETE TERMINAL LINE TO REPLACE\n{partial_line_text}\n\n"
         f"MARKDOWN FENCE STATE\n{fence_text}\n\n"
         f"COMPLETED SECTION OUTLINE\n{outline_text or '(none detected)'}"
     )
@@ -269,12 +279,13 @@ def build_continuation_packet(
             f"CURRENT CONTINUATION INSTRUCTION\n{instruction}\n\n"
             f"ORIGINAL USER REQUEST AND REQUIREMENTS\n{root_excerpt}\n\n"
             f"EXACT TERMINAL RESPONSE TAIL\n{retained_tail}\n\n"
+            f"INCOMPLETE TERMINAL LINE TO REPLACE\n{partial_line_text}\n\n"
             f"MARKDOWN FENCE STATE\n{fence_text}\n\n"
             f"COMPLETED SECTION OUTLINE\n{outline_text or '(omitted for prompt budget)'}"
         )
     if len(packet) > max_characters:
         keep = max(1_000, len(retained_tail) - (len(packet) - max_characters))
-        raw_tail = combined[-keep:]
+        raw_tail = resumable[-keep:]
         retained_tail = (
             "[Earlier response text omitted before this exact tail]\n" + raw_tail
         )
@@ -282,10 +293,12 @@ def build_continuation_packet(
             f"CURRENT CONTINUATION INSTRUCTION\n{instruction}\n\n"
             f"ORIGINAL USER REQUEST AND REQUIREMENTS\n{root_excerpt}\n\n"
             f"EXACT TERMINAL RESPONSE TAIL\n{retained_tail}\n\n"
+            f"INCOMPLETE TERMINAL LINE TO REPLACE\n{partial_line_text}\n\n"
             f"MARKDOWN FENCE STATE\n{fence_text}"
         )
     return ContinuationPacket(
         text=packet,
         render_prefix=safe_render_prefix(state),
         fence_state=state,
+        rewind_characters=len(partial_line),
     )

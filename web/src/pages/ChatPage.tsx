@@ -741,7 +741,7 @@ export function ChatPage() {
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
-        voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
+        voiceReplyEnabled={Boolean(bootstrap.features.web_voice_reply && bootstrap.features.web_voice_billing)} voiceStates={voiceReply.states} generateVoice={(messageId, voiceTurnId) => void voiceReply.generate(messageId, voiceTurnId)} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}
         highlightMessageId={highlightMessageId} />

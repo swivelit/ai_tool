@@ -208,6 +208,25 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
         selected_keys.add(key)
         seen_text.append(tokens)
 
+    # The website's single-field "Ask questions" long-input flow stores the
+    # user's question inside the virtual document and sends a generic provider
+    # prompt. Questions are conventionally placed at the tail, so retain the
+    # final chunk as well as lexical matches instead of silently selecting only
+    # the opening filler.
+    generic_virtual_question = normalized_question.startswith(
+        "answer questions about the attached pasted text"
+    )
+    if generic_virtual_question:
+        for upload_index, upload in enumerate(uploads):
+            if upload.virtual_text_operation != "ask_questions":
+                continue
+            tail = next((
+                item for item in reversed(ranked)
+                if item.upload_index == upload_index
+            ), None)
+            if tail is not None:
+                add(tail)
+
     if not question_tokens:
         # Attachment-only turns need one representative excerpt per file, up
         # to the same practical five-chunk ceiling.

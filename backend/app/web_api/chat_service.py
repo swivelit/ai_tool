@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from threading import Lock
 from time import monotonic
 from typing import Any, Callable, Literal
@@ -401,6 +402,7 @@ class PreparedWebTurn:
     continuation_root_message_id: str | None = None
     continuation_segment_index: int = 0
     continuation_render_prefix: str = ""
+    continuation_rewind_characters: int = 0
     execution_plan: ExecutionPlan | None = None
     retrieval_context: EvidencePack | None = None
     streaming_mode: str | None = None
@@ -1678,6 +1680,9 @@ def prepare_web_turn(
                 "is_continuation_control": True,
                 "continuation_packet": continuation_packet.text,
                 "continuation_render_prefix": continuation_packet.render_prefix,
+                "continuation_rewind_characters": (
+                    continuation_packet.rewind_characters
+                ),
                 "continuation_parent_message_id": continuation_chain.target.id,
                 "continuation_root_message_id": continuation_chain.root_assistant_id,
                 "continuation_segment_index": continuation_chain.segment_index,
@@ -2679,6 +2684,10 @@ def prepare_web_turn(
             continuation_render_prefix=(
                 continuation_packet.render_prefix if continuation_packet else ""
             ),
+            continuation_rewind_characters=(
+                continuation_packet.rewind_characters
+                if continuation_packet else 0
+            ),
             execution_plan=execution_plan,
             streaming_mode=(
                 execution_plan.streaming_mode if execution_plan else None
@@ -2934,6 +2943,23 @@ def _finalize_embedding_stage(
         session.commit()
 
 
+_EXACT_PRIVATE_IDENTIFIER = re.compile(
+    r"\b(?:passport|national\s+id|social\s+security|tax\s+identification|"
+    r"driver(?:'s)?\s+licen[cs]e)\s+(?:number|id)\b",
+    re.IGNORECASE,
+)
+
+
+def _missing_requested_private_identifier(
+    question: str, pack: EvidencePack,
+) -> bool:
+    requested = _EXACT_PRIVATE_IDENTIFIER.search(str(question or ""))
+    if requested is None:
+        return False
+    evidence_text = "\n".join(item.runtime_text for item in pack.items)
+    return _EXACT_PRIVATE_IDENTIFIER.search(evidence_text) is None
+
+
 def _execute_phase2_retrieval(
     prepared: PreparedWebTurn,
     *,
@@ -3033,6 +3059,17 @@ def _execute_phase2_retrieval(
             result.pack,
             min(policy.evidence_token_cap, allocation.document_tokens),
         )
+        if _missing_requested_private_identifier(
+            prepared.ai_request.message, pack,
+        ):
+            pack = replace(
+                pack,
+                retrieval_status="insufficient",
+                status_codes=tuple(dict.fromkeys((
+                    *pack.status_codes,
+                    "requested_identifier_not_supported",
+                ))),
+            )
         if (
             prepared.repository_contract is not None
             and prepared.retrieval_context is not None
@@ -5067,6 +5104,9 @@ def execute_web_turn(
                     "continuation_request_id": prepared.request_id,
                     "continuation_render_prefix": (
                         prepared.continuation_render_prefix
+                    ),
+                    "continuation_rewind_characters": (
+                        prepared.continuation_rewind_characters
                     ),
                     "continuation_consumed": False,
                 } if prepared.continuation_parent_message_id else {}),

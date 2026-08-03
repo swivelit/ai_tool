@@ -10,7 +10,9 @@ from app.ai.providers.base import GenerationCancelled, GenerationIncomplete
 from app.ai.types import AIProviderResponse
 from app.billing.errors import PaymentValidationError
 from app.database import SessionLocal
-from app.models import UsageCharge, WebAnswerCheck, WebUsageStage
+from app.models import (
+    UsageCharge, WebAnswerCheck, WebChatMessage, WebChatThread, WebUsageStage,
+)
 from app.web_ai.evidence.models import EvidenceItem, EvidencePack
 from app.web_ai.generation.answer_guard import (
     AnswerGuard, AnswerGuardContext, ProviderCompletion,
@@ -23,7 +25,7 @@ from app.web_ai.settings import TriagSettings
 from app.web_ai.streaming_policy import StreamingPolicy
 from app.web_ai.triage import AttachmentMetadata, TriageInput, build_execution_plan
 from app.web_api.chat_service import (
-    _parse_verifier_status,
+    _missing_requested_private_identifier, _parse_verifier_status,
     execute_web_turn,
     prepare_web_turn,
 )
@@ -80,6 +82,63 @@ def _response(text: str) -> AIProviderResponse:
             "truncated": False,
         },
     )
+
+
+def test_request_audit_uses_persisted_message_quality_as_source_of_truth():
+    user = create_test_user("quality-source", "quality-source@example.com")
+    request_id = "quality-source-request"
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Quality")
+        session.add(thread)
+        session.flush()
+        assistant = WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="assistant",
+            content="Grounded answer [S1]",
+            request_id=request_id,
+            swico_tier="standard",
+            status="complete",
+            metadata_json=json.dumps({
+                "quality": {
+                    "status": "grounded",
+                    "retrieval_status": "sufficient",
+                    "checks": [{"type": "citation_validity", "status": "passed"}],
+                },
+            }),
+        )
+        session.add(assistant)
+        session.flush()
+        session.add(WebAnswerCheck(
+            user_id=int(user.id),
+            thread_id=thread.id,
+            request_id=request_id,
+            assistant_message_id=assistant.id,
+            idempotency_key=f"answer-check:{request_id}:legacy",
+            status="failed",
+            passed=False,
+            safe_metadata_json=json.dumps({"quality_outcome": "unverified"}),
+        ))
+        session.commit()
+        audit = build_request_audit(session, request_ids=[request_id])[0]
+    assert audit["quality_status"] == "grounded"
+    assert audit["persisted_quality_status"] == "grounded"
+
+
+def test_private_source_question_is_insufficient_when_identifier_is_absent():
+    assert _missing_requested_private_identifier(
+        "Using only the PDF, what is the CEO's passport number?", _pack(),
+    ) is True
+    supported = replace(
+        _pack(),
+        items=(replace(
+            _pack().items[0],
+            runtime_text="Passport number: SYNTHETIC-123",
+        ),),
+    )
+    assert _missing_requested_private_identifier(
+        "What is the passport number?", supported,
+    ) is False
 
 
 def test_live_plan_lists_only_enabled_phase3_provider_stages():

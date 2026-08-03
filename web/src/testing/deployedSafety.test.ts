@@ -181,7 +181,9 @@ test('production capability browser waits and cleanup are independently bounded'
   )
   expect(spec).toContain("page.waitForEvent(\n            'download', { timeout:BROWSER_TOOL_TIMEOUT_MS }")
   expect(spec).toContain("'response_download_timeout'")
-  expect(spec).toContain('const cleanupDeadline = Date.now() + CLEANUP_DEADLINE_MS')
+  expect(spec).toContain('const cleanupDeadline = Date.now() + capabilityCleanupDeadlineMs(')
+  expect(spec).toContain('runWithBoundedConcurrency(ids, 4')
+  expect(spec).toContain('await deleteThreadPass(firstThreadFailures)')
   expect(spec).toContain('const executionDeadline = testStartedAt')
   expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
   expect(spec).toContain('forceCancelActiveCapabilityRequests<Audit>({')
@@ -476,6 +478,7 @@ test('production capability website audit discovers footer routes and stays boun
   )
   expect(spec).toContain("workflowStart('J-PUBLIC-WEBSITE')")
   expect(spec).toContain("'footer a[href], .legal a[href]'")
+  expect(spec).toContain("auditPage.locator('footer, .legal').first().waitFor")
   expect(spec).toContain('if (pageIndex >= 25) break')
   expect(spec).toContain('response.status() !== 200')
   expect(spec).toContain('await auditPage.title()')
@@ -483,6 +486,8 @@ test('production capability website audit discovers footer routes and stays boun
   expect(spec).toContain('candidate.origin !== websiteOrigin')
   expect(spec).toContain('setViewportSize({ width:390, height:844 })')
   expect(spec).toContain("getByLabel('Message Swico').isVisible")
+  expect(spec).toContain('missing_routes:[...missingWebsiteRoutes].join')
+  expect(spec).toContain('tested_mobile_url:testedMobileUrl')
   for (const forbiddenPath of [
     '/legal/terms', '/legal/privacy', '/legal/refunds', '/legal/contact',
     '/legal/pricing', '/legal/delivery', '/legal/ai',

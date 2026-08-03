@@ -470,6 +470,11 @@ def _serialize_message(
     if input_mode == "voice":
         input_mode = "dictation"
     voice_turn_id = metadata.get("voice_turn_id") if input_mode != "text" else None
+    if input_mode == "text" and row.role == "assistant" and row.request_id:
+        try:
+            voice_turn_id = str(UUID(str(row.request_id)))
+        except ValueError:
+            voice_turn_id = None
     reply_language = metadata.get("reply_language")
     reply_language = reply_language if reply_language in {"en", "ta"} else None
     raw_attachments = metadata.get("attachments")
@@ -622,6 +627,9 @@ def _serialize_message(
             if metadata.get("continuation_root_message_id") else None
         ),
         "continuation_segment_index": continuation_segment_index,
+        "continuation_rewind_characters": max(
+            0, min(14_000, int(metadata.get("continuation_rewind_characters") or 0))
+        ),
         "failure_code": failure_code,
         "retry_at": retry_at,
         "replaces_message_id": row.replaces_message_id,
@@ -3496,7 +3504,16 @@ async def synthesize_web_audio(
         metadata = json.loads(message.metadata_json or "{}")
     except (TypeError, ValueError):
         metadata = {}
-    if not isinstance(metadata, dict) or str(metadata.get("voice_turn_id") or "") != str(payload.voice_turn_id):
+    expected_voice_turn_id = (
+        metadata.get("voice_turn_id")
+        if isinstance(metadata, dict) and metadata.get("input_mode") != "text"
+        else message.request_id
+    )
+    try:
+        expected_voice_turn_id = str(UUID(str(expected_voice_turn_id)))
+    except ValueError:
+        expected_voice_turn_id = ""
+    if not isinstance(metadata, dict) or expected_voice_turn_id != str(payload.voice_turn_id):
         return _temporary_error(404, "assistant_message_not_found", "Assistant message not found.")
     text_content = str(message.content or "")
     try:
@@ -3817,6 +3834,9 @@ async def chat_stream(
                 "continuation_segment_index": (
                     prepared.continuation_segment_index
                 ),
+                "continuation_rewind_characters": (
+                    prepared.continuation_rewind_characters
+                ),
             })
             yield _sse("status", {"phase": "routing"})
             if prepared.reserved_micros:
@@ -3883,7 +3903,12 @@ async def chat_stream(
                 "message_id": completed.message.id, "thread_id": completed.thread_id,
                 "cancelled": completed.message.status == "cancelled",
                 "input_mode": prepared.input_mode,
-                "voice_turn_id": prepared.voice_turn_id,
+                "voice_turn_id": (
+                    prepared.voice_turn_id
+                    or prepared.request_id
+                    if prepared.input_mode == "text"
+                    else prepared.voice_turn_id
+                ),
                 "reply_language": prepared.reply_language,
                 "billing_credit_bucket": prepared.billing_credit_bucket,
                 "finish_reason": str(response.raw.get("finish_reason") or "unknown"),
@@ -3900,6 +3925,9 @@ async def chat_stream(
                 ),
                 "continuation_segment_index": (
                     prepared.continuation_segment_index
+                ),
+                "continuation_rewind_characters": (
+                    prepared.continuation_rewind_characters
                 ),
                 "parent_can_continue": (
                     False

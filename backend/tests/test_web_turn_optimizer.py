@@ -388,7 +388,9 @@ def test_multi_hop_and_historical_continuation_resolve_original_request():
     assert [segment.id for segment in chain.segments] == [root.id, child.id]
     assert packet.render_prefix == "```python\n"
     assert "  value = 1" in packet.text
-    exact_boundary = chain.target.content[-1_000:]
+    assert packet.rewind_characters == len("  value = 1")
+    assert "INCOMPLETE TERMINAL LINE TO REPLACE\n  value = 1" in reduced.text
+    exact_boundary = chain.target.content[-1_000:].rsplit("\n", 1)[0]
     assert exact_boundary in reduced.text
     assert reduced.text.index(
         "[Earlier response text omitted before this exact tail]"
@@ -643,6 +645,31 @@ def test_attachment_retrieval_is_ranked_deduplicated_and_capped(monkeypatch):
     assert len(selected) <= 8000
     assert optimized.attachment_chars_sent <= 8000
     assert selected.count("[report.pdf") <= 5
+
+
+def test_virtual_ask_questions_keeps_the_tail_question_and_marker(monkeypatch):
+    monkeypatch.setenv("WEB_ATTACHMENT_PROMPT_MAX_CHARS", "8000")
+    upload = EphemeralUpload(
+        id="pasted", owner_user_id=1, name="Pasted text.txt",
+        extension=".txt", media_type="text/plain", size_bytes=20_000,
+        created_at=utc_iso(), expires_at=utc_iso(),
+        chunks=[
+            ExtractedChunk(text="opening filler " * 300, source="pasted text chunk 1"),
+            ExtractedChunk(
+                text=(
+                    "Benchmark question: what exact value follows the final marker?\n"
+                    "FINAL ACCEPTANCE MARKER: TAIL-synthetic"
+                ),
+                source="pasted text chunk 2",
+            ),
+        ],
+        source_locators=[], warnings=[], virtual_text_operation="ask_questions",
+    )
+    selected = select_attachment_context(
+        [upload],
+        "Answer questions about the attached pasted text. Preserve its meaning.",
+    )
+    assert "TAIL-synthetic" in selected
 
 
 def test_task_aware_lite_ordering_never_crosses_tier(monkeypatch):

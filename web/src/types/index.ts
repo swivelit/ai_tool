@@ -95,6 +95,7 @@ export type Message = {
   continuation_parent_message_id?: string | null;
   continuation_root_message_id?: string | null;
   continuation_segment_index?: number;
+  continuation_rewind_characters?: number;
   replaces_message_id?: string | null; revision_number?: number;
   feedback_rating?: 'up' | 'down' | null;
   provenance?: ResponseProvenance[];

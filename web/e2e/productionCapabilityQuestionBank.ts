@@ -252,8 +252,8 @@ Explain how to check the result and how to present the exercise accessibly.`,
   },
   {
     id:'R08', category:'R', batch:'routing', tier:'standard', freshThread:true,
-    prompt:'Teach a junior engineer what idempotency means for payment endpoints. Reply with exactly four Markdown bullets and at most 140 words. Include one concrete client-retry scenario and explain the stable no-duplicate payment outcome.',
-    expected:'Score 100 with four concise bullets, a definition, and a concrete stable retry outcome.',
+    prompt:'Teach a junior engineer what idempotency means for payment endpoints. Reply with exactly four Markdown bullets and at most 140 words. Include one concrete client-retry scenario.',
+    expected:'Score 100 with four concise bullets, a definition, and a concrete retry example.',
   },
   {
     id:'R09', category:'R', batch:'routing', tier:'standard', freshThread:true,

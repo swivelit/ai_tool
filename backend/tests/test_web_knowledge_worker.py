@@ -225,6 +225,32 @@ def test_exact_settlement_retry_restart_and_duplicate_job_protection(monkeypatch
         assert len(debits) == 1
 
 
+def test_billing_exempt_embedding_is_audited_without_wallet_debit(monkeypatch):
+    _knowledge_flags(monkeypatch)
+    email = "worker-exempt@example.com"
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", email)
+    user = create_test_user("worker-exempt", email)
+    document = _document(int(user.id))
+    job = _enqueue_embedding(int(user.id), document.id, "exempt-once")
+
+    assert _dedicated_queue(
+        lambda _session, _payload: _paid_result,
+    )._process_one() is True
+
+    with SessionLocal() as session:
+        completed = session.get(Job, job.id)
+        charge = session.exec(select(UsageCharge)).one()
+        debits = session.exec(
+            select(WalletLedger).where(WalletLedger.entry_type == "usage_debit")
+        ).all()
+        assert completed is not None and completed.status == "completed"
+        assert charge.status == "billing_exempt"
+        assert charge.billing_exemption_reason == "internal_capability_test"
+        assert charge.provider_cost_micros == 300
+        assert charge.debited_micros == 0
+        assert debits == []
+
+
 def test_cancellation_before_and_during_embedding(monkeypatch):
     _knowledge_flags(monkeypatch)
     user = create_test_user("worker-cancel", "worker-cancel@example.com")

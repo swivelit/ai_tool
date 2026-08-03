@@ -122,6 +122,8 @@ it('continues without an optimistic control bubble and consumes the parent butto
     content:'</main>\n```', truncated:false, can_continue:false,
     continuation_render_prefix:'```html\n',
     continuation_parent_message_id:parent.id,
+    continuation_root_message_id:parent.id,
+    continuation_segment_index:1,
   }
   let messageLoads = 0
   vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
@@ -169,6 +171,8 @@ it('continues without an optimistic control bubble and consumes the parent butto
       element => element.textContent?.includes('</main>'),
     ),
   ).toBe(true))
+  expect(document.querySelectorAll('.message.assistant')).toHaveLength(1)
+  expect(document.querySelectorAll('.code-block')).toHaveLength(1)
 })
 
 it('keeps the authoritative SSE thread for follow-ups, supports selection, and clears it for New chat', async () => {

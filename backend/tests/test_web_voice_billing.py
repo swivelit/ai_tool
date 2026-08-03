@@ -36,12 +36,15 @@ def _message(
     user_id: int, *, role: str = "assistant", status: str = "complete",
     voice_turn_id: str | None = None, reply_language: str | None = "en",
     content: str = "A stored answer.",
+    input_mode: str = "voice",
 ) -> str:
     voice_turn_id = voice_turn_id or str(uuid4())
     with SessionLocal() as session:
         thread = WebChatThread(user_id=user_id, title="Voice")
         session.add(thread); session.flush()
-        metadata = {"input_mode": "voice", "voice_turn_id": voice_turn_id}
+        metadata = {"input_mode": input_mode}
+        if input_mode != "text":
+            metadata["voice_turn_id"] = voice_turn_id
         if reply_language is not None:
             metadata["reply_language"] = reply_language
         message = WebChatMessage(
@@ -51,6 +54,22 @@ def _message(
         )
         session.add(message); session.commit()
         return message.id
+
+
+def test_text_answer_uses_request_id_for_voice_reply(client, monkeypatch):
+    user = create_test_user("tts-text", "tts-text@example.com")
+    _fund(int(user.id))
+    message_id = _message(int(user.id), input_mode="text")
+    with SessionLocal() as session:
+        message = session.get(WebChatMessage, message_id)
+        assert message is not None
+        voice_turn_id = str(message.request_id)
+    monkeypatch.setattr(
+        "app.web_api.router.SarvamProvider.tts",
+        lambda *args, **kwargs: WAV_BASE64,
+    )
+    response = _post_tts(client, "tts-text", message_id, voice_turn_id)
+    assert response.status_code == 200
 
 
 def _post_tts(client, uid: str, message_id: str, voice_turn_id: str, operation_id: str | None = None):
