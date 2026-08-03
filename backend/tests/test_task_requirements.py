@@ -6,7 +6,8 @@ from pathlib import Path
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.generation.sentence_segmentation import count_sentences
 from app.web_ai.generation.task_requirements import (
-    evaluate_authority_semantics, evaluate_idempotency_semantics,
+    evaluate_architecture_coverage, evaluate_authority_semantics,
+    evaluate_idempotency_semantics,
     extract_task_requirements, validate_task_requirements,
 )
 
@@ -16,6 +17,21 @@ B01 = (
     "four bullet points, include one concrete retry example, and use no more "
     "than 140 words."
 )
+B03 = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
 
 
 def test_b01_semantic_requirements_require_definition_and_retry_example():
@@ -62,6 +78,86 @@ def test_python_and_browser_share_capability_semantic_fixtures():
             "redis_valkey_forbidden_authority_passed"
         ], case["id"]
         assert result.forbidden_authority_violation is case["violation"], case["id"]
+    for case in cases["architecture_coverage"]:
+        result = evaluate_architecture_coverage(case["text"])
+        assert list(result.covered_area_identifiers) == case[
+            "covered_areas"
+        ], case["id"]
+        assert list(result.missing_area_identifiers) == case[
+            "missing_areas"
+        ], case["id"]
+        duplicate = next(
+            item for item in result.areas
+            if item.area_identifier == "duplicate_handling"
+        )
+        assert duplicate.heading_present is case[
+            "duplicate_heading_present"
+        ], case["id"]
+        assert duplicate.semantic_mechanism_present is case[
+            "duplicate_semantic_mechanism_present"
+        ], case["id"]
+        assert duplicate.stable_side_effect_outcome_present is case[
+            "duplicate_stable_side_effect_outcome_present"
+        ], case["id"]
+
+
+def test_architecture_headings_without_semantics_remain_unverified():
+    contract = extract_task_requirements(B03)
+    headings_only = (
+        "PostgreSQL is the source of truth. Redis and Valkey are "
+        "non-authoritative caches.\n"
+        + "\n".join(
+            f"### {item.ordinal}. {item.label}"
+            for item in contract.deliverables
+        )
+    )
+    checks = validate_task_requirements(headings_only, contract)
+    architecture_checks = [
+        check for check in checks
+        if check.check_type.startswith("task_architecture_")
+    ]
+    assert len(architecture_checks) == 10
+    assert all(check.status == "failed" for check in architecture_checks)
+    duplicate = next(
+        check for check in architecture_checks
+        if check.check_type == "task_architecture_duplicate_handling"
+    )
+    duplicate_observations = dict(duplicate.observations)
+    assert {
+        key: duplicate_observations[key]
+        for key in (
+            "area_identifier", "heading_present",
+            "semantic_mechanism_present",
+            "stable_side_effect_outcome_present",
+        )
+    } == {
+        "area_identifier": "duplicate_handling",
+        "heading_present": 1,
+        "semantic_mechanism_present": 0,
+        "stable_side_effect_outcome_present": 0,
+    }
+    assert duplicate_observations["validator_version"]
+    assert AnswerGuard().check(
+        headings_only,
+        AnswerGuardContext(
+            answer_class="long_form",
+            task_contract=B03,
+            task_requirements=contract,
+        ),
+    ).status == "unverified"
+
+
+def test_architecture_quality_observations_never_contain_answer_text():
+    private_phrase = "private architecture response phrase"
+    contract = extract_task_requirements(B03)
+    checks = validate_task_requirements(
+        f"### 5. Duplicate-event handling\n{private_phrase}", contract
+    )
+    encoded = json.dumps(
+        [check.safe_summary for check in checks], sort_keys=True
+    )
+    assert private_phrase not in encoded
+    assert "area_identifier" in encoded
 
 
 def test_markdown_numbered_deliverables_preserve_top_level_order():

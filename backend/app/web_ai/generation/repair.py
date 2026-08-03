@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from ...ai.types import AIRequest
 from ..evidence.models import EvidencePack
@@ -40,6 +41,9 @@ def build_repair_request(
             "definition_present", "concrete_retry_example_present",
             "stable_outcome_present", "authoritative_store_present",
             "forbidden_authority_passed", "forbidden_authority_violation",
+            "area_identifier", "heading_present",
+            "semantic_mechanism_present",
+            "stable_side_effect_outcome_present",
             "validator_version",
         }
         values = [
@@ -91,6 +95,24 @@ def build_repair_request(
             " This is the final bounded strict-format correction. Preserve all "
             "semantic content and every passing constraint; change only what the "
             "listed deterministic format checks require."
+        )
+    architecture_areas = tuple(dict.fromkeys(
+        str(dict(check.observations).get("area_identifier") or "")
+        for check in failed_checks
+        if check.check_type.startswith("task_architecture_")
+        and re.fullmatch(
+            r"[a-z][a-z0-9_]{0,39}",
+            str(dict(check.observations).get("area_identifier") or ""),
+        )
+    ))
+    if architecture_areas:
+        system += (
+            " Supply concrete behavior for only these missing architecture "
+            "areas while preserving every area that already passes: "
+            + ", ".join(architecture_areas)
+            + ". A heading alone is insufficient. For duplicate_handling, "
+            "state a durable deduplication or idempotency mechanism, or a "
+            "stable outcome that prevents a repeated wallet or ledger effect."
         )
     typed_contract = output_contract_instruction(
         output_contract or OutputContract()

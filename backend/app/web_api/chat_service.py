@@ -56,7 +56,7 @@ from ..web_ai.generation.answer_guard import (
 )
 from ..web_ai.generation.generator import GeneratedAnswer, VerifiedGenerator
 from ..web_ai.generation.models import (
-    AnswerQualityResult, RepositoryValidationMode,
+    AnswerQualityResult, QualityCheck, RepositoryValidationMode,
 )
 from ..web_ai.generation.output_contract import (
     OutputContract,
@@ -67,7 +67,8 @@ from ..web_ai.generation.output_contract import (
     validate_output_contract,
 )
 from ..web_ai.generation.task_requirements import (
-    TaskRequirementContract, extract_task_requirements,
+    TaskRequirementContract, architecture_area_ids_for_contract,
+    extract_task_requirements,
 )
 from ..web_ai.generation.repair import build_repair_request
 from ..web_ai.persistence import (
@@ -3975,6 +3976,49 @@ def execute_web_turn(
                 )
                 return _parse_verifier_status(verifier_response.text)
 
+            architecture_area_ids = architecture_area_ids_for_contract(
+                task_requirements
+            )
+            initial_quality_captured = False
+            pre_repair_failed_check_identifiers: tuple[str, ...] = ()
+            repair_trigger_area_identifiers: tuple[str, ...] = ()
+            post_repair_failed_check_identifiers: tuple[str, ...] = ()
+
+            def failed_check_identifiers(
+                result: AnswerQualityResult,
+            ) -> tuple[str, ...]:
+                return tuple(dict.fromkeys(
+                    check.check_type
+                    for check in result.failed_checks
+                    if check.check_type
+                ))[:16]
+
+            def failed_architecture_area_identifiers(
+                result: AnswerQualityResult,
+            ) -> tuple[str, ...]:
+                return tuple(dict.fromkeys(
+                    str(dict(check.observations).get("area_identifier") or "")
+                    for check in result.failed_checks
+                    if (
+                        check.check_type.startswith("task_architecture_")
+                        and str(
+                            dict(check.observations).get("area_identifier") or ""
+                        ) in architecture_area_ids
+                    )
+                ))[:10]
+
+            def capture_initial_quality(
+                result: AnswerQualityResult,
+            ) -> AnswerQualityResult:
+                nonlocal initial_quality_captured
+                nonlocal pre_repair_failed_check_identifiers
+                if architecture_area_ids and not initial_quality_captured:
+                    pre_repair_failed_check_identifiers = (
+                        failed_check_identifiers(result)
+                    )
+                    initial_quality_captured = True
+                return result
+
             def verify(answer: str) -> AnswerQualityResult:
                 nonlocal guard_context, repository_validation_attempts
                 if (
@@ -4028,11 +4072,11 @@ def execute_web_turn(
                                     prepared.repository_validation
                                 ),
                             )
-                            return guard.check(
+                            return capture_initial_quality(guard.check(
                                 answer,
                                 guard_context,
                                 model_verifier=None,
-                            )
+                            ))
                         if on_status:
                             on_status("running_code_checks")
                         _phase3_stage(
@@ -4120,11 +4164,11 @@ def execute_web_turn(
                         guard_context,
                         repository_validation=prepared.repository_validation,
                     )
-                return guard.check(
+                return capture_initial_quality(guard.check(
                     answer,
                     guard_context,
                     model_verifier=None,
-                )
+                ))
 
             repair_prices: list[tuple[str, PriceResult, int, int]] = []
             repair_reserved_total = 0
@@ -4172,6 +4216,11 @@ def execute_web_turn(
                 attempt_number: int,
             ) -> AIProviderResponse | None:
                 nonlocal guard_context, repair_reserved_total, repair_reasoning_total
+                nonlocal repair_trigger_area_identifiers
+                if architecture_area_ids and attempt_number == 1:
+                    repair_trigger_area_identifiers = (
+                        failed_architecture_area_identifiers(quality)
+                    )
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -4355,24 +4404,30 @@ def execute_web_turn(
             def verify_repaired(
                 answer: str, prior: AnswerQualityResult
             ) -> AnswerQualityResult:
-                nonlocal guard_context
+                nonlocal guard_context, post_repair_failed_check_identifiers
                 if guard_context.repository_validation_required:
                     prepared.repository_validation = None
                     guard_context = replace(
                         guard_context, repository_validation=None
                     )
-                    result = verify(answer)
-                    return replace(result, repair_attempted=True)
-                return guard.check(
-                    answer,
-                    guard_context,
-                    model_verifier=None,
-                    repair_attempted=True,
-                )
+                    result = replace(verify(answer), repair_attempted=True)
+                else:
+                    result = guard.check(
+                        answer,
+                        guard_context,
+                        model_verifier=None,
+                        repair_attempted=True,
+                    )
+                if architecture_area_ids:
+                    post_repair_failed_check_identifiers = (
+                        failed_check_identifiers(result)
+                    )
+                return result
 
             def verify_final(
                 answer: str, prior: AnswerQualityResult | None
             ) -> AnswerQualityResult:
+                nonlocal post_repair_failed_check_identifiers
                 result = guard.check(
                     answer,
                     guard_context,
@@ -4384,6 +4439,37 @@ def execute_web_turn(
                         prior and prior.repair_attempted
                     ),
                 )
+                if architecture_area_ids:
+                    if result.repair_attempted:
+                        post_repair_failed_check_identifiers = (
+                            failed_check_identifiers(result)
+                        )
+                    trace = QualityCheck(
+                        "task_architecture_repair_trace",
+                        "passed",
+                        observations=(
+                            (
+                                "pre_repair_failed_check_identifiers",
+                                ",".join(
+                                    pre_repair_failed_check_identifiers
+                                )[:256],
+                            ),
+                            (
+                                "repair_trigger_area_identifiers",
+                                ",".join(
+                                    repair_trigger_area_identifiers
+                                )[:256],
+                            ),
+                            (
+                                "post_repair_failed_check_identifiers",
+                                ",".join(
+                                    post_repair_failed_check_identifiers
+                                )[:256],
+                            ),
+                            ("validator_version", task_requirements.version),
+                        ),
+                    )
+                    result = replace(result, checks=result.checks + (trace,))
                 return result
 
             try:

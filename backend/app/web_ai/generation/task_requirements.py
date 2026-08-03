@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.2"
+TASK_REQUIREMENT_VERSION = "2026-08-03.3"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -35,6 +35,198 @@ class AuthoritySemanticEvaluation:
     forbidden_authority_passed: bool
     forbidden_authority_violation: bool
     validator_version: str = TASK_REQUIREMENT_VERSION
+
+
+ARCHITECTURE_AREA_IDENTIFIERS = (
+    "database_schema",
+    "transaction_boundaries",
+    "state_transitions",
+    "pseudocode",
+    "duplicate_handling",
+    "out_of_order_handling",
+    "failure_recovery",
+    "reconciliation",
+    "security_checks",
+    "test_plan",
+)
+
+
+@dataclass(frozen=True)
+class ArchitectureAreaEvaluation:
+    area_identifier: str
+    heading_present: bool
+    semantic_mechanism_present: bool
+    stable_side_effect_outcome_present: bool
+    passed: bool
+    validator_version: str = TASK_REQUIREMENT_VERSION
+
+
+@dataclass(frozen=True)
+class ArchitectureCoverageEvaluation:
+    areas: tuple[ArchitectureAreaEvaluation, ...]
+    validator_version: str = TASK_REQUIREMENT_VERSION
+
+    @property
+    def covered_area_identifiers(self) -> tuple[str, ...]:
+        return tuple(item.area_identifier for item in self.areas if item.passed)
+
+    @property
+    def missing_area_identifiers(self) -> tuple[str, ...]:
+        return tuple(
+            item.area_identifier for item in self.areas if not item.passed
+        )
+
+
+def normalize_architecture_semantics(value: str) -> str:
+    normalized = str(value or "").casefold()
+    normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", normalized)
+    normalized = normalized.replace("**", " ").replace("__", " ")
+    normalized = normalized.replace("`", " ")
+    normalized = re.sub(r"[-\u2010-\u2015\u2212_]", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _architecture_area_from_label(label: str) -> str | None:
+    value = normalize_architecture_semantics(label)
+    rules = (
+        ("database_schema", (
+            r"\bdatabase\b.*\b(?:table|schema)",
+            r"\b(?:tables?|schema)\b.*\b(?:unique|constraint)",
+        )),
+        ("transaction_boundaries", (r"\btransaction\b.*\bboundar",)),
+        ("state_transitions", (r"\b(?:event|payment|state)\b.*\btransition",)),
+        ("pseudocode", (r"\bpseudocode\b",)),
+        ("duplicate_handling", (r"\bduplicate\b.*\bhandling\b",)),
+        ("out_of_order_handling", (r"\bout of order\b.*\bhandling\b",)),
+        ("failure_recovery", (r"\bfailure\b.*\brecovery\b",)),
+        ("reconciliation", (r"\breconcil",)),
+        ("security_checks", (r"\bsecurity\b.*\bchecks?\b",)),
+        ("test_plan", (r"\btest\b.*\bplan\b",)),
+    )
+    for area_identifier, patterns in rules:
+        if any(re.search(pattern, value) for pattern in patterns):
+            return area_identifier
+    return None
+
+
+def architecture_area_ids_for_contract(
+    contract: "TaskRequirementContract",
+) -> tuple[str, ...]:
+    identifiers = tuple(
+        _architecture_area_from_label(item.label)
+        for item in contract.deliverables
+    )
+    if (
+        len(identifiers) == len(ARCHITECTURE_AREA_IDENTIFIERS)
+        and identifiers == ARCHITECTURE_AREA_IDENTIFIERS
+    ):
+        return ARCHITECTURE_AREA_IDENTIFIERS
+    return ()
+
+
+def _architecture_sections(answer: str) -> dict[str, tuple[bool, str]]:
+    value = str(answer or "")
+    fenced_ranges = tuple(
+        (match.start(), match.end())
+        for match in re.finditer(r"```.*?```", value, re.DOTALL)
+    )
+    matches = [
+        match for match in _ANSWER_NUMBERED.finditer(value)
+        if not any(start <= match.start() < end for start, end in fenced_ranges)
+    ]
+    sections: dict[str, tuple[bool, str]] = {}
+    last_match_index = -1
+    for index, match in enumerate(matches):
+        ordinal = int(match.group(1))
+        if ordinal < 1 or ordinal > len(ARCHITECTURE_AREA_IDENTIFIERS):
+            continue
+        area_identifier = _architecture_area_from_label(match.group(2))
+        expected_area = ARCHITECTURE_AREA_IDENTIFIERS[ordinal - 1]
+        if area_identifier != expected_area or index <= last_match_index:
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        label_parts = re.split(
+            r"\s+(?:[-\u2010-\u2015\u2212]|:)\s+",
+            match.group(2), maxsplit=1,
+        )
+        inline_detail = label_parts[1] if len(label_parts) == 2 else ""
+        sections[expected_area] = (
+            True,
+            normalize_architecture_semantics(
+                inline_detail + "\n" + value[match.end():end]
+            ),
+        )
+        last_match_index = index
+    return sections
+
+
+def _architecture_mechanism(area_identifier: str, value: str) -> bool:
+    if area_identifier == "database_schema":
+        return bool(
+            re.search(r"\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b", value)
+            and re.search(r"\b(?:unique|primary key|constraint|provider event id)\b", value)
+        )
+    patterns = {
+        "transaction_boundaries": r"\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b",
+        "state_transitions": r"\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic transition)\b",
+        "pseudocode": r"\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction)\b",
+        "out_of_order_handling": r"\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state)\b",
+        "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash recovery|lease recovery)\b",
+        "reconciliation": r"\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b",
+        "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b",
+        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b",
+    }
+    return bool(re.search(patterns[area_identifier], value))
+
+
+def _duplicate_semantics(value: str) -> tuple[bool, bool]:
+    mechanism = bool(re.search(
+        r"\b(?:deduplicat\w*|dedupe\w*|idempotent|idempotency|already processed|"
+        r"unique provider event id|unique event(?: id)? constraint|on conflict|"
+        r"(?:ignore|ignored|acknowledge|acknowledged) (?:a )?duplicate|"
+        r"stored event result)\b",
+        value,
+    ))
+    stable = bool(re.search(
+        r"\bon conflict do nothing\b|"
+        r"\b(?:return|returns|acknowledge|acknowledges) (?:http )?(?:200|success)"
+        r"[^.;]{0,70}\b(?:already processed|duplicate)\b|"
+        r"\b(?:already processed|duplicate)\b[^.;]{0,70}"
+        r"\b(?:return|returns|acknowledge|acknowledges) (?:http )?(?:200|success)\b|"
+        r"\b(?:no|without|prevent\w*|cannot|does not)\b[^.;]{0,70}"
+        r"\b(?:second|another|repeated|duplicate)\b[^.;]{0,35}"
+        r"\b(?:wallet credit|ledger credit|ledger mutation|charge|processing|side effect)\b|"
+        r"\breuse\w* (?:the )?stored event result\b",
+        value,
+    ))
+    return mechanism, stable
+
+
+def evaluate_architecture_coverage(
+    answer: str,
+) -> ArchitectureCoverageEvaluation:
+    normalized_answer = normalize_architecture_semantics(answer)
+    sections = _architecture_sections(answer)
+    areas: list[ArchitectureAreaEvaluation] = []
+    for area_identifier in ARCHITECTURE_AREA_IDENTIFIERS:
+        heading_present, section_value = sections.get(
+            area_identifier, (False, normalized_answer)
+        )
+        if area_identifier == "duplicate_handling":
+            mechanism, stable = _duplicate_semantics(section_value)
+            passed = mechanism or stable
+        else:
+            mechanism = _architecture_mechanism(area_identifier, section_value)
+            stable = False
+            passed = mechanism
+        areas.append(ArchitectureAreaEvaluation(
+            area_identifier=area_identifier,
+            heading_present=heading_present,
+            semantic_mechanism_present=mechanism,
+            stable_side_effect_outcome_present=stable,
+            passed=passed,
+        ))
+    return ArchitectureCoverageEvaluation(tuple(areas))
 
 
 def evaluate_idempotency_semantics(
@@ -334,6 +526,13 @@ class TaskRequirementContract:
             rules.extend(
                 f"{item.ordinal}. {item.label}" for item in self.deliverables
             )
+        if architecture_area_ids_for_contract(self):
+            rules.append(
+                "For every architecture area, provide concrete behavior rather "
+                "than a heading alone. For duplicate handling, name a durable "
+                "deduplication or idempotency mechanism, or a stable no-repeat "
+                "outcome such as no second wallet credit or ledger mutation."
+            )
         return "Mandatory task requirements; all are verified:\n- " + "\n- ".join(rules)
 
 
@@ -583,19 +782,40 @@ def validate_task_requirements(
         section_text[int(match.group(1))] = set(
             _terms(value[match.start():end], 400)
         )
-    for deliverable in contract.deliverables:
-        terms_in_section = section_text.get(deliverable.ordinal, set())
-        term_overlap = sum(term in terms_in_section for term in deliverable.terms)
-        required_overlap = 1 if len(deliverable.terms) <= 2 else 2
-        passed = (
-            deliverable.ordinal in section_text
-            and term_overlap >= min(required_overlap, len(deliverable.terms))
-        )
-        checks.append(QualityCheck(
-            f"task_deliverable_{deliverable.ordinal:02d}",
-            "passed" if passed else "failed",
-            "" if passed else f"missing_deliverable_{deliverable.ordinal:02d}",
-        ))
+    architecture_area_ids = architecture_area_ids_for_contract(contract)
+    if architecture_area_ids:
+        architecture = evaluate_architecture_coverage(value)
+        for area in architecture.areas:
+            checks.append(QualityCheck(
+                f"task_architecture_{area.area_identifier}",
+                "passed" if area.passed else "failed",
+                "" if area.passed else "architecture_area_missing",
+                observations=(
+                    ("area_identifier", area.area_identifier),
+                    ("heading_present", int(area.heading_present)),
+                    ("semantic_mechanism_present", int(
+                        area.semantic_mechanism_present
+                    )),
+                    ("stable_side_effect_outcome_present", int(
+                        area.stable_side_effect_outcome_present
+                    )),
+                    ("validator_version", area.validator_version),
+                ),
+            ))
+    else:
+        for deliverable in contract.deliverables:
+            terms_in_section = section_text.get(deliverable.ordinal, set())
+            term_overlap = sum(term in terms_in_section for term in deliverable.terms)
+            required_overlap = 1 if len(deliverable.terms) <= 2 else 2
+            passed = (
+                deliverable.ordinal in section_text
+                and term_overlap >= min(required_overlap, len(deliverable.terms))
+            )
+            checks.append(QualityCheck(
+                f"task_deliverable_{deliverable.ordinal:02d}",
+                "passed" if passed else "failed",
+                "" if passed else f"missing_deliverable_{deliverable.ordinal:02d}",
+            ))
 
     if contract.explicit_subquestion_count:
         answered = len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*+])\s+\S+", value))

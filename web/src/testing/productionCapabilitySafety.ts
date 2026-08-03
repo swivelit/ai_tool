@@ -617,7 +617,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.2'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.3'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -650,17 +650,131 @@ export type WebhookArchitectureEvaluation = {
   nonPostgresAuthoritativeClaim: boolean
   coveredAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
   missingAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
+  areaEvaluations: ArchitectureAreaEvaluation[]
   validatorVersion: string
+}
+
+export type ArchitectureAreaEvaluation = {
+  areaIdentifier: typeof WEBHOOK_ARCHITECTURE_AREAS[number]
+  headingPresent: boolean
+  semanticMechanismPresent: boolean
+  stableSideEffectOutcomePresent: boolean
+  passed: boolean
 }
 
 function hasAll(value: string, patterns: RegExp[]): boolean {
   return patterns.every(pattern => pattern.test(value))
 }
 
+export function normalizeArchitectureSemantics(answer: string): string {
+  return String(answer)
+    .toLowerCase()
+    .replace(/^\s{0,3}#{1,6}\s*/gmu, '')
+    .replace(/\*\*|__|`/gu, ' ')
+    .replace(/[-\u2010-\u2015\u2212_]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+}
+
+function architectureAreaFromLabel(
+  label: string,
+): typeof WEBHOOK_ARCHITECTURE_AREAS[number] | null {
+  const value = normalizeArchitectureSemantics(label)
+  const rules: Array<[
+    typeof WEBHOOK_ARCHITECTURE_AREAS[number], RegExp[],
+  ]> = [
+    ['database_schema', [/\bdatabase\b.*\b(?:table|schema)/u, /\b(?:tables?|schema)\b.*\b(?:unique|constraint)/u]],
+    ['transaction_boundaries', [/\btransaction\b.*\bboundar/u]],
+    ['state_transitions', [/\b(?:event|payment|state)\b.*\btransition/u]],
+    ['pseudocode', [/\bpseudocode\b/u]],
+    ['duplicate_handling', [/\bduplicate\b.*\bhandling\b/u]],
+    ['out_of_order_handling', [/\bout of order\b.*\bhandling\b/u]],
+    ['failure_recovery', [/\bfailure\b.*\brecovery\b/u]],
+    ['reconciliation', [/\breconcil/u]],
+    ['security_checks', [/\bsecurity\b.*\bchecks?\b/u]],
+    ['test_plan', [/\btest\b.*\bplan\b/u]],
+  ]
+  return rules.find(([, patterns]) => patterns.some(pattern => pattern.test(value)))?.[0] ?? null
+}
+
+function architectureSections(answer: string): Map<
+  typeof WEBHOOK_ARCHITECTURE_AREAS[number], string
+> {
+  const value = String(answer)
+  const fencedRanges = [...value.matchAll(/```[\s\S]*?```/gu)].map(match => ({
+    start:match.index ?? 0,
+    end:(match.index ?? 0) + match[0].length,
+  }))
+  const matches = [...value.matchAll(
+    /^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+(?:\*\*)?(.+?)(?:\*\*)?\s*$/gmu,
+  )].filter(match => !fencedRanges.some(range => (
+    range.start <= (match.index ?? 0) && (match.index ?? 0) < range.end
+  )))
+  const sections = new Map<typeof WEBHOOK_ARCHITECTURE_AREAS[number], string>()
+  let lastMatchIndex = -1
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index]
+    const ordinal = Number(match[1])
+    if (ordinal < 1 || ordinal > WEBHOOK_ARCHITECTURE_AREAS.length) continue
+    const area = architectureAreaFromLabel(match[2] ?? '')
+    const expectedArea = WEBHOOK_ARCHITECTURE_AREAS[ordinal - 1]
+    if (area !== expectedArea || index <= lastMatchIndex) continue
+    const start = (match.index ?? 0) + match[0].length
+    const end = matches[index + 1]?.index ?? value.length
+    const labelParts = (match[2] ?? '').split(
+      /\s+(?:[-\u2010-\u2015\u2212]|:)\s+/u,
+      2,
+    )
+    const inlineDetail = labelParts.length === 2 ? labelParts[1] : ''
+    sections.set(expectedArea, normalizeArchitectureSemantics(
+      `${inlineDetail}\n${value.slice(start, end)}`,
+    ))
+    lastMatchIndex = index
+  }
+  return sections
+}
+
+function duplicateArchitectureSemantics(value: string): {
+  mechanism: boolean
+  stableOutcome: boolean
+} {
+  const mechanism = /\b(?:deduplicat\w*|dedupe\w*|idempotent|idempotency|already processed|unique provider event id|unique event(?: id)? constraint|on conflict|(?:ignore|ignored|acknowledge|acknowledged) (?:a )?duplicate|stored event result)\b/u.test(value)
+  const stableOutcome = /\bon conflict do nothing\b|\b(?:return|returns|acknowledge|acknowledges) (?:http )?(?:200|success)[^.;]{0,70}\b(?:already processed|duplicate)\b|\b(?:already processed|duplicate)\b[^.;]{0,70}\b(?:return|returns|acknowledge|acknowledges) (?:http )?(?:200|success)\b|\b(?:no|without|prevent\w*|cannot|does not)\b[^.;]{0,70}\b(?:second|another|repeated|duplicate)\b[^.;]{0,35}\b(?:wallet credit|ledger credit|ledger mutation|charge|processing|side effect)\b|\breuse\w* (?:the )?stored event result\b/u.test(value)
+  return { mechanism, stableOutcome }
+}
+
+function architectureMechanism(
+  area: typeof WEBHOOK_ARCHITECTURE_AREAS[number],
+  value: string,
+): boolean {
+  if (area === 'database_schema') {
+    return hasAll(value, [
+      /\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b/u,
+      /\b(?:unique|primary key|constraint|provider event id)\b/u,
+    ])
+  }
+  const patterns: Record<
+    Exclude<typeof WEBHOOK_ARCHITECTURE_AREAS[number], 'database_schema' | 'duplicate_handling'>,
+    RegExp
+  > = {
+    transaction_boundaries:/\b(?:atomic transaction|begin|commit|rollback|select for update|transaction boundar\w*|same transaction)\b/u,
+    state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle|monotonic transition)\b/u,
+    pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process event|begin transaction)\b/u,
+    out_of_order_handling:/\b(?:out of order|late event|event ordering|reorder|sequence gap|monotonic state)\b/u,
+    failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash recovery|lease recovery)\b/u,
+    reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/u,
+    security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body)\b/u,
+    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b/u,
+  }
+  return area !== 'duplicate_handling' && patterns[area].test(value)
+}
+
 export function evaluateWebhookArchitecture(
   answer: string,
 ): WebhookArchitectureEvaluation {
   const value = String(answer)
+  const normalizedValue = normalizeArchitectureSemantics(value)
+  const sections = architectureSections(value)
   const clauses = value.split(/(?<=[.!?;])\s+|\n+/u).filter(Boolean)
   const storeHasAuthority = (clause: string, store: string): boolean => {
     const authority = '(?:source of truth|system of record|authoritative(?: store| database)?|canonical(?: store| database)?|owns? (?:the )?durable state)'
@@ -684,28 +798,40 @@ export function evaluateWebhookArchitecture(
   )))
   const redisValkeyForbiddenAuthorityPassed = safeStores.length === stores.length
     && !nonPostgresAuthoritativeClaim
-  const coverage: Record<typeof WEBHOOK_ARCHITECTURE_AREAS[number], boolean> = {
-    database_schema:hasAll(value, [
-      /\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b/i,
-      /\b(?:unique|primary key|constraint|deduplication key)\b/i,
-    ]),
-    transaction_boundaries:/\b(?:transaction boundaries?|atomic transaction|begin\b|commit\b|rollback\b|select for update)\b/i.test(value),
-    state_transitions:/\b(?:state transitions?|state machine|status transitions?|payment lifecycle|event lifecycle)\b/i.test(value),
-    pseudocode:/\b(?:pseudocode|algorithm|processing flow|handler flow|worker flow|process[_ ]?event)\b/i.test(value),
-    duplicate_handling:/\b(?:duplicate(?: event)? handling|deduplicat\w*|idempotenc\w*|already processed|on conflict)\b/i.test(value),
-    out_of_order_handling:/\b(?:out[- ]of[- ]order|late event|event ordering|reorder|sequence gap|monotonic state)\b/i.test(value),
-    failure_recovery:/\b(?:failure recovery|retry|replay|dead[- ]letter|crash recovery|lease recovery)\b/i.test(value),
-    reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/i.test(value),
-    security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|timestamp validation|raw body)\b/i.test(value),
-    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b/i.test(value),
-  }
-  const coveredAreas = WEBHOOK_ARCHITECTURE_AREAS.filter(area => coverage[area])
+  const areaEvaluations = WEBHOOK_ARCHITECTURE_AREAS.map(areaIdentifier => {
+    const section = sections.get(areaIdentifier)
+    const semanticValue = section ?? normalizedValue
+    if (areaIdentifier === 'duplicate_handling') {
+      const duplicate = duplicateArchitectureSemantics(semanticValue)
+      return {
+        areaIdentifier,
+        headingPresent:section !== undefined,
+        semanticMechanismPresent:duplicate.mechanism,
+        stableSideEffectOutcomePresent:duplicate.stableOutcome,
+        passed:duplicate.mechanism || duplicate.stableOutcome,
+      }
+    }
+    const mechanism = architectureMechanism(areaIdentifier, semanticValue)
+    return {
+      areaIdentifier,
+      headingPresent:section !== undefined,
+      semanticMechanismPresent:mechanism,
+      stableSideEffectOutcomePresent:false,
+      passed:mechanism,
+    }
+  })
+  const coveredAreas = areaEvaluations
+    .filter(area => area.passed)
+    .map(area => area.areaIdentifier)
   return {
     postgresAuthoritative,
     redisValkeyForbiddenAuthorityPassed,
     nonPostgresAuthoritativeClaim,
     coveredAreas,
-    missingAreas:WEBHOOK_ARCHITECTURE_AREAS.filter(area => !coverage[area]),
+    missingAreas:areaEvaluations
+      .filter(area => !area.passed)
+      .map(area => area.areaIdentifier),
+    areaEvaluations,
     validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
   }
 }

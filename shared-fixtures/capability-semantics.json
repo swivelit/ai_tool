@@ -79,5 +79,88 @@
       "redis_valkey_forbidden_authority_passed": false,
       "violation": true
     }
+  ],
+  "architecture_coverage": [
+    {
+      "id": "complete-ten-section-architecture",
+      "text": "PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.\n### 1. Database tables and unique constraints\nUse webhook_events, payments, refunds, and wallet_ledger tables with a UNIQUE provider_event_id.\n### 2. Transaction boundaries\nA worker uses one atomic transaction with SELECT FOR UPDATE, then commits or rolls back.\n### 3. Event and payment state transitions\nMonotonic payment and refund state transitions prevent an older event from reversing a newer state.\n### 4. Pseudocode\nHandler pseudocode begins a transaction, inserts the event, applies state, commits, and acknowledges.\n### 5. Duplicate-event handling\nProcessing is idempotent: INSERT ON CONFLICT DO NOTHING returns 200 for an already processed event without a second wallet credit.\n### 6. Out-of-order handling\nLate out of order events are stored and applied only when their sequence permits a monotonic transition.\n### 7. Failure recovery\nA retryable inbox and dead letter queue support crash recovery and safe replay.\n### 8. Reconciliation\nA reconciliation job compares provider records with PostgreSQL and repairs recorded discrepancies.\n### 9. Security checks\nVerify the raw-body HMAC signature, timestamp, replay window, and event identifier.\n### 10. Focused test plan\nRun concurrency, duplicate, ordering, rollback, refund, signature, and failure-injection integration tests.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": [],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "hyphenated-duplicate-with-dedupe",
+      "text": "### 5. Duplicate-event handling\nDeduplicate every webhook using a unique provider event ID.",
+      "covered_areas": ["duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": false
+    },
+    {
+      "id": "unicode-dash-idempotent",
+      "text": "### 5. Duplicate‑event handling — processing is idempotent and cannot create another ledger credit.",
+      "covered_areas": ["duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "idempotency-stored-result",
+      "text": "### 5) **Duplicate event handling**\nIdempotency reuses the stored event result for a repeated delivery.",
+      "covered_areas": ["duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "unique-event-on-conflict",
+      "text": "Use a UNIQUE provider_event_id. INSERT ON CONFLICT DO NOTHING and acknowledge the duplicate.",
+      "covered_areas": ["duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": false,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "duplicate-success-no-second-credit",
+      "text": "A duplicate webhook event returns success for the already processed row with no second wallet credit and no repeated ledger mutation.",
+      "covered_areas": ["duplicate_handling"],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": false,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "heading-only-rejected",
+      "text": "### 5. Duplicate-event handling",
+      "covered_areas": [],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": false,
+      "duplicate_stable_side_effect_outcome_present": false
+    },
+    {
+      "id": "duplicated-without-mitigation-rejected",
+      "text": "Events may be duplicated and can arrive more than once.",
+      "covered_areas": [],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": false,
+      "duplicate_semantic_mechanism_present": false,
+      "duplicate_stable_side_effect_outcome_present": false
+    },
+    {
+      "id": "retry-without-dedup-rejected",
+      "text": "Retry the webhook after a transient failure.",
+      "covered_areas": [],
+      "missing_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "duplicate_heading_present": false,
+      "duplicate_semantic_mechanism_present": false,
+      "duplicate_stable_side_effect_outcome_present": false
+    }
   ]
 }

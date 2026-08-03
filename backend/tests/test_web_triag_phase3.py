@@ -518,10 +518,90 @@ Test concurrency, duplicates, ordering, refunds, and failure injection."""
         if (
             check["type"].startswith("task_requirement_")
             or check["type"].startswith("task_deliverable_")
+            or (
+                check["type"].startswith("task_architecture_")
+                and check["type"] != "task_architecture_repair_trace"
+            )
         )
     ]
     assert len(task_checks) == 12
     assert all(check["status"] == "passed" for check in task_checks)
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session, request_ids=["contract-complete-architecture-request"]
+        )[0]
+    assert audit["pre_repair_failed_check_identifiers"] == []
+    assert audit["repair_trigger_area_identifiers"] == []
+    assert audit["post_repair_failed_check_identifiers"] == []
+
+
+def test_incomplete_architecture_gets_one_targeted_duplicate_repair(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    incomplete = """PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.
+### 1. Database tables and unique constraints
+Use event tables with a UNIQUE provider event ID.
+### 2. Transaction boundaries
+Use one atomic transaction and commit or rollback together.
+### 3. Event and payment state transitions
+Use monotonic payment state transitions.
+### 4. Pseudocode
+Worker pseudocode begins a transaction and processes the event.
+### 5. Duplicate-event handling
+### 6. Out-of-order handling
+Store late out-of-order events until their monotonic state permits them.
+### 7. Failure recovery
+Use a retryable inbox for crash recovery.
+### 8. Reconciliation
+Run a reconciliation audit job.
+### 9. Security checks
+Perform HMAC signature verification and replay-window checks.
+### 10. A focused test plan
+Run concurrency and failure-injection integration tests."""
+    repaired = incomplete.replace(
+        "### 5. Duplicate-event handling\n",
+        "### 5. Duplicate-event handling\n"
+        "INSERT ON CONFLICT DO NOTHING for the unique provider event ID, then "
+        "return 200 without a second wallet credit.\n",
+    )
+    captured_requests = []
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-targeted-architecture-repair",
+        prompt=prompt,
+        answers=[incomplete, repaired],
+        captured_requests=captured_requests,
+    )
+    assert calls == 2
+    assert len(captured_requests) == 2
+    repair_messages = captured_requests[1].metadata["provider_messages"]
+    assert "duplicate_handling" in repair_messages[0]["content"]
+    assert "heading alone is insufficient" in repair_messages[0]["content"]
+    assert completed.message.quality["status"] == "verified"
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session,
+            request_ids=["contract-targeted-architecture-repair-request"],
+        )[0]
+    assert audit["architecture_missing_area_identifiers"] == []
+    assert audit["pre_repair_failed_check_identifiers"] == [
+        "task_architecture_duplicate_handling"
+    ]
+    assert audit["repair_trigger_area_identifiers"] == ["duplicate_handling"]
+    assert audit["post_repair_failed_check_identifiers"] == []
 
 
 def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):

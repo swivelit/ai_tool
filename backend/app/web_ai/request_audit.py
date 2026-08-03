@@ -101,6 +101,41 @@ _FINISH_REASONS = frozenset({
 _COMPLETION_STATUSES = frozenset({
     "unknown", "complete", "incomplete", "cancelled",
 })
+_ARCHITECTURE_AREA_IDENTIFIERS = (
+    "database_schema",
+    "transaction_boundaries",
+    "state_transitions",
+    "pseudocode",
+    "duplicate_handling",
+    "out_of_order_handling",
+    "failure_recovery",
+    "reconciliation",
+    "security_checks",
+    "test_plan",
+)
+_ARCHITECTURE_AREA_SET = frozenset(_ARCHITECTURE_AREA_IDENTIFIERS)
+_SAFE_REPAIR_CHECK_IDENTIFIERS = frozenset({
+    "provider_completion",
+    "task_requirement_authoritative_store",
+    "task_requirement_forbidden_authority",
+    *(
+        f"task_architecture_{area}"
+        for area in _ARCHITECTURE_AREA_IDENTIFIERS
+    ),
+})
+
+
+def _bounded_identifier_list(value: object) -> list[str]:
+    return [
+        item for item in dict.fromkeys(
+            part.strip() for part in str(value or "").split(",")
+            if part.strip()
+        )
+        if (
+            item in _ARCHITECTURE_AREA_SET
+            or item in _SAFE_REPAIR_CHECK_IDENTIFIERS
+        )
+    ][:16]
 
 
 def _bounded_count(value: object) -> int:
@@ -287,6 +322,10 @@ def build_request_audit(
         repair_attempted = False
         output_contract_check_statuses: list[str] = []
         task_requirement_check_statuses: list[str] = []
+        architecture_missing_area_identifiers: list[str] = []
+        pre_repair_failed_check_identifiers: list[str] = []
+        repair_trigger_area_identifiers: list[str] = []
+        post_repair_failed_check_identifiers: list[str] = []
         phase2_fallback_reason_code: str | None = None
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
@@ -335,13 +374,49 @@ def build_request_audit(
                         continue
                     check_type = str(raw_check.get("type") or "")
                     check_status = str(raw_check.get("status") or "")
+                    observations = (
+                        raw_check.get("observations")
+                        if isinstance(raw_check.get("observations"), dict)
+                        else {}
+                    )
                     if check_type.startswith("output_contract_"):
                         output_contract_check_statuses.append(check_status)
                     if (
                         check_type.startswith("task_requirement_")
                         or check_type.startswith("task_deliverable_")
+                        or (
+                            check_type.startswith("task_architecture_")
+                            and check_type != "task_architecture_repair_trace"
+                        )
                     ):
                         task_requirement_check_statuses.append(check_status)
+                    if (
+                        check_type.startswith("task_architecture_")
+                        and check_type != "task_architecture_repair_trace"
+                        and check_status in {"failed", "error"}
+                    ):
+                        area = str(observations.get("area_identifier") or "")
+                        if (
+                            area in _ARCHITECTURE_AREA_SET
+                            and area not in architecture_missing_area_identifiers
+                        ):
+                            architecture_missing_area_identifiers.append(area)
+                    if check_type == "task_architecture_repair_trace":
+                        pre_repair_failed_check_identifiers = (
+                            _bounded_identifier_list(observations.get(
+                                "pre_repair_failed_check_identifiers"
+                            ))
+                        )
+                        repair_trigger_area_identifiers = (
+                            _bounded_identifier_list(observations.get(
+                                "repair_trigger_area_identifiers"
+                            ))
+                        )
+                        post_repair_failed_check_identifiers = (
+                            _bounded_identifier_list(observations.get(
+                                "post_repair_failed_check_identifiers"
+                            ))
+                        )
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
@@ -366,16 +441,49 @@ def build_request_audit(
         for _status, metadata_json, _updated_at in sorted(
             check_rows, key=lambda row: row[2]
         ):
-            candidate = _safe_json(str(metadata_json or "{}")).get(
-                "quality_outcome"
-            )
+            check_metadata = _safe_json(str(metadata_json or "{}"))
+            candidate = check_metadata.get("quality_outcome")
             if candidate in _QUALITY_STATUSES:
                 quality_status = str(candidate)
-            candidate_mode = _safe_json(
-                str(metadata_json or "{}")
-            ).get("repository_validation_mode")
+            candidate_mode = check_metadata.get("repository_validation_mode")
             if candidate_mode in _REPOSITORY_VALIDATION_MODES:
                 repository_validation_mode = str(candidate_mode)
+            for raw_check in (
+                check_metadata.get("quality_checks")
+                if isinstance(check_metadata.get("quality_checks"), list)
+                else []
+            ):
+                if not isinstance(raw_check, dict):
+                    continue
+                check_type = str(raw_check.get("check_type") or "")
+                check_status = str(raw_check.get("check_status") or "")
+                if (
+                    check_type.startswith("task_architecture_")
+                    and check_type != "task_architecture_repair_trace"
+                    and check_status in {"failed", "error"}
+                ):
+                    area = str(raw_check.get("area_identifier") or "")
+                    if (
+                        area in _ARCHITECTURE_AREA_SET
+                        and area not in architecture_missing_area_identifiers
+                    ):
+                        architecture_missing_area_identifiers.append(area)
+                if check_type == "task_architecture_repair_trace":
+                    pre_repair_failed_check_identifiers = (
+                        _bounded_identifier_list(raw_check.get(
+                            "pre_repair_failed_check_identifiers"
+                        ))
+                    )
+                    repair_trigger_area_identifiers = (
+                        _bounded_identifier_list(raw_check.get(
+                            "repair_trigger_area_identifiers"
+                        ))
+                    )
+                    post_repair_failed_check_identifiers = (
+                        _bounded_identifier_list(raw_check.get(
+                            "post_repair_failed_check_identifiers"
+                        ))
+                    )
 
         cancelled_before_usage = any(
             _safe_json(str(row[4] or "{}")).get("release_reason")
@@ -483,6 +591,18 @@ def build_request_audit(
             "task_requirement_check_status_counts": _bounded_counts(
                 task_requirement_check_statuses,
                 frozenset({"passed", "failed", "warning", "skipped", "error"}),
+            ),
+            "architecture_missing_area_identifiers": (
+                architecture_missing_area_identifiers[:10]
+            ),
+            "pre_repair_failed_check_identifiers": (
+                pre_repair_failed_check_identifiers
+            ),
+            "repair_trigger_area_identifiers": (
+                repair_trigger_area_identifiers
+            ),
+            "post_repair_failed_check_identifiers": (
+                post_repair_failed_check_identifiers
             ),
             "repair_attempted": repair_attempted,
             "generation_stage_count": min(

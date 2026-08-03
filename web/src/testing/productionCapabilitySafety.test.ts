@@ -52,6 +52,15 @@ const semanticFixtures = JSON.parse(readFileSync(
     redis_valkey_forbidden_authority_passed: boolean
     violation: boolean
   }>
+  architecture_coverage: Array<{
+    id: string
+    text: string
+    covered_areas: string[]
+    missing_areas: string[]
+    duplicate_heading_present: boolean
+    duplicate_semantic_mechanism_present: boolean
+    duplicate_stable_side_effect_outcome_present: boolean
+  }>
 }
 
 const valid = {
@@ -438,6 +447,37 @@ describe('production capability safety', () => {
         fixture.violation,
       )
     }
+  })
+
+  it('shares all architecture coverage semantics with the backend', () => {
+    for (const fixture of semanticFixtures.architecture_coverage) {
+      const result = evaluateWebhookArchitecture(fixture.text)
+      expect(result.coveredAreas, fixture.id).toEqual(fixture.covered_areas)
+      expect(result.missingAreas, fixture.id).toEqual(fixture.missing_areas)
+      const duplicate = result.areaEvaluations.find(
+        area => area.areaIdentifier === 'duplicate_handling',
+      )
+      expect(duplicate?.headingPresent, fixture.id).toBe(
+        fixture.duplicate_heading_present,
+      )
+      expect(duplicate?.semanticMechanismPresent, fixture.id).toBe(
+        fixture.duplicate_semantic_mechanism_present,
+      )
+      expect(duplicate?.stableSideEffectOutcomePresent, fixture.id).toBe(
+        fixture.duplicate_stable_side_effect_outcome_present,
+      )
+    }
+  })
+
+  it('keeps architecture diagnostics content-free', () => {
+    const privatePhrase = 'private response phrase must not enter diagnostics'
+    const result = evaluateWebhookArchitecture(
+      `### 5. Duplicate-event handling\n${privatePhrase}`,
+    )
+    expect(JSON.stringify(result)).not.toContain(privatePhrase)
+    expect(result.areaEvaluations.every(area => (
+      Object.keys(area).every(key => !['answer', 'text', 'content'].includes(key))
+    ))).toBe(true)
   })
 
   it('rejects Redis authority and incomplete architecture coverage', () => {

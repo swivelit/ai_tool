@@ -195,6 +195,10 @@ type Audit = {
   truncated: boolean
   output_contract_check_status_counts: Record<string, number>
   task_requirement_check_status_counts: Record<string, number>
+  architecture_missing_area_identifiers: string[]
+  pre_repair_failed_check_identifiers: string[]
+  repair_trigger_area_identifiers: string[]
+  post_repair_failed_check_identifiers: string[]
   repair_attempted: boolean
   generation_stage_count: number
   repair_stage_count: number
@@ -264,6 +268,9 @@ type QuestionResult = {
   completionStatus: string
   outputContractCheckStatusCounts: Record<string, number>
   taskRequirementCheckStatusCounts: Record<string, number>
+  preRepairFailedCheckIdentifiers: string[]
+  repairTriggerAreaIdentifiers: string[]
+  postRepairFailedCheckIdentifiers: string[]
   repairAttempted: boolean
   generationStageCount: number
   repairStageCount: number
@@ -298,6 +305,8 @@ type QuestionResult = {
   tierEvidence?: CapabilityTierEvidence
   architectureEvaluation?: {
     missingAreas: string[]
+    backendMissingAreas: string[]
+    contractDisagreement: boolean
     authorityClassification: 'postgres_authoritative' | 'non_postgres_authoritative' | 'ambiguous'
     postgresAuthoritative: boolean
     redisValkeyForbiddenAuthorityPassed: boolean
@@ -830,6 +839,8 @@ function skippedResult(
     persistedQualityStatus:'not_run', sseQualityStatus:'not_run',
     cacheHit:false, cacheHitKind:'none', finishReason:'', completionStatus:'not_run',
     outputContractCheckStatusCounts:{}, taskRequirementCheckStatusCounts:{},
+    preRepairFailedCheckIdentifiers:[], repairTriggerAreaIdentifiers:[],
+    postRepairFailedCheckIdentifiers:[],
     repairAttempted:false,
     generationStageCount:0, repairStageCount:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
@@ -1296,6 +1307,27 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         judged.defectSeverity = 'P2'
       }
     }
+    let architectureContractDisagreement = false
+    if (question.id === 'B03') {
+      const architecture = evaluateWebhookArchitecture(redacted.text)
+      const browserMissing = [...architecture.missingAreas].sort()
+      const backendMissing = [
+        ...audit.architecture_missing_area_identifiers,
+      ].sort()
+      architectureContractDisagreement = (
+        browserMissing.length !== backendMissing.length
+        || browserMissing.some((area, index) => area !== backendMissing[index])
+      )
+      if (architectureContractDisagreement) {
+        judged.status = 'failed'
+        judged.score = Math.min(judged.score, 60)
+        judged.reasonCodes = judged.reasonCodes.filter(
+          reason => reason !== 'architecture_sections_missing',
+        )
+        judged.reasonCodes.push('architecture_contract_disagreement')
+        judged.defectSeverity = 'P2'
+      }
+    }
     if (secretCodes.length) {
       judged.status = 'failed'
       judged.score = 0
@@ -1356,6 +1388,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       completionStatus:audit.completion_status,
       outputContractCheckStatusCounts:audit.output_contract_check_status_counts,
       taskRequirementCheckStatusCounts:audit.task_requirement_check_status_counts,
+      preRepairFailedCheckIdentifiers:
+        audit.pre_repair_failed_check_identifiers,
+      repairTriggerAreaIdentifiers:audit.repair_trigger_area_identifiers,
+      postRepairFailedCheckIdentifiers:
+        audit.post_repair_failed_check_identifiers,
       repairAttempted:audit.repair_attempted,
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
@@ -1385,6 +1422,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           const architecture = evaluateWebhookArchitecture(redacted.text)
           return {
             missingAreas:architecture.missingAreas,
+            backendMissingAreas:audit.architecture_missing_area_identifiers,
+            contractDisagreement:architectureContractDisagreement,
             postgresAuthoritative:architecture.postgresAuthoritative,
             redisValkeyForbiddenAuthorityPassed:
               architecture.redisValkeyForbiddenAuthorityPassed,
@@ -2720,6 +2759,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         output_contract_check_status_counts:item.outputContractCheckStatusCounts,
         repair_attempted:item.repairAttempted,
         task_requirement_check_status_counts:item.taskRequirementCheckStatusCounts,
+        pre_repair_failed_check_identifiers:
+          item.preRepairFailedCheckIdentifiers,
+        repair_trigger_area_identifiers:item.repairTriggerAreaIdentifiers,
+        post_repair_failed_check_identifiers:
+          item.postRepairFailedCheckIdentifiers,
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
         visible_bullet_count:item.representationCounts.visibleBulletCount,
@@ -2755,6 +2799,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
               item.architectureEvaluation.redisValkeyForbiddenAuthorityPassed,
             covered_area_count:item.architectureEvaluation.coveredAreaCount,
             missing_area_identifiers:item.architectureEvaluation.missingAreas,
+            backend_missing_area_identifiers:
+              item.architectureEvaluation.backendMissingAreas,
+            contract_disagreement:
+              item.architectureEvaluation.contractDisagreement,
             validator_version:item.architectureEvaluation.validatorVersion,
           },
         } : {}),
