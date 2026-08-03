@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import json
+import re
 from typing import Iterable
 
 from sqlmodel import Session, select
@@ -123,6 +124,21 @@ _SAFE_REPAIR_CHECK_IDENTIFIERS = frozenset({
         for area in _ARCHITECTURE_AREA_IDENTIFIERS
     ),
 })
+_SAFE_CHECK_IDENTIFIER = re.compile(
+    r"^(?:provider_completion|output_contract_[a-z0-9_]{1,64}|"
+    r"task_requirement_[a-z0-9_]{1,64}|task_deliverable_[0-9]{1,3}|"
+    r"task_architecture_[a-z0-9_]{1,64})$"
+)
+_DETERMINISTIC_INTENTS = frozenset({
+    "local_time", "arithmetic", "unit_conversion", "json_validation",
+    "billing_topup_how", "billing_topup_packages", "billing_topup_bounds",
+    "billing_custom_topup", "billing_tier_pricing", "swico_brand",
+    "profile", "settings", "web_tool_coming_soon", "memory_write",
+})
+_DETERMINISTIC_SCOPE_REASONS = frozenset({
+    "answer_class_detailed", "answer_class_long_form", "message_too_long",
+    "too_many_nonempty_lines", "creation_task", "intent_match_too_late",
+})
 
 
 def _bounded_identifier_list(value: object) -> list[str]:
@@ -134,8 +150,14 @@ def _bounded_identifier_list(value: object) -> list[str]:
         if (
             item in _ARCHITECTURE_AREA_SET
             or item in _SAFE_REPAIR_CHECK_IDENTIFIERS
+            or _SAFE_CHECK_IDENTIFIER.fullmatch(item) is not None
         )
     ][:16]
+
+
+def _safe_check_identifier(value: object) -> str | None:
+    identifier = str(value or "").strip()
+    return identifier if _SAFE_CHECK_IDENTIFIER.fullmatch(identifier) else None
 
 
 def _bounded_count(value: object) -> int:
@@ -322,11 +344,15 @@ def build_request_audit(
         repair_attempted = False
         output_contract_check_statuses: list[str] = []
         task_requirement_check_statuses: list[str] = []
+        failed_check_identifiers: list[str] = []
         architecture_missing_area_identifiers: list[str] = []
         pre_repair_failed_check_identifiers: list[str] = []
         repair_trigger_area_identifiers: list[str] = []
         post_repair_failed_check_identifiers: list[str] = []
         phase2_fallback_reason_code: str | None = None
+        deterministic_intent: str | None = None
+        deterministic_route: str | None = None
+        scope_gate_reason: str | None = None
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
             message_statuses.append(str(status or ""))
@@ -335,6 +361,14 @@ def build_request_audit(
             if str(role) != "assistant":
                 continue
             metadata = _safe_json(str(metadata_json or "{}"))
+            candidate_intent = str(metadata.get("deterministic_intent") or "")
+            if candidate_intent in _DETERMINISTIC_INTENTS:
+                deterministic_intent = candidate_intent
+            if metadata.get("deterministic_route") == "backend_tool":
+                deterministic_route = "backend_tool"
+            candidate_scope_reason = str(metadata.get("scope_gate_reason") or "")
+            if candidate_scope_reason in _DETERMINISTIC_SCOPE_REASONS:
+                scope_gate_reason = candidate_scope_reason
             cache_hit = cache_hit or metadata.get("cache_hit") is True
             candidate_cache_kind = str(
                 metadata.get("cache_hit_kind") or "none"
@@ -390,6 +424,21 @@ def build_request_audit(
                         )
                     ):
                         task_requirement_check_statuses.append(check_status)
+                    if check_status in {"failed", "error"} and (
+                        check_type.startswith("output_contract_")
+                        or check_type.startswith("task_requirement_")
+                        or check_type.startswith("task_deliverable_")
+                        or (
+                            check_type.startswith("task_architecture_")
+                            and check_type != "task_architecture_repair_trace"
+                        )
+                    ):
+                        identifier = _safe_check_identifier(check_type)
+                        if (
+                            identifier is not None
+                            and identifier not in failed_check_identifiers
+                        ):
+                            failed_check_identifiers.append(identifier)
                     if (
                         check_type.startswith("task_architecture_")
                         and check_type != "task_architecture_repair_trace"
@@ -457,6 +506,13 @@ def build_request_audit(
                     continue
                 check_type = str(raw_check.get("check_type") or "")
                 check_status = str(raw_check.get("check_status") or "")
+                if check_status in {"failed", "error"}:
+                    identifier = _safe_check_identifier(check_type)
+                    if (
+                        identifier is not None
+                        and identifier not in failed_check_identifiers
+                    ):
+                        failed_check_identifiers.append(identifier)
                 if (
                     check_type.startswith("task_architecture_")
                     and check_type != "task_architecture_repair_trace"
@@ -484,6 +540,16 @@ def build_request_audit(
                             "post_repair_failed_check_identifiers"
                         ))
                     )
+
+        if failed_check_identifiers:
+            if not pre_repair_failed_check_identifiers:
+                pre_repair_failed_check_identifiers = list(
+                    failed_check_identifiers
+                )
+            if not post_repair_failed_check_identifiers:
+                post_repair_failed_check_identifiers = list(
+                    failed_check_identifiers
+                )
 
         cancelled_before_usage = any(
             _safe_json(str(row[4] or "{}")).get("release_reason")
@@ -603,6 +669,13 @@ def build_request_audit(
             ),
             "post_repair_failed_check_identifiers": (
                 post_repair_failed_check_identifiers
+            ),
+            "failed_check_identifiers": failed_check_identifiers[:16],
+            "deterministic_intent": deterministic_intent,
+            "deterministic_route": deterministic_route,
+            "scope_gate_reason": (
+                None if deterministic_route == "backend_tool"
+                else scope_gate_reason
             ),
             "repair_attempted": repair_attempted,
             "generation_stage_count": min(

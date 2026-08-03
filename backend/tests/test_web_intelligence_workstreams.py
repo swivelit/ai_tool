@@ -20,7 +20,10 @@ from app.models import (
 )
 from app.openai_model_router import OpenAIModelRouter
 from app.time_utils import utc_now
-from app.web_api.deterministic_answers import try_deterministic_answer
+from app.web_api.deterministic_answers import (
+    deterministic_scope_decision,
+    try_deterministic_answer,
+)
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.request_coordinator import _apply_prompt_budget
 from app.web_api.router import _serialize_message
@@ -297,6 +300,114 @@ def test_ws3_configured_billing_faq_is_model_and_embedding_free(monkeypatch):
     assert response.raw["provenance"] == ["backend_tool"]
 
 
+def test_deterministic_scope_rejects_multisection_creation_brief():
+    user = create_test_user("scope-brief", "scope-brief@example.com")
+    brief = """Create a responsive landing page for a collaboration product.
+
+1. Hero — include a concise value proposition and two calls to action.
+2. Features — explain realtime editing, approvals, and version history.
+3. Security — cover access controls, encryption, and audit history.
+4. Pricing — show the available plans and what each includes.
+5. FAQ — compare plans and pricing side by side.
+
+Return complete accessible HTML, CSS, and JavaScript in fenced code blocks."""
+    with SessionLocal() as session:
+        response = try_deterministic_answer(
+            session,
+            user_id=int(user.id),
+            message=brief,
+            reply_language="en",
+            request_id="scope-brief",
+        )
+    decision = deterministic_scope_decision(brief, answer_class="long_form")
+    assert response is None
+    assert decision.intent == "billing_tier_pricing"
+    assert decision.scope_gate_reason == "answer_class_long_form"
+
+
+def test_deterministic_scope_keeps_direct_pricing_question():
+    user = create_test_user("scope-pricing", "scope-pricing@example.com")
+    with SessionLocal() as session:
+        response = try_deterministic_answer(
+            session,
+            user_id=int(user.id),
+            message="What are Swico's plans and pricing?",
+            reply_language="en",
+            request_id="scope-pricing",
+        )
+    assert response is not None
+    assert response.intent == "billing_tier_pricing"
+
+
+def test_deterministic_scope_keeps_direct_tanglish_pricing_question():
+    user = create_test_user(
+        "scope-pricing-tanglish", "scope-pricing-tanglish@example.com"
+    )
+    with SessionLocal() as session:
+        response = try_deterministic_answer(
+            session,
+            user_id=int(user.id),
+            message="Swico plans enna, pricing sollunga?",
+            reply_language="en",
+            request_id="scope-pricing-tanglish",
+        )
+    assert response is not None
+    assert response.intent == "billing_tier_pricing"
+    assert "Swico-oda" in response.text
+
+
+def test_deterministic_scope_character_and_line_boundaries():
+    base = "What are Swico plans and pricing?"
+    exactly_240 = base + ("x" * (240 - len(base)))
+    assert len(exactly_240) == 240
+    assert deterministic_scope_decision(exactly_240).scope_gate_reason is None
+    assert deterministic_scope_decision(exactly_240 + "x").scope_gate_reason == (
+        "message_too_long"
+    )
+    assert deterministic_scope_decision(
+        "What are Swico plans and pricing?\nPlease compare them."
+    ).scope_gate_reason is None
+    assert deterministic_scope_decision(
+        "What are Swico plans and pricing?\nPlease compare them.\nKeep it short."
+    ).scope_gate_reason == "too_many_nonempty_lines"
+    assert deterministic_scope_decision(
+        "Convert 5 km to miles\nUse it in lesson two.\nExplain the lesson."
+    ).scope_gate_reason == "too_many_nonempty_lines"
+
+
+def test_deterministic_scope_creation_verb_and_early_match_boundaries():
+    assert deterministic_scope_decision(
+        "Design a page that asks: What are Swico plans and pricing?"
+    ).scope_gate_reason == "creation_task"
+    assert deterministic_scope_decision(
+        "Write a profile explaining what Swico is."
+    ).scope_gate_reason == "creation_task"
+
+    early = ("x" * 158) + " plans and pricing available?"
+    late = ("x" * 159) + " plans and pricing available?"
+    assert early.index("plans") == 159
+    assert deterministic_scope_decision(early).scope_gate_reason is None
+    assert late.index("plans") == 160
+    assert deterministic_scope_decision(late).scope_gate_reason == (
+        "intent_match_too_late"
+    )
+
+
+def test_deterministic_scope_answer_class_precedes_short_intent(caplog):
+    caplog.set_level("INFO", logger="app.web_api.deterministic_answers")
+    decision = deterministic_scope_decision(
+        "What are Swico plans and pricing?", answer_class="detailed",
+        emit_log=True,
+    )
+    assert decision.scope_gate_reason == "answer_class_detailed"
+    record = next(
+        item for item in caplog.records
+        if item.getMessage() == "web_deterministic_scope_suppressed"
+    )
+    assert record.intent == "billing_tier_pricing"
+    assert record.reason == "answer_class_detailed"
+
+
 def test_ws3_billing_faq_returns_before_cache_reservation_and_provider(
     monkeypatch,
 ):
@@ -312,6 +423,14 @@ def test_ws3_billing_faq_returns_before_cache_reservation_and_provider(
         user_id=int(user.id), message="recharge panna eppadi",
         request_id="ws3-routing", thread_id=None, reply_language="en",
     )
+    assert prepared.optimization is not None
+    assert prepared.optimization.metrics["deterministic_intent"] == (
+        "billing_topup_how"
+    )
+    assert prepared.optimization.metrics["deterministic_route"] == (
+        "backend_tool"
+    )
+    assert prepared.optimization.metrics["scope_gate_reason"] is None
 
     class ProviderSpy:
         def complete(self, *_args, **_kwargs):
@@ -325,6 +444,43 @@ def test_ws3_billing_faq_returns_before_cache_reservation_and_provider(
     assert completed.response.provider == "backend_tool"
     with SessionLocal() as session:
         assert session.exec(select(UsageCharge)).all() == []
+
+
+def test_deterministic_scope_sends_long_pricing_creation_to_generation(
+    monkeypatch,
+):
+    monkeypatch.setenv("WEB_DETERMINISTIC_TOOLS_ENABLED", "true")
+    user = create_test_user(
+        "scope-generation", "scope-generation@example.com"
+    )
+    message = """Create a responsive landing page for a collaboration product.
+
+1. Hero — include a concise value proposition and two calls to action.
+2. Features — explain realtime editing, approvals, and version history.
+3. Security — cover access controls, encryption, and audit history.
+4. Pricing — show the available plans and what each includes.
+5. FAQ — compare plans and pricing side by side.
+
+Return complete accessible HTML, CSS, and JavaScript in fenced code blocks."""
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message=message,
+        request_id="scope-generation",
+        thread_id=None,
+        reply_language="en",
+        billing_exempt=True,
+    )
+    assert prepared.precomputed_response is None
+    assert prepared.route.provider in {"openai", "sarvam"}
+    assert prepared.optimization is not None
+    assert prepared.optimization.metrics["deterministic_intent"] == (
+        "billing_tier_pricing"
+    )
+    assert prepared.optimization.metrics["deterministic_route"] is None
+    assert prepared.optimization.metrics["scope_gate_reason"] in {
+        "answer_class_detailed", "answer_class_long_form", "message_too_long",
+        "too_many_nonempty_lines",
+    }
 
 
 def test_ws6_first_prompt_message_is_byte_stable(monkeypatch):

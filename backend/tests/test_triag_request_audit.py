@@ -59,6 +59,10 @@ EXPECTED_RESULT_KEYS = {
     "pre_repair_failed_check_identifiers",
     "repair_trigger_area_identifiers",
     "post_repair_failed_check_identifiers",
+    "failed_check_identifiers",
+    "deterministic_intent",
+    "deterministic_route",
+    "scope_gate_reason",
     "repair_attempted",
     "generation_stage_count",
     "repair_stage_count",
@@ -292,6 +296,10 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "pre_repair_failed_check_identifiers": [],
         "repair_trigger_area_identifiers": [],
         "post_repair_failed_check_identifiers": [],
+        "failed_check_identifiers": [],
+        "deterministic_intent": None,
+        "deterministic_route": None,
+        "scope_gate_reason": None,
         "repair_attempted": False,
         "generation_stage_count": 1,
         "repair_stage_count": 0,
@@ -384,6 +392,61 @@ def test_request_audit_reports_clean_pre_provider_cancellation(
     assert result["cancellation_failure_count"] == 0
     assert result["orphaned_active_reservation"] is False
     assert result["duplicate_settlement_indicator"] is False
+    assert SECRET_CONTENT not in response.text
+
+
+def test_request_audit_includes_every_counted_failed_contract_identifier(
+    client, monkeypatch,
+):
+    _seed_request()
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == REQUEST_ID,
+            WebChatMessage.role == "assistant",
+        )).one()
+        assistant.metadata_json = json.dumps({
+            "deterministic_intent": "billing_tier_pricing",
+            "deterministic_route": None,
+            "scope_gate_reason": "message_too_long",
+            "quality": {
+                "status": "unverified",
+                "checks": [
+                    {
+                        "type": "task_requirement_explicit_subquestions",
+                        "status": "failed",
+                    },
+                    {
+                        "type": "output_contract_question_count",
+                        "status": "failed",
+                    },
+                ],
+            },
+        })
+        session.add(assistant)
+        session.commit()
+
+    response = client.post(
+        "/api/web/admin/triag-request-audit",
+        headers=_configure_admin(monkeypatch),
+        json={"request_ids": [REQUEST_ID]},
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["task_requirement_check_status_counts"] == {"failed": 1}
+    assert result["output_contract_check_status_counts"] == {"failed": 1}
+    assert result["failed_check_identifiers"] == [
+        "task_requirement_explicit_subquestions",
+        "output_contract_question_count",
+    ]
+    assert result["pre_repair_failed_check_identifiers"] == (
+        result["failed_check_identifiers"]
+    )
+    assert result["post_repair_failed_check_identifiers"] == (
+        result["failed_check_identifiers"]
+    )
+    assert result["deterministic_intent"] == "billing_tier_pricing"
+    assert result["deterministic_route"] is None
+    assert result["scope_gate_reason"] == "message_too_long"
     assert SECRET_CONTENT not in response.text
 
 

@@ -470,6 +470,46 @@ test('production capability deployment parity gates authentication and questions
   expect(spec).toContain('page, gate.apiBaseUrl, timeoutMs')
 })
 
+test('production capability website audit discovers footer routes and stays bounded', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain("workflowStart('J-PUBLIC-WEBSITE')")
+  expect(spec).toContain("'footer a[href], .legal a[href]'")
+  expect(spec).toContain('if (pageIndex >= 25) break')
+  expect(spec).toContain('response.status() !== 200')
+  expect(spec).toContain('await auditPage.title()')
+  expect(spec).toContain("message.type() === 'error'")
+  expect(spec).toContain('candidate.origin !== websiteOrigin')
+  expect(spec).toContain('setViewportSize({ width:390, height:844 })')
+  expect(spec).toContain("getByLabel('Message Swico').isVisible")
+  for (const forbiddenPath of [
+    '/legal/terms', '/legal/privacy', '/legal/refunds', '/legal/contact',
+    '/legal/pricing', '/legal/delivery', '/legal/ai',
+  ]) {
+    const crawl = spec.slice(
+      spec.indexOf("workflowStart('J-PUBLIC-WEBSITE')"),
+      spec.indexOf('const privacyFailure =', spec.indexOf(
+        "workflowStart('J-PUBLIC-WEBSITE')",
+      )),
+    )
+    expect(crawl).not.toContain(forbiddenPath)
+  }
+})
+
+test('routing scenarios assert content-free deterministic request-audit fields', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  for (const field of [
+    'deterministic_intent', 'deterministic_route', 'scope_gate_reason',
+    'provider_call_count', 'generation_stage_count',
+  ]) expect(spec).toContain(field)
+  expect(spec).toContain("result.deterministicRoute === 'backend_tool'")
+  expect(spec).toContain("id:'R-ROUTING-AUDIT'")
+  expect(spec).toContain("['all', 'full'].includes(gate.batch)")
+})
+
 test('deployment mismatch GitHub summary is restricted to parity fields', () => {
   const workflow = readFileSync(
     resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',

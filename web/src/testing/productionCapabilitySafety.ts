@@ -4,7 +4,7 @@ export const PRODUCTION_CAPABILITY_CONFIRMATION =
   'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS'
 
 export const PRODUCTION_CAPABILITY_BATCHES = [
-  'core', 'context', 'rag', 'repository', 'voice-ui', 'all',
+  'core', 'context', 'rag', 'repository', 'voice-ui', 'routing', 'all', 'full',
 ] as const
 
 export type ProductionCapabilityBatch =
@@ -432,9 +432,9 @@ export function productionCapabilityGate(
 
 export function batchIncludes(
   selected: ProductionCapabilityBatch,
-  scenarioBatch: Exclude<ProductionCapabilityBatch, 'all'>,
+  scenarioBatch: Exclude<ProductionCapabilityBatch, 'all' | 'full'>,
 ): boolean {
-  return selected === 'all' || selected === scenarioBatch
+  return selected === 'all' || selected === 'full' || selected === scenarioBatch
 }
 
 export class DebitCapExceeded extends Error {

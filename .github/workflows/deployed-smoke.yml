@@ -22,7 +22,7 @@ on:
         required: false
         default: core
         type: choice
-        options: [core, context, rag, repository, voice-ui, all]
+        options: [core, context, rag, repository, voice-ui, routing, all, full]
       production_capability_max_chat_debit_micros:
         description: Positive maximum cumulative Chat debit in micro-INR
         required: false

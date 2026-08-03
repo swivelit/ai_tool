@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from datetime import datetime
 import json
+import logging
 import math
 import operator
 import os
@@ -22,6 +24,33 @@ from ..models import User
 from ..time_utils import utc_now
 from .swico_brand import classify_swico_brand_query, swico_brand_response
 
+
+logger = logging.getLogger(__name__)
+
+DETERMINISTIC_SCOPE_MAX_CHARACTERS = 240
+DETERMINISTIC_SCOPE_MAX_NONEMPTY_LINES = 2
+DETERMINISTIC_SCOPE_INTENT_PREFIX_CHARACTERS = 160
+
+_CREATION_TASK_OPEN = re.compile(
+    r"^\s*(?:create|build|make|design|write|generate|develop|implement|code|draft)\b",
+    re.IGNORECASE,
+)
+_BRAND_SCOPE_ANCHOR = re.compile(
+    r"(?:\bswico\b|\bswivel\s+technologies\b|\bjeyanth\b|"
+    r"ஸ்விகோ|சுவிகோ|ஸ்விவல்|"
+    r"\bwho\s+are\s+you\b|\bwhat\s+are\s+you\b|"
+    r"\bwhat(?:'s|\s+is)\s+your\s+name\b|\bwhat\s+ai\s+are\s+you\b|"
+    r"\bwho\s+(?:created|made|developed|built)\s+you\b|"
+    r"\b(?:your|the\s+assistant(?:'s)?)\s+(?:creator|developer|company|"
+    r"architecture|agents?|token\s+optimi[sz]ation|voice\s+functionality|"
+    r"document\s+support|billing|credits?|security|privacy|model|provider)\b|"
+    r"\bwhich\s+company\s+(?:created|made|developed|built)\s+you\b|"
+    r"\bwhich\s+model\s+(?:powers|runs|drives)\s+you\b|"
+    r"\bwhat\s+model\s+do\s+you\s+use\b|"
+    r"\bare\s+you\s+(?:an?\s+)?(?:ai|assistant|chatgpt|sarvam(?:\s+ai)?)\b|"
+    r"நீ(?:ங்கள்)?\s+யார்|உன்(?:ங்கள்)?\s+பெயர்\s+என்ன)",
+    re.IGNORECASE,
+)
 
 _TIME_QUERY = re.compile(
     r"\b(?:what\s+(?:time|date|day)\s+is\s+it|"
@@ -130,6 +159,108 @@ _UNITS: dict[str, tuple[str, float, str]] = {
     "mib": ("data", 1024.0**2, "MiB"),
     "gib": ("data", 1024.0**3, "GiB"),
 }
+
+
+@dataclass(frozen=True)
+class DeterministicScopeDecision:
+    intent: str | None
+    scope_gate_reason: str | None
+
+
+def _billing_intent_match(message: str) -> tuple[str, re.Match[str]] | None:
+    for intent, pattern in (
+        ("billing_topup_how", _TOPUP_HOW),
+        ("billing_topup_packages", _TOPUP_PACKAGES),
+        ("billing_topup_bounds", _TOPUP_BOUNDS),
+        ("billing_custom_topup", _TOPUP_CUSTOM),
+        ("billing_tier_pricing", _PLAN_PRICING),
+    ):
+        match = pattern.search(message)
+        if match is not None:
+            return intent, match
+    return None
+
+
+def _candidate_intent(
+    message: str, *, previous_topic: str | None = None,
+) -> tuple[str | None, int | None]:
+    if (
+        _TIME_QUERY.search(message)
+        and not re.search(r"\btime complexity\b", message, re.IGNORECASE)
+    ):
+        return "local_time", 0
+    if _arithmetic_answer(message) is not None:
+        return "arithmetic", 0
+    if _UNIT_QUERY.match(message) is not None:
+        return "unit_conversion", 0
+    json_match = _JSON_INTENT.search(message)
+    if json_match is not None:
+        return "json_validation", json_match.start()
+    billing = _billing_intent_match(message)
+    if billing is not None:
+        return billing[0], billing[1].start()
+    if classify_swico_brand_query(message, previous_topic=previous_topic) is not None:
+        anchor = _BRAND_SCOPE_ANCHOR.search(message)
+        return "swico_brand", anchor.start() if anchor is not None else 0
+    lowered = message.casefold()
+    if re.search(r"\b(?:my profile|what do you know about me|saved profile)\b", lowered):
+        return "profile", 0
+    if re.search(
+        r"\b(?:my settings|reply language setting|change (?:my )?reply language)\b",
+        lowered,
+    ):
+        return "settings", 0
+    if _COMING_SOON.search(message):
+        return "web_tool_coming_soon", 0
+    return None, None
+
+
+def deterministic_scope_decision(
+    message: str,
+    *,
+    answer_class: str | None = None,
+    previous_topic: str | None = None,
+    emit_log: bool = False,
+) -> DeterministicScopeDecision:
+    """Bound deterministic tools to short, direct requests.
+
+    A suppressed candidate deliberately returns to the normal generation path.
+    Only content-free intent and reason identifiers are logged.
+    """
+
+    text = str(message or "").strip()
+    intent, match_start = _candidate_intent(
+        text, previous_topic=previous_topic,
+    ) if text else (None, None)
+    reason: str | None = None
+    normalized_answer_class = str(answer_class or "").strip().lower()
+    if normalized_answer_class in {"detailed", "long_form"}:
+        reason = f"answer_class_{normalized_answer_class}"
+    elif len(text) > DETERMINISTIC_SCOPE_MAX_CHARACTERS:
+        reason = "message_too_long"
+    elif sum(1 for line in text.splitlines() if line.strip()) > (
+        DETERMINISTIC_SCOPE_MAX_NONEMPTY_LINES
+    ):
+        reason = "too_many_nonempty_lines"
+    elif intent and (
+        intent.startswith("billing_") or intent == "swico_brand"
+    ):
+        if _CREATION_TASK_OPEN.match(text):
+            reason = "creation_task"
+        elif match_start is None or match_start >= (
+            DETERMINISTIC_SCOPE_INTENT_PREFIX_CHARACTERS
+        ):
+            reason = "intent_match_too_late"
+    if reason is not None and intent is not None and emit_log:
+        logger.info(
+            "web_deterministic_scope_suppressed",
+            extra={
+                "event": "web_deterministic_scope_suppressed",
+                "intent": intent,
+                "reason": reason,
+            },
+        )
+    return DeterministicScopeDecision(intent, reason)
 
 
 def _response(text: str, *, intent: str, reason: str) -> AIProviderResponse:
@@ -262,7 +393,11 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
     package_text = ", ".join(_rupees(value) for value in packages) or "none configured"
     tanglish = (
         str(reply_language or "").strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
-        or bool(re.search(r"\b(?:panna|seiya|eppadi|epdi|vaanga)\b", text, re.I))
+        or bool(re.search(
+            r"\b(?:panna|seiya|eppadi|epdi|vaanga|enna|sollunga)\b",
+            text,
+            re.I,
+        ))
         or bool(re.search(r"[\u0B80-\u0BFF]", text))
     )
 
@@ -325,12 +460,18 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
             + ("" if item["available"] else " (not currently available)")
             for item in settings["tiers"]
         ]
-        return (
+        answer = (
             "Swico’s available modes are " + "; ".join(tiers)
             + f". AI usage is paid from credits; configured top-up packages are "
-            f"{package_text}.",
-            "billing_tier_pricing",
+            f"{package_text}."
         )
+        if tanglish:
+            answer = (
+                "Swico-oda available modes: " + "; ".join(tiers)
+                + f". AI usage credits-la pay aagum; configured top-up packages: "
+                f"{package_text}."
+            )
+        return answer, "billing_tier_pricing"
     return None
 
 
@@ -371,6 +512,13 @@ def try_deterministic_answer(
 ) -> AIProviderResponse | None:
     text = str(message or "").strip()
     if not text:
+        return None
+    scope = deterministic_scope_decision(
+        text,
+        previous_topic=previous_topic,
+        emit_log=True,
+    )
+    if scope.scope_gate_reason is not None:
         return None
     answer = _time_answer(session, user_id, text)
     if answer:

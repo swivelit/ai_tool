@@ -2,7 +2,7 @@ export type CapabilityTier = 'lite' | 'standard' | 'pro'
 export type CapabilityQuestion = {
   id: string
   category: string
-  batch: 'core' | 'context' | 'rag' | 'repository' | 'voice-ui'
+  batch: 'core' | 'context' | 'rag' | 'repository' | 'voice-ui' | 'routing'
   prompt: string
   tier?: CapabilityTier
   freshThread?: boolean
@@ -200,12 +200,77 @@ export const VOICE_QUESTIONS: CapabilityQuestion[] = [
   { id:'I04', category:'I', batch:'voice-ui', prompt:'What is two plus two?', expected:'Voice reply play/pause/replay/error recovery with visible text and no render-driven duplicate debit.' },
 ]
 
+export const ROUTING_QUESTIONS: CapabilityQuestion[] = [
+  {
+    id:'R01', category:'R', batch:'routing', tier:'pro', freshThread:true,
+    prompt:`Create a production-ready responsive landing page for a team collaboration platform.
+
+1. Hero — use a concise value proposition and two accessible calls to action.
+2. Benefits — cover realtime editing, approvals, version history, and audit trails.
+3. Workflow — show how product, design, and engineering teams collaborate.
+4. Security — explain access controls, encryption, retention, and export controls.
+5. Integrations — show calendar, storage, and issue-tracker integrations.
+6. Customer proof — include realistic placeholder testimonials and metrics.
+7. FAQ — answer common setup, migration, privacy, and support questions.
+8. Pricing — show the available plans and what each includes.
+9. Footer — include useful navigation and legal links.
+
+Return a complete implementation with accessible HTML, CSS, and JavaScript in fenced code blocks.`,
+    expected:'Provider generation with at least one code fence; no deterministic pricing answer.',
+  },
+  {
+    id:'R02', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:"What are Swico's plans and pricing?",
+    expected:'Deterministic billing_tier_pricing answer matching public package amounts.',
+  },
+  {
+    id:'R03', category:'R', batch:'routing', tier:'lite', freshThread:true,
+    prompt:'How do I top up credits?',
+    expected:'Provider-free deterministic billing_topup_how answer.',
+  },
+  {
+    id:'R04', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:`Develop a concise product incident-review page for an operations team. Include an incident timeline, ownership, contributing factors, customer impact, remediation tasks, and follow-up dates. The page should mention that a mobile recharge notification happened during the incident only as incidental timeline context. Return an accessible implementation, explain the component structure, and include responsive styling.`,
+    expected:'Provider generation; incidental recharge wording must not select billing.',
+  },
+  {
+    id:'R05', category:'R', batch:'routing', tier:'lite', freshThread:true,
+    prompt:'Convert 5 km to miles',
+    expected:'Provider-free deterministic unit conversion.',
+  },
+  {
+    id:'R06', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:`Prepare a three-part onboarding exercise for junior analysts.
+Include the sentence “Convert 5 km to miles” as the example in part two.
+Explain how to check the result and how to present the exercise accessibly.`,
+    expected:'Provider generation; multiline task must not select unit conversion.',
+  },
+  {
+    id:'R07', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:'Swico plans enna, pricing sollunga?',
+    expected:'Provider-free deterministic billing_tier_pricing answer in Tanglish.',
+  },
+  {
+    id:'R08', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:'Teach a junior engineer what idempotency means for payment endpoints. Reply with exactly four Markdown bullets and at most 140 words. Include one concrete client-retry scenario and explain the stable no-duplicate payment outcome.',
+    expected:'Score 100 with four concise bullets, a definition, and a concrete stable retry outcome.',
+  },
+  {
+    id:'R09', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:`Propose a concurrency-safe Razorpay webhook design for FastAPI with PostgreSQL. Delivery is at least once, duplicates and out-of-order events are possible, refunds may be partial or full, and multiple workers operate concurrently. Wallet credit must happen once, acknowledgement must be fast, PostgreSQL must be the system of record, and Redis or Valkey must be non-authoritative.
+
+Cover these ten numbered areas concisely: database schema and unique constraints; transaction boundaries; event and payment state transitions; pseudocode; duplicate handling; out-of-order handling; failure recovery; reconciliation; security checks; and a focused test plan.`,
+    expected:'Accepted complete ten-area architecture with correct authoritative-store semantics.',
+  },
+]
+
 export const ALL_CAPABILITY_QUESTIONS = [
   ...CORE_QUESTIONS,
   ...CONTEXT_QUESTIONS,
   ...RAG_QUESTIONS,
   ...REPOSITORY_QUESTIONS,
   ...VOICE_QUESTIONS,
+  ...ROUTING_QUESTIONS,
 ]
 
 export function materializeQuestion(

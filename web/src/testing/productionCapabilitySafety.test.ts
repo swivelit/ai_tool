@@ -96,6 +96,9 @@ describe('production capability safety', () => {
     expect(capabilityEffectiveTimeoutMs('all')).toBe(
       PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
     )
+    expect(capabilityEffectiveTimeoutMs('full')).toBe(
+      PRODUCTION_CAPABILITY_ALL_TIMEOUT_MS,
+    )
     expect(capabilityEffectiveTimeoutMs('core')).toBeLessThan(
       capabilityEffectiveTimeoutMs('all'),
     )
@@ -351,10 +354,20 @@ describe('production capability safety', () => {
     })).toThrow(/confirmation_invalid/)
   })
 
-  it('selects only the requested batch or all', () => {
+  it('selects only the requested batch, all, or its full alias', () => {
     expect(batchIncludes('rag', 'rag')).toBe(true)
     expect(batchIncludes('rag', 'core')).toBe(false)
     expect(batchIncludes('all', 'voice-ui')).toBe(true)
+    expect(batchIncludes('routing', 'routing')).toBe(true)
+    expect(batchIncludes('routing', 'core')).toBe(false)
+    expect(batchIncludes('full', 'routing')).toBe(true)
+    expect(batchIncludes('full', 'repository')).toBe(true)
+    expect(productionCapabilityGate({
+      ...valid, PRODUCTION_CAPABILITY_BATCH:'routing',
+    }).batch).toBe('routing')
+    expect(productionCapabilityGate({
+      ...valid, PRODUCTION_CAPABILITY_BATCH:'full',
+    }).batch).toBe('full')
   })
 
   it('stops before a subsequent request once a cap is reached', () => {

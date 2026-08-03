@@ -78,6 +78,7 @@ import {
   CONTEXT_QUESTIONS,
   RAG_QUESTIONS,
   REPOSITORY_QUESTIONS,
+  ROUTING_QUESTIONS,
   materializeQuestion,
   type CapabilityQuestion,
   type CapabilityTier,
@@ -121,6 +122,9 @@ type Wallet = {
   billing_exempt?: boolean
 }
 type WalletResponse = Wallet & { wallet?: Wallet; wallets?: { chat: Wallet; voice: Wallet } }
+type PublicBillingConfig = {
+  packages?: Array<{ gross_amount_paise?: number }>
+}
 type Thread = { id: string; title: string; archived_at: string | null }
 type ThreadList = { items: Thread[]; has_more: boolean; offset: number; limit: number }
 type MemorySettings = {
@@ -200,6 +204,10 @@ type Audit = {
   pre_repair_failed_check_identifiers: string[]
   repair_trigger_area_identifiers: string[]
   post_repair_failed_check_identifiers: string[]
+  failed_check_identifiers: string[]
+  deterministic_intent: string | null
+  deterministic_route: 'backend_tool' | null
+  scope_gate_reason: string | null
   repair_attempted: boolean
   generation_stage_count: number
   repair_stage_count: number
@@ -272,6 +280,10 @@ type QuestionResult = {
   preRepairFailedCheckIdentifiers: string[]
   repairTriggerAreaIdentifiers: string[]
   postRepairFailedCheckIdentifiers: string[]
+  failedCheckIdentifiers: string[]
+  deterministicIntent: string | null
+  deterministicRoute: 'backend_tool' | null
+  scopeGateReason: string | null
   repairAttempted: boolean
   generationStageCount: number
   repairStageCount: number
@@ -438,6 +450,7 @@ function evaluation(
       || hasAffirmativeWaitAdvice(value)
     ) fail('medical_urgency_failed'); break
     case 'B01':
+    case 'R08':
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       {
@@ -463,7 +476,8 @@ function evaluation(
         ) formatFail('python_fence_prefix_failed')
       }
       break
-    case 'B03': {
+    case 'B03':
+    case 'R09': {
       const architecture = evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
@@ -842,6 +856,8 @@ function skippedResult(
     outputContractCheckStatusCounts:{}, taskRequirementCheckStatusCounts:{},
     preRepairFailedCheckIdentifiers:[], repairTriggerAreaIdentifiers:[],
     postRepairFailedCheckIdentifiers:[],
+    failedCheckIdentifiers:[], deterministicIntent:null,
+    deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
     generationStageCount:0, repairStageCount:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
@@ -1294,7 +1310,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const taskChecksPassed = (audit.task_requirement_check_status_counts.passed ?? 0) > 0
       && (audit.task_requirement_check_status_counts.failed ?? 0) === 0
       && (audit.task_requirement_check_status_counts.error ?? 0) === 0
-    if (question.id === 'B01') {
+    if (['B01', 'R08'].includes(question.id)) {
       const semantic = evaluateIdempotencySemantics(redacted.text)
       const browserSemanticPassed = semantic.definitionPresent
         && semantic.concreteRetryExamplePresent && semantic.stableOutcomePresent
@@ -1309,7 +1325,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       }
     }
     let architectureContractDisagreement = false
-    if (question.id === 'B03') {
+    if (['B03', 'R09'].includes(question.id)) {
       const architecture = evaluateWebhookArchitecture(rawRedacted.text)
       const browserMissing = [...architecture.missingAreas].sort()
       const backendMissing = [
@@ -1394,6 +1410,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       repairTriggerAreaIdentifiers:audit.repair_trigger_area_identifiers,
       postRepairFailedCheckIdentifiers:
         audit.post_repair_failed_check_identifiers,
+      failedCheckIdentifiers:audit.failed_check_identifiers,
+      deterministicIntent:audit.deterministic_intent,
+      deterministicRoute:audit.deterministic_route,
+      scopeGateReason:audit.scope_gate_reason,
       repairAttempted:audit.repair_attempted,
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
@@ -1418,7 +1438,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       defectSeverity:judged.defectSeverity,
       ...(codeTest ? { codeTest } : {}),
       tierEvidence,
-      ...(question.id === 'B03' ? {
+      ...(['B03', 'R09'].includes(question.id) ? {
         architectureEvaluation:(() => {
           const architecture = evaluateWebhookArchitecture(rawRedacted.text)
           return {
@@ -1437,7 +1457,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           }
         })(),
       } : {}),
-      ...(question.id === 'B01' ? {
+      ...(['B01', 'R08'].includes(question.id) ? {
         semanticEvaluation:evaluateIdempotencySemantics(redacted.text),
       } : {}),
       ...(question.id === 'C07' ? {
@@ -1573,6 +1593,124 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         break
       }
     }
+  }
+
+  const runRouting = async () => {
+    if (!api) throw new Error('benchmark_not_authenticated')
+    const walletBefore = walletValues(await readWallet(api))
+    const publicConfig = await api.request<PublicBillingConfig>(
+      'GET', '/api/web/billing/public-config', undefined,
+      { timeoutMilliseconds:30_000 },
+    )
+    const expectedPackageLabels = (publicConfig.data?.packages ?? [])
+      .flatMap(item => Number.isInteger(item.gross_amount_paise)
+        ? [`₹${Number(item.gross_amount_paise) / 100}`] : [])
+    const routingResults: QuestionResult[] = []
+    const markRoutingFailure = (result: QuestionResult, reason: string) => {
+      result.status = 'failed'
+      result.score = Math.min(result.score, 60)
+      if (!result.reasonCodes.includes(reason)) result.reasonCodes.push(reason)
+      result.defectSeverity ??= 'P2'
+    }
+    for (const question of ROUTING_QUESTIONS) {
+      if (stopAfterSecret) {
+        results.push(skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'not_run',
+          'stopped_after_potential_secret',
+        ))
+        continue
+      }
+      try {
+        const result = await runQuestion(question)
+        routingResults.push(result)
+        const deterministic = (
+          result.deterministicRoute === 'backend_tool'
+          && result.providerCallCount === 0
+          && result.generationStageCount === 0
+        )
+        const generated = (
+          result.deterministicRoute === null
+          && result.providerCallCount > 0
+          && result.generationStageCount > 0
+        )
+        if (['R01', 'R04', 'R06', 'R08', 'R09'].includes(question.id) && !generated) {
+          markRoutingFailure(result, 'routing_model_path_not_observed')
+        }
+        if (question.id === 'R01') {
+          if (!/```/u.test(result.rawMarkdown)) {
+            markRoutingFailure(result, 'routing_landing_page_code_fence_missing')
+          }
+          if (/available modes/iu.test(result.rawMarkdown)) {
+            markRoutingFailure(result, 'routing_landing_page_pricing_hijack')
+          }
+        }
+        const expectedIntent = ({
+          R02:'billing_tier_pricing',
+          R03:'billing_topup_how',
+          R05:'unit_conversion',
+          R07:'billing_tier_pricing',
+        } as Record<string, string | undefined>)[question.id]
+        if (expectedIntent && (
+          !deterministic || result.deterministicIntent !== expectedIntent
+        )) {
+          markRoutingFailure(result, 'routing_deterministic_intent_mismatch')
+        }
+        if (question.id === 'R02' && (
+          publicConfig.status !== 200
+          || !expectedPackageLabels.length
+          || !expectedPackageLabels.every(
+            label => result.visibleAnswer.includes(label),
+          )
+        )) {
+          markRoutingFailure(result, 'routing_pricing_packages_mismatch')
+        }
+        if (question.id === 'R07' && !/\b(?:oda|la|aagum|irukku|sollunga)\b/iu.test(
+          result.visibleAnswer,
+        )) {
+          markRoutingFailure(result, 'routing_tanglish_reply_missing')
+        }
+        if (question.id === 'R08' && result.score !== 100) {
+          markRoutingFailure(result, 'routing_b01_variation_not_exact')
+        }
+        if (question.id === 'R09' && (
+          result.status !== 'passed'
+          || Boolean(result.architectureEvaluation?.missingAreas.length)
+          || result.architectureEvaluation?.contractDisagreement
+        )) {
+          markRoutingFailure(result, 'routing_architecture_variation_failed')
+        }
+      } catch (error) {
+        const reason = safeHarnessReason(error)
+        const failedResult = skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'failed', reason,
+        )
+        if (error instanceof CapabilityQuestionExecutionError) {
+          failedResult.requestId = error.requestId
+        }
+        results.push(failedResult)
+      }
+    }
+    const walletAfter = walletValues(await readWallet(api))
+    const charged = routingResults.reduce(
+      (total, result) => total + result.chargedMicros, 0,
+    )
+    const zeroDebit = charged === 0
+      && walletBefore.chat === walletAfter.chat
+      && walletBefore.voice === walletAfter.voice
+    workflowResults.push({
+      id:'R-ROUTING-AUDIT',
+      status:zeroDebit ? 'passed' : 'failed',
+      reasonCodes:zeroDebit
+        ? ['routing_batch_zero_debit'] : ['routing_batch_nonzero_debit'],
+      requestIds:routingResults.flatMap(
+        result => result.requestId ? [result.requestId] : [],
+      ),
+      severity:zeroDebit ? null : 'P0',
+      diagnostics:{
+        scenario_count:routingResults.length,
+        charged_micro_inr:charged,
+      },
+    })
   }
 
   const runContext = async () => {
@@ -2368,6 +2506,106 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     workflowResults.push({ id:'J-BILLING-READS', status:billingPass ? 'passed' : 'failed', reasonCodes:billingPass ? ['public_config_wallet_ledger_usage_read_without_payment_order'] : ['billing_read_failed'], requestIds:[], severity:billingPass ? null : 'P2' })
     workflowResults.push({ id:'J-BILLING-UI', status:'skipped', reasonCodes:['dedicated_internal_acceptance_account_is_billing_exempt_so_add_credit_modal_is_disabled'], requestIds:[], severity:null })
 
+    workflowStart('J-PUBLIC-WEBSITE')
+    const websiteReasons: string[] = []
+    const auditPage = await context.newPage()
+    const websiteOrigin = new URL(process.env.PLAYWRIGHT_BASE_URL ?? '').origin
+    const queuedUrls: string[] = [`${websiteOrigin}/`]
+    const seenUrls = new Set<string>()
+    const pageConsoleErrors: string[] = []
+    auditPage.on('console', message => {
+      if (message.type() === 'error') pageConsoleErrors.push('console_error')
+    })
+    try {
+      await auditPage.setViewportSize({ width:390, height:844 })
+      let footerRouteCount = 0
+      for (let pageIndex = 0; pageIndex < queuedUrls.length; pageIndex += 1) {
+        if (pageIndex >= 25) break
+        assertWithinDeadline()
+        const target = queuedUrls[pageIndex]
+        if (seenUrls.has(target)) continue
+        seenUrls.add(target)
+        pageConsoleErrors.length = 0
+        const response = await auditPage.goto(target, {
+          waitUntil:'domcontentloaded',
+          timeout:Math.min(15_000, assertWithinDeadline()),
+        }).catch(() => null)
+        if (!response || response.status() !== 200) {
+          websiteReasons.push(`website_page_${pageIndex}_http_failed`)
+          continue
+        }
+        const title = await auditPage.title().catch(() => '')
+        if (!title.trim()) {
+          websiteReasons.push(`website_page_${pageIndex}_title_missing`)
+        }
+        if (pageConsoleErrors.length) {
+          websiteReasons.push(`website_page_${pageIndex}_console_error`)
+        }
+        if (pageIndex === 0) {
+          const chatVisible = await auditPage.getByLabel('Message Swico').isVisible({
+            timeout:Math.min(15_000, assertWithinDeadline()),
+          }).catch(() => false)
+          if (!chatVisible) websiteReasons.push('website_mobile_chat_input_missing')
+        }
+        const hrefs = await auditPage.locator('a[href]').evaluateAll(anchors => (
+          anchors.map(anchor => anchor.getAttribute('href') ?? '')
+        )).catch(() => [] as string[])
+        if (pageIndex === 0) {
+          const footerHrefs = await auditPage.locator(
+            'footer a[href], .legal a[href]',
+          ).evaluateAll(anchors => anchors.map(
+            anchor => anchor.getAttribute('href') ?? '',
+          )).catch(() => [] as string[])
+          footerRouteCount = footerHrefs.filter(Boolean).length
+          if (footerRouteCount < 7) {
+            websiteReasons.push('website_footer_routes_missing')
+          }
+        }
+        for (const href of hrefs) {
+          try {
+            const candidate = new URL(href, target)
+            if (candidate.origin !== websiteOrigin) continue
+            candidate.search = ''
+            candidate.hash = ''
+            const normalized = candidate.toString()
+            if (
+              !seenUrls.has(normalized)
+              && !queuedUrls.includes(normalized)
+              && queuedUrls.length < 25
+            ) queuedUrls.push(normalized)
+          } catch {
+            websiteReasons.push(`website_page_${pageIndex}_internal_link_invalid`)
+          }
+        }
+      }
+      if (seenUrls.size < Math.min(8, 1 + footerRouteCount)) {
+        websiteReasons.push('website_internal_crawl_incomplete')
+      }
+    } catch (error) {
+      websiteReasons.push(
+        safeHarnessReason(error) === 'website_audit_timeout'
+          ? 'website_public_crawl_timeout' : 'website_public_crawl_failed',
+      )
+    } finally {
+      await withBoundedTimeout(
+        () => auditPage.close(),
+        5_000,
+        'website_public_page_close_timeout',
+      ).catch(() => {
+        websiteReasons.push('website_public_page_close_timeout')
+      })
+    }
+    const uniqueWebsiteReasons = [...new Set(websiteReasons)]
+    workflowResults.push({
+      id:'J-PUBLIC-WEBSITE',
+      status:uniqueWebsiteReasons.length ? 'failed' : 'passed',
+      reasonCodes:uniqueWebsiteReasons.length
+        ? uniqueWebsiteReasons : ['public_footer_routes_and_mobile_smoke_passed'],
+      requestIds:[],
+      severity:uniqueWebsiteReasons.length ? 'P2' : null,
+      diagnostics:{ crawled_page_count:seenUrls.size },
+    })
+
     const privacyFailure = results.some(item => providerIdentifierVisible(`${item.visibleAnswer}\n${item.visibleSources.map(source => `${source.label} ${source.locator}`).join('\n')}`))
     workflowResults.push({ id:'J-PROVIDER-PRIVACY', status:privacyFailure ? 'failed' : 'passed', reasonCodes:privacyFailure ? ['provider_identifier_visible'] : ['no_provider_identifier_visible'], requestIds:results.flatMap(item => item.requestId ? [item.requestId] : []), severity:privacyFailure ? 'P0' : null })
   }
@@ -2522,11 +2760,14 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       deterministicGreetingPassed = greeting.status === 'passed'
     }
     if (!deterministicGreetingPassed) throw new Error('deterministic_greeting_prerequisite_failed')
+    if (!stopAfterSecret && batchIncludes(gate.batch, 'routing')) await runRouting()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'context')) await runContext()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'rag')) await runRag()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'repository')) await runRepository()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'voice-ui')) await runVoice()
-    if (!stopAfterSecret && batchIncludes(gate.batch, 'core')) {
+    if (!stopAfterSecret && (
+      batchIncludes(gate.batch, 'core') || batchIncludes(gate.batch, 'routing')
+    )) {
       workflowStart('J-WEBSITE-AUDIT')
       const websiteTimeout = Math.max(
         1, Math.min(WEBSITE_AUDIT_DEADLINE_MS, executionDeadline - Date.now()),
@@ -2567,7 +2808,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         throw error
       }
     }
-    if (!stopAfterSecret && gate.batch === 'all') await runOwnerIsolation()
+    if (!stopAfterSecret && ['all', 'full'].includes(gate.batch)) {
+      await runOwnerIsolation()
+    }
   } catch (error) {
     primaryFailure ??= safeHarnessReason(error)
   } finally {
@@ -2789,6 +3032,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         repair_trigger_area_identifiers:item.repairTriggerAreaIdentifiers,
         post_repair_failed_check_identifiers:
           item.postRepairFailedCheckIdentifiers,
+        failed_check_identifiers:item.failedCheckIdentifiers,
+        deterministic_intent:item.deterministicIntent,
+        deterministic_route:item.deterministicRoute,
+        scope_gate_reason:item.scopeGateReason,
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
         visible_bullet_count:item.representationCounts.visibleBulletCount,

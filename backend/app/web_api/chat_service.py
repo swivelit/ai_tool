@@ -136,7 +136,10 @@ from .continuation import (
     resolve_continuation_chain, write_metadata as write_continuation_metadata,
 )
 from .request_coordinator import WebRequestCoordinator, WebRequestDecision
-from .deterministic_answers import try_deterministic_answer
+from .deterministic_answers import (
+    deterministic_scope_decision,
+    try_deterministic_answer,
+)
 from .swico_brand import swico_brand_response
 from .web_memory import (
     explicit_memory_write_requested,
@@ -1613,6 +1616,25 @@ def prepare_web_turn(
                 metrics=continuation_metrics,
                 local_intent="",
             )
+        deterministic_scope = deterministic_scope_decision(
+            model_message,
+            answer_class=preliminary.answer_class,
+            previous_topic=previous_safe_metadata.get("topic"),
+            emit_log=(
+                continuation_row is None
+                and _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False)
+            ),
+        )
+        preliminary = replace(
+            preliminary,
+            metrics={
+                **preliminary.metrics,
+                "deterministic_intent": deterministic_scope.intent,
+                "deterministic_route": None,
+                "scope_gate_reason": deterministic_scope.scope_gate_reason,
+            },
+        )
+
         base_metadata = {
             "client_surface": "web", "billing_required": True, "cloud_only": True,
             "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
@@ -1884,6 +1906,7 @@ def prepare_web_turn(
         if (
             continuation_row is None
             and _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False)
+            and deterministic_scope.scope_gate_reason is None
         ):
             deterministic = try_deterministic_answer(
                 session,
@@ -1905,6 +1928,15 @@ def prepare_web_turn(
                         characters=len(compliant_text),
                     )
             if deterministic is not None:
+                preliminary = replace(
+                    preliminary,
+                    metrics={
+                        **preliminary.metrics,
+                        "deterministic_intent": deterministic.intent,
+                        "deterministic_route": "backend_tool",
+                        "scope_gate_reason": None,
+                    },
+                )
                 ai_request = AIRequest(
                     user_id=user_id,
                     message=model_message,
@@ -1965,6 +1997,7 @@ def prepare_web_turn(
         # bounded owner-scoped candidate read above is reused if a provider is needed.
         if (
             continuation_row is None
+            and deterministic_scope.scope_gate_reason is None
             and (
                 preliminary.local_intent == "swico_brand"
                 or (enabled and preliminary.local_intent)
@@ -1985,6 +2018,15 @@ def prepare_web_turn(
                 metadata={**base_metadata, **brand_metadata},
             )
             if preliminary.local_intent == "swico_brand":
+                preliminary = replace(
+                    preliminary,
+                    metrics={
+                        **preliminary.metrics,
+                        "deterministic_intent": "swico_brand",
+                        "deterministic_route": "backend_tool",
+                        "scope_gate_reason": None,
+                    },
+                )
                 route = AIRoute(
                     "backend_tool", None, "deterministic_swico_brand",
                     "approved_swico_public_profile",
@@ -2180,6 +2222,21 @@ def prepare_web_turn(
                 session=session,
             )
             optimization = coordinator_decision.optimization
+            optimization = replace(
+                optimization,
+                metrics={
+                    **optimization.metrics,
+                    "deterministic_intent": preliminary.metrics.get(
+                        "deterministic_intent"
+                    ),
+                    "deterministic_route": preliminary.metrics.get(
+                        "deterministic_route"
+                    ),
+                    "scope_gate_reason": preliminary.metrics.get(
+                        "scope_gate_reason"
+                    ),
+                },
+            )
             if continuation_chain is not None:
                 optimization = replace(
                     optimization,
@@ -2335,6 +2392,21 @@ def prepare_web_turn(
                 ),
             )
             optimization = coordinator_decision.optimization
+            optimization = replace(
+                optimization,
+                metrics={
+                    **optimization.metrics,
+                    "deterministic_intent": preliminary.metrics.get(
+                        "deterministic_intent"
+                    ),
+                    "deterministic_route": preliminary.metrics.get(
+                        "deterministic_route"
+                    ),
+                    "scope_gate_reason": preliminary.metrics.get(
+                        "scope_gate_reason"
+                    ),
+                },
+            )
         else:
             optimization = with_prompt_estimate(optimization, serialized_prompt)
         optimization = _rollout_cache_policy(
