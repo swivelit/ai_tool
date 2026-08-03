@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Response } from '@playwright/test'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
@@ -42,6 +42,7 @@ import {
   deploymentParitySafeSummary,
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
+  evaluateIdempotencySemantics,
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
@@ -58,7 +59,7 @@ import {
   type DeploymentReleaseObservation,
 } from '../src/testing/productionCapabilitySafety'
 import {
-  capabilityAuditHasActiveProviderGeneration,
+  capabilityAuditIsCancellationReady,
   capabilityAuditIsTerminal,
   cleanupUsageAuditReasons,
   forceCancelActiveCapabilityRequests,
@@ -193,6 +194,7 @@ type Audit = {
   completion_status: string
   truncated: boolean
   output_contract_check_status_counts: Record<string, number>
+  task_requirement_check_status_counts: Record<string, number>
   repair_attempted: boolean
   generation_stage_count: number
   repair_stage_count: number
@@ -261,6 +263,7 @@ type QuestionResult = {
   finishReason: string
   completionStatus: string
   outputContractCheckStatusCounts: Record<string, number>
+  taskRequirementCheckStatusCounts: Record<string, number>
   repairAttempted: boolean
   generationStageCount: number
   repairStageCount: number
@@ -296,6 +299,16 @@ type QuestionResult = {
   architectureEvaluation?: {
     missingAreas: string[]
     authorityClassification: 'postgres_authoritative' | 'non_postgres_authoritative' | 'ambiguous'
+    postgresAuthoritative: boolean
+    redisValkeyForbiddenAuthorityPassed: boolean
+    coveredAreaCount: number
+    validatorVersion: string
+  }
+  semanticEvaluation?: {
+    definitionPresent: boolean
+    concreteRetryExamplePresent: boolean
+    stableOutcomePresent: boolean
+    validatorVersion: string
   }
   sentenceValidation?: {
     observedSentenceCount: number
@@ -417,7 +430,14 @@ function evaluation(
     case 'B01':
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
-      if (!/retry/i.test(value) || !/same|key|duplicate/i.test(value)) fail('retry_example_or_definition_missing')
+      {
+        const semantic = evaluateIdempotencySemantics(value)
+        if (
+          !semantic.definitionPresent
+          || !semantic.concreteRetryExamplePresent
+          || !semantic.stableOutcomePresent
+        ) fail('retry_example_or_definition_missing')
+      }
       break
     case 'B02':
       if (!codeTest?.passed) fail(codeTest?.reasonCode ?? 'code_test_not_run')
@@ -440,7 +460,11 @@ function evaluation(
         reasons.push('architecture_sections_missing')
         mandatoryConstraintFailed = true
       }
-      if (!architecture.postgresAuthoritative || architecture.nonPostgresAuthoritativeClaim) {
+      if (
+        !architecture.postgresAuthoritative
+        || !architecture.redisValkeyForbiddenAuthorityPassed
+        || architecture.nonPostgresAuthoritativeClaim
+      ) {
         fail('architecture_source_of_truth_error')
       }
       break
@@ -609,8 +633,10 @@ async function pollAudit(
 
 async function pollCancellationActive(
   api: DeployedApi, requestId: string, timeoutMilliseconds = 15_000,
+  acceptedAndReady = false,
 ): Promise<{ state: 'active' | 'terminal' | 'timeout'; audit: Audit | null }> {
   const deadline = Date.now() + timeoutMilliseconds
+  let lastAudit: Audit | null = null
   while (Date.now() < deadline) {
     const requestTimeout = Math.max(1, Math.min(5_000, deadline - Date.now()))
     const response = await api.request<{ results: Audit[] }>(
@@ -618,15 +644,19 @@ async function pollCancellationActive(
       { timeoutMilliseconds:requestTimeout },
     ).catch(() => ({ status:0, data:null }))
     const current = response.data?.results[0]
+    if (current) lastAudit = current
     if (current && ['complete', 'cancelled', 'failed'].includes(current.cancellation_state)) {
       return { state:'terminal', audit:current }
     }
-    if (current && capabilityAuditHasActiveProviderGeneration(current)) {
+    if (current && capabilityAuditIsCancellationReady(current, {
+      streamResponseAccepted:acceptedAndReady,
+      stopButtonReady:acceptedAndReady,
+    })) {
       return { state:'active', audit:current }
     }
     await new Promise(resolveWait => setTimeout(resolveWait, 300))
   }
-  return { state:'timeout', audit:null }
+  return { state:'timeout', audit:lastAudit }
 }
 
 async function freshChat(page: Page): Promise<void> {
@@ -799,7 +829,8 @@ function skippedResult(
     retrievalStatus:'not_run', qualityStatus:'not_run', sourceKindCounts:{},
     persistedQualityStatus:'not_run', sseQualityStatus:'not_run',
     cacheHit:false, cacheHitKind:'none', finishReason:'', completionStatus:'not_run',
-    outputContractCheckStatusCounts:{}, repairAttempted:false,
+    outputContractCheckStatusCounts:{}, taskRequirementCheckStatusCounts:{},
+    repairAttempted:false,
     generationStageCount:0, repairStageCount:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
     invalidCitation:false,
@@ -1248,6 +1279,23 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       judged.reasonCodes.push('contract_validation_disagreement')
       judged.defectSeverity = 'P2'
     }
+    const taskChecksPassed = (audit.task_requirement_check_status_counts.passed ?? 0) > 0
+      && (audit.task_requirement_check_status_counts.failed ?? 0) === 0
+      && (audit.task_requirement_check_status_counts.error ?? 0) === 0
+    if (question.id === 'B01') {
+      const semantic = evaluateIdempotencySemantics(redacted.text)
+      const browserSemanticPassed = semantic.definitionPresent
+        && semantic.concreteRetryExamplePresent && semantic.stableOutcomePresent
+      if (browserSemanticPassed !== taskChecksPassed) {
+        judged.status = 'failed'
+        judged.score = Math.min(judged.score, 60)
+        judged.reasonCodes = judged.reasonCodes.filter(
+          reason => reason !== 'retry_example_or_definition_missing',
+        )
+        judged.reasonCodes.push('semantic_contract_disagreement')
+        judged.defectSeverity = 'P2'
+      }
+    }
     if (secretCodes.length) {
       judged.status = 'failed'
       judged.score = 0
@@ -1307,6 +1355,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       finishReason:audit.finish_reason,
       completionStatus:audit.completion_status,
       outputContractCheckStatusCounts:audit.output_contract_check_status_counts,
+      taskRequirementCheckStatusCounts:audit.task_requirement_check_status_counts,
       repairAttempted:audit.repair_attempted,
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
@@ -1336,12 +1385,20 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           const architecture = evaluateWebhookArchitecture(redacted.text)
           return {
             missingAreas:architecture.missingAreas,
+            postgresAuthoritative:architecture.postgresAuthoritative,
+            redisValkeyForbiddenAuthorityPassed:
+              architecture.redisValkeyForbiddenAuthorityPassed,
+            coveredAreaCount:architecture.coveredAreas.length,
+            validatorVersion:architecture.validatorVersion,
             authorityClassification:architecture.nonPostgresAuthoritativeClaim
               ? 'non_postgres_authoritative' as const
               : architecture.postgresAuthoritative
                 ? 'postgres_authoritative' as const : 'ambiguous' as const,
           }
         })(),
+      } : {}),
+      ...(question.id === 'B01' ? {
+        semanticEvaluation:evaluateIdempotencySemantics(redacted.text),
       } : {}),
       ...(question.id === 'C07' ? {
         sentenceValidation:{
@@ -2042,16 +2099,24 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     assertWithinDeadline()
     workflowStart('J-CANCELLATION')
     let cancellationRequestId: string | null = null
-    let cancellationResponseObserver: Promise<unknown> | null = null
+    let cancellationResponseObserver: Promise<Response> | null = null
     let cancellationThreadsBefore = new Set<string>()
     let cancellationChargeObserved = false
     let cancellationFailure: CapabilityCancellationReasonCode | null = null
     const cancellationDiagnostics: Record<string, string | number | boolean | null> = {
+      stream_response_observed:false,
+      stream_http_status:null,
+      stop_button_ready:false,
+      readiness_poll_elapsed_ms:null,
+      last_pre_cancel_state:'not_started',
+      generation_stage_count:0,
+      active_usage_stage_names:'',
       cancel_post_observed:false,
       cancel_http_status:null,
       cancel_response_status:'unknown',
       request_already_completed:false,
       terminal_audit_state:'not_started',
+      final_terminal_state:'not_started',
     }
     try {
       budget.assertRequestMayStart('chat')
@@ -2082,25 +2147,59 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       cancellationRequestId = requestId
       benchmarkRequestIds.add(requestId)
       requestPayloads.set(requestId, payload)
+      const streamResponse = await withBoundedTimeout(
+        () => cancellationResponseObserver as Promise<Response>,
+        Math.min(120_000, assertWithinDeadline()),
+        'cancellation_precondition_not_met',
+      ).catch(() => null)
+      cancellationDiagnostics.stream_response_observed = Boolean(streamResponse)
+      cancellationDiagnostics.stream_http_status = streamResponse?.status() ?? null
+      if (
+        !streamResponse
+        || streamResponse.status() < 200
+        || streamResponse.status() >= 300
+      ) {
+        throw new Error('cancellation_precondition_not_met')
+      }
+      const stop = page.getByTestId('stop-generation-button')
+      const readinessStartedAt = Date.now()
+      try {
+        await expect(stop).toHaveAttribute(
+          'data-cancellation-ready', 'true', {
+            timeout:Math.min(60_000, assertWithinDeadline()),
+          },
+        )
+        cancellationDiagnostics.stop_button_ready = true
+      } catch {
+        const completion = await pollCancellationActive(
+          api, requestId, Math.min(5_000, assertWithinDeadline()),
+        )
+        if (completion.state === 'terminal') {
+          cancellationDiagnostics.request_already_completed = true
+          cancellationDiagnostics.last_pre_cancel_state =
+            completion.audit?.cancellation_state ?? 'terminal'
+          throw new Error('request_completed_before_cancel')
+        }
+        throw new Error('stop_button_not_ready')
+      }
       const readiness = await pollCancellationActive(
-        api, requestId, Math.min(15_000, assertWithinDeadline()),
+        api, requestId, Math.min(60_000, assertWithinDeadline()), true,
       )
+      cancellationDiagnostics.readiness_poll_elapsed_ms = Math.min(
+        120_000, Date.now() - readinessStartedAt,
+      )
+      cancellationDiagnostics.last_pre_cancel_state =
+        readiness.audit?.cancellation_state ?? readiness.state
+      cancellationDiagnostics.generation_stage_count =
+        readiness.audit?.generation_stage_count ?? 0
+      cancellationDiagnostics.active_usage_stage_names =
+        (readiness.audit?.active_usage_stage_names ?? []).join(',').slice(0, 120)
       if (readiness.state === 'terminal') {
         cancellationDiagnostics.request_already_completed = true
         throw new Error('request_completed_before_cancel')
       }
       if (readiness.state !== 'active' || !readiness.audit) {
         throw new Error('cancellation_precondition_not_met')
-      }
-      const stop = page.getByTestId('stop-generation-button')
-      try {
-        await expect(stop).toHaveAttribute(
-          'data-cancellation-ready', 'true', {
-            timeout:Math.min(30_000, assertWithinDeadline()),
-          },
-        )
-      } catch {
-        throw new Error('stop_button_not_ready')
       }
       const cancelRequestPromise = observePlaywrightPromise(page.waitForRequest(request => (
         new URL(request.url()).pathname
@@ -2146,6 +2245,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         throw new Error('terminal_audit_timeout')
       }
       cancellationDiagnostics.terminal_audit_state = audit.cancellation_state
+      cancellationDiagnostics.final_terminal_state = audit.cancellation_state
       budget.observeAuthoritativeCharge('chat', audit.charged_micro_inr_total)
       cancellationChargeObserved = true
       cancellationFailure = boundedCancellationSettlementReason(audit)
@@ -2170,6 +2270,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ).catch(() => null)
         if (terminalAudit) {
           cancellationDiagnostics.terminal_audit_state = terminalAudit.cancellation_state
+          cancellationDiagnostics.final_terminal_state = terminalAudit.cancellation_state
           budget.observeAuthoritativeCharge('chat', terminalAudit.charged_micro_inr_total)
           cancellationChargeObserved = true
           if (!cancellationFailure) {
@@ -2618,6 +2719,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         truncated:item.truncated,
         output_contract_check_status_counts:item.outputContractCheckStatusCounts,
         repair_attempted:item.repairAttempted,
+        task_requirement_check_status_counts:item.taskRequirementCheckStatusCounts,
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
         visible_bullet_count:item.representationCounts.visibleBulletCount,
@@ -2635,6 +2737,25 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
             observed_sentence_count:item.sentenceValidation.observedSentenceCount,
             contains_tamil_script:item.sentenceValidation.containsTamilScript,
             validator_version:item.sentenceValidation.validatorVersion,
+          },
+        } : {}),
+        ...(item.semanticEvaluation ? {
+          semantic_evaluation:{
+            definition_present:item.semanticEvaluation.definitionPresent,
+            concrete_retry_example_present:
+              item.semanticEvaluation.concreteRetryExamplePresent,
+            stable_outcome_present:item.semanticEvaluation.stableOutcomePresent,
+            validator_version:item.semanticEvaluation.validatorVersion,
+          },
+        } : {}),
+        ...(item.architectureEvaluation ? {
+          architecture_evaluation:{
+            postgres_authoritative:item.architectureEvaluation.postgresAuthoritative,
+            redis_valkey_forbidden_authority_passed:
+              item.architectureEvaluation.redisValkeyForbiddenAuthorityPassed,
+            covered_area_count:item.architectureEvaluation.coveredAreaCount,
+            missing_area_identifiers:item.architectureEvaluation.missingAreas,
+            validator_version:item.architectureEvaluation.validatorVersion,
           },
         } : {}),
         ...(item.tierEvidence ? {

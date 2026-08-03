@@ -526,11 +526,28 @@ def validate_output_contract(
             "exact_question_count_failed",
         )
     if contract.exact_word_count is not None:
-        add(
-            "word_count",
-            len(value.split()) == contract.exact_word_count,
-            "exact_word_count_failed",
-        )
+        observed_word_count = len(value.split())
+        checks.append(QualityCheck(
+            "output_contract_word_count",
+            (
+                "passed"
+                if observed_word_count == contract.exact_word_count
+                else "failed"
+            ),
+            (
+                ""
+                if observed_word_count == contract.exact_word_count
+                else "exact_word_count_failed"
+            ),
+            observations=(
+                ("expected_word_count", contract.exact_word_count),
+                ("observed_word_count", observed_word_count),
+                (
+                    "word_count_delta",
+                    observed_word_count - contract.exact_word_count,
+                ),
+            ),
+        ))
     if contract.required_phrase and contract.required_phrase_count is not None:
         add(
             "phrase_count",

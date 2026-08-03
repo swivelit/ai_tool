@@ -293,11 +293,19 @@ test('production capability safe summary includes content-free completion diagno
     'finish_reason:item.finishReason',
     'completion_status:item.completionStatus',
     'output_contract_check_status_counts:item.outputContractCheckStatusCounts',
+    'task_requirement_check_status_counts:item.taskRequirementCheckStatusCounts',
     'repair_attempted:item.repairAttempted',
     'generation_stage_count:item.generationStageCount',
     'repair_stage_count:item.repairStageCount',
     'persisted_quality_status:item.persistedQualityStatus',
     'sse_quality_status:item.sseQualityStatus',
+    'definition_present:item.semanticEvaluation.definitionPresent',
+    'concrete_retry_example_present:',
+    'stable_outcome_present:item.semanticEvaluation.stableOutcomePresent',
+    'postgres_authoritative:item.architectureEvaluation.postgresAuthoritative',
+    'redis_valkey_forbidden_authority_passed:',
+    'covered_area_count:item.architectureEvaluation.coveredAreaCount',
+    'missing_area_identifiers:item.architectureEvaluation.missingAreas',
   ]) expect(spec).toContain(field)
 })
 
@@ -348,6 +356,42 @@ test('Tamil capability validation uses persisted Markdown for count and script',
   expect(spec).toContain(
     'validator_version:item.sentenceValidation.validatorVersion',
   )
+})
+
+test('cancellation waits for stream acceptance and stop readiness before audit polling', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const responseAccepted = spec.indexOf(
+    '() => cancellationResponseObserver as Promise<Response>',
+  )
+  const responseStatus = spec.indexOf(
+    'cancellationDiagnostics.stream_http_status', responseAccepted,
+  )
+  const stopReady = spec.indexOf(
+    "'data-cancellation-ready', 'true'", responseStatus,
+  )
+  const auditPoll = spec.indexOf(
+    'const readiness = await pollCancellationActive(', stopReady,
+  )
+  const stopClick = spec.indexOf('await stop.click()', auditPoll)
+  expect(responseAccepted).toBeGreaterThan(0)
+  expect(responseAccepted).toBeLessThan(responseStatus)
+  expect(responseStatus).toBeLessThan(stopReady)
+  expect(stopReady).toBeLessThan(auditPoll)
+  expect(auditPoll).toBeLessThan(stopClick)
+  expect(spec.slice(responseAccepted, auditPoll)).toContain(
+    'Math.min(120_000, assertWithinDeadline())',
+  )
+  expect(spec.slice(stopReady, stopClick)).toContain(
+    'Math.min(60_000, assertWithinDeadline())',
+  )
+  for (const field of [
+    'stream_response_observed', 'stream_http_status', 'stop_button_ready',
+    'readiness_poll_elapsed_ms', 'last_pre_cancel_state',
+    'generation_stage_count', 'active_usage_stage_names',
+    'cancel_post_observed', 'cancel_http_status', 'final_terminal_state',
+  ]) expect(spec).toContain(field)
 })
 
 test('cleanup force-cancels benchmark-owned active requests before final usage audit', () => {

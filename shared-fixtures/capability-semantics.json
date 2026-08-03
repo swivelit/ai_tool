@@ -1,0 +1,83 @@
+{
+  "idempotency": [
+    {
+      "id": "stored-result-no-second-charge",
+      "text": "Idempotency in payment APIs means one logical payment keeps one outcome. For example, retry POST /payments after a timeout; the service returns the stored result without a second charge.",
+      "definition_present": true,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": true
+    },
+    {
+      "id": "reused-identifier-previous-result",
+      "text": "A payment endpoint is idempotent when repeated requests represent one operation. If the client sends the request again, it reuses the identifier and receives the previous result instead of duplicate processing.",
+      "definition_present": true,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": true
+    },
+    {
+      "id": "retry-mention-without-example",
+      "text": "Idempotency in payments prevents duplicate work. Retry requests should be handled carefully.",
+      "definition_present": true,
+      "concrete_retry_example_present": false,
+      "stable_outcome_present": true
+    },
+    {
+      "id": "concrete-retry-without-stable-outcome",
+      "text": "Idempotency in payment APIs means requests can be repeated safely. For example, retry POST /payments after a timeout.",
+      "definition_present": true,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": false
+    },
+    {
+      "id": "example-without-definition",
+      "text": "For example, retry POST /payments with the same identifier and return the original result without charging twice.",
+      "definition_present": false,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": true
+    }
+  ],
+  "architecture_authority": [
+    {
+      "id": "non-authoritative-caches",
+      "text": "PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.",
+      "postgres_authoritative": true,
+      "redis_valkey_forbidden_authority_passed": true,
+      "violation": false
+    },
+    {
+      "id": "not-authoritative",
+      "text": "PostgreSQL is the system of record; Redis and Valkey are not authoritative.",
+      "postgres_authoritative": true,
+      "redis_valkey_forbidden_authority_passed": true,
+      "violation": false
+    },
+    {
+      "id": "cache-queue-only",
+      "text": "PostgreSQL is authoritative. Redis is cache only and Valkey is queue only.",
+      "postgres_authoritative": true,
+      "redis_valkey_forbidden_authority_passed": true,
+      "violation": false
+    },
+    {
+      "id": "not-canonical-or-durable-owner",
+      "text": "PostgreSQL owns the durable state. Redis is not canonical, and Valkey does not own durable state.",
+      "postgres_authoritative": true,
+      "redis_valkey_forbidden_authority_passed": true,
+      "violation": false
+    },
+    {
+      "id": "not-system-of-record",
+      "text": "PostgreSQL is the source of truth. Neither Redis nor Valkey is the system of record.",
+      "postgres_authoritative": true,
+      "redis_valkey_forbidden_authority_passed": true,
+      "violation": false
+    },
+    {
+      "id": "redis-authoritative-violation",
+      "text": "Redis is the authoritative store and PostgreSQL keeps a replica.",
+      "postgres_authoritative": false,
+      "redis_valkey_forbidden_authority_passed": false,
+      "violation": true
+    }
+  ]
+}

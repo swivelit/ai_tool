@@ -75,6 +75,15 @@ _ALLOWED_KEYS = frozenset(
         "expected_sentence_count",
         "observed_sentence_count",
         "contains_tamil_script",
+        "expected_word_count",
+        "observed_word_count",
+        "word_count_delta",
+        "definition_present",
+        "concrete_retry_example_present",
+        "stable_outcome_present",
+        "authoritative_store_present",
+        "forbidden_authority_passed",
+        "forbidden_authority_violation",
         "validator_version",
         "repair_attempted",
         "verifier_used",
@@ -223,7 +232,10 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
         {"text", "image", "audio", "video", "application", "other"}
     ),
     "semantic_requirement_kinds": frozenset(
-        {"definition", "example", "deliverables", "comparison", "subquestions"}
+        {
+            "definition", "example", "stable_outcome", "deliverables",
+            "authoritative_store", "comparison", "subquestions",
+        }
     ),
     "reason_codes": frozenset(
         {

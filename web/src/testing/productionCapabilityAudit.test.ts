@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   capabilityAuditHasActiveProviderGeneration,
+  capabilityAuditIsCancellationReady,
   cleanupUsageAuditReasons,
   forceCancelActiveCapabilityRequests,
   pollCapabilityAudits,
@@ -107,6 +108,25 @@ describe('production capability request-audit batching', () => {
       generation_stage_count:1,
       provider_call_count:0,
     })).toBe(true)
+  })
+
+  it('allows accepted ready cancellation while stage telemetry is delayed', () => {
+    const delayed = {
+      ...terminalAudit(requestId(1)),
+      cancellation_state:'active',
+      active_usage_stage_names:[],
+      cache_hit:false,
+      generation_stage_count:0,
+      provider_call_count:0,
+    }
+    expect(capabilityAuditIsCancellationReady(delayed, {
+      streamResponseAccepted:true,
+      stopButtonReady:true,
+    })).toBe(true)
+    expect(capabilityAuditIsCancellationReady(delayed, {
+      streamResponseAccepted:false,
+      stopButtonReady:true,
+    })).toBe(false)
   })
 
   it('force-cancels a benchmark-owned nonterminal generation before terminal audit', async () => {

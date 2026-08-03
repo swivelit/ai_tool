@@ -3276,9 +3276,10 @@ def _phase3_stage(
         stage.reserved_micros = max(
             int(stage.reserved_micros or 0), max(0, int(reserved_micros))
         )
-        stage.debited_micros = max(0, int(price.micros)) if price else 0
-        stage.input_tokens = max(0, int(input_tokens))
-        stage.output_tokens = max(0, int(output_tokens))
+        if price is not None:
+            stage.debited_micros = max(0, int(price.micros))
+            stage.input_tokens = max(0, int(input_tokens))
+            stage.output_tokens = max(0, int(output_tokens))
         stage.safe_metadata_json = json.dumps(
             {
                 "stage_key": stage_name,
@@ -3339,6 +3340,7 @@ def _expand_phase3_reservation(
     stage_name: str,
     request: AIRequest,
     route: AIRoute,
+    attempt_number: int = 1,
 ) -> int:
     estimate = reserve_price(
         route.provider,
@@ -3357,7 +3359,7 @@ def _expand_phase3_reservation(
             session,
             request_id=prepared.request_id,
             additional_micros=estimate.micros,
-            expansion_id=f"{stage_name}:1",
+            expansion_id=f"{stage_name}:{max(1, int(attempt_number))}",
         )
         session.commit()
     prepared.reserved_micros += estimate.micros
@@ -4124,10 +4126,52 @@ def execute_web_turn(
                     model_verifier=None,
                 )
 
-            def repair(
-                answer: str, quality: AnswerQualityResult
+            repair_prices: list[tuple[str, PriceResult, int, int]] = []
+            repair_reserved_total = 0
+            repair_reasoning_total = 0
+
+            def settle_repair_stage(
+                *,
+                status: str,
+                provider_name: str,
+                model_name: str,
+                attempt_number: int,
+            ) -> None:
+                if repair_prices:
+                    aggregate = _aggregate_phase3_prices(
+                        repair_prices, repair_prices[0][1]
+                    )
+                    _phase3_stage(
+                        prepared,
+                        stage_name="repair",
+                        status=status,
+                        provider=provider_name,
+                        model=model_name,
+                        attempt_number=attempt_number,
+                        price=aggregate,
+                        input_tokens=sum(item[2] for item in repair_prices),
+                        output_tokens=sum(item[3] for item in repair_prices),
+                        reasoning_tokens=repair_reasoning_total,
+                        reserved_micros=repair_reserved_total,
+                    )
+                    return
+                _phase3_stage(
+                    prepared,
+                    stage_name="repair",
+                    status=status,
+                    provider=provider_name,
+                    model=model_name,
+                    attempt_number=attempt_number,
+                    reserved_micros=repair_reserved_total,
+                )
+
+            def repair_attempt(
+                answer: str,
+                quality: AnswerQualityResult,
+                *,
+                attempt_number: int,
             ) -> AIProviderResponse | None:
-                nonlocal guard_context
+                nonlocal guard_context, repair_reserved_total, repair_reasoning_total
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -4152,6 +4196,8 @@ def execute_web_turn(
                         if prepared.optimization else "normal"
                     ),
                     max_output_tokens=prepared.route.max_output_tokens,
+                    attempt_number=attempt_number,
+                    strict_format_correction=attempt_number == 2,
                 )
                 repair_route = replace(
                     prepared.route,
@@ -4168,23 +4214,25 @@ def execute_web_turn(
                         stage_name="repair",
                         request=contract.request,
                         route=repair_route,
+                        attempt_number=attempt_number,
                     )
                 except BillingError:
-                    _phase3_stage(
-                        prepared,
-                        stage_name="repair",
-                        status="skipped",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
+                    settle_repair_stage(
+                        status="settled" if repair_prices else "skipped",
+                        provider_name=prepared.route.provider,
+                        model_name=prepared.route.model or "",
+                        attempt_number=attempt_number,
                     )
                     return None
+                repair_reserved_total += reserved
                 _phase3_stage(
                     prepared,
                     stage_name="repair",
                     status="running",
                     provider=prepared.route.provider,
                     model=prepared.route.model or "",
-                    reserved_micros=reserved,
+                    attempt_number=attempt_number,
+                    reserved_micros=repair_reserved_total,
                 )
                 try:
                     repaired = provider.complete(
@@ -4212,48 +4260,41 @@ def execute_web_turn(
                             incomplete.input_tokens,
                             incomplete.output_tokens,
                         ))
-                        _phase3_stage(
-                            prepared,
-                            stage_name="repair",
+                        repair_prices.append((
+                            "repair", repair_price, incomplete.input_tokens,
+                            incomplete.output_tokens,
+                        ))
+                        repair_reasoning_total += int(
+                            usage.get("reasoning_tokens") or 0
+                        )
+                        settle_repair_stage(
                             status="settled",
-                            provider=incomplete.provider,
-                            model=incomplete.model or "",
-                            price=repair_price,
-                            input_tokens=incomplete.input_tokens,
-                            output_tokens=incomplete.output_tokens,
-                            reasoning_tokens=int(
-                                usage.get("reasoning_tokens") or 0
-                            ),
-                            reserved_micros=reserved,
+                            provider_name=incomplete.provider,
+                            model_name=incomplete.model or "",
+                            attempt_number=attempt_number,
                         )
                     else:
-                        _phase3_stage(
-                            prepared,
-                            stage_name="repair",
-                            status="failed",
-                            provider=prepared.route.provider,
-                            model=prepared.route.model or "",
-                            reserved_micros=reserved,
+                        settle_repair_stage(
+                            status="settled" if repair_prices else "failed",
+                            provider_name=prepared.route.provider,
+                            model_name=prepared.route.model or "",
+                            attempt_number=attempt_number,
                         )
                     return None
                 except GenerationCancelled:
-                    _phase3_stage(
-                        prepared,
-                        stage_name="repair",
-                        status="released",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
-                        reserved_micros=reserved,
+                    settle_repair_stage(
+                        status="settled" if repair_prices else "released",
+                        provider_name=prepared.route.provider,
+                        model_name=prepared.route.model or "",
+                        attempt_number=attempt_number,
                     )
                     raise
                 except Exception:
-                    _phase3_stage(
-                        prepared,
-                        stage_name="repair",
-                        status="failed",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
-                        reserved_micros=reserved,
+                    settle_repair_stage(
+                        status="settled" if repair_prices else "failed",
+                        provider_name=prepared.route.provider,
+                        model_name=prepared.route.model or "",
+                        attempt_number=attempt_number,
                     )
                     return None
                 repair_price = _phase3_response_price(repaired)
@@ -4263,16 +4304,18 @@ def execute_web_turn(
                     repaired.input_tokens,
                     repaired.output_tokens,
                 ))
-                _phase3_stage(
-                    prepared,
-                    stage_name="repair",
+                repair_prices.append((
+                    "repair", repair_price, repaired.input_tokens,
+                    repaired.output_tokens,
+                ))
+                repair_reasoning_total += int(
+                    repaired.raw.get("reasoning_tokens") or 0
+                )
+                settle_repair_stage(
                     status="settled",
-                    provider=repaired.provider,
-                    model=repaired.model or "",
-                    price=repair_price,
-                    input_tokens=repaired.input_tokens,
-                    output_tokens=repaired.output_tokens,
-                    reserved_micros=reserved,
+                    provider_name=repaired.provider,
+                    model_name=repaired.model or "",
+                    attempt_number=attempt_number,
                 )
                 guard_context = replace(
                     guard_context,
@@ -4281,6 +4324,33 @@ def execute_web_turn(
                     ),
                 )
                 return repaired
+
+            def repair(
+                answer: str, quality: AnswerQualityResult
+            ) -> AIProviderResponse | None:
+                return repair_attempt(
+                    answer, quality, attempt_number=1
+                )
+
+            def second_strict_format_repair(
+                answer: str, quality: AnswerQualityResult
+            ) -> AIProviderResponse | None:
+                return repair_attempt(
+                    answer, quality, attempt_number=2
+                )
+
+            def can_second_strict_format_repair(
+                quality: AnswerQualityResult,
+            ) -> bool:
+                failed = quality.failed_checks
+                return bool(
+                    output_contract.strict_visible_format
+                    and failed
+                    and all(
+                        check.check_type.startswith("output_contract_")
+                        for check in failed
+                    )
+                )
 
             def verify_repaired(
                 answer: str, prior: AnswerQualityResult
@@ -4297,9 +4367,6 @@ def execute_web_turn(
                     answer,
                     guard_context,
                     model_verifier=None,
-                    only_checks={
-                        check.check_type for check in prior.failed_checks
-                    },
                     repair_attempted=True,
                 )
 
@@ -4336,6 +4403,11 @@ def execute_web_turn(
                             value, output_contract
                         )
                     ) if output_contract.required else None,
+                    second_repair=(
+                        second_strict_format_repair
+                        if stream_policy.mode == "verified_buffered" else None
+                    ),
+                    can_second_repair=can_second_strict_format_repair,
                 )
             except GenerationIncomplete as exc:
                 # A strict visible contract may consume its shared provider budget

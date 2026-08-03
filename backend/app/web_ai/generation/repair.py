@@ -28,9 +28,38 @@ def build_repair_request(
     task_requirements: TaskRequirementContract | None = None,
     answer_class: str = "normal",
     max_output_tokens: int = 2400,
+    attempt_number: int = 1,
+    strict_format_correction: bool = False,
 ) -> RepairContract:
+    attempt_number = max(1, min(2, int(attempt_number)))
+
+    def safe_observations(check: QualityCheck) -> str:
+        allowed = {
+            "expected_word_count", "observed_word_count", "word_count_delta",
+            "expected_sentence_count", "observed_sentence_count",
+            "definition_present", "concrete_retry_example_present",
+            "stable_outcome_present", "authoritative_store_present",
+            "forbidden_authority_passed", "forbidden_authority_violation",
+            "validator_version",
+        }
+        values = [
+            f"{key}={value}"
+            for key, value in check.observations
+            if key in allowed
+            and (
+                isinstance(value, int)
+                or (
+                    isinstance(value, str)
+                    and len(value) <= 40
+                    and all(character.isalnum() or character in ".-_" for character in value)
+                )
+            )
+        ]
+        return f" ({', '.join(values)})" if values else ""
+
     failures = "\n".join(
         f"- {check.check_type}: {check.reason_code or 'failed'}"
+        f"{safe_observations(check)}"
         for check in failed_checks
     )
     evidence = "\n\n".join(
@@ -46,6 +75,23 @@ def build_repair_request(
         "Cover every mandatory deliverable before optional detail. Return only the "
         "repaired final answer as a compact, complete replacement with no repair commentary."
     )
+    exact_count_failed = any(
+        check.check_type == "output_contract_word_count"
+        and check.status in {"failed", "error"}
+        for check in failed_checks
+    )
+    if exact_count_failed:
+        system += (
+            " For an exact word-count failure, make the smallest possible edit, "
+            "preserve every already-passing constraint, and count words using the "
+            "same whitespace-delimited rule as the verifier."
+        )
+    if strict_format_correction:
+        system += (
+            " This is the final bounded strict-format correction. Preserve all "
+            "semantic content and every passing constraint; change only what the "
+            "listed deterministic format checks require."
+        )
     typed_contract = output_contract_instruction(
         output_contract or OutputContract()
     )
@@ -70,7 +116,7 @@ def build_repair_request(
         message="Repair the checked draft.",
         reply_language=reply_language,
         channel="text",
-        request_id=f"{request_id}:repair:1",
+        request_id=f"{request_id}:repair:{attempt_number}",
         metadata={
             "provider_messages": [
                 {"role": "system", "content": system},

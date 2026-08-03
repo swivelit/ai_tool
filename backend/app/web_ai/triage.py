@@ -344,7 +344,12 @@ def build_execution_plan(
             name for name, present in (
                 ("definition", bool(task_requirements.definition_topics)),
                 ("example", task_requirements.concrete_example),
+                ("stable_outcome", task_requirements.stable_single_operation_outcome),
                 ("deliverables", bool(task_requirements.deliverables)),
+                ("authoritative_store", bool(
+                    task_requirements.authoritative_store
+                    or task_requirements.forbidden_authoritative_stores
+                )),
                 ("comparison", bool(task_requirements.comparison_terms)),
                 ("subquestions", bool(task_requirements.explicit_subquestion_count)),
             ) if present

@@ -617,11 +617,40 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.2'
+
+export type IdempotencySemanticEvaluation = {
+  definitionPresent: boolean
+  concreteRetryExamplePresent: boolean
+  stableOutcomePresent: boolean
+  validatorVersion: string
+}
+
+export function evaluateIdempotencySemantics(
+  answer: string,
+): IdempotencySemanticEvaluation {
+  const value = String(answer)
+  const definitionPresent = /\bidempoten\w*\b/i.test(value)
+    && /\b(?:payment|charge|request|operation|endpoint|API)\w*\b/i.test(value)
+    && /\b(?:means|is|refers to|ensures|allows|prevents|guarantees|describes|when)\b/i.test(value)
+  const retryPresent = /\b(?:retry|retries|retried|repeated request|request again|sends? (?:it|the request) again|second attempt)\b/i.test(value)
+  const concreteMarker = /\b(?:GET|POST|PUT|PATCH|DELETE)\b|\/[A-Za-z][A-Za-z0-9_/-]*|\b(?:after (?:a )?timeout|client|identifier|request id|payment id|order id|idempotency key)\b/i.test(value)
+  const stableOutcomePresent = /\b(?:reuse[sd]? (?:the |an? )?(?:same )?(?:identifier|key|id)|same (?:identifier|key|id|result|response|outcome)|(?:return|receive[sd]?|gets?) (?:the )?(?:stored|previous|original|same|first) (?:result|response|outcome)|(?:without|no|prevent(?:s|ing)?|avoid(?:s|ing)?) (?:a |the )?(?:second|additional|duplicate) (?:charge|payment|processing|operation)|(?:one|single) (?:charge|payment|operation|result|outcome)|already processed|does not (?:charge|process|create) (?:it )?again|instead of duplicate processing|prevents? duplicate (?:work|processing|charges?|payments?))\b/i.test(value)
+  return {
+    definitionPresent,
+    concreteRetryExamplePresent:retryPresent && concreteMarker,
+    stableOutcomePresent,
+    validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
+  }
+}
+
 export type WebhookArchitectureEvaluation = {
   postgresAuthoritative: boolean
+  redisValkeyForbiddenAuthorityPassed: boolean
   nonPostgresAuthoritativeClaim: boolean
   coveredAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
   missingAreas: typeof WEBHOOK_ARCHITECTURE_AREAS[number][]
+  validatorVersion: string
 }
 
 function hasAll(value: string, patterns: RegExp[]): boolean {
@@ -633,18 +662,28 @@ export function evaluateWebhookArchitecture(
 ): WebhookArchitectureEvaluation {
   const value = String(answer)
   const clauses = value.split(/(?<=[.!?;])\s+|\n+/u).filter(Boolean)
-  const authority = /\b(?:source of truth|system of record|authoritative(?: store| database)?)\b/i
+  const storeHasAuthority = (clause: string, store: string): boolean => {
+    const authority = '(?:source of truth|system of record|authoritative(?: store| database)?|canonical(?: store| database)?|owns? (?:the )?durable state)'
+    return new RegExp(`\\b${store}\\b[^.;]{0,55}\\b${authority}\\b|\\b${authority}\\b\\s+(?:is|remains|:)\\s+(?:the\\s+)?\\b${store}\\b`, 'i').test(clause)
+  }
+  const storeIsSafelyNonAuthoritative = (clause: string, store: string): boolean => {
+    if (!new RegExp(`\\b${store}\\b`, 'i').test(clause)) return false
+    return new RegExp(`\\b${store}\\b[^.;]{0,55}\\bnon[- ]authoritative\\b|\\b${store}\\b[^.;]{0,55}\\b(?:not|never|isn't|is not|must not)\\b[^.;]{0,30}\\b(?:authoritative|source of truth|system of record|canonical)\\b|\\b${store}\\b[^.;]{0,55}\\b(?:cache|queue) only\\b|\\b${store}\\b[^.;]{0,55}\\bonly (?:a )?(?:cache|queue)\\b|\\b${store}\\b[^.;]{0,55}\\bdoes not own (?:the )?durable state\\b|\\bneither\\s+redis\\s+nor\\s+valkey\\b[^.;]{0,55}\\b(?:authoritative|source of truth|system of record|canonical)\\b`, 'i').test(clause)
+  }
   const postgresAuthoritative = clauses.some(clause => (
-    /\bpostgres(?:ql)?\b/i.test(clause)
-    && authority.test(clause)
-    && !/\b(?:not|never|isn't|is not|must not|cannot|can't)\b[^.;]{0,45}\b(?:source of truth|system of record|authoritative)/i.test(clause)
+    storeHasAuthority(clause, 'postgres(?:ql)?')
+    && !storeIsSafelyNonAuthoritative(clause, 'postgres(?:ql)?')
   ))
-  const nonPostgresAuthoritativeClaim = clauses.some(clause => {
-    if (!/\b(?:redis|valkey)\b/i.test(clause) || !authority.test(clause)) return false
-    return !/\b(?:redis|valkey)\b[^.;]{0,60}\b(?:is|are|must|should|can|will|remains?)?\s*(?:explicitly\s+)?(?:not|never)\b[^.;]{0,45}\b(?:the\s+)?(?:source of truth|system of record|authoritative)/i.test(clause)
-      && !/\b(?:not|never)\b[^.;]{0,35}\b(?:redis|valkey)\b[^.;]{0,45}\b(?:source of truth|system of record|authoritative)/i.test(clause)
-      && !/\bneither\s+redis\s+nor\s+valkey\b[^.;]{0,60}\b(?:source of truth|system of record|authoritative)/i.test(clause)
-  })
+  const stores = ['redis', 'valkey']
+  const safeStores = stores.filter(store => clauses.some(
+    clause => storeIsSafelyNonAuthoritative(clause, store),
+  ))
+  const nonPostgresAuthoritativeClaim = stores.some(store => clauses.some(clause => (
+    storeHasAuthority(clause, store)
+    && !storeIsSafelyNonAuthoritative(clause, store)
+  )))
+  const redisValkeyForbiddenAuthorityPassed = safeStores.length === stores.length
+    && !nonPostgresAuthoritativeClaim
   const coverage: Record<typeof WEBHOOK_ARCHITECTURE_AREAS[number], boolean> = {
     database_schema:hasAll(value, [
       /\b(?:tables?|schema|event inbox|webhook events?|payments?|wallet ledger)\b/i,
@@ -663,9 +702,11 @@ export function evaluateWebhookArchitecture(
   const coveredAreas = WEBHOOK_ARCHITECTURE_AREAS.filter(area => coverage[area])
   return {
     postgresAuthoritative,
+    redisValkeyForbiddenAuthorityPassed,
     nonPostgresAuthoritativeClaim,
     coveredAreas,
     missingAreas:WEBHOOK_ARCHITECTURE_AREAS.filter(area => !coverage[area]),
+    validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
   }
 }
 

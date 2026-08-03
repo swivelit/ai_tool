@@ -45,6 +45,15 @@ export function capabilityAuditHasActiveProviderGeneration(
     && audit.active_usage_stage_names.includes('generation')
 }
 
+export function capabilityAuditIsCancellationReady(
+  audit: CancellationReadyCapabilityAudit,
+  evidence: { streamResponseAccepted: boolean; stopButtonReady: boolean },
+): boolean {
+  if (audit.cancellation_state !== 'active' || audit.cache_hit) return false
+  return capabilityAuditHasActiveProviderGeneration(audit)
+    || (evidence.streamResponseAccepted && evidence.stopButtonReady)
+}
+
 export async function readCapabilityAuditsOnce<T extends PollableCapabilityAudit>(options: {
   api: CapabilityAuditTransport
   requestIds: readonly string[]

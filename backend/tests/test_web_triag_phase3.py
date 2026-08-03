@@ -376,7 +376,9 @@ def test_repair_is_called_at_most_once():
     assert result.repair_attempts == 1
 
 
-def _execute_contract_turn(monkeypatch, *, slug, prompt, answers):
+def _execute_contract_turn(
+    monkeypatch, *, slug, prompt, answers, captured_requests=None,
+):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response",
@@ -389,6 +391,8 @@ def _execute_contract_turn(monkeypatch, *, slug, prompt, answers):
     class Provider:
         def complete(self, request, route):
             nonlocal calls
+            if captured_requests is not None:
+                captured_requests.append(request)
             answer = answers[min(calls, len(answers) - 1)]
             calls += 1
             return _response(answer)
@@ -454,6 +458,70 @@ def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
     }
     assert "task_requirement_definition" in check_types
     assert "task_requirement_example" in check_types
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session, request_ids=["contract-semantic-b01-request"]
+        )[0]
+    assert audit["task_requirement_check_status_counts"] == {"passed": 3}
+
+
+def test_complete_markdown_architecture_deliverables_need_no_repair(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    answer = """PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.
+### 1. Database tables and unique constraints
+Use event and payment tables with unique event identifiers.
+### 2. Transaction boundaries
+One atomic transaction commits wallet and event changes.
+### 3. Event and payment state transitions
+Use monotonic event and payment status transitions.
+### 4. Pseudocode
+The worker flow begins, processes the event, then commits.
+### 5. Duplicate-event handling
+Deduplicate every duplicate event with the unique identifier.
+### 6. Out-of-order handling
+Store late out-of-order events until state permits transition.
+### 7. Failure recovery
+Retry crash recovery safely from the event inbox.
+### 8. Reconciliation
+Run a reconciliation consistency check against PostgreSQL.
+### 9. Security checks
+Perform HMAC signature and replay security checks.
+### 10. A focused test plan
+Test concurrency, duplicates, ordering, refunds, and failure injection."""
+    captured_requests = []
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-complete-architecture",
+        prompt=prompt,
+        answers=[answer],
+        captured_requests=captured_requests,
+    )
+    assert calls == 1
+    assert len(captured_requests) == 1
+    assert completed.message.quality["status"] == "verified"
+    task_checks = [
+        check for check in completed.message.quality["checks"]
+        if (
+            check["type"].startswith("task_requirement_")
+            or check["type"].startswith("task_deliverable_")
+        )
+    ]
+    assert len(task_checks) == 12
+    assert all(check["status"] == "passed" for check in task_checks)
 
 
 def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):
@@ -535,6 +603,70 @@ def test_exact_120_word_contract_repair_persists_visible_verified_text(
     assert completed.message.content.strip()
     assert len(completed.message.content.split()) == 120
     assert completed.message.quality["status"] == "verified"
+
+
+def test_exact_120_word_contract_allows_one_final_strict_format_correction(
+    monkeypatch,
+):
+    prompt = (
+        "Write a micro-story of exactly 120 words. Requirements: include the "
+        "phrase \u201cblue umbrella\u201d exactly once; the setting is a railway station; "
+        "no dialogue; end with the word \u201chome\u201d; do not include a title."
+    )
+    prefix = [
+        "At", "the", "railway", "station", "a", "blue", "umbrella", "rested",
+    ]
+    draft_124 = " ".join(prefix + ["quietly"] * 115 + ["home"])
+    repair_111 = " ".join(prefix + ["quietly"] * 102 + ["home"])
+    repair_120 = " ".join(prefix + ["quietly"] * 111 + ["home"])
+    captured_requests = []
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-exact-120-second-correction",
+        prompt=prompt,
+        answers=[draft_124, repair_111, repair_120],
+        captured_requests=captured_requests,
+    )
+
+    assert calls == 3
+    assert [request.request_id for request in captured_requests] == [
+        "contract-exact-120-second-correction-request",
+        "contract-exact-120-second-correction-request:repair:1",
+        "contract-exact-120-second-correction-request:repair:2",
+    ]
+    second_repair = captured_requests[2]
+    assert second_repair.metadata["strict_output_contract"] is True
+    assert second_repair.metadata["minimum_visible_output_tokens"] >= 200
+    assert second_repair.metadata["max_provider_attempts"] == 1
+    assert completed.message.content == repair_120
+    assert len(completed.message.content.split()) == 120
+    assert completed.message.content.casefold().count("blue umbrella") == 1
+    assert "railway station" in completed.message.content.casefold()
+    assert not any(character in completed.message.content for character in '\u201c\u201d"')
+    assert "\n" not in completed.message.content
+    assert completed.message.content.endswith("home")
+    assert completed.message.quality["status"] == "verified"
+
+    request_id = "contract-exact-120-second-correction-request"
+    with SessionLocal() as session:
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id
+        )).all()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        audit = build_request_audit(session, request_ids=[request_id])[0]
+    repair_stage = next(
+        stage for stage in stages if stage.stage_name == "repair"
+    )
+    assert repair_stage.status == "settled"
+    assert repair_stage.input_tokens == 16
+    assert repair_stage.output_tokens == 8
+    assert charge.debited_micros == sum(stage.debited_micros for stage in stages)
+    assert audit["provider_call_count"] == 3
+    assert audit["repair_stage_count"] == 1
+    assert audit["output_contract_check_status_counts"].get("failed", 0) == 0
 
 
 def test_tamil_sentence_and_script_contract_repair_agrees_with_request_audit(

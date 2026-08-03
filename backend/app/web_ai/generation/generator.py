@@ -46,6 +46,10 @@ class VerifiedGenerator:
             [str, AnswerQualityResult | None], AnswerQualityResult
         ] | None = None,
         canonicalize: Callable[[str], str] | None = None,
+        second_repair: Callable[
+            [str, AnswerQualityResult], AIProviderResponse | None
+        ] | None = None,
+        can_second_repair: Callable[[AnswerQualityResult], bool] | None = None,
     ) -> GeneratedAnswer:
         def status(value: str) -> None:
             if on_status:
@@ -87,6 +91,32 @@ class VerifiedGenerator:
             status("repairing")
             attempts = 1
             repaired = repair(response.text, quality)
+            _check_cancelled(cancellation_signal)
+            if repaired is not None:
+                response = replace(
+                    repaired,
+                    text=(
+                        canonicalize(repaired.text)
+                        if canonicalize is not None else repaired.text
+                    ),
+                )
+                quality = (
+                    verify_repaired(response.text, quality)
+                    if verify_repaired else verify(response.text) if verify else quality
+                )
+            else:
+                quality = replace(quality, repair_attempted=True)
+        if (
+            quality
+            and not quality.passed
+            and attempts == 1
+            and second_repair is not None
+            and can_second_repair is not None
+            and can_second_repair(quality)
+        ):
+            status("repairing")
+            attempts = 2
+            repaired = second_repair(response.text, quality)
             _check_cancelled(cancellation_signal)
             if repaired is not None:
                 response = replace(

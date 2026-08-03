@@ -286,6 +286,7 @@ def build_request_audit(
         truncated = False
         repair_attempted = False
         output_contract_check_statuses: list[str] = []
+        task_requirement_check_statuses: list[str] = []
         phase2_fallback_reason_code: str | None = None
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
@@ -332,13 +333,15 @@ def build_request_audit(
                 ):
                     if not isinstance(raw_check, dict):
                         continue
-                    if not str(raw_check.get("type") or "").startswith(
-                        "output_contract_"
+                    check_type = str(raw_check.get("type") or "")
+                    check_status = str(raw_check.get("status") or "")
+                    if check_type.startswith("output_contract_"):
+                        output_contract_check_statuses.append(check_status)
+                    if (
+                        check_type.startswith("task_requirement_")
+                        or check_type.startswith("task_deliverable_")
                     ):
-                        continue
-                    output_contract_check_statuses.append(
-                        str(raw_check.get("status") or "")
-                    )
+                        task_requirement_check_statuses.append(check_status)
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
@@ -475,6 +478,10 @@ def build_request_audit(
             "truncated": truncated,
             "output_contract_check_status_counts": _bounded_counts(
                 output_contract_check_statuses,
+                frozenset({"passed", "failed", "warning", "skipped", "error"}),
+            ),
+            "task_requirement_check_status_counts": _bounded_counts(
+                task_requirement_check_statuses,
                 frozenset({"passed", "failed", "warning", "skipped", "error"}),
             ),
             "repair_attempted": repair_attempted,

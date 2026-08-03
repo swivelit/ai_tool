@@ -162,6 +162,21 @@ def test_sentence_question_story_and_no_title_contracts():
     ))
 
 
+def test_exact_word_count_records_bounded_repair_observations():
+    contract = extract_output_contract(C09)
+    value = " ".join(["word"] * 111)
+    check = next(
+        item for item in validate_output_contract(value, contract)
+        if item.check_type == "output_contract_word_count"
+    )
+    assert check.status == "failed"
+    assert dict(check.observations) == {
+        "expected_word_count": 120,
+        "observed_word_count": 111,
+        "word_count_delta": -9,
+    }
+
+
 def test_tamil_script_is_a_first_class_mandatory_contract():
     tamil_contract = extract_output_contract(
         "Explain photosynthesis in exactly five Tamil sentences."
@@ -368,6 +383,38 @@ def test_repair_prompt_contains_the_exact_typed_contract_and_no_commentary_rule(
     assert "Return only the repaired final answer" in rendered
     assert "Use exactly these JSON keys: answer, reason, confidence" in rendered
     assert repair.request.metadata["output_contract"] == contract.as_metadata()
+
+
+def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
+    contract = extract_output_contract(C09)
+    failed = next(
+        item for item in validate_output_contract(" ".join(["word"] * 111), contract)
+        if item.check_type == "output_contract_word_count"
+    )
+    repair = build_repair_request(
+        user_id=1,
+        request_id="exact-count-repair",
+        reply_language="en",
+        current_answer=" ".join(["word"] * 111),
+        failed_checks=(failed,),
+        evidence_pack=None,
+        task_contract=C09,
+        output_contract=contract,
+        attempt_number=2,
+        strict_format_correction=True,
+    )
+    rendered = "\n".join(
+        str(item["content"])
+        for item in repair.request.metadata["provider_messages"]
+    )
+    assert repair.request.request_id == "exact-count-repair:repair:2"
+    assert repair.request.metadata["strict_output_contract"] is True
+    assert repair.request.metadata["minimum_visible_output_tokens"] >= 200
+    assert repair.request.metadata["max_provider_attempts"] == 1
+    assert "observed_word_count=111" in rendered
+    assert "word_count_delta=-9" in rendered
+    assert "smallest possible edit" in rendered
+    assert "whitespace-delimited rule" in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

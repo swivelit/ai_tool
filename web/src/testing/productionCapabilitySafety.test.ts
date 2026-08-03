@@ -18,6 +18,7 @@ import {
   deploymentShasMatch,
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
+  evaluateIdempotencySemantics,
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
@@ -32,6 +33,26 @@ import {
   tierEvidenceMatches,
   weightedScore,
 } from './productionCapabilitySafety'
+
+const semanticFixtures = JSON.parse(readFileSync(
+  resolve(process.cwd(), '../shared-fixtures/capability-semantics.json'),
+  'utf8',
+)) as {
+  idempotency: Array<{
+    id: string
+    text: string
+    definition_present: boolean
+    concrete_retry_example_present: boolean
+    stable_outcome_present: boolean
+  }>
+  architecture_authority: Array<{
+    id: string
+    text: string
+    postgres_authoritative: boolean
+    redis_valkey_forbidden_authority_passed: boolean
+    violation: boolean
+  }>
+}
 
 const valid = {
   PLAYWRIGHT_BASE_URL:'https://swico.example',
@@ -389,6 +410,34 @@ describe('production capability safety', () => {
     )
     expect(result.postgresAuthoritative).toBe(true)
     expect(result.nonPostgresAuthoritativeClaim).toBe(false)
+  })
+
+  it('shares deterministic idempotency semantic fixtures with the backend', () => {
+    for (const fixture of semanticFixtures.idempotency) {
+      const result = evaluateIdempotencySemantics(fixture.text)
+      expect(result.definitionPresent, fixture.id).toBe(fixture.definition_present)
+      expect(result.concreteRetryExamplePresent, fixture.id).toBe(
+        fixture.concrete_retry_example_present,
+      )
+      expect(result.stableOutcomePresent, fixture.id).toBe(
+        fixture.stable_outcome_present,
+      )
+    }
+  })
+
+  it('shares authoritative-store semantic fixtures with the backend', () => {
+    for (const fixture of semanticFixtures.architecture_authority) {
+      const result = evaluateWebhookArchitecture(fixture.text)
+      expect(result.postgresAuthoritative, fixture.id).toBe(
+        fixture.postgres_authoritative,
+      )
+      expect(result.redisValkeyForbiddenAuthorityPassed, fixture.id).toBe(
+        fixture.redis_valkey_forbidden_authority_passed,
+      )
+      expect(result.nonPostgresAuthoritativeClaim, fixture.id).toBe(
+        fixture.violation,
+      )
+    }
   })
 
   it('rejects Redis authority and incomplete architecture coverage', () => {
