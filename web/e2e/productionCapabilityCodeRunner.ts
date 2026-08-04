@@ -207,15 +207,37 @@ async function writeRepositoryFixture(directory: string): Promise<void> {
   await writeFile(join(directory, 'src/orderService.js'), `import { finalPrice } from './pricing.js'
 
 export function createOrder(order) {
-  return { id: order.id, totalCents: finalPrice(order.subtotalCents, order.discountRate) }
+  return {
+    id: order.id,
+    totalCents: finalPrice(order.subtotalCents, order.discountRate),
+  }
 }\n`)
   await writeFile(join(directory, 'test/order.test.js'), `import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createOrder } from '../src/orderService.js'
 import { finalPrice } from '../src/pricing.js'
-test('applies a percentage discount', () => assert.equal(finalPrice(10000, 15), 8500))
-test('creates an order', () => assert.deepEqual(createOrder({ id:'ORDER-1', subtotalCents:10000, discountPercent:15 }), { id:'ORDER-1', totalCents:8500 }))
-test('rejects invalid percentage', () => assert.throws(() => finalPrice(10000, 101)))
+
+test('applies a percentage discount', () => {
+  assert.equal(finalPrice(10000, 15), 8500)
+})
+
+test('creates an order with the discounted total', () => {
+  assert.deepEqual(
+    createOrder({
+      id: 'ORDER-1',
+      subtotalCents: 10000,
+      discountPercent: 15,
+    }),
+    {
+      id: 'ORDER-1',
+      totalCents: 8500,
+    },
+  )
+})
+
+test('rejects an invalid percentage', () => {
+  assert.throws(() => finalPrice(10000, 101))
+})
 `)
 }
 

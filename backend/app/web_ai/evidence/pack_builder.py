@@ -84,8 +84,10 @@ def evidence_prompt(pack: EvidencePack) -> str:
         for item in pack.items
     ]
     status_instruction = (
-        "The retrieved evidence is insufficient. Say that the uploaded documents "
-        "do not provide enough support; do not guess."
+        "The retrieved evidence is insufficient. State explicitly that the supplied "
+        "sources do not provide the requested fact and that it cannot be determined "
+        "from the available evidence. Do not answer the fact, infer a value, use "
+        "outside knowledge, or guess."
         if pack.retrieval_status == "insufficient"
         else (
             "Use only supported statements. Before answering each requested fact, "

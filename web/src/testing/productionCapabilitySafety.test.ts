@@ -21,6 +21,7 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateIdempotencySemantics,
+  idempotencySemanticFailureReasons,
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
@@ -107,7 +108,9 @@ describe('production capability safety', () => {
 
   it('scales cleanup for generated threads and caps the global budget', () => {
     expect(capabilityCleanupDeadlineMs(0)).toBe(5 * 60_000)
-    expect(capabilityCleanupDeadlineMs(71)).toBe(5 * 60_000 + 71 * 4_000)
+    expect(capabilityCleanupDeadlineMs(71)).toBe(
+      5 * 60_000 + 71 * 4_000 + 3 * 60_000,
+    )
     expect(capabilityCleanupDeadlineMs(10_000)).toBe(15 * 60_000)
   })
 
@@ -463,6 +466,26 @@ describe('production capability safety', () => {
         fixture.stable_outcome_present,
       )
     }
+  })
+
+  it('reports only the idempotency semantic sub-checks that are false', () => {
+    expect(idempotencySemanticFailureReasons({
+      definitionPresent:true,
+      concreteRetryExamplePresent:true,
+      stableOutcomePresent:false,
+      validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
+    }, { requireStableOutcome:true })).toEqual([
+      'semantic_stable_outcome_missing',
+    ])
+    expect(idempotencySemanticFailureReasons({
+      definitionPresent:false,
+      concreteRetryExamplePresent:false,
+      stableOutcomePresent:true,
+      validatorVersion:CAPABILITY_SEMANTIC_VALIDATOR_VERSION,
+    }, { requireStableOutcome:false })).toEqual([
+      'semantic_definition_missing',
+      'semantic_retry_example_missing',
+    ])
   })
 
   it('shares authoritative-store semantic fixtures with the backend', () => {

@@ -79,7 +79,12 @@ export function ChatPage() {
   const activeRef = useRef<string | null>(active)
   const userUid = user?.uid ?? ''
   const userUidRef = useRef(userUid)
-  const streamScopeRef = useRef<{ requestId: string; initialThreadId: string | null; threadId: string | null } | null>(null)
+  const streamScopeRef = useRef<{
+    requestId: string
+    initialThreadId: string | null
+    threadId: string | null
+    assistantMessageId?: string
+  } | null>(null)
   const cancellationReadyRef = useRef(false)
   const queuedStopRef = useRef(false)
   const cancellationSentRef = useRef(false)
@@ -112,11 +117,26 @@ export function ChatPage() {
       ...(response.wallets ? { wallets:response.wallets } : {}),
     } : value)
   }, [user])
-  const loadMessages = useCallback(async (threadId: string) => {
-    if (!user) return
+  const loadMessages = useCallback(async (
+    threadId: string, options: {
+      requireAssistantRequestId?: string
+      requireAssistantMessageId?: string
+    } = {},
+  ): Promise<boolean> => {
+    if (!user) return false
     const data = await apiJson<{ items: Message[] }>(user, `/api/web/threads/${threadId}/messages`)
     const unique = Array.from(new Map(data.items.map(message => [message.id, message])).values())
-    if (activeRef.current !== threadId) return
+    if (
+      (options.requireAssistantRequestId || options.requireAssistantMessageId)
+      && !unique.some(message => (
+        message.role === 'assistant'
+        && (
+          message.request_id === options.requireAssistantRequestId
+          || message.id === options.requireAssistantMessageId
+        )
+      ))
+    ) return false
+    if (activeRef.current !== threadId) return false
     setMessages(unique)
     const restored = new Map<string, MessageAttachment>()
     for (const message of unique) {
@@ -125,6 +145,7 @@ export function ChatPage() {
       }
     }
     setAttachments(Array.from(restored.values()).slice(-5))
+    return true
   }, [user])
   const applyWallet = useCallback((wallet: Wallet) => {
     setBootstrap(value => value ? { ...value, wallet } : value)
@@ -241,7 +262,9 @@ export function ChatPage() {
   }, [])
   useEffect(() => {
     if (!user || !active) { if (!streaming) { setMessages([]); setAttachments([]) }; return }
-    if (streaming && streamState.assistant?.thread_id === active) return
+    const streamingThread = streamScopeRef.current?.threadId
+      ?? streamState.assistant?.thread_id
+    if (streaming && streamingThread === active) return
     void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
   }, [user, active]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -342,7 +365,13 @@ export function ChatPage() {
           summarize: 'Summarize', analyze: 'Analyze', ask_questions: 'Answer questions about',
           rewrite: 'Rewrite', translate: 'Translate',
         }
-        providerText = `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`
+        const embeddedQuestion = longInputMode === 'ask_questions'
+          ? [...text.trimEnd().split(/\r?\n/u)].reverse().map(line => (
+            line.match(/^\s*Question\s*:\s*(.{1,2000})\s*$/iu)?.[1]?.trim()
+          )).find(Boolean)
+          : undefined
+        providerText = embeddedQuestion
+          ?? `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`
       } catch (caught) {
         setError(chatErrorMessage(caught, !navigator.onLine)); setStreaming(false)
         return
@@ -427,6 +456,12 @@ export function ChatPage() {
           && Boolean((event.data as Record<string, unknown>).memory_updated)) {
           window.dispatchEvent(new Event('swico:memory-updated'))
         }
+        if (event.event === 'done' && typeof event.data === 'object' && event.data) {
+          const messageId = String(
+            (event.data as Record<string, unknown>).message_id ?? '',
+          )
+          if (messageId) scope.assistantMessageId = messageId
+        }
         if (event.event === 'done' && requestOptions?.continueMessageId) {
           setMessages(value => value.map(item => (
             item.id === requestOptions.continueMessageId
@@ -457,9 +492,20 @@ export function ChatPage() {
       })
       setDraftVoiceTurnId(null)
       await loadThreads(true)
-      if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
-      if (requestOptions?.continueMessageId && threadId) {
-        await loadMessages(threadId)
+      const completedThreadId = streamScopeRef.current?.requestId === nextRequestId
+        ? streamScopeRef.current.threadId ?? threadId
+        : threadId
+      if (completedThreadId) {
+        const persisted = await loadMessages(completedThreadId, {
+          requireAssistantRequestId:nextRequestId,
+          requireAssistantMessageId:streamScopeRef.current?.assistantMessageId,
+        })
+        if (persisted) {
+          // The persisted thread is authoritative after a terminal stream.
+          // Clear the optimistic projection only after the matching assistant
+          // is observable; eventual-consistency lag must not hide the answer.
+          dispatchStream({ type:'reset' })
+        }
       }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {

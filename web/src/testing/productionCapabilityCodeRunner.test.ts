@@ -51,12 +51,15 @@ diff --git a/src/pricing.js b/src/pricing.js
 diff --git a/src/orderService.js b/src/orderService.js
 --- a/src/orderService.js
 +++ b/src/orderService.js
-@@ -1,5 +1,5 @@
+@@ -1,9 +1,9 @@
  import { finalPrice } from './pricing.js'
  
  export function createOrder(order) {
--  return { id: order.id, totalCents: finalPrice(order.subtotalCents, order.discountRate) }
-+  return { id: order.id, totalCents: finalPrice(order.subtotalCents, order.discountPercent) }
+   return {
+     id: order.id,
+-    totalCents: finalPrice(order.subtotalCents, order.discountRate),
++    totalCents: finalPrice(order.subtotalCents, order.discountPercent),
+   }
  }
 \`\`\``
 

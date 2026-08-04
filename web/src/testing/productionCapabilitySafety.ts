@@ -24,7 +24,11 @@ export function capabilityEffectiveTimeoutMs(
 export function capabilityCleanupDeadlineMs(generatedThreadCount: number): number {
   const count = Number.isFinite(generatedThreadCount)
     ? Math.max(0, Math.floor(generatedThreadCount)) : 0
-  return Math.min(15 * 60_000, 5 * 60_000 + count * 4_000)
+  const mutationWindows = count > 0 ? Math.ceil(count / 30) : 0
+  return Math.min(
+    15 * 60_000,
+    5 * 60_000 + count * 4_000 + mutationWindows * 60_000,
+  )
 }
 
 export function remainingCapabilitySseBodyTimeoutMs(
@@ -630,6 +634,26 @@ export type IdempotencySemanticEvaluation = {
   concreteRetryExamplePresent: boolean
   stableOutcomePresent: boolean
   validatorVersion: string
+}
+
+export type IdempotencySemanticFailureReason =
+  | 'semantic_definition_missing'
+  | 'semantic_retry_example_missing'
+  | 'semantic_stable_outcome_missing'
+
+export function idempotencySemanticFailureReasons(
+  evaluation: IdempotencySemanticEvaluation,
+  options: { requireStableOutcome: boolean },
+): IdempotencySemanticFailureReason[] {
+  const reasons: IdempotencySemanticFailureReason[] = []
+  if (!evaluation.definitionPresent) reasons.push('semantic_definition_missing')
+  if (!evaluation.concreteRetryExamplePresent) {
+    reasons.push('semantic_retry_example_missing')
+  }
+  if (options.requireStableOutcome && !evaluation.stableOutcomePresent) {
+    reasons.push('semantic_stable_outcome_missing')
+  }
+  return reasons
 }
 
 export function evaluateIdempotencySemantics(

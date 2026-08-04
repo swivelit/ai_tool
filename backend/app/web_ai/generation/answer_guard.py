@@ -17,6 +17,7 @@ from .models import (
 )
 from .output_contract import OutputContract, validate_output_contract
 from .output_format import fenced_code_quality_check
+from .repository_grounding import repository_path_grounding_check
 from .task_requirements import (
     TaskRequirementContract, validate_task_requirements,
 )
@@ -75,6 +76,7 @@ class AnswerGuardContext:
     repository_change_required: bool | None = None
     repository_context_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
+    repository_file_paths: tuple[str, ...] = ()
     output_contract: OutputContract | None = None
     task_requirements: TaskRequirementContract | None = None
     provider_completion: ProviderCompletion | None = None
@@ -179,6 +181,10 @@ class AnswerGuard:
             checks.append(QualityCheck(
                 "repository_context", "passed", ""
             ))
+            if include("repository_path_grounding"):
+                checks.append(repository_path_grounding_check(
+                    answer, context.repository_file_paths,
+                ))
         if context.repository_validation_required:
             validation = context.repository_validation
             if validation is None:

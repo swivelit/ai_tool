@@ -877,7 +877,8 @@ def test_insufficient_document_evidence_does_not_call_generation_provider(
     )
     assert prepared.retrieval_context is not None
     assert prepared.retrieval_context.retrieval_status == "insufficient"
-    assert "couldn’t find enough support" in completed.message.content
+    assert "do not provide this information" in completed.message.content
+    assert "cannot determine it" in completed.message.content
     assert completed.message.quality is not None
     assert completed.message.quality["status"] == "insufficient_evidence"
     assert completed.response.raw["provider_attempts"] == 0

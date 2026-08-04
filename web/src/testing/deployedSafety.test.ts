@@ -182,7 +182,7 @@ test('production capability browser waits and cleanup are independently bounded'
   expect(spec).toContain("page.waitForEvent(\n            'download', { timeout:BROWSER_TOOL_TIMEOUT_MS }")
   expect(spec).toContain("'response_download_timeout'")
   expect(spec).toContain('const cleanupDeadline = Date.now() + capabilityCleanupDeadlineMs(')
-  expect(spec).toContain('runWithBoundedConcurrency(ids, 4')
+  expect(spec).toContain('runWithBoundedConcurrency(ids, 2')
   expect(spec).toContain('await deleteThreadPass(firstThreadFailures)')
   expect(spec).toContain('const executionDeadline = testStartedAt')
   expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
@@ -258,7 +258,7 @@ test('R08 routing variation reuses the B01 semantic and format contract', () => 
     spec.indexOf("if (question.id === 'R09'", spec.indexOf("if (question.id === 'R08' && (")),
   )
   expect(routing).toContain(
-    '!b01ContractPassed(result.visibleAnswer, result.rawMarkdown)',
+    '!b01ContractPassed(result.rawMarkdown)',
   )
   expect(routing).not.toContain('result.score !== 100')
   expect(spec).toContain('function b01ContractPassed(')
@@ -761,6 +761,7 @@ test('transient generated-thread cleanup failures retry within a hard bound', as
   }
   await deleteGeneratedThread(
     api, 'generated-thread', new Set(), new Set(['generated-thread']),
+    { wait:async () => undefined },
   )
   expect(deleteCalls).toBe(4)
 
@@ -773,8 +774,27 @@ test('transient generated-thread cleanup failures retry within a hard bound', as
   }
   await expect(deleteGeneratedThread(
     failingApi, 'generated-thread', new Set(), new Set(['generated-thread']),
+    { wait:async () => undefined },
   )).rejects.toMatchObject({ reasonCode:'thread_delete_http_failure' })
-  expect(boundedCalls).toBe(4)
+  expect(boundedCalls).toBe(6)
+})
+
+test('thread deletion honors Retry-After without treating rate limiting as cleanup failure', async () => {
+  const waits: number[] = []
+  const statuses = [
+    { status:429, data:null, retryAfterSeconds:60 },
+    { status:204, data:null },
+  ]
+  const api: DeployedApi = {
+    request:vi.fn(async method => (
+      method === 'GET' ? { status:404, data:null } : statuses.shift()!
+    )),
+  }
+  await expect(deleteGeneratedThread(
+    api, 'generated-thread', new Set(), new Set(['generated-thread']),
+    { wait:async milliseconds => { waits.push(milliseconds) } },
+  )).resolves.toBeUndefined()
+  expect(waits).toEqual([60_000])
 })
 
 test('exhausted thread deletion rate limits use the bounded rate code', async () => {
@@ -787,8 +807,9 @@ test('exhausted thread deletion rate limits use the bounded rate code', async ()
   }
   await expect(deleteGeneratedThread(
     api, 'generated-thread', new Set(), new Set(['generated-thread']),
+    { wait:async () => undefined },
   )).rejects.toMatchObject({ reasonCode:'thread_delete_rate_limited' })
-  expect(calls).toBe(4)
+  expect(calls).toBe(6)
 })
 
 test('original or untracked threads can never be deleted', async () => {

@@ -50,6 +50,10 @@ class VerifiedGenerator:
             [str, AnswerQualityResult], AIProviderResponse | None
         ] | None = None,
         can_second_repair: Callable[[AnswerQualityResult], bool] | None = None,
+        finalize: Callable[
+            [str, AnswerQualityResult | None],
+            tuple[str, AnswerQualityResult | None],
+        ] | None = None,
     ) -> GeneratedAnswer:
         def status(value: str) -> None:
             if on_status:
@@ -134,6 +138,9 @@ class VerifiedGenerator:
                 quality = replace(quality, repair_attempted=True)
         if verify_final is not None:
             quality = verify_final(response.text, quality)
+        if finalize is not None:
+            final_text, quality = finalize(response.text, quality)
+            response = replace(response, text=final_text)
         _check_cancelled(cancellation_signal)
         status("responding")
         if on_delta:

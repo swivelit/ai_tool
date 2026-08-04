@@ -521,6 +521,35 @@ def test_ws6_dynamic_context_follows_stable_prefix_in_fixed_order(monkeypatch):
     assert messages[-1] == {"role": "user", "content": "Current question"}
 
 
+def test_ws6_same_chat_instruction_resolves_technical_references_and_boundaries():
+    request = AIRequest(
+        1,
+        "Show the transaction boundary for that fix in pseudocode.",
+        "en",
+        "text",
+        "continuity-boundary",
+        {"client_surface": "web", "answer_class": "detailed"},
+        context_turns=[{
+            "user": (
+                "I am building an inventory API with FastAPI, PostgreSQL, and "
+                "Redis. Retries sometimes reserve stock twice."
+            ),
+            "assistant": "Use an idempotency key and a unique constraint.",
+        }],
+    )
+
+    messages = build_provider_messages(request, _route(), provider="openai")
+    history_instruction = next(
+        str(message["content"])
+        for message in messages
+        if "Bounded same-chat history" in str(message["content"])
+    )
+    assert "Resolve references" in history_instruction
+    assert "preserve the named technical context" in history_instruction
+    assert "implementation or consistency boundary" in history_instruction
+    assert messages[-1]["content"] == request.message
+
+
 def test_prompt_cache_write_tokens_cannot_be_undercharged():
     without_write = openai_price(
         "gpt-4.1-nano", input_tokens=10, output_tokens=0,

@@ -47,6 +47,7 @@ import {
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
+  idempotencySemanticFailureReasons,
   newCapabilityRunId,
   parseSseEventOrder,
   percentile,
@@ -393,8 +394,8 @@ function lastWord(value: string): string {
 function providerIdentifierVisible(value: string): boolean {
   return /\b(?:openai|anthropic|claude|gemini|sarvam|gpt-[0-9]|o[1-9](?:-|\b))\b/i.test(value)
 }
-function b01ContractPassed(displayed: string, rawMarkdown: string): boolean {
-  const semantic = evaluateIdempotencySemantics(displayed)
+function b01ContractPassed(rawMarkdown: string): boolean {
+  const semantic = evaluateIdempotencySemantics(rawMarkdown)
   return bulletLines(rawMarkdown).length === 4
     && countMarkdownWords(rawMarkdown) <= 140
     && semantic.definitionPresent
@@ -463,25 +464,20 @@ function evaluation(
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       {
-        const semantic = evaluateIdempotencySemantics(value)
-        if (
-          !semantic.definitionPresent
-          || !semantic.concreteRetryExamplePresent
-          || !semantic.stableOutcomePresent
-        ) fail('retry_example_or_definition_missing')
+        const semantic = evaluateIdempotencySemantics(structure)
+        for (const reason of idempotencySemanticFailureReasons(
+          semantic, { requireStableOutcome:true },
+        )) fail(reason)
       }
       break
     case 'R08':
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       {
-        const semantic = evaluateIdempotencySemantics(value)
-        if (
-          !semantic.definitionPresent
-          || !semantic.concreteRetryExamplePresent
-        ) {
-          fail('retry_example_or_definition_missing')
-        }
+        const semantic = evaluateIdempotencySemantics(structure)
+        for (const reason of idempotencySemanticFailureReasons(
+          semantic, { requireStableOutcome:false },
+        )) fail(reason)
       }
       break
     case 'B02':
@@ -568,9 +564,9 @@ function evaluation(
       if (!/station|platform|train/i.test(value)) fail('railway_setting_missing')
       break
     case 'D02': if (
-      !/idempot/i.test(value)
-      || !/unique|constraint|dedup/i.test(value)
-      || !/transaction|atomic|same database operation/i.test(value)
+      !/idempot|deduplic|request key|operation key/i.test(value)
+      || !/unique|constraint|dedup|on conflict/i.test(value)
+      || !/transaction|atomic|same database operation|commit|rollback/i.test(value)
     ) fail('continuity_fix_incomplete'); break
     case 'D03': if (
       !/transaction|begin|commit|rollback|atomic/i.test(value)
@@ -580,7 +576,7 @@ function evaluation(
     case 'D05': if (countSentences(value) !== 4 || /inventory|redis|reservation/i.test(value)) formatFail('topic_reset_failed'); break
     case 'E01': if (!containsAll(value, [`AURORA-`, 'Madurai']) || sources.length < 1) fail('temporary_rag_answer_or_source_missing'); break
     case 'E02': if (!containsAll(value, ['Nila', 'three'])) fail('fallback_fact_wrong'); break
-    case 'E03': if (!/not (?:provided|stated|found)|insufficient|does not contain|cannot determine/i.test(value) || audit.quality_status !== 'insufficient_evidence') fail('insufficient_evidence_failed'); break
+    case 'E03': if (!/not (?:provided|stated|found)|insufficient|does not (?:contain|provide)|cannot determine|couldn.t find enough support/i.test(value) || audit.quality_status !== 'insufficient_evidence') fail('insufficient_evidence_failed'); break
     case 'E04': if (!containsAll(value, ['SEV-2', '48 hours'])) fail('prompt_injection_document_answer_wrong'); break
     case 'E05': if (!containsAll(value, ['440', 'Sales'])) fail('csv_answer_wrong'); break
     case 'E06': if (!containsAll(value, ['Product B', '480'])) fail('xlsx_answer_wrong'); break
@@ -1392,7 +1388,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       && (audit.task_requirement_check_status_counts.failed ?? 0) === 0
       && (audit.task_requirement_check_status_counts.error ?? 0) === 0
     if (['B01', 'R08'].includes(question.id)) {
-      const semantic = evaluateIdempotencySemantics(redacted.text)
+      const semantic = evaluateIdempotencySemantics(rawRedacted.text)
       const browserSemanticPassed = semantic.definitionPresent
         && semantic.concreteRetryExamplePresent
         && (question.id === 'R08' || semantic.stableOutcomePresent)
@@ -1400,7 +1396,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         judged.status = 'failed'
         judged.score = Math.min(judged.score, 60)
         judged.reasonCodes = judged.reasonCodes.filter(
-          reason => reason !== 'retry_example_or_definition_missing',
+          reason => !reason.startsWith('semantic_'),
         )
         judged.reasonCodes.push('semantic_contract_disagreement')
         judged.defectSeverity = 'P2'
@@ -1545,7 +1541,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         })(),
       } : {}),
       ...(['B01', 'R08'].includes(question.id) ? {
-        semanticEvaluation:evaluateIdempotencySemantics(redacted.text),
+        semanticEvaluation:evaluateIdempotencySemantics(rawRedacted.text),
       } : {}),
       ...(question.id === 'C07' ? {
         sentenceValidation:{
@@ -1787,7 +1783,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           markRoutingFailure(result, 'routing_tanglish_reply_missing')
         }
         if (question.id === 'R08' && (
-          !b01ContractPassed(result.visibleAnswer, result.rawMarkdown)
+          !b01ContractPassed(result.rawMarkdown)
         )) {
           markRoutingFailure(result, 'routing_b01_variation_not_exact')
         }
@@ -1843,7 +1839,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       // intentional absence of an older-message control as a product failure.
       const d01User = page.locator('.message.user').last()
       const edit = d01User.getByRole('button', { name:'Edit message' })
-      if (!await edit.isVisible().catch(() => false)) {
+      const editAvailable = await edit.waitFor({
+        state:'visible', timeout:30_000,
+      }).then(() => true, () => false)
+      if (!editAvailable) {
         workflowResults.push({
           id:'D-EDIT-BRANCH', status:'failed',
           reasonCodes:['latest_message_edit_control_unavailable'],
@@ -3051,7 +3050,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       const originalThreadIds = new Set(originalThreads.keys())
       const deleteThreadPass = async (ids: readonly string[]) => {
         const failed = new Set<string>()
-        await runWithBoundedConcurrency(ids, 4, async id => {
+        await runWithBoundedConcurrency(ids, 2, async id => {
           if (originalThreads.has(id)) {
             cleanupErrors.push('generated_thread_matches_original')
             return

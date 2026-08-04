@@ -225,6 +225,55 @@ it('keeps the authoritative SSE thread for follow-ups, supports selection, and c
   expect(vi.mocked(streamChat).mock.calls[3][1]).not.toHaveProperty('thread_id')
 })
 
+it('keeps a verified-buffered assistant visible and refreshes the persisted prompt for editing', async () => {
+  const editableBootstrap = {
+    ...bootstrap,
+    features:{ ...bootstrap.features, web_message_edit:true },
+  }
+  const persistedUser = {
+    id:'persisted-user', thread_id:'new-thread', role:'user' as const,
+    content:'Long architecture request', request_id:'request-editable',
+    tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0,
+    usage_source:null, charge_micros:0, status:'complete',
+    created_at:new Date().toISOString(), input_mode:'text' as const,
+    voice_turn_id:null, reply_language:'en' as const,
+  }
+  const persistedAssistant = {
+    ...persistedUser, id:'persisted-assistant', role:'assistant' as const,
+    content:'Complete architecture answer.', tier:'standard' as const,
+    input_tokens:20, output_tokens:30, usage_source:'actual' as const,
+  }
+  vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return editableBootstrap as never
+    if (path.includes('/new-thread/messages')) {
+      return { items:[persistedUser, persistedAssistant] } as never
+    }
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(streamChat).mockReset().mockImplementation(async (
+    _user, _payload, onEvent,
+  ) => {
+    onEvent({ event:'thread', data:{ thread_id:'new-thread' } })
+    await Promise.resolve()
+    onEvent({ event:'delta', data:{ text:'Complete architecture answer.' } })
+    onEvent({ event:'done', data:{
+      message_id:'persisted-assistant', thread_id:'new-thread',
+    } })
+  })
+  render(<ChatPage />)
+  await userEvent.type(await screen.findByRole('textbox', {
+    name:'Message Swico',
+  }), 'Long architecture request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  expect(await screen.findByText('Complete architecture answer.'))
+    .toBeInTheDocument()
+  expect(await screen.findByRole('button', { name:'Edit message' }))
+    .toBeEnabled()
+})
+
 it('regenerates a completed answer with the existing backend contract', async () => {
   const thread = {
     id:'regen-thread', title:'Regeneration', archived_at:null,
@@ -375,6 +424,40 @@ it('turns a 50000-character paste into a virtual attachment without sending it i
   expect(payload.message).toMatch(/^Analyze the attached pasted text/)
   expect(payload.message.length).toBeLessThan(200)
   expect(payload.attachment_ids).toEqual(['virtual-50000'])
+})
+
+it('uses a bounded trailing Question line as the virtual-text retrieval query', async () => {
+  mockApi()
+  const longBootstrap = {
+    ...bootstrap,
+    features:{ ...bootstrap.features, web_long_input:true },
+    uploads:{
+      ...bootstrap.uploads, long_input_enabled:true,
+      long_input_inline_threshold_chars:12000, long_input_max_chars:64000,
+    },
+  }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return longBootstrap as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  vi.mocked(uploadVirtualText).mockResolvedValue({
+    ...uploaded, id:'virtual-question', name:'Pasted text — questions.txt',
+    size_bytes:50_000,
+  })
+  render(<ChatPage />)
+  const question = 'What exact value follows FINAL ACCEPTANCE MARKER?'
+  const paste = `${'x'.repeat(49_000)}\nQuestion: ${question}\nTAIL-EXAMPLE`
+  fireEvent.change(await screen.findByRole('textbox', {
+    name:'Message Swico',
+  }), { target:{ value:paste } })
+  await userEvent.selectOptions(screen.getByLabelText('Large text action'), 'ask_questions')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({
+    message:question,
+    attachment_ids:['virtual-question'],
+  })
 })
 
 it('saves a selected mode and refreshes the tier-sensitive token estimate', async () => {

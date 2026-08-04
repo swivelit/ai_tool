@@ -4,6 +4,7 @@ export type ApiResult<T> = {
   status: number
   data: T | null
   contentType?: string | null
+  retryAfterSeconds?: number
 }
 
 export type DeployedApiRequestOptions = { timeoutMilliseconds?: number }
@@ -19,6 +20,13 @@ export interface DeployedApi {
 
 const DEFAULT_DEPLOYED_API_TIMEOUT_MS = 30_000
 const MAX_BOUNDED_OPERATION_TIMEOUT_MS = 3 * 60 * 60_000
+
+function boundedRetryAfterSeconds(value: string | undefined): number | undefined {
+  if (!value || !/^\d{1,4}$/u.test(value.trim())) return undefined
+  const seconds = Number(value.trim())
+  return Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300
+    ? seconds : undefined
+}
 
 function validatedTimeout(
   value: number | undefined,
@@ -202,30 +210,36 @@ export class AuthenticatedDeployedApi implements DeployedApi {
       'deployed_api_timeout',
     )
     const status = response.status()
+    const responseHeaders = response.headers()
+    const retryAfterSeconds = boundedRetryAfterSeconds(
+      responseHeaders['retry-after'],
+    )
+    const timing = retryAfterSeconds === undefined ? {} : { retryAfterSeconds }
     if (status === 204 || status === 205) {
-      return { status, data:null, contentType:null }
+      return { status, data:null, contentType:null, ...timing }
     }
-    const contentType = response.headers()['content-type'] ?? ''
+    const contentType = responseHeaders['content-type'] ?? ''
     if (!contentType.includes('application/json')) {
-      return { status, data:null, contentType:contentType || null }
+      return { status, data:null, contentType:contentType || null, ...timing }
     }
     const bodyBytes = await withBoundedTimeout(
       () => response.body(), Math.max(1, deadline - Date.now()),
       'deployed_api_timeout',
     )
     if (bodyBytes.length === 0) return {
-      status, data:null, contentType:contentType || null,
+      status, data:null, contentType:contentType || null, ...timing,
     }
     try {
       return {
         status,
         data:JSON.parse(bodyBytes.toString('utf8')) as T,
         contentType:contentType || null,
+        ...timing,
       }
     } catch {
       // Optional or malformed JSON must not turn an observed HTTP status into
       // a transport failure. Callers still receive and validate non-2xx status.
-      return { status, data:null, contentType:contentType || null }
+      return { status, data:null, contentType:contentType || null, ...timing }
     }
   }
 
@@ -438,8 +452,9 @@ export class ThreadCleanupError extends Error {
   }
 }
 
-const THREAD_DELETE_MAX_ATTEMPTS = 4
+const THREAD_DELETE_MAX_ATTEMPTS = 6
 const THREAD_DELETE_BACKOFF_MS = [100, 250, 500]
+const THREAD_DELETE_DEFAULT_RETRY_AFTER_SECONDS = 60
 
 function threadCleanupFailure(error: unknown): ThreadCleanupError {
   return new ThreadCleanupError(
@@ -454,6 +469,10 @@ export async function deleteGeneratedThread(
   generatedThreadId: string,
   originalThreadIds: ReadonlySet<string>,
   knownGeneratedThreadIds: ReadonlySet<string> = new Set([generatedThreadId]),
+  options: {
+    wait?: (milliseconds: number) => Promise<void>
+    defaultRetryAfterSeconds?: number
+  } = {},
 ): Promise<void> {
   if (
     originalThreadIds.has(generatedThreadId)
@@ -462,6 +481,9 @@ export async function deleteGeneratedThread(
     throw new ThreadCleanupError('thread_delete_http_failure')
   }
   const path = `/api/web/threads/${encodeURIComponent(generatedThreadId)}`
+  const wait = options.wait ?? (milliseconds => new Promise(
+    resolveWait => setTimeout(resolveWait, milliseconds),
+  ))
   for (let attempt = 0; attempt < THREAD_DELETE_MAX_ATTEMPTS; attempt += 1) {
     let deleted: ApiResult<never>
     try {
@@ -470,8 +492,17 @@ export async function deleteGeneratedThread(
       throw threadCleanupFailure(error)
     }
     if (deleted.status === 204 || deleted.status === 404) break
+    if (deleted.status === 429 && attempt < THREAD_DELETE_MAX_ATTEMPTS - 1) {
+      const fallback = Math.min(300, Math.max(
+        1, Math.floor(
+          options.defaultRetryAfterSeconds
+          ?? THREAD_DELETE_DEFAULT_RETRY_AFTER_SECONDS,
+        ),
+      ))
+      await wait(1_000 * (deleted.retryAfterSeconds ?? fallback))
+      continue
+    }
     const transient = deleted.status === 409
-      || deleted.status === 429
       || deleted.status >= 500
     if (!transient || attempt === THREAD_DELETE_MAX_ATTEMPTS - 1) {
       throw new ThreadCleanupError(
@@ -480,9 +511,9 @@ export async function deleteGeneratedThread(
           : 'thread_delete_http_failure',
       )
     }
-    await new Promise(resolveWait => setTimeout(
-      resolveWait, THREAD_DELETE_BACKOFF_MS[attempt],
-    ))
+    await wait(THREAD_DELETE_BACKOFF_MS[Math.min(
+      attempt, THREAD_DELETE_BACKOFF_MS.length - 1,
+    )])
   }
   let verified: ApiResult<unknown>
   try {

@@ -72,6 +72,9 @@ from ..web_ai.generation.output_format import (
     autoclose_unbalanced_fence,
     fence_integrity_quality_check,
 )
+from ..web_ai.generation.repository_grounding import (
+    strip_ungrounded_repository_path_claims,
+)
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
     extract_task_requirements, splice_architecture_section_repair,
@@ -3022,6 +3025,18 @@ def _missing_requested_private_identifier(
     return _EXACT_PRIVATE_IDENTIFIER.search(evidence_text) is None
 
 
+def _insufficient_private_source_text(reply_language: str) -> str:
+    if reply_language == "ta":
+        return (
+            "பதிவேற்றிய ஆவணங்கள் இந்தத் தகவலை வழங்கவில்லை; எனவே கிடைத்த "
+            "ஆதாரத்திலிருந்து இதைத் தீர்மானிக்க முடியாது."
+        )
+    return (
+        "The attached sources do not provide this information, so I cannot "
+        "determine it from the available evidence."
+    )
+
+
 def _execute_phase2_retrieval(
     prepared: PreparedWebTurn,
     *,
@@ -3176,14 +3191,8 @@ def _execute_phase2_retrieval(
             )
         prepared.retrieval_context = pack
         if pack.retrieval_status == "insufficient":
-            insufficient_text = (
-                "பதிவேற்றிய ஆவணங்களில் இந்தக் கேள்விக்குப் போதுமான ஆதாரம் "
-                "கிடைக்கவில்லை."
-                if prepared.reply_language == "ta"
-                else (
-                    "I couldn’t find enough support in the available private sources "
-                    "to answer that reliably."
-                )
+            insufficient_text = _insufficient_private_source_text(
+                prepared.reply_language
             )
             prepared.precomputed_response = AIProviderResponse(
                 text=insufficient_text,
@@ -3291,12 +3300,8 @@ def _execute_phase2_retrieval(
         prepared.retrieval_context = pack
         if pack.retrieval_status == "insufficient":
             prepared.precomputed_response = AIProviderResponse(
-                text=(
-                    "பதிவேற்றிய ஆவணங்களில் இந்தக் கேள்விக்குப் போதுமான ஆதாரம் "
-                    "கிடைக்கவில்லை."
-                    if prepared.reply_language == "ta" else
-                    "I couldn’t find enough support in the available private "
-                    "sources to answer that reliably."
+                text=_insufficient_private_source_text(
+                    prepared.reply_language
                 ),
                 provider="backend_tool",
                 model=None,
@@ -3345,9 +3350,8 @@ def _execute_phase2_retrieval(
             )
         except Exception:
             prepared.precomputed_response = AIProviderResponse(
-                text=(
-                    "I couldn’t find enough support in the available private "
-                    "sources to answer that reliably."
+                text=_insufficient_private_source_text(
+                    prepared.reply_language
                 ),
                 provider="backend_tool",
                 model=None,
@@ -3833,6 +3837,9 @@ def execute_web_turn(
                         prepared.repository_contract is not None
                     ),
                 ),
+                repository_file_paths=tuple(
+                    item.path for item in prepared.repository_snapshot.files
+                ) if prepared.repository_snapshot is not None else (),
                 output_contract=output_contract,
                 task_requirements=task_requirements,
             )
@@ -4436,6 +4443,7 @@ def execute_web_turn(
                         attempt_number == 2
                         and output_contract.strict_visible_format
                     ),
+                    repository_file_paths=guard_context.repository_file_paths,
                 )
                 repair_route = replace(
                     prepared.route,
@@ -4699,6 +4707,23 @@ def execute_web_turn(
                     result = replace(result, checks=result.checks + (trace,))
                 return result
 
+            def finalize_repository_grounding(
+                answer: str, prior: AnswerQualityResult | None,
+            ) -> tuple[str, AnswerQualityResult | None]:
+                if not guard_context.repository_context_used:
+                    return answer, prior
+                cleaned, changed = strip_ungrounded_repository_path_claims(
+                    answer, guard_context.repository_file_paths,
+                )
+                if not changed:
+                    return answer, prior
+                return cleaned, guard.check(
+                    cleaned,
+                    guard_context,
+                    model_verifier=None,
+                    repair_attempted=bool(prior and prior.repair_attempted),
+                )
+
             try:
                 generated = VerifiedGenerator(stream_policy).generate(
                     generate_draft=generate_draft,
@@ -4721,6 +4746,7 @@ def execute_web_turn(
                         if stream_policy.mode == "verified_buffered" else None
                     ),
                     can_second_repair=can_second_strict_format_repair,
+                    finalize=finalize_repository_grounding,
                 )
             except GenerationIncomplete as exc:
                 # A strict visible contract may consume its shared provider budget

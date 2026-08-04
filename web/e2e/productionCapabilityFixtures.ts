@@ -202,7 +202,7 @@ export function longPastedText(
 ): string {
   const safetyMargin = 512
   const targetLength = maxCharacters - safetyMargin
-  const tail = `\nBenchmark question: ${question}\nFINAL ACCEPTANCE MARKER: TAIL-${runId}\n`
+  const tail = `\nQuestion: ${question}\nFINAL ACCEPTANCE MARKER: TAIL-${runId}\n`
   if (targetLength <= inlineThreshold || tail.length >= targetLength) {
     throw new Error('long_pasted_text_bounds_invalid')
   }

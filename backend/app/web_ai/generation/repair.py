@@ -59,6 +59,7 @@ def build_repair_request(
     max_output_tokens: int = 2400,
     attempt_number: int = 1,
     strict_format_correction: bool = False,
+    repository_file_paths: tuple[str, ...] = (),
 ) -> RepairContract:
     attempt_number = max(1, min(2, int(attempt_number)))
 
@@ -73,6 +74,7 @@ def build_repair_request(
             "semantic_mechanism_present",
             "stable_side_effect_outcome_present",
             "validator_version",
+            "cited_path_count", "invalid_path_count",
         }
         values = [
             f"{key}={value}"
@@ -136,6 +138,15 @@ def build_repair_request(
             "only the repaired final answer as a compact, complete replacement "
             "with no repair commentary."
         )
+    if any(
+        check.check_type == "repository_path_grounding"
+        for check in failed_checks
+    ):
+        system += (
+            " Cite or discuss only files in the supplied indexed-file list. "
+            "If the requested file is absent, say explicitly that it was not "
+            "found and do not invent its behavior or importers."
+        )
     exact_count_failed = any(
         check.check_type == "output_contract_word_count"
         and check.status in {"failed", "error"}
@@ -198,6 +209,11 @@ def build_repair_request(
         semantic_instruction = semantic_contract.prompt_instruction(
             max_output_tokens
         )
+    repository_context = (
+        "\n\nIndexed repository files (authoritative for file existence):\n"
+        + "\n".join(f"- {path}" for path in repository_file_paths[:200])[:6000]
+        if repository_file_paths else ""
+    )
     user = (
         f"Minimum task contract:\n{task_contract_context}\n\n"
         f"{typed_contract}\n\n"
@@ -205,6 +221,7 @@ def build_repair_request(
         f"Failed checks:\n{failures}\n\n"
         f"Current answer (bounded context):\n{bounded_answer}\n\n"
         f"Required evidence:\n{evidence}"
+        f"{repository_context}"
     )
     request = AIRequest(
         user_id=user_id,
