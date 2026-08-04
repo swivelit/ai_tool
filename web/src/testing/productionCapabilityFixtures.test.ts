@@ -44,12 +44,16 @@ describe('production capability fixtures', () => {
     const directory = mkdtempSync(resolve(tmpdir(), 'swico-capability-fixtures-'))
     try {
       const fixtures = [
-        ['.pdf', projectAuroraPdf('PARSER-RUN'), 'Nila'],
-        ['.xlsx', revenueXlsx(), 'Product | Revenue | Cost'],
-        ['.docx', retentionDocx(), 'Policy Alpha retention'],
-        ['.pptx', riskPptx(), 'dual-region failover'],
+        ['.pdf', projectAuroraPdf('PARSER-RUN'), ['Nila']],
+        ['.xlsx', revenueXlsx(), ['Product | Revenue | Cost']],
+        ['.docx', retentionDocx(), [
+          'Policy Alpha retention: 30 days',
+          'Policy Beta retention: 90 days',
+          'legal-hold exception: deletion is suspended until the hold is released',
+        ]],
+        ['.pptx', riskPptx(), ['dual-region failover']],
       ] as const
-      for (const [extension, buffer, expected] of fixtures) {
+      for (const [extension, buffer, expectedValues] of fixtures) {
         const path = resolve(directory, `fixture${extension}`)
         writeFileSync(path, buffer)
         const check = spawnSync(backendPython, [
@@ -64,7 +68,9 @@ describe('production capability fixtures', () => {
           env:{ ...process.env, PYTHONDONTWRITEBYTECODE:'1' },
         })
         expect(check.status, check.stderr).toBe(0)
-        expect(check.stdout).toContain(expected)
+        for (const expected of expectedValues) {
+          expect(check.stdout).toContain(expected)
+        }
       }
     } finally {
       rmSync(directory, { recursive:true, force:true })

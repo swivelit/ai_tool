@@ -10,7 +10,7 @@ import logging
 import os
 import re
 from threading import Lock
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Callable, Literal
 
 from sqlalchemy import text as sql_text
@@ -49,7 +49,7 @@ from ..job_queue import (
 )
 from ..models import (
     UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
-    WebMemoryFact, WebUsageStage,
+    WebCodeRepository, WebMemoryFact, WebUsageStage,
 )
 from ..web_ai.evidence.models import EvidencePack
 from ..web_ai.evidence.pack_builder import cap_evidence_pack, evidence_prompt
@@ -124,7 +124,7 @@ from ..web_ai.triage import (
 )
 from ..openai_tracked import OpenAIBudgetExceededError, tracked_embedding
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
-from ..time_utils import utc_now
+from ..time_utils import ensure_utc, utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
 from .document_extraction import (
     image_max_count, image_uploads_enabled, is_image_extension,
@@ -246,6 +246,63 @@ class AttachmentRequestError(RuntimeError):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+def _load_repository_snapshot_for_turn(
+    session: Session,
+    *,
+    owner_user_id: int,
+    repository_id: str,
+) -> EphemeralRepositorySnapshot:
+    """Resolve a live repository without invalidating it on a cache blip."""
+
+    row = session.exec(select(WebCodeRepository).where(
+        WebCodeRepository.owner_user_id == owner_user_id,
+        WebCodeRepository.repository_id == repository_id,
+    ).order_by(WebCodeRepository.updated_at.desc())).first()
+    if row is None:
+        raise AttachmentRequestError(
+            "repository_not_found", "Repository snapshot not found.", 404,
+        )
+    if row.status == "expired" or ensure_utc(row.expires_at) <= ensure_utc(utc_now()):
+        invalidate_repository_index(
+            session,
+            owner_user_id=owner_user_id,
+            repository_id=repository_id,
+        )
+        raise AttachmentRequestError(
+            "repository_expired",
+            "The temporary repository has expired. Upload it again.",
+            404,
+        )
+    if row.status != "ready":
+        raise AttachmentRequestError(
+            "repository_not_found", "Repository snapshot not found.", 404,
+        )
+
+    last_error: UploadStoreUnavailable | None = None
+    for attempt in range(2):
+        try:
+            snapshot = get_repository_snapshot(
+                get_upload_store(),
+                owner_user_id=owner_user_id,
+                repository_id=repository_id,
+            )
+            if snapshot is not None:
+                return snapshot
+        except UploadStoreUnavailable as exc:
+            last_error = exc
+        if attempt == 0:
+            sleep(0.05)
+
+    error = AttachmentRequestError(
+        "repository_cache_unavailable",
+        "Temporary repository context is unavailable. Try again shortly.",
+        503,
+    )
+    if last_error is not None:
+        raise error from last_error
+    raise error
 
 
 class EditRequestError(RuntimeError):
@@ -1387,30 +1444,11 @@ def prepare_web_turn(
                     "Temporary repository context is unavailable.",
                     503,
                 )
-            try:
-                repository_snapshot = get_repository_snapshot(
-                    get_upload_store(),
-                    owner_user_id=user_id,
-                    repository_id=repository_id,
-                )
-            except UploadStoreUnavailable as exc:
-                raise AttachmentRequestError(
-                    "repository_cache_unavailable",
-                    "Temporary repository context is unavailable.",
-                    503,
-                ) from exc
-            if repository_snapshot is None:
-                invalidate_repository_index(
-                    session,
-                    owner_user_id=user_id,
-                    repository_id=repository_id,
-                )
-                session.commit()
-                raise AttachmentRequestError(
-                    "repository_not_found",
-                    "Repository snapshot not found or expired.",
-                    404,
-                )
+            repository_snapshot = _load_repository_snapshot_for_turn(
+                session,
+                owner_user_id=user_id,
+                repository_id=repository_id,
+            )
             repository_index = build_repository_index(
                 repository_snapshot.files
             )

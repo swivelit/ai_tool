@@ -88,6 +88,10 @@ export function ChatPage() {
   const cancellationReadyRef = useRef(false)
   const queuedStopRef = useRef(false)
   const cancellationSentRef = useRef(false)
+  const pendingRepositoryThreadRebindRef = useRef<{
+    from: string | null
+    to: string
+  } | null>(null)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
@@ -95,11 +99,26 @@ export function ChatPage() {
     setRepository(value => value?.owner_uid === userUid ? value : null)
   }, [userUid])
   useEffect(() => {
-    setRepository(value => {
-      if (!value || value.thread_id === active) return value
-      return null
-    })
-  }, [active])
+    if (!repository) return
+    const pending = pendingRepositoryThreadRebindRef.current
+    if (repository.thread_id === active) {
+      if (pending?.to === active) pendingRepositoryThreadRebindRef.current = null
+      return
+    }
+    if (
+      pending
+      && pending.to === active
+      && repository.thread_id === pending.from
+    ) {
+      setRepository(value => value ? { ...value, thread_id:pending.to } : value)
+      pendingRepositoryThreadRebindRef.current = null
+      return
+    }
+    setRepository(null)
+    setError(
+      'The active code repository was detached from this chat. Upload it again to use repository context.',
+    )
+  }, [active, repository])
 
   const loadThreads = useCallback(async (reset = true) => {
     if (!user) return
@@ -280,8 +299,10 @@ export function ChatPage() {
     if (repository?.status !== 'ready' || !repository.expires_at) return
     const updateExpiry = () => {
       if (new Date(repository.expires_at!).getTime() <= Date.now()) {
-        setRepository(value => value?.id === repository.id
-          ? { ...value, status:'expired' } : value)
+        setRepository(value => value?.id === repository.id ? null : value)
+        setError(
+          'The active code repository expired and was detached. Upload it again to continue using repository context.',
+        )
       }
     }
     updateExpiry()
@@ -439,6 +460,10 @@ export function ChatPage() {
             const stillViewingOrigin = activeRef.current === scope.initialThreadId
             scope.threadId = id
             if (stillViewingOrigin) {
+              pendingRepositoryThreadRebindRef.current = {
+                from:scope.initialThreadId,
+                to:id,
+              }
               setRepository(value => (
                 value
                 && value.owner_uid === userUid
@@ -514,15 +539,18 @@ export function ChatPage() {
         if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
-        if (code === 'repository_expired' || code === 'repository_unavailable') {
-          setRepository(value => value ? { ...value, status:'expired' } : value)
-        }
+        const repositoryDetached = [
+          'repository_expired', 'repository_not_found', 'repository_unavailable',
+        ].includes(code)
+        if (repositoryDetached) setRepository(null)
         if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') {
           const body = caught.body as { error?: { credit_bucket?: string } } | undefined
           setBillingBucket(body?.error?.credit_bucket === 'voice' ? 'voice' : 'chat'); setBilling(true)
         }
-        setError(chatErrorMessage(caught, !navigator.onLine))
-        if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
+        setError(repositoryDetached
+          ? 'The active code repository is no longer attached. Upload it again to continue using repository context.'
+          : chatErrorMessage(caught, !navigator.onLine))
+        if (!(caught instanceof SSEStreamError) && !repositoryDetached) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
       if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
       if (requestOptions?.continueMessageId && threadId) {

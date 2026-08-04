@@ -447,6 +447,29 @@ test('Tamil capability validation uses persisted Markdown for count and script',
   )
 })
 
+test('capability failures retain bounded pre-reservation send diagnostics', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain('send_http_status:item.sendHttpStatus')
+  expect(spec).toContain('send_error_code:item.sendErrorCode')
+  expect(spec).toContain('send_error_message:item.sendErrorMessage')
+  expect(spec).toContain('send_sse_event_received:item.sendSseEventReceived')
+  expect(spec).toContain("safeSendErrorDiagnostics(response.status(), errorBody)")
+  expect(spec).toContain("'[REDACTED POTENTIAL SECRET]'")
+})
+
+test('repository capability waits for a ready composer signal before G questions', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const wait = spec.indexOf('await waitForRepositoryReady(page)')
+  const questions = spec.indexOf('for (const question of REPOSITORY_QUESTIONS)', wait)
+  expect(wait).toBeGreaterThan(0)
+  expect(questions).toBeGreaterThan(wait)
+  expect(spec).toContain("'repository_readiness_timeout'")
+})
+
 test('cancellation waits for stream acceptance and stop readiness before audit polling', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',

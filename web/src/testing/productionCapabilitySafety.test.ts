@@ -122,6 +122,9 @@ describe('production capability safety', () => {
     expect(remainingCapabilitySseBodyTimeoutMs(
       deadline, started + 90_000,
     )).toBe(270_000)
+    expect(remainingCapabilitySseBodyTimeoutMs(
+      deadline, deadline - 1_000,
+    )).toBe(90_000)
   })
 
   it('reports acceptance failure after successful deployment parity', () => {

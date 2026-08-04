@@ -252,6 +252,10 @@ type QuestionResult = {
   status: 'passed' | 'failed' | 'skipped' | 'not_run'
   selectedTier: CapabilityTier | 'not_run'
   requestId: string | null
+  sendHttpStatus: number | null
+  sendErrorCode: string | null
+  sendErrorMessage: string | null
+  sendSseEventReceived: boolean
   threadId: string | null
   startedAtUtc: string | null
   endedAtUtc: string | null
@@ -348,6 +352,47 @@ type QuestionResult = {
     observedSentenceCount: number
     containsTamilScript: boolean
     validatorVersion: string
+  }
+}
+
+type CapabilitySendDiagnostics = {
+  httpStatus: number | null
+  errorCode: string | null
+  errorMessage: string | null
+  sseEventReceived: boolean
+}
+
+function safeSendErrorDiagnostics(
+  status: number | null,
+  rawBody: string,
+): CapabilitySendDiagnostics {
+  let errorCode: string | null = null
+  let errorMessage: string | null = null
+  try {
+    const parsed = JSON.parse(rawBody) as {
+      error?: { code?: unknown; message?: unknown }
+      detail?: unknown
+    }
+    if (typeof parsed.error?.code === 'string') {
+      errorCode = parsed.error.code.replace(/[^a-z0-9_-]/gi, '').slice(0, 100) || null
+    }
+    const candidate = typeof parsed.error?.message === 'string'
+      ? parsed.error.message
+      : typeof parsed.detail === 'string' ? parsed.detail : null
+    if (candidate) {
+      const redacted = redactPotentialSecrets(candidate.slice(0, 240))
+      errorMessage = redacted.potentialSecret
+        ? '[REDACTED POTENTIAL SECRET]'
+        : redacted.text.replace(/[\r\n]+/g, ' ').slice(0, 240)
+    }
+  } catch {
+    // A malformed/non-JSON error body is intentionally not copied into artifacts.
+  }
+  return {
+    httpStatus:status,
+    errorCode,
+    errorMessage,
+    sseEventReceived:parseSseEventOrder(rawBody).length > 0,
   }
 }
 
@@ -906,6 +951,14 @@ async function uploadRepositoryThroughComposer(
   return body.id
 }
 
+async function waitForRepositoryReady(page: Page): Promise<void> {
+  await expect(page.getByLabel('Active code repository').getByText(
+    'Repository ready', { exact:true },
+  )).toBeVisible({ timeout:90_000 }).catch(() => {
+    throw new Error('repository_readiness_timeout')
+  })
+}
+
 function skippedResult(
   question: CapabilityQuestion,
   backendRelease: string,
@@ -915,6 +968,8 @@ function skippedResult(
   return {
     scenarioId:scenarioId(question), questionId:question.id, category:question.category,
     status, selectedTier:question.tier ?? 'not_run', requestId:null, threadId:null,
+    sendHttpStatus:null, sendErrorCode:null, sendErrorMessage:null,
+    sendSseEventReceived:false,
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
     answerWords:0,
@@ -1082,6 +1137,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     reason_code: string
     request_id: string | null
     error_class: string
+    send_http_status: number | null
+    send_error_code: string | null
+    send_error_message: string | null
+    send_sse_event_received: boolean
     recovery_reason_code?: string
   }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
@@ -1176,6 +1235,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       composerText?: string
       virtualText?: boolean
       onRequestId?: (requestId: string) => void
+      onSendDiagnostics?: (diagnostics: CapabilitySendDiagnostics) => void
     } = {},
   ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
@@ -1253,12 +1313,27 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const response = await responsePromise.catch(() => {
       throw new Error('chat_response_not_observed')
     })
+    options.onSendDiagnostics?.({
+      httpStatus:response.status(), errorCode:null, errorMessage:null,
+      sseEventReceived:false,
+    })
     // Drain the SSE response immediately, but observe the user-visible and
     // authoritative terminal states before consuming the complete body. A
     // verified long-form response may legitimately take much longer than the
     // short JSON-response timeout used elsewhere in this harness.
     const sseBodyObserver = observePlaywrightPromise(response.body())
     void sseBodyObserver.catch(() => undefined)
+    if (!response.ok()) {
+      const errorBody = await withBoundedTimeout(
+        () => sseBodyObserver,
+        Math.min(30_000, remaining(30_000)),
+        'response_body_timeout',
+      ).then(value => value.toString('utf8'), () => '')
+      options.onSendDiagnostics?.(
+        safeSendErrorDiagnostics(response.status(), errorBody),
+      )
+      throw new Error('assistant_ui_timeout')
+    }
     const auditObserver = observePlaywrightPromise(
       pollAudit(api, requestId, remaining(QUESTION_DEADLINE_MS)),
     )
@@ -1294,6 +1369,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     } catch {
       stepReasonCodes.push('response_body_timeout')
     }
+    const sendDiagnostics = response.ok()
+      ? {
+          httpStatus:response.status(), errorCode:null, errorMessage:null,
+          sseEventReceived:parseSseEventOrder(rawSse).length > 0,
+        }
+      : safeSendErrorDiagnostics(response.status(), rawSse)
+    options.onSendDiagnostics?.(sendDiagnostics)
     const terminalErrors = sseData(rawSse, 'error').map(
       value => String(value.code ?? 'sse_error').slice(0, 100),
     )
@@ -1477,6 +1559,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const result: QuestionResult = {
       scenarioId:scenarioId(question), questionId:question.id, category:question.category,
       ...judged, selectedTier:tier, requestId, threadId:threadId || null,
+      sendHttpStatus:sendDiagnostics.httpStatus,
+      sendErrorCode:sendDiagnostics.errorCode,
+      sendErrorMessage:sendDiagnostics.errorMessage,
+      sendSseEventReceived:sendDiagnostics.sseEventReceived,
       startedAtUtc, endedAtUtc, firstVisibleDeltaMs,
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
@@ -1590,10 +1676,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   ): Promise<QuestionResult> => {
     const activeScenarioId = scenarioId(materializeQuestion(source, runId))
     let capturedRequestId: string | null = null
+    let sendDiagnostics: CapabilitySendDiagnostics = {
+      httpStatus:null, errorCode:null, errorMessage:null,
+      sseEventReceived:false,
+    }
     try {
       const result = await executeQuestion(source, {
         ...options,
         onRequestId:requestId => { capturedRequestId = requestId },
+        onSendDiagnostics:value => { sendDiagnostics = value },
       })
       progress('question_complete', 'question', activeScenarioId, result.requestId)
       scheduleCheckpoint()
@@ -1601,7 +1692,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       return result
     } catch (error) {
       let recoveryReason: string | null = null
-      if (capturedRequestId && api) {
+      if (
+        capturedRequestId && api
+        && (sendDiagnostics.httpStatus === null
+          || (sendDiagnostics.httpStatus >= 200 && sendDiagnostics.httpStatus < 300))
+      ) {
         const terminalAudit = await pollAudit(
           api, capturedRequestId, 60_000,
         ).catch(() => null)
@@ -1651,6 +1746,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         request_id:capturedRequestId,
         error_class:error instanceof Error
           ? error.constructor.name : 'UnknownError',
+        send_http_status:sendDiagnostics.httpStatus,
+        send_error_code:sendDiagnostics.errorCode,
+        send_error_message:sendDiagnostics.errorMessage,
+        send_sse_event_received:sendDiagnostics.sseEventReceived,
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
@@ -1665,6 +1764,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           reasonCode,
         )
         failedResult.requestId = capturedRequestId
+        failedResult.sendHttpStatus = sendDiagnostics.httpStatus
+        failedResult.sendErrorCode = sendDiagnostics.errorCode
+        failedResult.sendErrorMessage = sendDiagnostics.errorMessage
+        failedResult.sendSseEventReceived = sendDiagnostics.sseEventReceived
         results.push(failedResult)
         return failedResult
       }
@@ -2123,6 +2226,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const id = await uploadRepositoryThroughComposer(page, runId, uploadPace)
     generatedRepositoryIds.add(id)
     createdRepositoryIds.add(id)
+    try {
+      await waitForRepositoryReady(page)
+    } catch {
+      for (const question of REPOSITORY_QUESTIONS) {
+        results.push(skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'failed',
+          'repository_readiness_timeout',
+        ))
+      }
+      return
+    }
     for (const question of REPOSITORY_QUESTIONS) await runQuestion({ ...question, freshThread:false })
   }
 
@@ -3211,6 +3325,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       scenarios:results.map(item => ({
         scenario_id:item.scenarioId, question_id:item.questionId, status:item.status,
         score:item.score, request_id:item.requestId, reason_codes:item.reasonCodes,
+        send_http_status:item.sendHttpStatus,
+        send_error_code:item.sendErrorCode,
+        send_error_message:item.sendErrorMessage,
+        send_sse_event_received:item.sendSseEventReceived,
         first_delta_ms:item.firstVisibleDeltaMs, total_ms:item.totalResponseMs,
         charged_micros:item.chargedMicros,
         cache_hit:item.cacheHit,

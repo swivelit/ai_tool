@@ -772,7 +772,139 @@ it('shows safe repository upload failure and expiry without leaking server detai
   )
   expect(document.body.textContent).not.toMatch(/SECRET_TOKEN|raw\/source\.py/)
   await choose('expired.zip')
-  expect(await screen.findByText('Repository expired')).toBeInTheDocument()
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'expired and was detached',
+  )
+  expect(screen.queryByLabelText('Active code repository')).not.toBeInTheDocument()
+})
+
+it('rebinds a fresh-chat repository before activating its SSE thread', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, _file, id) => repositorySnapshot(id),
+  )
+  vi.mocked(streamChat).mockImplementation(async (
+    _user, payload, onEvent,
+  ) => {
+    onEvent({ event:'thread', data:{ thread_id:'fresh-repository-thread' } })
+    onEvent({ event:'delta', data:{ text:'Repository answer.' } })
+    onEvent({ event:'done', data:{
+      message_id:`answer-${payload.request_id}`, truncated:false,
+    } })
+  })
+  const { container } = render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
+  await userEvent.click(screen.getByRole('menuitem', {
+    name:/Upload code repository/,
+  }))
+  await userEvent.upload(container.querySelector(
+    'input[aria-label="Upload code repository"]',
+  ) as HTMLInputElement, new File(['private'], 'fresh.zip', {
+    type:'application/zip',
+  }))
+  await screen.findByText('Repository ready')
+  const repositoryId = vi.mocked(uploadRepository).mock.calls[0][2]
+
+  const composer = screen.getByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'First repository question')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1))
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({
+    repository_id:repositoryId,
+  })
+  expect(vi.mocked(streamChat).mock.calls[0][1]).not.toHaveProperty('thread_id')
+  expect(await screen.findByText('Repository ready')).toBeInTheDocument()
+
+  await userEvent.type(composer, 'Second repository question')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({
+    repository_id:repositoryId,
+    thread_id:'fresh-repository-thread',
+  })
+  expect(screen.queryByText(/detached from this chat/i)).not.toBeInTheDocument()
+})
+
+it('clears an expired repository with a visible re-upload notice', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, _file, id) => repositorySnapshot(id),
+  )
+  vi.mocked(streamChat).mockRejectedValue(new ApiError(404, {
+    error:{ code:'repository_expired', message:'private server detail' },
+  }))
+  const { container } = render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
+  await userEvent.click(screen.getByRole('menuitem', {
+    name:/Upload code repository/,
+  }))
+  await userEvent.upload(container.querySelector(
+    'input[aria-label="Upload code repository"]',
+  ) as HTMLInputElement, new File(['private'], 'expired-on-send.zip', {
+    type:'application/zip',
+  }))
+  await screen.findByText('Repository ready')
+  await userEvent.type(
+    screen.getByRole('textbox', { name:'Message Swico' }),
+    'Read the repository',
+  )
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'no longer attached',
+  )
+  expect(screen.queryByLabelText('Active code repository')).not.toBeInTheDocument()
+  expect(document.body).not.toHaveTextContent('private server detail')
+})
+
+it('keeps a live repository attached across a transient cache error', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return repositoryBootstrap as never
+    if (path.startsWith('/api/web/threads')) {
+      return { items:[], has_more:false } as never
+    }
+    return {} as never
+  })
+  vi.mocked(uploadRepository).mockImplementation(
+    async (_user, _file, id) => repositorySnapshot(id),
+  )
+  vi.mocked(streamChat).mockRejectedValue(new ApiError(503, {
+    error:{ code:'repository_cache_unavailable' },
+  }))
+  const { container } = render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
+  await userEvent.click(screen.getByRole('menuitem', {
+    name:/Upload code repository/,
+  }))
+  await userEvent.upload(container.querySelector(
+    'input[aria-label="Upload code repository"]',
+  ) as HTMLInputElement, new File(['private'], 'temporary.zip', {
+    type:'application/zip',
+  }))
+  await screen.findByText('Repository ready')
+  await userEvent.type(
+    screen.getByRole('textbox', { name:'Message Swico' }),
+    'Read the repository',
+  )
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'temporarily unavailable',
+  )
+  expect(screen.getByText('Repository ready')).toBeInTheDocument()
 })
 
 it('clears repository state on logout and Firebase account change', async () => {

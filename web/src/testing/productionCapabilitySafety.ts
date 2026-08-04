@@ -45,7 +45,14 @@ export function remainingCapabilitySseBodyTimeoutMs(
   questionDeadlineMilliseconds: number,
   nowMilliseconds: number,
 ): number {
-  return Math.max(1, questionDeadlineMilliseconds - nowMilliseconds)
+  // Playwright can surface the terminal UI/audit before its streaming body
+  // promise finishes draining. Keep the ordinary six-minute question bound,
+  // but allow a small bounded terminal-drain grace instead of turning a
+  // completed short answer into response_body_timeout at the deadline edge.
+  return Math.min(
+    6 * 60_000,
+    Math.max(90_000, questionDeadlineMilliseconds - nowMilliseconds),
+  )
 }
 
 export function capabilitySafeFailureReason(input: {

@@ -58,10 +58,13 @@ from app.web_api.repository_store import (
 )
 from app.web_api.upload_store import InProcessEphemeralUploadStore
 from app.web_api.chat_service import (
+    AttachmentRequestError,
+    _load_repository_snapshot_for_turn,
     _repository_index_manifest,
     _resolved_repository_validation_mode,
     prepare_web_turn,
 )
+from app.web_api import chat_service as web_chat_service
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -307,6 +310,98 @@ def test_repository_snapshot_owner_isolation_and_expiry():
     assert get_repository_snapshot(
         store, owner_user_id=11, repository_id=expired.id
     ) is None
+
+
+def _repository_registry_row(
+    owner_user_id: int, repository_id: str, *, expired: bool,
+) -> WebCodeRepository:
+    return WebCodeRepository(
+        owner_user_id=owner_user_id,
+        repository_id=repository_id,
+        idempotency_key=f"test:{repository_id}",
+        source_version="source-version",
+        content_hash="a" * 64,
+        status="expired" if expired else "ready",
+        expires_at=datetime.now(timezone.utc) + (
+            timedelta(seconds=-1 if expired else 300)
+        ),
+    )
+
+
+def test_live_repository_cache_miss_retries_without_invalidating(monkeypatch):
+    owner = create_test_user("repo-cache-live", "repo-cache-live@example.com")
+    repository_id = str(uuid4())
+    with SessionLocal() as session:
+        session.add(_repository_registry_row(
+            int(owner.id), repository_id, expired=False,
+        ))
+        session.commit()
+
+    reads = {"count": 0}
+    invalidated: list[str] = []
+    monkeypatch.setattr(web_chat_service, "get_upload_store", lambda: object())
+    monkeypatch.setattr(web_chat_service, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        web_chat_service, "get_repository_snapshot",
+        lambda *_args, **_kwargs: reads.__setitem__(
+            "count", reads["count"] + 1,
+        ),
+    )
+    monkeypatch.setattr(
+        web_chat_service, "invalidate_repository_index",
+        lambda _session, *, owner_user_id, repository_id: invalidated.append(
+            f"{owner_user_id}:{repository_id}",
+        ),
+    )
+
+    with SessionLocal() as session, pytest.raises(AttachmentRequestError) as caught:
+        _load_repository_snapshot_for_turn(
+            session,
+            owner_user_id=int(owner.id),
+            repository_id=repository_id,
+        )
+    assert caught.value.code == "repository_cache_unavailable"
+    assert caught.value.status_code == 503
+    assert reads["count"] == 2
+    assert invalidated == []
+
+
+def test_expired_repository_invalidates_without_retrying_cache(monkeypatch):
+    owner = create_test_user(
+        "repo-cache-expired", "repo-cache-expired@example.com",
+    )
+    repository_id = str(uuid4())
+    with SessionLocal() as session:
+        session.add(_repository_registry_row(
+            int(owner.id), repository_id, expired=True,
+        ))
+        session.commit()
+
+    reads = {"count": 0}
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        web_chat_service, "get_repository_snapshot",
+        lambda *_args, **_kwargs: reads.__setitem__(
+            "count", reads["count"] + 1,
+        ),
+    )
+    monkeypatch.setattr(
+        web_chat_service, "invalidate_repository_index",
+        lambda _session, *, owner_user_id, repository_id: invalidated.append(
+            f"{owner_user_id}:{repository_id}",
+        ),
+    )
+
+    with SessionLocal() as session, pytest.raises(AttachmentRequestError) as caught:
+        _load_repository_snapshot_for_turn(
+            session,
+            owner_user_id=int(owner.id),
+            repository_id=repository_id,
+        )
+    assert caught.value.code == "repository_expired"
+    assert caught.value.status_code == 404
+    assert reads["count"] == 0
+    assert invalidated == [f"{int(owner.id)}:{repository_id}"]
 
 
 def test_dedicated_repository_api_is_owner_scoped_and_persists_no_source(
