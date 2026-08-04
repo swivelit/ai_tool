@@ -235,6 +235,35 @@ test('production capability uses persisted Markdown for structural scoring and b
   )
 })
 
+test('isolated assistant persistence races are bounded without aborting the batch', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain('async function pollRawMessage(')
+  expect(spec).toContain('assistantPersistenceFailures += 1')
+  expect(spec).toContain('assistantPersistenceFailures > 3')
+  expect(spec).toContain("primaryFailure ??= 'assistant_persistence_systemic_outage'")
+  expect(spec).toContain('assistant_persistence_failures:assistantPersistenceFailures')
+  expect(spec).toMatch(
+    /if \(\['assistant_persistence_missing', 'assistant_ui_timeout'\][\s\S]{0,900}return failedResult/,
+  )
+})
+
+test('R08 routing variation reuses the B01 semantic and format contract', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const routing = spec.slice(
+    spec.indexOf("if (question.id === 'R08' && ("),
+    spec.indexOf("if (question.id === 'R09'", spec.indexOf("if (question.id === 'R08' && (")),
+  )
+  expect(routing).toContain(
+    '!b01ContractPassed(result.visibleAnswer, result.rawMarkdown)',
+  )
+  expect(routing).not.toContain('result.score !== 100')
+  expect(spec).toContain('function b01ContractPassed(')
+})
+
 test('targeted architecture fixtures use the shared coverage expectations', () => {
   const fixtures = JSON.parse(readFileSync(
     resolve(process.cwd(), '../shared-fixtures/capability-semantics.json'),

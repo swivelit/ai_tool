@@ -570,6 +570,7 @@ export function ChatPage() {
     const limits = bootstrap.uploads
     const usable = attachments.filter(item => item.status !== 'expired' && item.status !== 'unavailable' && item.status !== 'error')
     let count = usable.length
+    let imageCount = usable.filter(item => item.media_type.startsWith('image/')).length
     let total = usable.reduce((sum, item) => sum + item.size_bytes, 0)
     for (const file of files) {
       const extension = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`
@@ -578,14 +579,25 @@ export function ChatPage() {
         continue
       }
       if (file.size <= 0) { setError(`“${file.name}” is empty.`); continue }
-      if (file.size > limits.max_file_bytes) { setError(`“${file.name}” exceeds the 10 MiB file limit.`); continue }
+      const isImage = file.type.startsWith('image/')
+      const fileLimit = isImage
+        ? limits.image_max_file_bytes ?? limits.max_file_bytes
+        : limits.max_file_bytes
+      if (file.size > fileLimit) { setError(`“${file.name}” exceeds the configured file limit.`); continue }
+      if (isImage && imageCount >= (limits.image_max_count ?? 4)) {
+        setError(`You can attach up to ${limits.image_max_count ?? 4} images.`)
+        break
+      }
       if (count >= limits.max_files_per_message) { setError(`You can attach up to ${limits.max_files_per_message} files.`); break }
       if (total + file.size > limits.max_total_bytes) { setError('Pending attachments exceed the 25 MiB total limit.'); break }
       count += 1; total += file.size
+      if (isImage) imageCount += 1
       const localId = crypto.randomUUID()
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined
       const pending: ComposerAttachment = {
         local_id: localId, file, name: file.name, media_type: file.type,
         size_bytes: file.size, status: 'uploading', progress: 0,
+        preview_url:previewUrl,
       }
       setAttachments(value => [...value, pending])
       void uploadDocument(user, file, progress => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item)))
@@ -594,7 +606,8 @@ export function ChatPage() {
             void deleteUpload(user, upload.id).catch(() => undefined)
             return
           }
-          setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? upload : item))
+          setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
+            ? { ...upload, preview_url:item.preview_url } : item))
         })
         .catch(caught => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
           ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item)))
@@ -603,6 +616,7 @@ export function ChatPage() {
   const removeAttachment = (attachment: ComposerAttachment) => {
     const key = 'local_id' in attachment ? attachment.local_id : attachment.id
     if ('local_id' in attachment && attachment.status === 'uploading') removedLocalUploads.current.add(attachment.local_id)
+    if (attachment.preview_url) URL.revokeObjectURL(attachment.preview_url)
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
   }

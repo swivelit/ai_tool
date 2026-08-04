@@ -14,7 +14,7 @@ from ...database import SessionLocal
 from ...openai_model_router import OpenAIModelRouter, record_openai_usage
 from ...openai_tracked import (
     enforce_openai_budget, get_tracked_chat_completion_metadata,
-    tracked_openai_generation,
+    messages_for_openai_endpoint, tracked_openai_generation,
 )
 from ..completion_quality import incomplete_markdown_reason
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
@@ -375,7 +375,9 @@ class OpenAIProvider(AIProvider):
                     )
                     response_kwargs: dict[str, Any] = {
                         "model": model,
-                        "input": messages,
+                        "input": messages_for_openai_endpoint(
+                            messages, "responses"
+                        ),
                         "max_output_tokens": route.max_output_tokens,
                         "stream": True,
                     }
@@ -476,7 +478,9 @@ class OpenAIProvider(AIProvider):
                     reasoning_effort = None
                     chat_kwargs: dict[str, Any] = {
                         "model": model,
-                        "messages": messages,
+                        "messages": messages_for_openai_endpoint(
+                            messages, "chat_completions"
+                        ),
                         "max_tokens": route.max_output_tokens,
                         "temperature": 0.2,
                         "stream": True,

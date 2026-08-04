@@ -232,7 +232,9 @@ export function Composer({
       onDragOver={event => event.preventDefault()} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false) }} onDrop={drop}>
       {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
         {attachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={'local_id' in attachment ? attachment.local_id : attachment.id}>
-          <FileText size={18} aria-hidden="true" />
+          {attachment.media_type.startsWith('image/') && attachment.preview_url
+            ? <img className="attachment-thumbnail" src={attachment.preview_url} alt="" />
+            : <FileText size={18} aria-hidden="true" />}
           <span className="attachment-copy"><strong title={attachment.name}>{attachment.name}</strong>
             <small>{attachment.media_type || attachment.name.split('.').pop()?.toUpperCase()} · {humanSize(attachment.size_bytes)}</small>
             <small>{attachment.status === 'uploading' ? `Uploading… ${attachment.progress}%`

@@ -35,6 +35,7 @@ class OpenAIModelSpec:
     supports_reasoning_effort: bool
     supports_tools: bool
     free_user_allowed: bool
+    supports_vision: bool = False
     admin_only: bool = False
     enabled_by_default: bool = True
 
@@ -166,6 +167,9 @@ def _spec(
         supports_reasoning_effort=supports_reasoning_effort,
         supports_tools=supports_tools,
         free_user_allowed=free_user_allowed,
+        supports_vision=(
+            family not in {"embedding-3", "gpt-3.5"}
+        ),
         admin_only=admin_only,
         enabled_by_default=enabled_by_default,
     )
@@ -389,6 +393,9 @@ def get_model_spec(model: str) -> OpenAIModelSpec:
         supports_reasoning_effort=False,
         supports_tools=False,
         free_user_allowed=True,
+        supports_vision=_env_bool(
+            f"OPENAI_MODEL_SUPPORTS_VISION_{_price_key(normalized)}", False
+        ),
         enabled_by_default=True,
     )
 

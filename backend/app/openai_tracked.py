@@ -450,9 +450,45 @@ def _chat_output_text(response: Any) -> str:
     return ""
 
 
-def _build_responses_input(messages: list[dict[str, Any]], input_text: Optional[str]) -> str:
+def messages_for_openai_endpoint(
+    messages: list[dict[str, Any]], endpoint: str,
+) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            converted.append(dict(message))
+            continue
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if endpoint == "chat_completions":
+                if block.get("type") == "input_text":
+                    blocks.append({"type": "text", "text": str(block.get("text") or "")})
+                elif block.get("type") == "input_image":
+                    blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": str(block.get("image_url") or "")},
+                    })
+            else:
+                blocks.append(dict(block))
+        converted.append({**message, "content": blocks})
+    return converted
+
+
+def _build_responses_input(
+    messages: list[dict[str, Any]], input_text: Optional[str],
+) -> str | list[dict[str, Any]]:
     if input_text is not None:
         return str(input_text or "")
+    if any(isinstance(message.get("content"), list) for message in messages):
+        return [
+            message for message in messages_for_openai_endpoint(
+                messages, "responses"
+            )
+            if str(message.get("role") or "") not in {"system", "developer"}
+        ]
     parts: list[str] = []
     for message in messages:
         role = str(message.get("role") or "user")
@@ -604,7 +640,9 @@ def tracked_openai_generation(
                 else:
                     request_kwargs = {
                         "model": selection.model,
-                        "messages": messages,
+                        "messages": messages_for_openai_endpoint(
+                            messages, "chat_completions"
+                        ),
                         "store": False,
                     }
                     token_param = "max_completion_tokens" if selection.model.startswith(("gpt-5", "o")) else "max_tokens"

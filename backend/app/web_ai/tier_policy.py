@@ -131,7 +131,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
     },
     "standard": {
         "max_prompt_tokens": 6_500,
-        "max_output_tokens": 2_400,
+        "max_output_tokens": 3_000,
         "max_history_tokens": 2_600,
         "max_memory_tokens": 975,
         "max_profile_tokens": 650,
@@ -156,7 +156,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
     },
     "pro": {
         "max_prompt_tokens": 12_000,
-        "max_output_tokens": 4_000,
+        "max_output_tokens": 6_000,
         "max_history_tokens": 4_800,
         "max_memory_tokens": 1_800,
         "max_profile_tokens": 900,

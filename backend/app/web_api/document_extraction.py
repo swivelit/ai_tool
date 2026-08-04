@@ -17,7 +17,9 @@ from .legacy_doc_conversion import (
 )
 
 
-SUPPORTED_EXTENSIONS = (".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx", ".pptx")
+DOCUMENT_EXTENSIONS = (".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx", ".pptx")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS + IMAGE_EXTENSIONS
 MEDIA_TYPES: dict[str, set[str]] = {
     ".txt": {"text/plain"},
     ".md": {"text/markdown", "text/plain", "text/x-markdown"},
@@ -27,6 +29,11 @@ MEDIA_TYPES: dict[str, set[str]] = {
     ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     ".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
     ".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    ".png": {"image/png"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
+    ".webp": {"image/webp"},
+    ".gif": {"image/gif"},
 }
 OFFICE_EXPECTED_ENTRY = {
     ".docx": "word/document.xml",
@@ -78,6 +85,27 @@ def max_file_bytes() -> int:
     return env_int("WEB_UPLOAD_MAX_FILE_BYTES", 10 * 1024 * 1024, maximum=10 * 1024 * 1024)
 
 
+def image_uploads_enabled() -> bool:
+    return str(os.getenv("WEB_IMAGE_UPLOADS_ENABLED", "false")).strip().lower() in {
+        "1", "true", "yes", "y", "on",
+    }
+
+
+def image_max_file_bytes() -> int:
+    return env_int(
+        "WEB_IMAGE_UPLOAD_MAX_BYTES", 8 * 1024 * 1024,
+        maximum=8 * 1024 * 1024,
+    )
+
+
+def image_max_count() -> int:
+    return env_int("WEB_IMAGE_UPLOAD_MAX_COUNT", 4, maximum=4)
+
+
+def is_image_extension(extension: str) -> bool:
+    return str(extension or "").casefold() in IMAGE_EXTENSIONS
+
+
 def max_extracted_chars() -> int:
     return env_int("WEB_UPLOAD_MAX_EXTRACTED_CHARS", 100_000, maximum=500_000)
 
@@ -113,7 +141,13 @@ def validate_extension_and_mime(filename: str, content_type: str | None) -> tupl
     if extension in FORBIDDEN_UPLOAD_EXTENSIONS or extension not in SUPPORTED_EXTENSIONS:
         raise DocumentValidationError(
             "unsupported_file_type",
-            "This file type is not supported. Upload TXT, MD, CSV, JSON, PDF, DOCX, XLSX, or PPTX.",
+            "This file type is not supported.",
+        )
+    if is_image_extension(extension) and not image_uploads_enabled():
+        raise DocumentValidationError(
+            "image_uploads_disabled",
+            "Image attachments are not enabled.",
+            status_code=503,
         )
     media_type = str(content_type or "").split(";", 1)[0].strip().lower()
     if media_type != "application/octet-stream" and media_type not in MEDIA_TYPES[extension]:
@@ -137,6 +171,34 @@ def validate_content_signature(path: str, extension: str) -> None:
         validate_office_container(path, extension)
     if extension in {".txt", ".md", ".csv", ".json"}:
         _decode_text(Path(path).read_bytes())
+    valid_image = {
+        ".png": head.startswith(b"\x89PNG\r\n\x1a\n"),
+        ".jpg": head.startswith(b"\xff\xd8\xff"),
+        ".jpeg": head.startswith(b"\xff\xd8\xff"),
+        ".webp": head.startswith(b"RIFF") and head[8:12] == b"WEBP",
+        ".gif": head.startswith((b"GIF87a", b"GIF89a")),
+    }
+    if extension in valid_image and not valid_image[extension]:
+        raise DocumentValidationError(
+            "invalid_image", "The uploaded file is not a valid still image."
+        )
+    if extension in valid_image:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                if int(getattr(image, "n_frames", 1) or 1) != 1:
+                    raise DocumentValidationError(
+                        "animated_image_unsupported",
+                        "Animated images are not supported. Upload a still image.",
+                    )
+                image.verify()
+        except DocumentValidationError:
+            raise
+        except Exception as exc:
+            raise DocumentValidationError(
+                "invalid_image", "The uploaded file is not a valid still image."
+            ) from exc
 
 
 def validate_office_container(path: str, extension: str) -> None:

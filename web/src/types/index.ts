@@ -18,10 +18,12 @@ export type Thread = { id: string; title: string; archived_at: string | null; cr
 export type AttachmentDisplay = {
   id: string; name: string; media_type: string; size_bytes: number;
   created_at: string; expires_at: string; warnings: string[]; warning_codes?: string[];
+  preview_url?: string;
 }
 export type PendingAttachment = {
   local_id: string; file: File; name: string; media_type: string; size_bytes: number;
   status: 'uploading' | 'error'; progress: number; error?: string;
+  preview_url?: string;
 }
 export type ReadyAttachment = AttachmentDisplay & { status: 'ready' }
 export type RepositorySnapshot = {
@@ -147,6 +149,7 @@ export type Bootstrap = {
     web_knowledge_library?: boolean;
     web_triag_hybrid?: boolean;
     web_answer_guard?: boolean;
+    web_image_uploads?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;
@@ -156,6 +159,8 @@ export type Bootstrap = {
     max_files_per_message: number; max_total_bytes: number; supported_extensions: string[];
     long_input_enabled?: boolean; long_input_inline_threshold_chars?: number;
     long_input_max_chars?: number;
+    image_uploads_enabled?: boolean; image_max_file_bytes?: number;
+    image_max_count?: number;
   };
   repositories?: {
     ttl_seconds: number;

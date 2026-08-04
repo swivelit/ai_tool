@@ -16,6 +16,7 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
+from ..ai.openai_catalog import get_model_spec
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import (
@@ -67,6 +68,10 @@ from ..web_ai.generation.output_contract import (
     output_contract_hash,
     validate_output_contract,
 )
+from ..web_ai.generation.output_format import (
+    autoclose_unbalanced_fence,
+    fence_integrity_quality_check,
+)
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
     extract_task_requirements, splice_architecture_section_repair,
@@ -116,6 +121,9 @@ from ..openai_tracked import OpenAIBudgetExceededError, tracked_embedding
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
+from .document_extraction import (
+    image_max_count, image_uploads_enabled, is_image_extension,
+)
 from .conversation_continuity import (
     SameThreadContinuityDecision,
     decide_same_thread_continuity,
@@ -389,7 +397,7 @@ class PreparedWebTurn:
     reply_language: str = "en"
     billing_exempt: bool = False
     existing_response_id: str | None = None
-    provider_messages: list[dict[str, str]] | None = None
+    provider_messages: list[dict[str, Any]] | None = None
     optimization: WebTurnOptimization | None = None
     coordinator_decision: WebRequestDecision | None = None
     precomputed_response: AIProviderResponse | None = None
@@ -741,7 +749,7 @@ def _hard_budget_provider_messages(
     route: AIRoute,
     *,
     prompt_maximum: int | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     messages = build_provider_messages(request, route, provider=route.provider)
     try:
         maximum = max(
@@ -1021,6 +1029,21 @@ def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
     if sum(upload.size_bytes for upload in uploads) > max_total:
         raise AttachmentRequestError(
             "attachment_total_too_large", "Attachments exceed the 25 MiB total limit.", 413
+        )
+    image_uploads = [
+        upload for upload in uploads if is_image_extension(upload.extension)
+    ]
+    if image_uploads and not image_uploads_enabled():
+        raise AttachmentRequestError(
+            "image_uploads_disabled",
+            "Image attachments are not enabled.",
+            503,
+        )
+    if len(image_uploads) > image_max_count():
+        raise AttachmentRequestError(
+            "too_many_image_attachments",
+            "Too many image attachments were included in this message.",
+            422,
         )
     return uploads
 
@@ -1318,6 +1341,10 @@ def prepare_web_turn(
             session.add(continuation_row)
 
         uploads = _load_attachments(user_id, attachment_ids or [])
+        image_uploads = [
+            upload for upload in uploads
+            if is_image_extension(upload.extension)
+        ]
         inherited_repository_message = (
             regenerate_user
             or edit_target
@@ -1386,6 +1413,8 @@ def prepare_web_turn(
         model_message = visible_message or (
             "Review this repository."
             if repository_id else
+            "Describe and answer questions about the attached image."
+            if image_uploads else
             "Review and summarize the attached document."
         )
         if regenerate_user is not None:
@@ -1666,6 +1695,14 @@ def prepare_web_turn(
             ),
             "task_requirements": task_requirements.as_metadata(),
             "task_requirements_hash": task_requirements.hash,
+            "vision_inputs": [
+                {
+                    "media_type": upload.media_type,
+                    "data_base64": upload.binary_base64,
+                }
+                for upload in image_uploads
+                if upload.binary_base64
+            ],
         }
         cache_compatibility_hash = _cache_compatibility_hash(
             prompt_schema_version=str(base_metadata["prompt_cache_version"]),
@@ -2334,6 +2371,21 @@ def prepare_web_turn(
         )
         route = AIProviderRouter().select_route(ai_request)
 
+        if image_uploads and route.provider != "openai":
+            raise AttachmentRequestError(
+                "vision_model_unavailable",
+                "The selected Swico tier cannot process image attachments.",
+                422,
+            )
+        if image_uploads and not enabled and not get_model_spec(
+            route.model or ""
+        ).supports_vision:
+            raise AttachmentRequestError(
+                "vision_model_unavailable",
+                "The selected Swico tier cannot process image attachments.",
+                422,
+            )
+
         if route.provider not in {"openai", "sarvam"}:
             # Deterministic safety blocks do not consume wallet credit.
             session.commit()
@@ -2430,7 +2482,9 @@ def prepare_web_turn(
         # Reorder healthy candidates within the effective tier. The optional
         # simple-turn policy may use Lite without changing the user's saved tier.
         if enabled and route.provider == "openai" and swico_tier:
-            from ..openai_model_router import OpenAIModelRouter
+            from ..openai_model_router import (
+                OpenAIModelRouter, vision_capable_selections,
+            )
 
             model_router = OpenAIModelRouter()
             candidate_tier, simple_turn_downshift = _candidate_swico_tier(
@@ -2459,6 +2513,14 @@ def prepare_web_turn(
                     max_output_tokens=route.max_output_tokens,
                     answer_class=optimization.answer_class,
                 )
+            if image_uploads:
+                selections = vision_capable_selections(selections)
+                if not selections:
+                    raise AttachmentRequestError(
+                        "vision_model_unavailable",
+                        "The selected Swico tier cannot process image attachments.",
+                        422,
+                    )
             selection_meta = model_router.last_selection_metadata
             route = replace(
                 route,
@@ -2550,7 +2612,7 @@ def prepare_web_turn(
         embedding_reserved_micros = 0
         embedding_accounted = False
         attachment_embedding_planned = bool(
-            uploads
+            any(not is_image_extension(upload.extension) for upload in uploads)
             and not any(upload.virtual_text_operation for upload in uploads)
         )
         knowledge_embedding_planned = bool(
@@ -3776,11 +3838,12 @@ def execute_web_turn(
             )
             guard = AnswerGuard()
             repository_validation_attempts = 0
+            fence_autoclosed = False
 
             def generate_draft(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
-                nonlocal streamed_by_provider, guard_context
+                nonlocal streamed_by_provider, guard_context, fence_autoclosed
                 _phase3_stage(
                     prepared,
                     stage_name="generation",
@@ -3929,6 +3992,16 @@ def execute_web_turn(
                     guard_context,
                     provider_completion=ProviderCompletion.from_raw(draft.raw),
                 )
+                closed_text, was_autoclosed = autoclose_unbalanced_fence(
+                    draft.text
+                )
+                if was_autoclosed:
+                    fence_autoclosed = True
+                    draft = replace(
+                        draft,
+                        text=closed_text,
+                        raw={**draft.raw, "fence_autoclosed": True},
+                    )
                 return draft
 
             def model_verifier(answer: str, pack: EvidencePack) -> bool:
@@ -4328,6 +4401,7 @@ def execute_web_turn(
                 attempt_number: int,
             ) -> AIProviderResponse | None:
                 nonlocal guard_context, repair_reserved_total, repair_reasoning_total
+                nonlocal fence_autoclosed
                 nonlocal repair_trigger_area_identifiers
                 if architecture_area_ids and attempt_number == 1:
                     repair_trigger_area_identifiers = (
@@ -4487,6 +4561,16 @@ def execute_web_turn(
                         repaired.raw
                     ),
                 )
+                closed_text, was_autoclosed = autoclose_unbalanced_fence(
+                    repaired.text
+                )
+                if was_autoclosed:
+                    fence_autoclosed = True
+                    repaired = replace(
+                        repaired,
+                        text=closed_text,
+                        raw={**repaired.raw, "fence_autoclosed": True},
+                    )
                 if contract.architecture_splice_areas:
                     spliced = splice_architecture_section_repair(
                         answer,
@@ -4572,6 +4656,14 @@ def execute_web_turn(
                     ),
                     repair_attempted=bool(
                         prior and prior.repair_attempted
+                    ),
+                )
+                result = replace(
+                    result,
+                    checks=result.checks + (
+                        fence_integrity_quality_check(
+                            autoclosed=fence_autoclosed
+                        ),
                     ),
                 )
                 if architecture_area_ids:
@@ -4718,6 +4810,20 @@ def execute_web_turn(
                 )
                 if on_delta:
                     on_delta(response.text)
+        closed_text, was_autoclosed = autoclose_unbalanced_fence(response.text)
+        if was_autoclosed:
+            response = replace(
+                response,
+                text=closed_text,
+                raw={**response.raw, "fence_autoclosed": True},
+            )
+            if prepared.answer_quality is not None:
+                prepared.answer_quality = replace(
+                    prepared.answer_quality,
+                    checks=prepared.answer_quality.checks + (
+                        fence_integrity_quality_check(autoclosed=True),
+                    ),
+                )
         if guard_enabled and output_contract.required:
             prepared.answer_quality = _enforce_final_output_contract_quality(
                 response.text, output_contract, prepared.answer_quality
@@ -4959,6 +5065,9 @@ def execute_web_turn(
             "incomplete_reason": str(
                 response.raw.get("incomplete_reason") or ""
             )[:80],
+            "fence_autoclosed": bool(
+                response.raw.get("fence_autoclosed")
+            ),
         })
         response.raw.update(optimization_metrics)
         safe_sources = (

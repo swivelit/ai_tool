@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import json
 import os
 import zipfile
@@ -27,6 +28,10 @@ MIME = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+STILL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def _upload(client, filename: str, content: bytes, media_type: str, *, uid: str = "upload-user"):
@@ -110,6 +115,67 @@ def test_unsupported_mismatch_empty_and_per_file_limit(client, monkeypatch):
     monkeypatch.setenv("WEB_UPLOAD_MAX_FILE_BYTES", "4")
     too_large = _upload(client, "notes.txt", b"12345", "text/plain")
     assert too_large.status_code == 413 and too_large.json()["error"]["code"] == "file_too_large"
+
+
+def test_image_uploads_are_gated_stored_without_text_extraction_and_bounded(
+    client, monkeypatch,
+):
+    create_test_user("upload-user", "upload-user@example.com")
+    png = STILL_PNG
+    disabled = _upload(client, "sample.png", png, "image/png")
+    assert disabled.status_code == 503
+    assert disabled.json()["error"]["code"] == "image_uploads_disabled"
+
+    monkeypatch.setenv("WEB_IMAGE_UPLOADS_ENABLED", "true")
+    uploaded = _upload(client, "sample.png", png, "image/png")
+    assert uploaded.status_code == 201
+    stored = get_upload_store().get(uploaded.json()["id"])
+    assert stored is not None
+    assert stored.chunks == []
+    assert stored.binary_base64
+
+    monkeypatch.setenv("WEB_IMAGE_UPLOAD_MAX_BYTES", "8")
+    oversized = _upload(client, "large.png", png, "image/png")
+    assert oversized.status_code == 413
+    assert oversized.json()["error"]["code"] == "file_too_large"
+
+
+def test_image_count_and_nonvision_tier_fail_before_provider_call(
+    client, monkeypatch,
+):
+    create_test_user("upload-user", "upload-user@example.com")
+    monkeypatch.setenv("WEB_IMAGE_UPLOADS_ENABLED", "true")
+    png = STILL_PNG
+    uploads = [
+        _upload(client, f"sample-{index}.png", png, "image/png").json()
+        for index in range(5)
+    ]
+    too_many = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("upload-user", "upload-user@example.com"),
+        json={
+            "request_id": "90000000-0000-4000-8000-000000000090",
+            "message": "Describe these images.",
+            "attachment_ids": [item["id"] for item in uploads],
+        },
+    )
+    assert too_many.status_code == 422
+    assert too_many.json()["error"]["code"] == "too_many_image_attachments"
+
+    monkeypatch.setattr(
+        "app.openai_model_router.vision_capable_selections", lambda _items: []
+    )
+    unavailable = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("upload-user", "upload-user@example.com"),
+        json={
+            "request_id": "90000000-0000-4000-8000-000000000091",
+            "message": "Describe this image.",
+            "attachment_ids": [uploads[0]["id"]],
+        },
+    )
+    assert unavailable.status_code == 422
+    assert unavailable.json()["error"]["code"] == "vision_model_unavailable"
 
 
 def test_octet_stream_requires_a_valid_signature_and_legacy_doc_is_honest(client, monkeypatch):

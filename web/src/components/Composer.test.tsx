@@ -86,6 +86,22 @@ it('selects and drops documents through the attachment control', async () => {
   expect(addFiles).toHaveBeenCalledTimes(2)
 })
 
+it('accepts configured image extensions and renders an image thumbnail chip', () => {
+  const image = ready({
+    name:'preview.png', media_type:'image/png',
+    preview_url:'blob:synthetic-preview',
+  })
+  const { container } = render(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachmentsEnabled supportedExtensions={['.png', '.txt']}
+    attachments={[image]}
+  />)
+  expect((container.querySelector('input[aria-label="Upload files"]') as HTMLInputElement).accept).toBe('.png,.txt')
+  expect(container.querySelector('img.attachment-thumbnail')).toHaveAttribute(
+    'src', 'blob:synthetic-preview',
+  )
+})
+
 it('opens the Plus menu accessibly, uploads, restores focus, and hosts the tier selector', async () => {
   const addFiles = vi.fn(); const onTierSelect = vi.fn()
   const { container } = render(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}

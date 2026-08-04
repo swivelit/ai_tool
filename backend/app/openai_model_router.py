@@ -33,6 +33,16 @@ _USAGE_SCHEMA_COMPAT_READY = False
 OPENAI_SAFE_DEFAULT_MODEL = "gpt-5-nano"
 
 
+def vision_capable_selections(
+    selections: list[ModelSelection],
+) -> list[ModelSelection]:
+    """Keep the selected tier/order while excluding text-only candidates."""
+    return [
+        selection for selection in selections
+        if get_model_spec(selection.model).supports_vision
+    ]
+
+
 class OpenAIConfigurationError(RuntimeError):
     """Raised before provider calls when OpenAI runtime config is invalid."""
 

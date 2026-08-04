@@ -12,6 +12,7 @@ from app.web_ai.generation.output_contract import (
     output_contract_instruction,
 )
 from app.web_ai.generation.task_requirements import TaskRequirementContract
+from app.web_ai.generation.output_format import FENCED_CODE_OUTPUT_INSTRUCTION
 
 from .types import AIRequest, AIRoute
 from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
@@ -44,14 +45,42 @@ STATIC_SYSTEM_PREFIX = "\n".join((
     ),
     "Do not claim access to live/current data unless it was provided.",
     "Apply saved profile preferences only when supplied. Do not invent or reveal profile facts.",
+    FENCED_CODE_OUTPUT_INSTRUCTION,
 ))
 
 
-def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
+def _vision_content(
+    text: str, vision_inputs: object,
+) -> str | list[dict[str, Any]]:
+    if not isinstance(vision_inputs, list) or not vision_inputs:
+        return text
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
+    for item in vision_inputs[:4]:
+        if not isinstance(item, dict):
+            continue
+        media_type = str(item.get("media_type") or "")
+        encoded = str(item.get("data_base64") or "")
+        if not media_type.startswith("image/") or not encoded:
+            continue
+        content.append({
+            "type": "input_image",
+            "image_url": f"data:{media_type};base64,{encoded}",
+        })
+    return content if len(content) > 1 else text
+
+
+def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, Any]]:
     prepared = (request.metadata or {}).get("provider_messages")
     if isinstance(prepared, list) and all(isinstance(item, dict) for item in prepared):
         return [
-            {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")}
+            {
+                "role": str(item.get("role") or "user"),
+                "content": (
+                    item.get("content")
+                    if isinstance(item.get("content"), (str, list))
+                    else str(item.get("content") or "")
+                ),
+            }
             for item in prepared
         ]
     instructions = build_system_instructions(request, route, provider=provider)
@@ -137,13 +166,36 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
                 messages.append({"role": "user", "content": historical_user})
             if historical_assistant:
                 messages.append({"role": "assistant", "content": historical_assistant})
-    messages.append({"role": "user", "content": request.message})
+    messages.append({
+        "role": "user",
+        "content": _vision_content(
+            request.message,
+            (request.metadata or {}).get("vision_inputs"),
+        ),
+    })
     return messages
 
 
-def serialize_provider_messages(messages: list[dict[str, str]]) -> str:
+def serialize_provider_messages(messages: list[dict[str, Any]]) -> str:
     """Canonical conservative representation used by every web preflight."""
-    return json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    def safe_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: (
+                    "[image-data]"
+                    if key == "image_url" and str(item).startswith("data:image/")
+                    else safe_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [safe_value(item) for item in value]
+        return value
+
+    return json.dumps(
+        safe_value(messages), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def stable_prompt_cache_key(request: AIRequest, route: AIRoute) -> str | None:

@@ -16,6 +16,7 @@ from .models import (
     AnswerQualityResult, QualityCheck, RepositoryValidationMode,
 )
 from .output_contract import OutputContract, validate_output_contract
+from .output_format import fenced_code_quality_check
 from .task_requirements import (
     TaskRequirementContract, validate_task_requirements,
 )
@@ -122,6 +123,8 @@ class AnswerGuard:
             checks.append(_repetition_check(answer))
         if include("duplicate_sections"):
             checks.append(_duplicate_section_check(answer))
+        if include("output_fenced_code_present"):
+            checks.append(fenced_code_quality_check(answer))
 
         evidence = context.evidence_pack
         evidence_backed = evidence is not None

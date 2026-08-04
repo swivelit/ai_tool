@@ -9,7 +9,10 @@ from sqlmodel import select
 import app.openai_model_router as model_router_module
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
-from app.openai_model_router import OpenAIModelRouter, get_today_estimated_openai_spend, record_openai_usage
+from app.openai_model_router import (
+    ModelSelection, OpenAIModelRouter, get_today_estimated_openai_spend,
+    record_openai_usage, vision_capable_selections,
+)
 from app.openai_tracked import (
     OpenAIBudgetExceededError,
     OpenAIBudgetSnapshot,
@@ -166,6 +169,16 @@ def test_select_candidates_simple_ladder(monkeypatch):
 
     assert [selection.model for selection in selections[:3]] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
     assert selections[0].endpoint == "responses"
+
+
+def test_vision_routing_preserves_order_and_rejects_text_only_models():
+    selections = [
+        ModelSelection("gpt-3.5-turbo-0125", "standard", "test", 200),
+        ModelSelection("gpt-5-nano", "cheap", "test", 200),
+    ]
+    assert [
+        item.model for item in vision_capable_selections(selections)
+    ] == ["gpt-5-nano"]
 
 
 def test_select_candidates_reasoning_ladder(monkeypatch):

@@ -128,8 +128,11 @@ from .continuation import (
     sanitize_render_prefix,
 )
 from .document_extraction import (
-    DocumentValidationError, SUPPORTED_EXTENSIONS, chunk_virtual_text, extract_document, max_file_bytes,
-    sanitize_filename, validate_content_signature, validate_extension_and_mime,
+    DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, DocumentValidationError,
+    chunk_virtual_text, extract_document, image_max_count,
+    image_max_file_bytes, image_uploads_enabled, is_image_extension,
+    max_file_bytes, sanitize_filename, validate_content_signature,
+    validate_extension_and_mime,
 )
 from .schemas import (
     AssistantSettingsPatch, MemorySettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
@@ -360,7 +363,13 @@ def _uploads_public_config() -> dict[str, Any]:
         "max_file_bytes": max_file_bytes(),
         "max_files_per_message": min(5, max(1, configured_files)),
         "max_total_bytes": min(25 * 1024 * 1024, max(1, configured_total)),
-        "supported_extensions": list(SUPPORTED_EXTENSIONS),
+        "supported_extensions": list(
+            DOCUMENT_EXTENSIONS
+            + (IMAGE_EXTENSIONS if image_uploads_enabled() else ())
+        ),
+        "image_uploads_enabled": image_uploads_enabled(),
+        "image_max_file_bytes": image_max_file_bytes(),
+        "image_max_count": image_max_count(),
         "long_input_enabled": _env_enabled("WEB_LONG_INPUT_ENABLED"),
         "long_input_inline_threshold_chars": _bounded_int_env(
             "WEB_LONG_INPUT_INLINE_THRESHOLD_CHARS", 12_000, 1_000, 16_000
@@ -720,6 +729,9 @@ def bootstrap(
             "web_chat": True,
             "prepaid_billing": True,
             "web_attachments": _env_enabled("WEB_ATTACHMENTS_ENABLED") and bool(uploads["available"]),
+            "web_image_uploads": bool(
+                uploads["available"] and uploads["image_uploads_enabled"]
+            ),
             "web_voice_recording": _env_enabled("WEB_VOICE_RECORDING_ENABLED"),
             "web_voice_reply": _env_enabled("WEB_VOICE_REPLY_ENABLED"),
             "web_voice_billing": _env_enabled("WEB_VOICE_BILLING_ENABLED"),
@@ -3045,14 +3057,27 @@ async def upload_document(
         await file.close()
         return _temporary_error(exc.status_code, exc.code, exc.message)
     temp_path = ""
+    binary_base64: str | None = None
     try:
+        upload_limit = (
+            image_max_file_bytes() if is_image_extension(extension)
+            else max_file_bytes()
+        )
         temp_path, size = await _save_temporary_upload(
-            file, limit=max_file_bytes(), suffix=extension,
+            file, limit=upload_limit, suffix=extension,
         )
         if size <= 0:
             return _temporary_error(400, "empty_file", "The uploaded file is empty.")
         validate_content_signature(temp_path, extension)
-        extraction = await asyncio.to_thread(extract_document, temp_path, extension)
+        if is_image_extension(extension):
+            binary_base64 = base64.b64encode(
+                Path(temp_path).read_bytes()
+            ).decode("ascii")
+            extraction = None
+        else:
+            extraction = await asyncio.to_thread(
+                extract_document, temp_path, extension
+            )
     except DocumentValidationError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
     finally:
@@ -3072,10 +3097,15 @@ async def upload_document(
         size_bytes=size,
         created_at=utc_iso(),
         expires_at=expiration_iso(ttl),
-        chunks=extraction.chunks,
-        source_locators=extraction.source_locators,
-        warnings=extraction.warnings,
-        warning_codes=extraction.warning_codes,
+        chunks=extraction.chunks if extraction is not None else [],
+        source_locators=(
+            extraction.source_locators if extraction is not None else []
+        ),
+        warnings=extraction.warnings if extraction is not None else [],
+        warning_codes=(
+            extraction.warning_codes if extraction is not None else []
+        ),
+        binary_base64=binary_base64,
     )
     try:
         get_upload_store().put(upload)

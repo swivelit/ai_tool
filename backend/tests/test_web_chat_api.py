@@ -1948,7 +1948,9 @@ def test_structurally_truncated_answer_is_saved_billed_and_not_post_processed(
         ).all()
         assert len(assistants) == 1
         assert assistants[0].status == "complete"
-        assert assistants[0].content == partial
+        assert assistants[0].content == partial + "\n```"
+        metadata = json.loads(assistants[0].metadata_json or "{}")
+        assert metadata["fence_autoclosed"] is True
         metadata = json.loads(assistants[0].metadata_json)
         assert metadata["truncated"] is True
         assert metadata["completion_status"] == "incomplete"

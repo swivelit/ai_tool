@@ -186,7 +186,7 @@ Include:
     )
 
     assert long_form.answer_class == "long_form"
-    assert long_form.max_output_tokens == 2400
+    assert long_form.max_output_tokens == 3000
     assert ordinary.answer_class == "detailed"
     assert ordinary.max_output_tokens == 1800
 
@@ -204,7 +204,7 @@ def test_long_form_execution_plan_preserves_distinct_tier_ceilings(monkeypatch):
         ).max_output_tokens
         for tier in ("lite", "standard", "pro")
     }
-    assert ceilings == {"lite": 1600, "standard": 2400, "pro": 4000}
+    assert ceilings == {"lite": 1600, "standard": 3000, "pro": 6000}
 
 
 def test_invalid_deterministic_json_candidate_falls_through_to_planned_generation(

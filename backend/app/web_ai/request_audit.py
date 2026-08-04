@@ -341,6 +341,7 @@ def build_request_audit(
         finish_reason = "unknown"
         completion_status = "unknown"
         truncated = False
+        fence_autoclosed = False
         repair_attempted = False
         output_contract_check_statuses: list[str] = []
         task_requirement_check_statuses: list[str] = []
@@ -388,6 +389,10 @@ def build_request_audit(
                 if candidate_completion in _COMPLETION_STATUSES else "unknown"
             )
             truncated = metadata.get("truncated") is True
+            fence_autoclosed = (
+                fence_autoclosed
+                or metadata.get("fence_autoclosed") is True
+            )
             provider_calls_from_messages = max(
                 provider_calls_from_messages,
                 min(100, _bounded_count(
@@ -654,6 +659,7 @@ def build_request_audit(
             "finish_reason": finish_reason,
             "completion_status": completion_status,
             "truncated": truncated,
+            "fence_autoclosed": fence_autoclosed,
             "output_contract_check_status_counts": _bounded_counts(
                 output_contract_check_statuses,
                 frozenset({"passed", "failed", "warning", "skipped", "error"}),

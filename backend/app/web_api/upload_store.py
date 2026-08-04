@@ -40,6 +40,7 @@ class EphemeralUpload:
     warnings: list[str]
     warning_codes: list[str] = field(default_factory=list)
     virtual_text_operation: str | None = None
+    binary_base64: str | None = None
 
     def display_metadata(self, *, status: str = "ready") -> dict[str, object]:
         return {

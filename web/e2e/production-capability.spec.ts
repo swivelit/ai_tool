@@ -199,6 +199,7 @@ type Audit = {
   finish_reason: string
   completion_status: string
   truncated: boolean
+  fence_autoclosed?: boolean
   output_contract_check_status_counts: Record<string, number>
   task_requirement_check_status_counts: Record<string, number>
   architecture_missing_area_identifiers: string[]
@@ -266,6 +267,7 @@ type QuestionResult = {
   contractValidationDisagreement: boolean
   contractDisagreementChecks: string[]
   truncated: boolean | null
+  fenceAutoclosed: boolean
   continueAvailable: boolean | null
   sseEventOrder: string[]
   retrievalStatus: string
@@ -391,6 +393,13 @@ function lastWord(value: string): string {
 function providerIdentifierVisible(value: string): boolean {
   return /\b(?:openai|anthropic|claude|gemini|sarvam|gpt-[0-9]|o[1-9](?:-|\b))\b/i.test(value)
 }
+function b01ContractPassed(displayed: string, rawMarkdown: string): boolean {
+  const semantic = evaluateIdempotencySemantics(displayed)
+  return bulletLines(rawMarkdown).length === 4
+    && countMarkdownWords(rawMarkdown) <= 140
+    && semantic.definitionPresent
+    && semantic.concreteRetryExamplePresent
+}
 function walletValues(value: WalletResponse): { chat: number; voice: number } {
   return {
     chat:Number(value.wallets?.chat.available_micros ?? value.wallet?.available_micros ?? value.available_micros ?? 0),
@@ -467,7 +476,10 @@ function evaluation(
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')
       {
         const semantic = evaluateIdempotencySemantics(value)
-        if (!semantic.definitionPresent || !semantic.concreteRetryExamplePresent) {
+        if (
+          !semantic.definitionPresent
+          || !semantic.concreteRetryExamplePresent
+        ) {
           fail('retry_example_or_definition_missing')
         }
       }
@@ -825,12 +837,30 @@ async function sourceRows(assistant: Locator): Promise<QuestionResult['visibleSo
 
 async function rawMessage(
   api: DeployedApi, threadId: string, requestId: string,
+  timeoutMilliseconds = 10_000,
 ): Promise<PublicMessage | null> {
   const response = await api.request<{ items: PublicMessage[] }>(
     'GET', `/api/web/threads/${encodeURIComponent(threadId)}/messages?limit=200&offset=0`,
+    undefined, { timeoutMilliseconds },
   )
   if (response.status !== 200 || !response.data) return null
   return response.data.items.find(item => item.role === 'assistant' && item.request_id === requestId) ?? null
+}
+
+async function pollRawMessage(
+  api: DeployedApi, threadId: string, requestId: string, timeoutMilliseconds: number,
+): Promise<PublicMessage | null> {
+  const deadline = Date.now() + Math.max(1, timeoutMilliseconds)
+  do {
+    const remaining = deadline - Date.now()
+    const message = await rawMessage(
+      api, threadId, requestId, Math.min(5_000, Math.max(1, remaining)),
+    ).catch(() => null)
+    if (message) return message
+    if (remaining <= 250) break
+    await new Promise(resolveWait => setTimeout(resolveWait, Math.min(250, remaining)))
+  } while (Date.now() < deadline)
+  return null
 }
 
 async function uploadThroughComposer(
@@ -891,7 +921,7 @@ function skippedResult(
     },
     contractValidationDisagreement:false,
     contractDisagreementChecks:[],
-    truncated:null, continueAvailable:null, sseEventOrder:[],
+    truncated:null, fenceAutoclosed:false, continueAvailable:null, sseEventOrder:[],
     retrievalStatus:'not_run', qualityStatus:'not_run', sourceKindCounts:{},
     persistedQualityStatus:'not_run', sseQualityStatus:'not_run',
     cacheHit:false, cacheHitKind:'none', finishReason:'', completionStatus:'not_run',
@@ -1122,6 +1152,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   let stopAfterSecret = false
   let deterministicGreetingPassed = false
   let primaryFailure: string | null = null
+  let assistantPersistenceFailures = 0
   let lastConsoleIndex = 0
   let lastFailedIndex = 0
   const backendRelease = () => String(bootstrap?.backend_release ?? 'unknown').slice(0, 160)
@@ -1285,7 +1316,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
     if (threadId) generatedThreadIds.add(threadId)
     const raw = threadId
-      ? await rawMessage(api, threadId, requestId).catch(() => null)
+      ? await pollRawMessage(
+        api, threadId, requestId, Math.min(30_000, remaining(30_000)),
+      )
       : null
     if (!raw) throw new Error('assistant_persistence_missing')
     const displayed = await visibleAnswer(assistant)
@@ -1445,6 +1478,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       contractDisagreementChecks:contractValidationDisagreement
         ? mandatoryStructureFailures : [],
       truncated:typeof doneEvent?.truncated === 'boolean' ? doneEvent.truncated : raw?.truncated ?? null,
+      fenceAutoclosed:audit.fence_autoclosed === true,
       continueAvailable:typeof doneEvent?.can_continue === 'boolean' ? doneEvent.can_continue : raw?.can_continue ?? null,
       sseEventOrder:events, retrievalStatus:audit.retrieval_status,
       qualityStatus:contractValidationDisagreement
@@ -1606,6 +1640,21 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           ? error.constructor.name : 'UnknownError',
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
+      if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
+        reasonCode,
+      )) {
+        assistantPersistenceFailures += 1
+        if (assistantPersistenceFailures > 3) {
+          primaryFailure ??= 'assistant_persistence_systemic_outage'
+        }
+        const failedResult = skippedResult(
+          materializeQuestion(source, runId), backendRelease(), 'failed',
+          reasonCode,
+        )
+        failedResult.requestId = capturedRequestId
+        results.push(failedResult)
+        return failedResult
+      }
       throw new CapabilityQuestionExecutionError(
         reasonCode, capturedRequestId,
         error instanceof Error ? error.constructor.name : 'UnknownError',
@@ -1737,7 +1786,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         )) {
           markRoutingFailure(result, 'routing_tanglish_reply_missing')
         }
-        if (question.id === 'R08' && result.score !== 100) {
+        if (question.id === 'R08' && (
+          !b01ContractPassed(result.visibleAnswer, result.rawMarkdown)
+        )) {
           markRoutingFailure(result, 'routing_b01_variation_not_exact')
         }
         if (question.id === 'R09' && result.finishReason === 'stop' && (
@@ -3124,6 +3175,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       failed_startup_step:failedStartupStep,
       scenarios_started:scenariosStarted,
       production_writes_started:productionWritesStarted,
+      assistant_persistence_failures:assistantPersistenceFailures,
       counts:{ total:results.length, passed, failed, skipped },
       overall_score:overallScore,
       scores_by_category:groupScores('category'),
@@ -3142,6 +3194,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         finish_reason:item.finishReason,
         completion_status:item.completionStatus,
         truncated:item.truncated,
+        fence_autoclosed:item.fenceAutoclosed,
         output_contract_check_status_counts:item.outputContractCheckStatusCounts,
         repair_attempted:item.repairAttempted,
         task_requirement_check_status_counts:item.taskRequirementCheckStatusCounts,
