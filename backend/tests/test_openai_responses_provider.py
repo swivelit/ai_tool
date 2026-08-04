@@ -445,7 +445,7 @@ def test_provider_complete_uses_answer_class_from_route_metadata():
     assert client.responses.calls[0]["reasoning"] == {"effort": "low"}
 
 
-def test_provider_complete_forwards_strict_repair_visible_output_metadata():
+def test_provider_complete_reserves_strict_repair_visible_output_metadata():
     client = _Client()
     request = _request("normal")
     request.metadata.update({
@@ -464,32 +464,59 @@ def test_provider_complete_forwards_strict_repair_visible_output_metadata():
 
 def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
+    monkeypatch.delenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", raising=False)
     assert openai_web_reasoning_effort(
-        "long_form", max_output_tokens=1200
+        "long_form", max_output_tokens=1600
     ) == "none"
     assert openai_web_reasoning_effort(
-        "long_form", max_output_tokens=2400
-    ) == "none"
-    assert openai_web_reasoning_effort(
-        "long_form", max_output_tokens=4000
+        "long_form", max_output_tokens=6000
     ) == "low"
 
     client = _Client()
     client.responses = _Recorder([_terminal_event(_final())])
-    route = replace(_route(), max_output_tokens=2400)
+    route = replace(_route(), max_output_tokens=1600)
     OpenAIProvider(client).stream_complete(
         _request("long_form"), route, lambda _delta: None
     )
     assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
 
 
-def test_strict_visible_contract_disables_reasoning_for_visible_reserve():
+def test_pro_strict_visible_contract_downgrades_reasoning_one_step(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "high")
     assert openai_web_reasoning_effort(
-        "normal",
-        max_output_tokens=420,
+        "long_form",
+        max_output_tokens=6000,
         strict_visible_format=True,
-        minimum_visible_output_tokens=228,
+        minimum_visible_output_tokens=1200,
+    ) == "medium"
+
+
+def test_pro_non_strict_long_form_retains_configured_reasoning(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "high")
+    assert openai_web_reasoning_effort(
+        "long_form", max_output_tokens=6000,
+    ) == "high"
+
+
+def test_strict_visible_contract_suppresses_only_below_reasoning_floor(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "2000")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_NORMAL", "medium")
+    assert openai_web_reasoning_effort(
+        "normal", max_output_tokens=2200,
+        strict_visible_format=True, minimum_visible_output_tokens=300,
     ) == "none"
+    assert openai_web_reasoning_effort(
+        "normal", max_output_tokens=3000,
+        strict_visible_format=True, minimum_visible_output_tokens=800,
+    ) == "low"
+
+
+def test_invalid_reasoning_budget_floor_is_rejected(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "zero")
+    with pytest.raises(OpenAIReasoningEffortConfigurationError):
+        openai_web_reasoning_effort("long_form", max_output_tokens=6000)
 
 
 def test_invalid_web_reasoning_effort_is_rejected(monkeypatch):
@@ -732,6 +759,31 @@ def test_terminal_diagnostics_never_log_content_or_credentials(caplog):
     assert records
     assert prompt not in str(records)
     assert "sk-private-secret" not in str(records)
+
+
+def test_stream_terminal_records_resolved_web_reasoning_effort(caplog, monkeypatch):
+    client = _Client()
+    client.responses = _Recorder([_terminal_event(_final(text="complete answer"))])
+    request = _request(answer_class="long_form")
+    request.metadata.update({
+        "strict_output_contract": True,
+        "minimum_visible_output_tokens": 900,
+    })
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "high")
+    caplog.set_level(
+        logging.INFO, logger="app.ai.providers.openai_provider"
+    )
+
+    response = OpenAIProvider(client).stream_complete(
+        request, _route(max_output_tokens=6_000), lambda _delta: None,
+    )
+
+    assert response.raw["reasoning_effort"] == "medium"
+    terminal = next(
+        record for record in caplog.records
+        if getattr(record, "event", "") == "openai_stream_terminal"
+    )
+    assert terminal.reasoning_effort == "medium"
 
 
 def test_gpt5_nano_uses_responses_without_chat_only_params():

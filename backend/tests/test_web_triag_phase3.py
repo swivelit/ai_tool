@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import logging
 
 import pytest
 from sqlmodel import Session, select
@@ -28,6 +29,7 @@ from app.web_api.chat_service import (
     _missing_requested_private_identifier, _parse_verifier_status,
     execute_web_turn,
     prepare_web_turn,
+    record_web_turn_lifecycle,
 )
 from app.web_api.conversation_continuity import SameThreadContinuityDecision
 from tests.conftest import create_test_user
@@ -61,6 +63,49 @@ def _pack(
         retrieval_status=status,  # type: ignore[arg-type]
         contradictions=contradictions,
         source_map=(("S1", "page 1"),),
+    )
+
+
+def test_turn_lifecycle_is_content_free_and_visible_in_request_audit(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user("lifecycle-audit", "lifecycle-audit@example.com")
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain database indexes.",
+        request_id="lifecycle-audit-request",
+        thread_id=None,
+        reply_language="en",
+        billing_exempt=True,
+    )
+    caplog.set_level(logging.INFO, logger="app.web_api.chat_service")
+
+    record_web_turn_lifecycle(prepared, "reserved")
+    record_web_turn_lifecycle(
+        prepared, "provider_started", reasoning_effort="medium"
+    )
+
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session, request_ids=[prepared.request_id]
+        )[0]
+    assert audit["reasoning_effort"] == "medium"
+    assert audit["turn_lifecycle_stage"] == "provider_started"
+    assert audit["turn_lifecycle_events"] == ["reserved", "provider_started"]
+    records = [
+        record for record in caplog.records
+        if getattr(record, "event", "") == "web_chat_turn_lifecycle"
+    ]
+    assert [record.lifecycle_stage for record in records] == [
+        "reserved", "provider_started",
+    ]
+    assert "Explain database indexes" not in str(
+        [record.__dict__ for record in records]
     )
 
 

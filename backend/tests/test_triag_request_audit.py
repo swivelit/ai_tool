@@ -70,6 +70,9 @@ EXPECTED_RESULT_KEYS = {
     "answer_check_status_counts",
     "selected_tier",
     "repository_validation_mode",
+    "reasoning_effort",
+    "turn_lifecycle_stage",
+    "turn_lifecycle_events",
     "phase2_fallback_reason_code",
     "cancellation_state",
     "cancellation_failure_origin",
@@ -144,6 +147,12 @@ def _seed_request() -> None:
             safe_metadata_json=json.dumps({
                 "provider": SECRET_PROVIDER,
                 "model": SECRET_MODEL,
+                "reasoning_effort": "medium",
+                "turn_lifecycle_stage": "message_persisted",
+                "turn_lifecycle_events": [
+                    "reserved", "provider_started", "provider_completed",
+                    "answer_finalized", "message_persisted",
+                ],
             }),
         ))
         session.add(UsageCharge(
@@ -308,6 +317,12 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "answer_check_status_counts": {"passed": 1},
         "selected_tier": "pro",
         "repository_validation_mode": None,
+        "reasoning_effort": "medium",
+        "turn_lifecycle_stage": "message_persisted",
+        "turn_lifecycle_events": [
+            "reserved", "provider_started", "provider_completed",
+            "answer_finalized", "message_persisted",
+        ],
         "phase2_fallback_reason_code": None,
         "cancellation_state": "complete",
         "cancellation_failure_origin": "none",

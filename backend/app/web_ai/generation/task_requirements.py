@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import re
@@ -504,6 +504,12 @@ class TaskRequirementContract:
     forbidden_authoritative_stores: tuple[str, ...] = ()
     comparison_terms: tuple[str, ...] = ()
     explicit_subquestion_count: int = 0
+    repository_unified_diff_required: bool = False
+    repository_validation_command: str | None = None
+    repository_validation_claim_mode: str | None = None
+    repository_forbidden_stack_assumptions: tuple[str, ...] = ()
+    repository_actual_stack_terms: tuple[str, ...] = ()
+    repository_missing_path_response_required: bool = False
     version: str = TASK_REQUIREMENT_VERSION
 
     @property
@@ -517,6 +523,12 @@ class TaskRequirementContract:
             or self.forbidden_authoritative_stores
             or self.comparison_terms
             or self.explicit_subquestion_count
+            or self.repository_unified_diff_required
+            or self.repository_validation_command
+            or self.repository_validation_claim_mode
+            or self.repository_forbidden_stack_assumptions
+            or self.repository_actual_stack_terms
+            or self.repository_missing_path_response_required
         )
 
     def as_metadata(self) -> dict[str, Any]:
@@ -578,6 +590,39 @@ class TaskRequirementContract:
                 int(value.get("explicit_subquestion_count") or 0)
                 if isinstance(value.get("explicit_subquestion_count"), int) else 0
             ),
+            repository_unified_diff_required=(
+                value.get("repository_unified_diff_required") is True
+            ),
+            repository_validation_command=(
+                str(value.get("repository_validation_command"))[:120]
+                if isinstance(value.get("repository_validation_command"), str)
+                and str(value.get("repository_validation_command")).strip()
+                else None
+            ),
+            repository_validation_claim_mode=(
+                str(value.get("repository_validation_claim_mode"))[:32]
+                if value.get("repository_validation_claim_mode")
+                in {"static_only", "executable", "unavailable"}
+                else None
+            ),
+            repository_forbidden_stack_assumptions=tuple(
+                str(item)[:40]
+                for item in (
+                    value.get("repository_forbidden_stack_assumptions") or ()
+                )[:8]
+            ) if isinstance(
+                value.get("repository_forbidden_stack_assumptions"),
+                (list, tuple),
+            ) else (),
+            repository_actual_stack_terms=tuple(
+                str(item)[:40]
+                for item in (value.get("repository_actual_stack_terms") or ())[:12]
+            ) if isinstance(
+                value.get("repository_actual_stack_terms"), (list, tuple)
+            ) else (),
+            repository_missing_path_response_required=(
+                value.get("repository_missing_path_response_required") is True
+            ),
             version=str(value.get("version") or TASK_REQUIREMENT_VERSION)[:32],
         )
 
@@ -638,6 +683,44 @@ class TaskRequirementContract:
         if self.explicit_subquestion_count:
             rules.append(
                 f"Answer all {self.explicit_subquestion_count} explicit sub-questions."
+            )
+        if self.repository_unified_diff_required:
+            rules.append(
+                "Return a syntactically intact unified diff with `---` and `+++` "
+                "file headers and at least one `@@` hunk; do not replace the diff "
+                "with prose or partial snippets."
+            )
+        if self.repository_validation_command:
+            rules.append(
+                "Name the repository-defined validation command exactly as "
+                f"`{self.repository_validation_command}`."
+            )
+        if self.repository_validation_claim_mode == "static_only":
+            rules.append(
+                "Validation is static-only for this answer. State honestly that "
+                "repository tests were not executed; do not claim that tests, "
+                "lint, build, or type checks ran or passed."
+            )
+        elif self.repository_validation_claim_mode == "unavailable":
+            rules.append(
+                "Executable validation is unavailable for this answer. Do not "
+                "claim that repository checks ran or passed."
+            )
+        if self.repository_forbidden_stack_assumptions:
+            rules.append(
+                "Identify the repository's actual stack and explicitly reject "
+                "these unsupported framework assumptions: "
+                + ", ".join(self.repository_forbidden_stack_assumptions) + "."
+            )
+            if self.repository_actual_stack_terms:
+                rules.append(
+                    "Name the actual indexed stack using at least one of: "
+                    + ", ".join(self.repository_actual_stack_terms) + "."
+                )
+        if self.repository_missing_path_response_required:
+            rules.append(
+                "The requested file is absent from the complete index. Say it "
+                "was not found and do not invent its behavior, contents, or importers."
             )
         if self.deliverables:
             target = max(35, min(
@@ -750,6 +833,45 @@ def extract_task_requirements(message: str) -> TaskRequirementContract:
         forbidden_authoritative_stores=forbidden_authoritative_stores,
         comparison_terms=comparison_terms,
         explicit_subquestion_count=min(20, explicit_subquestions),
+    )
+
+
+def with_repository_task_requirements(
+    contract: TaskRequirementContract,
+    *,
+    message: str,
+    validation_command: str | None,
+    validation_mode: str | None,
+    forbidden_stack_assumptions: tuple[str, ...] = (),
+    actual_stack_terms: tuple[str, ...] = (),
+    missing_path_response_required: bool = False,
+) -> TaskRequirementContract:
+    """Add repository-specific, deterministic requirements to a turn contract."""
+
+    text = str(message or "")
+    wants_diff = bool(re.search(r"\bunified\s+diff\b", text, re.IGNORECASE))
+    asks_validation_claim = bool(
+        re.search(r"\b(?:test|validation)\s+command\b", text, re.IGNORECASE)
+        and re.search(r"\b(?:run|ran|claim|check|verify)\w*\b", text, re.IGNORECASE)
+    )
+    return replace(
+        contract,
+        repository_unified_diff_required=wants_diff,
+        repository_validation_command=(
+            validation_command if asks_validation_claim else None
+        ),
+        repository_validation_claim_mode=(
+            validation_mode if asks_validation_claim else None
+        ),
+        repository_forbidden_stack_assumptions=tuple(dict.fromkeys(
+            item.casefold() for item in forbidden_stack_assumptions if item
+        ))[:8],
+        repository_actual_stack_terms=tuple(dict.fromkeys(
+            item.casefold() for item in actual_stack_terms if item
+        ))[:12],
+        repository_missing_path_response_required=bool(
+            missing_path_response_required
+        ),
     )
 
 
@@ -879,6 +1001,112 @@ def validate_task_requirements(
             "task_requirement_comparison",
             "passed" if present and compared else "failed",
             "" if present and compared else "named_comparison_missing",
+        ))
+
+    if contract.repository_unified_diff_required:
+        minus = re.search(r"(?m)^---\s+(?:a/)?[^\s]+\s*$", value)
+        plus = re.search(r"(?m)^\+\+\+\s+(?:b/)?[^\s]+\s*$", value)
+        hunk = re.search(r"(?m)^@@\s+[-+0-9, ]+@@", value)
+        intact = bool(minus and plus and hunk and minus.start() < plus.start() < hunk.start())
+        checks.append(QualityCheck(
+            "task_requirement_repository_unified_diff",
+            "passed" if intact else "failed",
+            "" if intact else "repository_unified_diff_missing",
+            observations=(
+                ("minus_header_present", int(minus is not None)),
+                ("plus_header_present", int(plus is not None)),
+                ("hunk_header_present", int(hunk is not None)),
+            ),
+        ))
+
+    if contract.repository_validation_command:
+        command_present = contract.repository_validation_command in value
+        run_claim = bool(re.search(
+            r"\b(?:tests?|checks?|lint|build|typecheck)\b[^.\n]{0,60}"
+            r"\b(?:ran|run|passed|pass|succeeded|verified)\b|"
+            r"\b(?:ran|run|passed|succeeded|verified)\b[^.\n]{0,60}"
+            r"\b(?:tests?|checks?|lint|build|typecheck)\b",
+            value, re.IGNORECASE,
+        ))
+        honest_unexecuted = bool(re.search(
+            r"\b(?:not|wasn['’]?t|didn['’]?t|cannot|can['’]?t|unable)\b"
+            r"[^.\n]{0,60}\b(?:run|execute|claim|verify)\w*\b|"
+            r"\b(?:static[- ]only|unverified|not executed)\b",
+            value, re.IGNORECASE,
+        ))
+        claim_matches = (
+            honest_unexecuted and not run_claim
+            if contract.repository_validation_claim_mode in {
+                "static_only", "unavailable"
+            }
+            else True
+        )
+        passed = command_present and claim_matches
+        checks.append(QualityCheck(
+            "task_requirement_repository_validation_claim",
+            "passed" if passed else "failed",
+            "" if passed else "repository_validation_claim_inaccurate",
+            observations=(
+                ("command_present", int(command_present)),
+                ("claim_matches_capability", int(claim_matches)),
+                ("validation_mode", contract.repository_validation_claim_mode or ""),
+            ),
+        ))
+
+    if contract.repository_forbidden_stack_assumptions:
+        rejected: list[str] = []
+        for framework in contract.repository_forbidden_stack_assumptions:
+            escaped = re.escape(framework)
+            if re.search(
+                rf"\b(?:not|isn['’]?t|doesn['’]?t|no)\b[^.\n]{{0,50}}\b{escaped}\b|"
+                rf"\b{escaped}\b[^.\n]{{0,50}}\b(?:not|absent|unsupported|not used)\b",
+                value, re.IGNORECASE,
+            ):
+                rejected.append(framework)
+        actual_stack_present = bool(
+            contract.repository_actual_stack_terms
+            and any(
+                re.search(rf"\b{re.escape(term)}\b", value, re.IGNORECASE)
+                for term in contract.repository_actual_stack_terms
+            )
+        )
+        passed = (
+            len(rejected) == len(contract.repository_forbidden_stack_assumptions)
+            and actual_stack_present
+        )
+        checks.append(QualityCheck(
+            "task_requirement_repository_stack",
+            "passed" if passed else "failed",
+            "" if passed else "repository_stack_assumption_not_rejected",
+            observations=(
+                ("unsupported_assumption_count", len(
+                    contract.repository_forbidden_stack_assumptions
+                )),
+                ("rejected_assumption_count", len(rejected)),
+                ("actual_stack_present", int(actual_stack_present)),
+            ),
+        ))
+
+    if contract.repository_missing_path_response_required:
+        honest_absence = bool(re.search(
+            r"\b(?:not found|wasn['’]?t found|does not exist|doesn['’]?t exist|"
+            r"absent|not present|no such file|cannot determine|can['’]?t determine)\b",
+            value, re.IGNORECASE,
+        ))
+        invented_behavior = bool(re.search(
+            r"\b(?:it|this file|the file)\s+"
+            r"(?:defines?|implements?|imports?|exports?|calls?|handles?|returns?|contains?)\b",
+            value, re.IGNORECASE,
+        ))
+        passed = honest_absence and not invented_behavior
+        checks.append(QualityCheck(
+            "task_requirement_repository_missing_path",
+            "passed" if passed else "failed",
+            "" if passed else "repository_missing_path_answer_invented",
+            observations=(
+                ("honest_absence_present", int(honest_absence)),
+                ("invented_behavior_present", int(invented_behavior)),
+            ),
         ))
 
     fenced_ranges = tuple(

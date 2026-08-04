@@ -219,6 +219,9 @@ type Audit = {
   answer_check_status_counts: Record<string, number>
   selected_tier: CapabilityTier | 'not_run'
   repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null
+  reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
+  turn_lifecycle_stage: string | null
+  turn_lifecycle_events: string[]
   cancellation_state: string
   cancellation_failure_origin: string
   cancellation_failure_count: number
@@ -293,6 +296,9 @@ type QuestionResult = {
   repairAttempted: boolean
   generationStageCount: number
   repairStageCount: number
+  reasoningEffort: string | null
+  turnLifecycleStage: string | null
+  turnLifecycleEvents: string[]
   sourceKindCounts: Record<string, number>
   visibleSources: Array<{ id: string; label: string; locator: string }>
   invalidCitation: boolean
@@ -929,7 +935,8 @@ function skippedResult(
     failedCheckIdentifiers:[], deterministicIntent:null,
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
-    generationStageCount:0, repairStageCount:0,
+    generationStageCount:0, repairStageCount:0, reasoningEffort:null,
+    turnLifecycleStage:null, turnLifecycleEvents:[],
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
     invalidCitation:false,
     usageStageCount:0, usageStageStatusCounts:{}, activeUsageStageNames:[],
@@ -1506,6 +1513,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       repairAttempted:audit.repair_attempted,
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
+      reasoningEffort:audit.reasoning_effort,
+      turnLifecycleStage:audit.turn_lifecycle_stage,
+      turnLifecycleEvents:audit.turn_lifecycle_events,
       visibleSources:sources, invalidCitation,
       answerCheckStatusCounts:audit.answer_check_status_counts,
       providerCallCount:audit.provider_call_count, usageStageCount:audit.usage_stage_row_count,
@@ -3223,6 +3233,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         scope_gate_reason:item.scopeGateReason,
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
+        reasoning_effort:item.reasoningEffort,
+        turn_lifecycle_stage:item.turnLifecycleStage,
+        turn_lifecycle_events:item.turnLifecycleEvents,
         visible_bullet_count:item.representationCounts.visibleBulletCount,
         raw_bullet_count:item.representationCounts.rawBulletCount,
         visible_fence_count:item.representationCounts.visibleFenceCount,

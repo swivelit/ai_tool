@@ -13,6 +13,15 @@ OPENAI_REASONING_EFFORT_DEFAULTS = {
 VALID_OPENAI_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh"}
 )
+OPENAI_REASONING_MIN_BUDGET_TOKENS_DEFAULT = 2_000
+_STRICT_EFFORT_DOWNGRADE = {
+    "xhigh": "high",
+    "high": "medium",
+    "medium": "low",
+    "low": "minimal",
+    "minimal": "minimal",
+    "none": "none",
+}
 
 
 class OpenAIReasoningEffortConfigurationError(RuntimeError):
@@ -52,15 +61,35 @@ def openai_web_reasoning_effort(
         visible_reserve = max(0, int(minimum_visible_output_tokens or 0))
     except (TypeError, ValueError):
         visible_reserve = 0
-    if strict_visible_format and visible_reserve:
+    floor_name = "OPENAI_REASONING_MIN_BUDGET_TOKENS"
+    try:
+        reasoning_floor = int(os.getenv(
+            floor_name, str(OPENAI_REASONING_MIN_BUDGET_TOKENS_DEFAULT)
+        ))
+    except (TypeError, ValueError) as exc:
+        raise OpenAIReasoningEffortConfigurationError(
+            f"{floor_name} must be a positive integer"
+        ) from exc
+    if reasoning_floor <= 0:
+        raise OpenAIReasoningEffortConfigurationError(
+            f"{floor_name} must be a positive integer"
+        )
+    reasoning_budget = max(0, output_budget - visible_reserve)
+    if (
+        strict_visible_format
+        and output_budget > 0
+        and reasoning_budget < reasoning_floor
+    ):
         return "none"
+    if strict_visible_format:
+        return _STRICT_EFFORT_DOWNGRADE[effort]
     # Responses reasoning tokens share max_output_tokens with visible output.
-    # Under Lite/Standard-sized long-form ceilings, reserve that bounded budget
-    # for the explicitly requested deliverable even when the general configured
-    # long-form effort is low. Larger Pro plans retain the configured effort.
+    # Below the configured floor, reserve the bounded response budget for the
+    # explicitly requested visible deliverable. Larger plans retain their
+    # configured effort.
     if (
         normalized_class == "long_form"
-        and 0 < output_budget <= 2_400
+        and 0 < output_budget < reasoning_floor
         and effort not in {"none", "minimal"}
     ):
         return "none"

@@ -60,6 +60,7 @@ from app.web_api.upload_store import InProcessEphemeralUploadStore
 from app.web_api.chat_service import (
     _repository_index_manifest,
     _resolved_repository_validation_mode,
+    prepare_web_turn,
 )
 from tests.conftest import auth_headers, create_test_user
 
@@ -363,6 +364,28 @@ def test_dedicated_repository_api_is_owner_scoped_and_persists_no_source(
         ], default=str)
     assert "return 'hello'" not in persisted
     assert "assert hello()" not in persisted
+    prepared = prepare_web_turn(
+        user_id=int(owner.id),
+        message="Refactor this repository to use React useOptimistic.",
+        request_id=str(uuid4()),
+        thread_id=None,
+        reply_language="en",
+        repository_id=repository_id,
+        billing_exempt=True,
+    )
+    prompt_context = str(
+        prepared.ai_request.metadata.get("attachment_prompt_context") or ""
+    )
+    task_metadata = prepared.ai_request.metadata.get("task_requirements")
+    assert "Indexed repository file manifest" in prompt_context
+    assert "app/main.py" in prompt_context
+    assert isinstance(task_metadata, dict)
+    assert task_metadata["repository_forbidden_stack_assumptions"] == (
+        "react",
+    ) or task_metadata["repository_forbidden_stack_assumptions"] == ["react"]
+    assert "unsupported framework assumptions: react" in str(
+        prepared.provider_messages[0]["content"]
+    ).casefold()
     cross_owner = client.post(
         "/api/web/chat/stream",
         headers=auth_headers("repo-other", "repo-other@example.com"),

@@ -122,6 +122,7 @@ from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
     PromptBudgetExceeded, execute_web_turn, prepare_web_turn,
+    record_web_turn_lifecycle,
 )
 from .continuation import (
     metadata_dict as continuation_metadata_dict,
@@ -3785,6 +3786,7 @@ async def chat_stream(
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
+    record_web_turn_lifecycle(prepared, "reserved")
 
     async def events():
         queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
@@ -4080,6 +4082,7 @@ async def chat_stream(
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
             yield _sse("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry."})
         finally:
+            record_web_turn_lifecycle(prepared, "stream_terminal")
             ownership["generator_closed"] = True
             with _active_generations_lock:
                 _active_generations.pop(prepared.request_id, None)

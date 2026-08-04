@@ -74,11 +74,12 @@ from ..web_ai.generation.output_format import (
     fence_integrity_quality_check,
 )
 from ..web_ai.generation.repository_grounding import (
-    append_ungrounded_repository_path_warning,
+    cited_repository_paths,
 )
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
     extract_task_requirements, splice_architecture_section_repair,
+    with_repository_task_requirements,
 )
 from ..web_ai.generation.repair import (
     architecture_splice_area_identifiers,
@@ -2225,6 +2226,41 @@ def prepare_web_turn(
             )
             repository_contract = repository_result.contract
             repository_pack = repository_result.evidence_pack
+            repository_validation_mode = _resolved_repository_validation_mode(
+                request_triag_settings,
+                repository_context_used=True,
+            )
+            indexed_repository_paths = {
+                item.path for item in repository_snapshot.files
+            }
+            task_requirements = with_repository_task_requirements(
+                task_requirements,
+                message=model_message,
+                validation_command=_repository_defined_test_command(
+                    repository_snapshot
+                ),
+                validation_mode=repository_validation_mode,
+                forbidden_stack_assumptions=(
+                    _repository_forbidden_stack_assumptions(
+                        model_message, repository_index
+                    )
+                ),
+                actual_stack_terms=tuple(dict.fromkeys((
+                    *repository_index.languages,
+                    *repository_index.frameworks,
+                ))),
+                missing_path_response_required=bool(
+                    repository_snapshot.index_complete
+                    and any(
+                        path not in indexed_repository_paths
+                        for path in cited_repository_paths(model_message)
+                    )
+                ),
+            )
+            base_metadata["task_requirements"] = (
+                task_requirements.as_metadata()
+            )
+            base_metadata["task_requirements_hash"] = task_requirements.hash
             repository_prompt = "\n\n".join((
                 repository_contract.prompt_contract(
                     policy.repository_contract_token_cap
@@ -2239,6 +2275,9 @@ def prepare_web_turn(
                     "request. For a requested file change, include each complete "
                     "changed file in a fenced block whose opening line contains "
                     "`path=relative/path.ext`; validation accepts no commands."
+                ),
+                task_requirements.prompt_instruction(
+                    execution_plan.max_output_tokens
                 ),
             ))
             attachment_context = "\n\n".join(
@@ -3070,6 +3109,41 @@ def _repository_index_manifest(
     return "\n".join((header, scope, *lines))
 
 
+def _repository_defined_test_command(
+    snapshot: EphemeralRepositorySnapshot,
+) -> str | None:
+    package = next(
+        (item for item in snapshot.files if item.path == "package.json"), None
+    )
+    if package is None:
+        return None
+    try:
+        payload = json.loads(package.text)
+    except (TypeError, ValueError):
+        return None
+    scripts = payload.get("scripts") if isinstance(payload, dict) else None
+    return "npm test" if isinstance(scripts, dict) and isinstance(
+        scripts.get("test"), str
+    ) else None
+
+
+def _repository_forbidden_stack_assumptions(
+    message: str,
+    repository_index: RepositoryIndex,
+) -> tuple[str, ...]:
+    text = str(message or "").casefold()
+    dependencies = {
+        name.casefold() for name, _version in repository_index.dependency_versions
+    }
+    frameworks = {item.casefold() for item in repository_index.frameworks}
+    return tuple(
+        framework for framework in ("react",)
+        if framework in text
+        and framework not in dependencies
+        and framework not in frameworks
+    )
+
+
 def _insufficient_private_source_text(reply_language: str) -> str:
     if reply_language == "ta":
         return (
@@ -3463,6 +3537,8 @@ def _phase3_stage(
     output_tokens: int = 0,
     reasoning_tokens: int = 0,
     reserved_micros: int = 0,
+    lifecycle_stage: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Upsert content-free, owner-scoped accounting for one provider stage."""
 
@@ -3504,13 +3580,37 @@ def _phase3_stage(
             stage.debited_micros = max(0, int(price.micros))
             stage.input_tokens = max(0, int(input_tokens))
             stage.output_tokens = max(0, int(output_tokens))
+        existing_safe = _safe_metadata_json(stage.safe_metadata_json)
+        lifecycle_events = [
+            str(item) for item in existing_safe.get("turn_lifecycle_events", [])
+            if str(item) in _TURN_LIFECYCLE_STAGES
+        ] if isinstance(existing_safe.get("turn_lifecycle_events"), list) else []
+        if lifecycle_stage in _TURN_LIFECYCLE_STAGES:
+            lifecycle_events.append(str(lifecycle_stage))
+            lifecycle_events = list(dict.fromkeys(lifecycle_events))[-8:]
+        safe_reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort in _SAFE_REASONING_EFFORTS else None
+        )
         stage.safe_metadata_json = json.dumps(
             {
+                **existing_safe,
                 "stage_key": stage_name,
                 "attempt_number": max(1, int(attempt_number)),
                 "provider": provider[:32],
                 "model": model[:128],
                 "status": status,
+                **(
+                    {
+                        "turn_lifecycle_stage": lifecycle_stage,
+                        "turn_lifecycle_events": lifecycle_events,
+                    }
+                    if lifecycle_stage in _TURN_LIFECYCLE_STAGES else {}
+                ),
+                **(
+                    {"reasoning_effort": safe_reasoning_effort}
+                    if safe_reasoning_effort else {}
+                ),
                 **(
                     {
                         "native_cost_amount": str(price.amount),
@@ -3533,6 +3633,102 @@ def _phase3_stage(
         stage.updated_at = utc_now()
         session.add(stage)
         session.commit()
+
+
+_TURN_LIFECYCLE_STAGES = frozenset({
+    "reserved", "provider_started", "provider_completed",
+    "answer_finalized", "message_persisted", "stream_terminal",
+})
+_SAFE_REASONING_EFFORTS = frozenset({
+    "none", "minimal", "low", "medium", "high", "xhigh",
+})
+
+
+def _safe_metadata_json(raw: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def record_web_turn_lifecycle(
+    prepared: PreparedWebTurn,
+    lifecycle_stage: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> None:
+    """Record a content-free lifecycle checkpoint without risking the turn."""
+    if (
+        lifecycle_stage not in _TURN_LIFECYCLE_STAGES
+        or prepared.route.provider not in {"openai", "sarvam"}
+    ):
+        return
+    logger.info(
+        "web_chat_turn_lifecycle",
+        extra={
+            "event": "web_chat_turn_lifecycle",
+            "request_id": prepared.request_id,
+            "lifecycle_stage": lifecycle_stage,
+            **(
+                {"reasoning_effort": reasoning_effort}
+                if reasoning_effort in _SAFE_REASONING_EFFORTS else {}
+            ),
+        },
+    )
+    try:
+        with SessionLocal() as session:
+            stage = session.exec(select(WebUsageStage).where(
+                WebUsageStage.request_id == prepared.request_id,
+                WebUsageStage.user_id == prepared.user_id,
+                WebUsageStage.stage_name == "generation",
+            )).first()
+            if stage is None:
+                if lifecycle_stage != "reserved":
+                    return
+                parent = session.exec(select(UsageCharge).where(
+                    UsageCharge.request_id == prepared.request_id,
+                    UsageCharge.user_id == prepared.user_id,
+                )).first()
+                stage = get_or_create_usage_stage(
+                    session,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_id,
+                    request_id=prepared.request_id,
+                    usage_charge_id=parent.id if parent else None,
+                    stage_name="generation",
+                    stage_order=10,
+                    status="planned",
+                    safe_metadata={"stage_key": "generation"},
+                )
+            safe = _safe_metadata_json(stage.safe_metadata_json)
+            events = [
+                str(item) for item in safe.get("turn_lifecycle_events", [])
+                if str(item) in _TURN_LIFECYCLE_STAGES
+            ] if isinstance(safe.get("turn_lifecycle_events"), list) else []
+            events.append(lifecycle_stage)
+            safe.update({
+                "turn_lifecycle_stage": lifecycle_stage,
+                "turn_lifecycle_events": list(dict.fromkeys(events))[-8:],
+            })
+            if reasoning_effort in _SAFE_REASONING_EFFORTS:
+                safe["reasoning_effort"] = reasoning_effort
+            stage.safe_metadata_json = json.dumps(
+                safe, sort_keys=True, separators=(",", ":")
+            )
+            stage.updated_at = utc_now()
+            session.add(stage)
+            session.commit()
+    except Exception as exc:
+        logger.warning(
+            "web_chat_turn_lifecycle_persistence_failed",
+            extra={
+                "event": "web_chat_turn_lifecycle_persistence_failed",
+                "request_id": prepared.request_id,
+                "lifecycle_stage": lifecycle_stage,
+                "exception_class": type(exc).__name__[:80],
+            },
+        )
 
 
 def _phase3_response_price(response: AIProviderResponse) -> PriceResult:
@@ -3982,6 +4178,7 @@ def execute_web_turn(
                     provider=prepared.route.provider,
                     model=prepared.route.model or "",
                     reserved_micros=prepared.reserved_micros,
+                    lifecycle_stage="provider_started",
                 )
                 try:
                     if visible_delta and hasattr(provider, "stream_complete"):
@@ -4032,6 +4229,10 @@ def execute_web_turn(
                                 usage.get("reasoning_tokens") or 0
                             ),
                             reserved_micros=prepared.reserved_micros,
+                            lifecycle_stage="provider_completed",
+                            reasoning_effort=str(
+                                usage.get("reasoning_effort") or ""
+                            ),
                         )
                     else:
                         _phase3_stage(
@@ -4059,6 +4260,10 @@ def execute_web_turn(
                         input_tokens=exc.response.input_tokens,
                         output_tokens=exc.response.output_tokens,
                         reserved_micros=prepared.reserved_micros,
+                        lifecycle_stage="provider_completed",
+                        reasoning_effort=str(
+                            exc.response.raw.get("reasoning_effort") or ""
+                        ),
                     )
                     raise
                 except GenerationCancelled as exc:
@@ -4080,6 +4285,10 @@ def execute_web_turn(
                             input_tokens=exc.response.input_tokens,
                             output_tokens=exc.response.output_tokens,
                             reserved_micros=prepared.reserved_micros,
+                            lifecycle_stage="provider_completed",
+                            reasoning_effort=str(
+                                exc.response.raw.get("reasoning_effort") or ""
+                            ),
                         )
                     else:
                         _phase3_stage(
@@ -4118,6 +4327,10 @@ def execute_web_turn(
                     input_tokens=draft.input_tokens,
                     output_tokens=draft.output_tokens,
                     reserved_micros=prepared.reserved_micros,
+                    lifecycle_stage="provider_completed",
+                    reasoning_effort=str(
+                        draft.raw.get("reasoning_effort") or ""
+                    ),
                 )
                 guard_context = replace(
                     guard_context,
@@ -4711,18 +4924,6 @@ def execute_web_turn(
                     )
                     if spliced is not None:
                         repaired = replace(repaired, text=spliced)
-                if guard_context.repository_context_used:
-                    warned_text, warned = (
-                        append_ungrounded_repository_path_warning(
-                            repaired.text,
-                            guard_context.repository_file_paths,
-                            index_complete=(
-                                guard_context.repository_index_complete
-                            ),
-                        )
-                    )
-                    if warned:
-                        repaired = replace(repaired, text=warned_text)
                 return repaired
 
             def repair(
@@ -5114,6 +5315,12 @@ def execute_web_turn(
             session.commit()
         raise
 
+    record_web_turn_lifecycle(
+        prepared,
+        "answer_finalized",
+        reasoning_effort=str(response.raw.get("reasoning_effort") or ""),
+    )
+
     with _terminalize_usage_on_persistence_error(
         prepared, phase3_prices,
     ), SessionLocal() as session:
@@ -5329,6 +5536,11 @@ def execute_web_turn(
                     or prepared.regeneration_cache_row_id
                 ),
                 "cache_hit_kind": response.raw.get("cache_hit_kind"),
+                **(
+                    {"reasoning_effort": response.raw.get("reasoning_effort")}
+                    if response.raw.get("reasoning_effort")
+                    in _SAFE_REASONING_EFFORTS else {}
+                ),
                 "regenerated_from_message_id": (
                     prepared.replaces_assistant_message_id
                 ),
@@ -5456,6 +5668,12 @@ def execute_web_turn(
             billing_exempt=prepared.billing_exempt,
             credit_bucket=prepared.billing_credit_bucket,
         )
+
+    record_web_turn_lifecycle(
+        prepared,
+        "message_persisted",
+        reasoning_effort=str(response.raw.get("reasoning_effort") or ""),
+    )
 
     response_is_truncated = bool(response.raw.get("truncated"))
     is_continuation_control = bool(

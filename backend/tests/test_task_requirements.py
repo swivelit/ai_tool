@@ -10,7 +10,7 @@ from app.web_ai.generation.task_requirements import (
     evaluate_authority_semantics,
     evaluate_idempotency_semantics,
     extract_task_requirements, splice_architecture_section_repair,
-    validate_task_requirements,
+    validate_task_requirements, with_repository_task_requirements,
 )
 
 
@@ -278,3 +278,77 @@ def test_python_sentence_segmenter_matches_shared_fixtures():
     assert cases
     for case in cases:
         assert count_sentences(case["text"]) == case["count"], case["id"]
+
+
+def test_repository_unified_diff_requirement_rejects_prose_and_accepts_intact_diff():
+    contract = with_repository_task_requirements(
+        extract_task_requirements("Provide a minimal unified diff."),
+        message="Provide a minimal unified diff.",
+        validation_command=None,
+        validation_mode="static_only",
+    )
+    failed = validate_task_requirements("Change src/app.js.", contract)
+    assert failed[-1].check_type == "task_requirement_repository_unified_diff"
+    assert failed[-1].status == "failed"
+    answer = """```diff
+--- a/src/app.js
++++ b/src/app.js
+@@ -1 +1 @@
+-return 1
++return 2
+```"""
+    assert validate_task_requirements(answer, contract)[-1].status == "passed"
+
+
+def test_repository_validation_claim_must_match_static_only_capability():
+    contract = with_repository_task_requirements(
+        extract_task_requirements(
+            "What test command is defined and which checks can you claim were run?"
+        ),
+        message="What test command is defined and which checks can you claim were run?",
+        validation_command="npm test",
+        validation_mode="static_only",
+    )
+    passing = validate_task_requirements(
+        "The command is `npm test`. Validation is static-only, so tests were not executed.",
+        contract,
+    )
+    assert passing[-1].status == "passed"
+    failing = validate_task_requirements(
+        "The command is `npm test`; all tests passed.", contract,
+    )
+    assert failing[-1].status == "failed"
+
+
+def test_repository_stack_requirement_rejects_unsupported_react_assumption():
+    contract = with_repository_task_requirements(
+        extract_task_requirements("Refactor this repository to React."),
+        message="Refactor this repository to React.",
+        validation_command="npm test",
+        validation_mode="static_only",
+        forbidden_stack_assumptions=("react",),
+        actual_stack_terms=("javascript",),
+    )
+    assert validate_task_requirements(
+        "This is a JavaScript repository, not a React application.", contract,
+    )[-1].status == "passed"
+    assert validate_task_requirements(
+        "Add a React component and useOptimistic.", contract,
+    )[-1].status == "failed"
+
+
+def test_repository_missing_path_requires_honest_absence_without_invention():
+    contract = with_repository_task_requirements(
+        extract_task_requirements("What does src/missing.ts do?"),
+        message="What does src/missing.ts do?",
+        validation_command=None,
+        validation_mode="static_only",
+        missing_path_response_required=True,
+    )
+    assert validate_task_requirements(
+        "The requested file was not found in the complete repository index.",
+        contract,
+    )[-1].status == "passed"
+    assert validate_task_requirements(
+        "The file implements authentication and exports login().", contract,
+    )[-1].status == "failed"

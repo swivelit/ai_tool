@@ -102,6 +102,14 @@ _FINISH_REASONS = frozenset({
 _COMPLETION_STATUSES = frozenset({
     "unknown", "complete", "incomplete", "cancelled",
 })
+_REASONING_EFFORTS = frozenset({
+    "none", "minimal", "low", "medium", "high", "xhigh",
+})
+_TURN_LIFECYCLE_STAGES = (
+    "reserved", "provider_started", "provider_completed",
+    "answer_finalized", "message_persisted", "stream_terminal",
+)
+_TURN_LIFECYCLE_STAGE_SET = frozenset(_TURN_LIFECYCLE_STAGES)
 _ARCHITECTURE_AREA_IDENTIFIERS = (
     "database_schema",
     "transaction_boundaries",
@@ -224,6 +232,7 @@ def build_request_audit(
         WebUsageStage.input_tokens,
         WebUsageStage.output_tokens,
         WebUsageStage.settled_at,
+        WebUsageStage.safe_metadata_json,
     ).where(WebUsageStage.request_id.in_(request_ids))).all())
     traces = list(session.exec(select(
         WebRetrievalTrace.request_id,
@@ -354,6 +363,9 @@ def build_request_audit(
         deterministic_intent: str | None = None
         deterministic_route: str | None = None
         scope_gate_reason: str | None = None
+        reasoning_effort: str | None = None
+        turn_lifecycle_stage: str | None = None
+        turn_lifecycle_events: list[str] = []
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
             message_statuses.append(str(status or ""))
@@ -389,6 +401,9 @@ def build_request_audit(
                 if candidate_completion in _COMPLETION_STATUSES else "unknown"
             )
             truncated = metadata.get("truncated") is True
+            candidate_reasoning = str(metadata.get("reasoning_effort") or "")
+            if candidate_reasoning in _REASONING_EFFORTS:
+                reasoning_effort = candidate_reasoning
             fence_autoclosed = (
                 fence_autoclosed
                 or metadata.get("fence_autoclosed") is True
@@ -550,6 +565,34 @@ def build_request_audit(
                         ))
                     )
 
+        for stage_row in stage_rows:
+            stage_metadata = _safe_json(str(stage_row[7] or "{}"))
+            candidate_reasoning = str(
+                stage_metadata.get("reasoning_effort") or ""
+            )
+            if (
+                candidate_reasoning in _REASONING_EFFORTS
+                and (
+                    str(stage_row[0]) == "generation"
+                    or reasoning_effort is None
+                )
+            ):
+                reasoning_effort = candidate_reasoning
+            candidate_lifecycle = str(
+                stage_metadata.get("turn_lifecycle_stage") or ""
+            )
+            if candidate_lifecycle in _TURN_LIFECYCLE_STAGE_SET:
+                turn_lifecycle_stage = candidate_lifecycle
+            raw_events = stage_metadata.get("turn_lifecycle_events")
+            if isinstance(raw_events, list):
+                for event in raw_events:
+                    normalized = str(event)
+                    if (
+                        normalized in _TURN_LIFECYCLE_STAGE_SET
+                        and normalized not in turn_lifecycle_events
+                    ):
+                        turn_lifecycle_events.append(normalized)
+
         if failed_check_identifiers:
             if not pre_repair_failed_check_identifiers:
                 pre_repair_failed_check_identifiers = list(
@@ -701,6 +744,9 @@ def build_request_audit(
             ),
             "selected_tier": selected_tier,
             "repository_validation_mode": repository_validation_mode,
+            "reasoning_effort": reasoning_effort,
+            "turn_lifecycle_stage": turn_lifecycle_stage,
+            "turn_lifecycle_events": turn_lifecycle_events[:8],
             "phase2_fallback_reason_code": phase2_fallback_reason_code,
             "cancellation_state": cancellation_state,
             "cancellation_failure_origin": cancellation_failure_origin,
