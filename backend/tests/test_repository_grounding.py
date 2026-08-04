@@ -5,9 +5,9 @@ from app.web_ai.code_quality.repository_index import (
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.generation.repository_grounding import (
     REPOSITORY_PATH_VALIDATOR_VERSION,
+    append_ungrounded_repository_path_warning,
     cited_repository_paths,
     evaluate_repository_path_grounding,
-    strip_ungrounded_repository_path_claims,
 )
 from app.web_ai.generation.repair import build_repair_request
 
@@ -48,13 +48,26 @@ def test_repository_answer_rejects_phantom_path_against_indexed_version():
     assert dict(check.observations) == {
         "cited_path_count": 2,
         "invalid_path_count": 1,
+        "index_complete": 1,
         "validator_version": REPOSITORY_PATH_VALIDATOR_VERSION,
     }
+    assert check.reason_code == "nonexistent_file"
 
-    cleaned, changed = strip_ungrounded_repository_path_claims(answer, paths)
-    assert changed is True
-    assert "src/nonexistent.ts" not in cleaned
-    assert evaluate_repository_path_grounding(cleaned, paths).passed is True
+    partial_quality = AnswerGuard().check(answer, AnswerGuardContext(
+        answer_class="normal",
+        task_contract="What do these repository files do?",
+        repository_context_used=True,
+        repository_file_paths=paths,
+        repository_index_complete=False,
+        verified_buffered=True,
+    ))
+    partial_check = next(
+        item for item in partial_quality.checks
+        if item.check_type == "repository_path_grounding"
+    )
+    assert partial_check.status == "warning"
+    assert partial_check.reason_code == "grounding_indeterminate"
+    assert partial_quality.failed_checks == ()
 
     repair = build_repair_request(
         user_id=1,
@@ -78,3 +91,27 @@ def test_repository_answer_rejects_phantom_path_against_indexed_version():
         "Indexed repository files (authoritative for file existence):", 1,
     )[1]
     assert "do not invent its behavior or importers" in rendered
+
+
+def test_repository_warning_never_modifies_fenced_diff_bytes():
+    diff = """The following patch is proposed:
+
+```diff
+--- a/src/components/Button.jsx
++++ b/src/components/Button.jsx
+@@ -1,2 +1,2 @@
+-export const Button = () => null
++export const Button = () => <button />
+```
+"""
+    warned, changed = append_ungrounded_repository_path_warning(
+        diff, ("src/pricing.js",), index_complete=True,
+    )
+    assert changed is True
+    assert warned.startswith(diff.rstrip())
+    assert diff.split("```diff\n", 1)[1].split("```", 1)[0] == (
+        warned.split("```diff\n", 1)[1].split("```", 1)[0]
+    )
+    assert "--- a/src/components/Button.jsx" in warned
+    assert "+++ b/src/components/Button.jsx" in warned
+    assert warned.count("Repository path verification could not verify:") == 1

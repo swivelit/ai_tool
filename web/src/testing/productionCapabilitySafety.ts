@@ -31,6 +31,16 @@ export function capabilityCleanupDeadlineMs(generatedThreadCount: number): numbe
   )
 }
 
+export function assertUniqueCapabilityScenarioIds(
+  scenarioIds: readonly string[],
+): void {
+  const seen = new Set<string>()
+  for (const scenarioId of scenarioIds) {
+    if (seen.has(scenarioId)) throw new Error('duplicate_scenario_id')
+    seen.add(scenarioId)
+  }
+}
+
 export function remainingCapabilitySseBodyTimeoutMs(
   questionDeadlineMilliseconds: number,
   nowMilliseconds: number,
@@ -654,6 +664,15 @@ export function idempotencySemanticFailureReasons(
     reasons.push('semantic_stable_outcome_missing')
   }
   return reasons
+}
+
+export function idempotencySemanticContractPassed(
+  answer: string,
+  options: { requireStableOutcome: boolean },
+): boolean {
+  return idempotencySemanticFailureReasons(
+    evaluateIdempotencySemantics(answer), options,
+  ).length === 0
 }
 
 export function evaluateIdempotencySemantics(

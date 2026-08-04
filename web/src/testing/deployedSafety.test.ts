@@ -183,6 +183,8 @@ test('production capability browser waits and cleanup are independently bounded'
   expect(spec).toContain("'response_download_timeout'")
   expect(spec).toContain('const cleanupDeadline = Date.now() + capabilityCleanupDeadlineMs(')
   expect(spec).toContain('runWithBoundedConcurrency(ids, 2')
+  expect(spec).toContain('const timeout = cleanupRemaining(150_000)')
+  expect(spec).not.toContain('const timeout = cleanupRemaining(45_000)')
   expect(spec).toContain('await deleteThreadPass(firstThreadFailures)')
   expect(spec).toContain('const executionDeadline = testStartedAt')
   expect(spec).toContain("cleanupErrors.push('cleanup_global_timeout')")
@@ -225,6 +227,14 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec.match(/evaluateWebhookArchitecture\(rawRedacted\.text\)/g))
     .toHaveLength(2)
   expect(spec).not.toContain('evaluateWebhookArchitecture(redacted.text)')
+  expect(spec.match(/evaluateIdempotencySemantics\(structure\)/g))
+    .toHaveLength(2)
+  expect(spec.match(/evaluateIdempotencySemantics\(rawRedacted\.text\)/g))
+    .toHaveLength(1)
+  expect(spec).not.toContain('evaluateIdempotencySemantics(redacted.text)')
+  expect(spec).toContain(
+    'idempotencySemanticContractPassed(\n        rawRedacted.text',
+  )
   expect(spec).toContain('representationCounts:capabilityAnswerRepresentationCounts(')
   expect(spec).toContain("const cancellationMarker = `CANCEL-${randomUUID()}`")
   expect(spec).not.toContain('For cancellation audit ${runId}')
@@ -262,6 +272,15 @@ test('R08 routing variation reuses the B01 semantic and format contract', () => 
   )
   expect(routing).not.toContain('result.score !== 100')
   expect(spec).toContain('function b01ContractPassed(')
+})
+
+test('edited continuity branch has a unique scenario id and summaries enforce it', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain("id:'D06-EDIT'")
+  expect(spec).toContain('assertUniqueCapabilityScenarioIds(')
+  expect(spec).toContain('results.map(item => item.scenarioId)')
 })
 
 test('targeted architecture fixtures use the shared coverage expectations', () => {

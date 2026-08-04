@@ -8,6 +8,7 @@ import {
   PRODUCTION_CAPABILITY_CONFIRMATION,
   PRODUCTION_CAPABILITY_CORE_TIMEOUT_MS,
   ProductionCapabilityGateError,
+  assertUniqueCapabilityScenarioIds,
   batchIncludes,
   bulletLines,
   capabilityAnswerRepresentationCounts,
@@ -21,6 +22,7 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateIdempotencySemantics,
+  idempotencySemanticContractPassed,
   idempotencySemanticFailureReasons,
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
@@ -486,6 +488,30 @@ describe('production capability safety', () => {
       'semantic_definition_missing',
       'semantic_retry_example_missing',
     ])
+  })
+
+  it('uses one semantic contract path for B01 and its routing variation', () => {
+    const answer = [
+      '- Idempotency means a payment API processes a logical request once.',
+      '- A client retries POST /payments after a timeout.',
+      '- The endpoint validates the request before processing it.',
+      '- The API reports the outcome to the caller.',
+    ].join('\n')
+    expect(idempotencySemanticContractPassed(
+      answer, { requireStableOutcome:false },
+    )).toBe(true)
+    expect(idempotencySemanticContractPassed(
+      answer, { requireStableOutcome:true },
+    )).toBe(false)
+  })
+
+  it('fails loudly when a safe summary would contain duplicate scenario ids', () => {
+    expect(() => assertUniqueCapabilityScenarioIds([
+      'D02-standard', 'D06-EDIT-standard', 'D02-standard',
+    ])).toThrowError('duplicate_scenario_id')
+    expect(() => assertUniqueCapabilityScenarioIds([
+      'D02-standard', 'D06-EDIT-standard',
+    ])).not.toThrow()
   })
 
   it('shares authoritative-store semantic fixtures with the backend', () => {

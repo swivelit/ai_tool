@@ -73,6 +73,7 @@ def create_repository_snapshot(
         expires_at=expiration_iso(ttl_seconds),
         files=validated.files,
         display_name=safe_repository_display_name(display_name),
+        ignored_file_count=validated.ignored_file_count,
     )
     put_repository_snapshot(store, snapshot, ttl_seconds=ttl_seconds)
     expires_at = datetime.fromisoformat(snapshot.expires_at.replace("Z", "+00:00"))

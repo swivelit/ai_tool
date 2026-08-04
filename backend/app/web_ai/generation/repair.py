@@ -74,7 +74,7 @@ def build_repair_request(
             "semantic_mechanism_present",
             "stable_side_effect_outcome_present",
             "validator_version",
-            "cited_path_count", "invalid_path_count",
+            "cited_path_count", "invalid_path_count", "index_complete",
         }
         values = [
             f"{key}={value}"

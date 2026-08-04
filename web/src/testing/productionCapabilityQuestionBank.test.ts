@@ -5,6 +5,7 @@ import {
   ROUTING_QUESTIONS,
   materializeQuestion,
 } from '../../e2e/productionCapabilityQuestionBank'
+import { assertUniqueCapabilityScenarioIds } from './productionCapabilitySafety'
 
 describe('production capability question bank', () => {
   it('preserves every required public question id', () => {
@@ -25,6 +26,15 @@ describe('production capability question bank', () => {
       expect(CORE_QUESTIONS.filter(item => item.id === id).map(item => item.tier))
         .toEqual(['lite', 'standard', 'pro'])
     }
+  })
+
+  it('has unique scenario ids including the edited continuity branch', () => {
+    const ids = ALL_CAPABILITY_QUESTIONS.map(item => (
+      item.tier ? `${item.id}-${item.tier}` : item.id
+    ))
+    expect(() => assertUniqueCapabilityScenarioIds([
+      ...ids, 'D06-EDIT-standard',
+    ])).not.toThrow()
   })
 
   it('materializes only synthetic run markers', () => {

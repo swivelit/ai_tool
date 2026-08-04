@@ -30,6 +30,7 @@ import {
   type CapabilityCancellationReasonCode,
 } from '../src/testing/productionTriagSafety'
 import {
+  assertUniqueCapabilityScenarioIds,
   DebitBudget,
   batchIncludes,
   bulletLines,
@@ -44,6 +45,7 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateIdempotencySemantics,
+  idempotencySemanticContractPassed,
   evaluateWebhookArchitecture,
   formatCapabilityProgress,
   hasAffirmativeWaitAdvice,
@@ -395,11 +397,11 @@ function providerIdentifierVisible(value: string): boolean {
   return /\b(?:openai|anthropic|claude|gemini|sarvam|gpt-[0-9]|o[1-9](?:-|\b))\b/i.test(value)
 }
 function b01ContractPassed(rawMarkdown: string): boolean {
-  const semantic = evaluateIdempotencySemantics(rawMarkdown)
   return bulletLines(rawMarkdown).length === 4
     && countMarkdownWords(rawMarkdown) <= 140
-    && semantic.definitionPresent
-    && semantic.concreteRetryExamplePresent
+    && idempotencySemanticContractPassed(
+      rawMarkdown, { requireStableOutcome:false },
+    )
 }
 function walletValues(value: WalletResponse): { chat: number; voice: number } {
   return {
@@ -1384,15 +1386,20 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       judged.reasonCodes.push('contract_validation_disagreement')
       judged.defectSeverity = 'P2'
     }
-    const taskChecksPassed = (audit.task_requirement_check_status_counts.passed ?? 0) > 0
-      && (audit.task_requirement_check_status_counts.failed ?? 0) === 0
-      && (audit.task_requirement_check_status_counts.error ?? 0) === 0
     if (['B01', 'R08'].includes(question.id)) {
-      const semantic = evaluateIdempotencySemantics(rawRedacted.text)
-      const browserSemanticPassed = semantic.definitionPresent
-        && semantic.concreteRetryExamplePresent
-        && (question.id === 'R08' || semantic.stableOutcomePresent)
-      if (browserSemanticPassed !== taskChecksPassed) {
+      const requireStableOutcome = question.id === 'B01'
+      const browserSemanticPassed = idempotencySemanticContractPassed(
+        rawRedacted.text, { requireStableOutcome },
+      )
+      const relevantBackendIdentifiers = new Set([
+        'task_requirement_definition',
+        'task_requirement_example',
+        ...(requireStableOutcome ? ['task_requirement_stable_outcome'] : []),
+      ])
+      const backendSemanticPassed = !audit.failed_check_identifiers.some(
+        identifier => relevantBackendIdentifiers.has(identifier),
+      )
+      if (browserSemanticPassed !== backendSemanticPassed) {
         judged.status = 'failed'
         judged.score = Math.min(judged.score, 60)
         judged.reasonCodes = judged.reasonCodes.filter(
@@ -1869,6 +1876,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         budget.observeAuthoritativeCharge('chat', editAudit.charged_micro_inr_total)
         const editedD02 = await runQuestion({
           ...dQuestions.find(item => item.id === 'D02')!,
+          id:'D06-EDIT',
           expected:'Uses Django, MySQL and Valkey without mixing FastAPI, PostgreSQL or Redis.',
         })
         const editedStackPass = containsAll(editedD02.visibleAnswer, ['Django', 'MySQL', 'Valkey'])
@@ -3055,7 +3063,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
             cleanupErrors.push('generated_thread_matches_original')
             return
           }
-          const timeout = cleanupRemaining(45_000)
+          // The documented thread-mutation Retry-After is 60 seconds. Keep
+          // each delete bounded by the global cleanup deadline, but allow the
+          // rate-limit-aware helper enough time to resume after that window.
+          const timeout = cleanupRemaining(150_000)
           if (timeout < 1) {
             failed.add(id)
             return
@@ -3152,7 +3163,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const settledResults = results.filter(item => item.requestId)
     const accepted = results.filter(item => item.status === 'passed')
     const rate = (numerator: number, denominator: number) => denominator ? Number((numerator * 100 / denominator).toFixed(2)) : null
-    const buildSafeSummary = (finalCleanupErrors: readonly string[]) => ({
+    const buildSafeSummary = (finalCleanupErrors: readonly string[]) => {
+      assertUniqueCapabilityScenarioIds(
+        results.map(item => item.scenarioId),
+      )
+      return ({
       run_id:runId,
       commit_sha:process.env.GITHUB_SHA?.slice(0, 40) ?? 'local',
       backend_release:backendRelease(),
@@ -3290,7 +3305,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         p50_total_ms:percentile(results.flatMap(item => item.totalResponseMs === null ? [] : [item.totalResponseMs]), 50),
         p95_total_ms:percentile(results.flatMap(item => item.totalResponseMs === null ? [] : [item.totalResponseMs]), 95),
       },
-    })
+      })
+    }
     const privateDetails = {
       run_id:runId,
       bootstrap:{

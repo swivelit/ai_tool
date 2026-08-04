@@ -42,6 +42,9 @@ from app.web_ai.code_quality.validation_client import (
     unavailable_result,
 )
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
+from app.web_ai.generation.repository_grounding import (
+    evaluate_repository_path_grounding,
+)
 from app.web_ai.persistence import get_or_create_usage_stage
 from app.web_ai.retrieval.code_symbols import retrieve_repository_contract
 from app.web_ai.settings import TriagSettings
@@ -54,7 +57,10 @@ from app.web_api.repository_store import (
     put_repository_snapshot,
 )
 from app.web_api.upload_store import InProcessEphemeralUploadStore
-from app.web_api.chat_service import _resolved_repository_validation_mode
+from app.web_api.chat_service import (
+    _repository_index_manifest,
+    _resolved_repository_validation_mode,
+)
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -220,6 +226,43 @@ def test_repository_contract_honors_explicit_unchanged_files():
     assert result.contract.unchanged_files == ("tests/test_main.py",)
 
 
+def test_repository_prompt_manifest_is_pre_generation_and_index_scoped():
+    index = _index()
+    result = retrieve_repository_contract(
+        owner_user_id=1, request_id="manifest",
+        repository_id=str(uuid4()), source_version="version1",
+        index=index, query="What does src/nonexistent.ts do?",
+        token_cap=200, evidence_item_limit=3,
+    )
+    snapshot = EphemeralRepositorySnapshot(
+        id=result.contract.repository_id,
+        owner_user_id=1,
+        source_version="version1",
+        content_hash="content",
+        created_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-04T01:00:00+00:00",
+        files=index.files,
+    )
+    manifest = _repository_index_manifest(snapshot, result.contract)
+    assert "complete supported-text file index" in manifest
+    assert "src/nonexistent.ts" not in manifest
+    for item in index.files:
+        assert f"- {item.path}" in manifest
+    grounded_answer = (
+        "`app/main.py` defines the route and `app/helpers.py` supplies its helper."
+    )
+    assert evaluate_repository_path_grounding(
+        grounded_answer, tuple(item.path for item in index.files),
+    ).invalid_paths == ()
+
+    partial = EphemeralRepositorySnapshot(
+        **{**snapshot.__dict__, "ignored_file_count": 1},
+    )
+    partial_manifest = _repository_index_manifest(partial, result.contract)
+    assert "indexed snapshot is partial" in partial_manifest
+    assert "Absence from this manifest is indeterminate" in partial_manifest
+
+
 def test_generated_file_envelope_accepts_only_declared_paths_not_commands():
     answer = (
         "```python path=app/main.py\nprint('safe')\n```\n"
@@ -244,12 +287,14 @@ def test_repository_snapshot_owner_isolation_and_expiry():
         source_version=content_hash[:32],
         content_hash=content_hash, created_at=now.isoformat(),
         expires_at=(now + timedelta(minutes=5)).isoformat(),
-        files=(stored_file,),
+        files=(stored_file,), ignored_file_count=2,
     )
     put_repository_snapshot(store, snapshot, ttl_seconds=300)
-    assert get_repository_snapshot(
+    restored = get_repository_snapshot(
         store, owner_user_id=11, repository_id=snapshot.id
-    ) == snapshot
+    )
+    assert restored == snapshot
+    assert restored.index_complete is False
     assert get_repository_snapshot(
         store, owner_user_id=12, repository_id=snapshot.id
     ) is None

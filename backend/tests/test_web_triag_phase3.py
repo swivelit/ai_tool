@@ -4,7 +4,7 @@ from dataclasses import replace
 import json
 
 import pytest
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.ai.providers.base import GenerationCancelled, GenerationIncomplete
 from app.ai.types import AIProviderResponse
@@ -82,6 +82,71 @@ def _response(text: str) -> AIProviderResponse:
             "truncated": False,
         },
     )
+
+
+@pytest.mark.parametrize("billing_exempt", [False, True])
+def test_assistant_persistence_failure_terminalizes_usage(
+    monkeypatch, billing_exempt,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user(
+        f"persistence-terminal-usage-{billing_exempt}",
+        f"persistence-terminal-usage-{billing_exempt}@example.com",
+    )
+    if not billing_exempt:
+        _fund(int(user.id))
+    request_id = f"persistence-terminal-usage-{billing_exempt}-request"
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain this repository architecture.",
+        request_id=request_id,
+        thread_id=None,
+        reply_language="en",
+        billing_exempt=billing_exempt,
+    )
+    original_flush = Session.flush
+
+    def fail_assistant_flush(self, objects=None):
+        if objects and any(
+            isinstance(item, WebChatMessage) and item.role == "assistant"
+            for item in objects
+        ):
+            raise RuntimeError("simulated assistant persistence failure")
+        return original_flush(self, objects)
+
+    monkeypatch.setattr(Session, "flush", fail_assistant_flush)
+    with pytest.raises(RuntimeError, match="assistant persistence"):
+        execute_web_turn(prepared, providers={
+            prepared.route.provider: type("Provider", (), {
+                "complete": staticmethod(lambda _request, _route: _response(
+                    "A complete generated answer."
+                )),
+            })(),
+        })
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id,
+        )).one()
+        assert charge.status not in {
+            "reserving", "reserved", "running", "exempt_pending",
+        }
+        if billing_exempt:
+            assert charge.status in {"billing_exempt", "released"}
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id,
+        )).all()
+        assert all(stage.status not in {
+            "planned", "reserved", "running",
+        } for stage in stages)
+        assert session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).first() is None
 
 
 def test_request_audit_uses_persisted_message_quality_as_source_of_truth():

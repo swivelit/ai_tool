@@ -91,6 +91,14 @@ describe('production capability isolated code runners', () => {
     expect(result.passed, JSON.stringify(result)).toBe(true)
   }, 25_000)
 
+  it('applies a fenced repository patch when a grounding warning follows it', async () => {
+    const result = await testRepositoryPatch(
+      `${patchAnswer}\n\nRepository path verification could not verify: \`src/missing.js\`.`,
+    )
+    expect(result.accepted, JSON.stringify(result)).toBe(true)
+    expect(result.passed, JSON.stringify(result)).toBe(true)
+  }, 25_000)
+
   it('safely recounts stale unified-diff hunk sizes before applying', async () => {
     const staleCounts = patchAnswer.replace('@@ -5,5 +5,8 @@', '@@ -5,5 +5,99 @@')
     const result = await testRepositoryPatch(staleCounts)

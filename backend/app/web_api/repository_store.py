@@ -36,6 +36,11 @@ class EphemeralRepositorySnapshot:
     expires_at: str
     files: tuple[RepositorySourceFile, ...]
     display_name: str = "Repository.zip"
+    ignored_file_count: int = 0
+
+    @property
+    def index_complete(self) -> bool:
+        return self.ignored_file_count == 0
 
     def safe_metadata(self) -> dict[str, object]:
         return {
@@ -43,6 +48,7 @@ class EphemeralRepositorySnapshot:
             "source_version": self.source_version,
             "content_hash": self.content_hash,
             "file_count": len(self.files),
+            "index_complete": self.index_complete,
             "display_name": self.display_name,
             "created_at": self.created_at,
             "expires_at": self.expires_at,
@@ -105,6 +111,9 @@ def get_repository_snapshot(
             files=files,
             display_name=safe_repository_display_name(
                 str(payload.get("display_name", "Repository.zip"))
+            ),
+            ignored_file_count=max(
+                0, int(payload.get("ignored_file_count", 0))
             ),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):

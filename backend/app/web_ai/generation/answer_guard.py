@@ -77,6 +77,7 @@ class AnswerGuardContext:
     repository_context_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
     repository_file_paths: tuple[str, ...] = ()
+    repository_index_complete: bool = True
     output_contract: OutputContract | None = None
     task_requirements: TaskRequirementContract | None = None
     provider_completion: ProviderCompletion | None = None
@@ -184,6 +185,7 @@ class AnswerGuard:
             if include("repository_path_grounding"):
                 checks.append(repository_path_grounding_check(
                     answer, context.repository_file_paths,
+                    index_complete=context.repository_index_complete,
                 ))
         if context.repository_validation_required:
             validation = context.repository_validation
