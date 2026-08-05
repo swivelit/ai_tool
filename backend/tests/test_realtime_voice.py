@@ -5,6 +5,7 @@ import asyncio
 import json
 import time
 import logging
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -253,6 +254,12 @@ def test_force_release_user_redis_path_deletes_only_the_active_lock_key():
 
 
 def test_release_voice_session_requires_auth_is_owner_scoped_and_rate_limited(client, monkeypatch, caplog):
+    fixed_window_time = datetime(
+        2031, 11, 17, 12, 34, 30, tzinfo=timezone.utc,
+    )
+    monkeypatch.setattr(
+        "app.billing.service.utc_now", lambda: fixed_window_time,
+    )
     assert client.delete("/api/web/voice/sessions").status_code in {401, 403}
     owner = create_test_user("voice-release-owner", "voice-release-owner@example.com")
     other = create_test_user("voice-release-other", "voice-release-other@example.com")

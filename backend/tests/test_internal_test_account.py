@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from sqlmodel import select
 
@@ -110,6 +111,12 @@ def test_internal_account_is_zero_debit_but_provider_cost_is_audited(
 def test_internal_account_keeps_rate_limit_safety_and_provider_budget(
     client, monkeypatch,
 ):
+    fixed_window_time = datetime(
+        2031, 11, 17, 12, 34, 30, tzinfo=timezone.utc,
+    )
+    monkeypatch.setattr(
+        "app.billing.service.utc_now", lambda: fixed_window_time,
+    )
     _configure(monkeypatch)
     create_test_user("internal-guards", TEST_EMAIL)
     headers = auth_headers("internal-guards", TEST_EMAIL)
