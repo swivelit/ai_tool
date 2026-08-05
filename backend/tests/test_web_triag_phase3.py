@@ -740,6 +740,83 @@ Test concurrency, duplicates, ordering, refunds, and failure injection."""
     assert audit["post_repair_failed_check_identifiers"] == []
 
 
+def test_authority_only_architecture_repair_splices_database_section(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    answer = """PostgreSQL is the system of record. Redis is non-authoritative.
+### 1. Database tables and unique constraints
+Use event and payment tables with a unique provider event ID.
+### 2. Transaction boundaries
+One atomic transaction commits wallet and event changes.
+### 3. Event and payment state transitions
+Use monotonic event and payment status transitions.
+### 4. Pseudocode
+The worker function begins a transaction, inserts the event, and commits.
+### 5. Duplicate-event handling
+INSERT ON CONFLICT DO NOTHING prevents a second wallet credit.
+### 6. Out-of-order handling
+Defer out-of-sequence events and discard outdated updates.
+### 7. Failure recovery
+Requeue pending events after a crash and resume expired leases.
+### 8. Reconciliation
+Run a reconciliation consistency check against PostgreSQL.
+### 9. Security checks
+Verify the webhook HMAC signature and reject replayed timestamps.
+### 10. A focused test plan
+Test duplicates, concurrency, crashes, refunds, replay, and out-of-order events."""
+    repaired_section = """### 1. Database tables and unique constraints
+Use event and payment tables with a unique provider event ID. PostgreSQL is the system of record. Redis and Valkey are explicitly non-authoritative stores."""
+    captured_requests = []
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-authority-only-architecture-repair",
+        prompt=prompt,
+        answers=[answer, repaired_section],
+        captured_requests=captured_requests,
+    )
+
+    assert calls == 2
+    assert len(captured_requests) == 2
+    repair_messages = captured_requests[1].metadata["provider_messages"]
+    assert "Return ONLY the targeted architecture sections" in (
+        repair_messages[0]["content"]
+    )
+    assert "### 1. database tables and unique constraints" in (
+        repair_messages[0]["content"]
+    )
+    assert completed.message.content[completed.message.content.index("### 2."):] == (
+        answer[answer.index("### 2."):]
+    )
+    assert completed.message.quality["status"] == "verified"
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session,
+            request_ids=[
+                "contract-authority-only-architecture-repair-request"
+            ],
+        )[0]
+    assert audit["architecture_missing_area_identifiers"] == []
+    assert audit["pre_repair_failed_check_identifiers"] == [
+        "task_requirement_forbidden_authority"
+    ]
+    assert audit["repair_trigger_area_identifiers"] == ["database_schema"]
+    assert audit["post_repair_failed_check_identifiers"] == []
+
+
 def test_incomplete_architecture_gets_one_targeted_duplicate_repair(monkeypatch):
     prompt = """Design an idempotent webhook architecture.
 Constraints:
@@ -794,7 +871,7 @@ Run concurrency and failure-injection integration tests."""
     repair_messages = captured_requests[1].metadata["provider_messages"]
     assert "duplicate_handling" in repair_messages[0]["content"]
     assert "heading alone is insufficient" in repair_messages[0]["content"]
-    assert "Return ONLY the failed architecture sections" in (
+    assert "Return ONLY the targeted architecture sections" in (
         repair_messages[0]["content"]
     )
     assert "Cover all 10" not in repair_messages[1]["content"]

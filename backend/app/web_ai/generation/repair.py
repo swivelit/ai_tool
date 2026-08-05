@@ -35,13 +35,21 @@ def architecture_splice_area_identifiers(
         for check in failed_checks
     ):
         return ()
-    return tuple(dict.fromkeys(
+    areas = [
         str(dict(check.observations).get("area_identifier") or "")
         for check in failed_checks
         if check.check_type.startswith("task_architecture_")
         and str(dict(check.observations).get("area_identifier") or "")
         in ARCHITECTURE_AREA_IDENTIFIERS
-    ))
+    ]
+    # Store-authority requirements belong with the database/schema section.
+    # Previously an authority-only failure passed the splice eligibility gate
+    # but contributed no area identifier, silently selecting a lossy full-answer
+    # rewrite. Targeting section 1 keeps every already-valid architecture
+    # section byte-identical while the authority wording is corrected.
+    if any(check.check_type in _AUTHORITY_CHECK_TYPES for check in failed_checks):
+        areas.append("database_schema")
+    return tuple(dict.fromkeys(areas))
 
 
 def build_repair_request(
@@ -142,11 +150,11 @@ def build_repair_request(
             )
             heading_requirements.append(f"### {ordinal}. {label}")
         system += (
-            "Return ONLY the failed architecture sections as complete "
+            "Return ONLY the targeted architecture sections as complete "
             "replacements, with no preface, conclusion, or repair commentary. "
             "Use these exact numbered Markdown heading forms: "
             + "; ".join(heading_requirements)
-            + ". Do not return sections that already pass."
+            + ". Do not return any section that is not targeted."
         )
     else:
         system += (
@@ -182,8 +190,9 @@ def build_repair_request(
         )
     if architecture_areas:
         system += (
-            " Supply concrete behavior for only these missing architecture "
-            "areas while preserving every area that already passes: "
+            " Supply concrete behavior and correct the listed authority rules "
+            "for only these targeted architecture areas while preserving every "
+            "other area byte-for-byte: "
             + ", ".join(architecture_areas)
             + ". A heading alone is insufficient. For duplicate_handling, "
             "state a durable deduplication or idempotency mechanism, or a "

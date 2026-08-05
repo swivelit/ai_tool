@@ -4934,10 +4934,6 @@ def execute_web_turn(
                 nonlocal fence_autoclosed, latest_generated_response
                 nonlocal completed_provider_response
                 nonlocal repair_trigger_area_identifiers
-                if architecture_area_ids and attempt_number == 1:
-                    repair_trigger_area_identifiers = (
-                        failed_architecture_area_identifiers(quality)
-                    )
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -4969,6 +4965,11 @@ def execute_web_turn(
                     ),
                     repository_file_paths=guard_context.repository_file_paths,
                 )
+                if architecture_area_ids and attempt_number == 1:
+                    repair_trigger_area_identifiers = (
+                        contract.architecture_splice_areas
+                        or failed_architecture_area_identifiers(quality)
+                    )
                 repair_route = replace(
                     prepared.route,
                     max_output_tokens=min(

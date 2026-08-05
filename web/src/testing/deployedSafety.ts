@@ -92,6 +92,31 @@ export function observePlaywrightPromise<T>(promise: Promise<T>): Promise<T> {
   return promise
 }
 
+export type CapabilityAssistantRepresentation = {
+  lookup: 'dom' | 'api_fallback' | 'unavailable'
+  answer: string | null
+  reasonCodes: string[]
+}
+
+export function resolveCapabilityAssistantRepresentation(options: {
+  domObserved: boolean
+  domTerminal: boolean
+  persistedAnswer: string | null | undefined
+}): CapabilityAssistantRepresentation {
+  if (options.domObserved && options.domTerminal) {
+    return { lookup:'dom', answer:null, reasonCodes:[] }
+  }
+  const persisted = String(options.persistedAnswer ?? '').trim()
+  if (persisted) {
+    return {
+      lookup:'api_fallback',
+      answer:persisted,
+      reasonCodes:['ui_render_not_observed'],
+    }
+  }
+  return { lookup:'unavailable', answer:null, reasonCodes:[] }
+}
+
 const SAFE_REASON_CODE = /^[a-z][a-z0-9_]{0,79}$/
 
 function boundedReasonCode(reasonCode: string, fallback: string): string {

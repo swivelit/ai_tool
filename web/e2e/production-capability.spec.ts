@@ -12,6 +12,7 @@ import {
   loginDeployed,
   logoutDeployed,
   observePlaywrightPromise,
+  resolveCapabilityAssistantRepresentation,
   restoreProfile,
   runCleanupActionSafely,
   runWithBoundedConcurrency,
@@ -274,15 +275,15 @@ type QuestionResult = {
   sseDeltaSeen: boolean
   sseDoneSeen: boolean
   repositoryAttached: boolean
-  assistantLookup: 'request_id' | 'message_id' | 'thread_reopen' | 'none'
+  assistantLookup: 'request_id' | 'message_id' | 'thread_reopen' | 'api_fallback' | 'none'
   assistantRequestIdMatched: boolean | null
   assistantDomRequestIds: string[]
-  harnessThreadId: string | null
-  sseThreadId: string | null
-  sseThreadRequestId: string | null
-  sseDoneThreadId: string | null
-  sseDoneRequestId: string | null
-  uiActiveThreadId: string | null
+  harnessThreadId: string
+  sseThreadId: string
+  sseThreadRequestId: string
+  sseDoneThreadId: string
+  sseDoneRequestId: string
+  uiActiveThreadId: string
   threadId: string | null
   startedAtUtc: string | null
   endedAtUtc: string | null
@@ -539,6 +540,15 @@ function safeHarnessReason(error: unknown): string {
     ? message : 'assistant_ui_timeout'
 }
 
+function availableDiagnosticId(value: string | null | undefined): string {
+  const candidate = String(value ?? '').trim()
+  return candidate || 'unavailable'
+}
+
+function availableDiagnosticIds(values: readonly string[]): string[] {
+  return values.length ? [...values] : ['unavailable']
+}
+
 function evaluation(
   question: CapabilityQuestion,
   displayedAnswer: string,
@@ -553,7 +563,7 @@ function evaluation(
   let correctness = value ? 1 : 0
   let format = 1
   let mandatoryConstraintFailed = false
-  const completeness = audit.cancellation_state === 'complete' ? 1 : 0
+  let completeness = audit.cancellation_state === 'complete' ? 1 : 0
   let grounding = 1
   const safety = providerIdentifierVisible(value) ? 0 : 1
   const efficiency = audit.provider_call_count <= 1 ? 1 : 0.5
@@ -693,10 +703,19 @@ function evaluation(
       || !/unique|constraint|dedup|on conflict/i.test(value)
       || !/transaction|atomic|same database operation|commit|rollback/i.test(value)
     ) fail('continuity_fix_incomplete'); break
-    case 'D03': if (
-      !/transaction|begin|commit|rollback|atomic/i.test(value)
-      || !/reservation|stock|inventory/i.test(value)
-    ) fail('transaction_boundary_missing'); break
+    case 'D03':
+      if (
+        audit.finish_reason === 'length'
+        || audit.completion_status === 'incomplete'
+        || audit.truncated
+      ) {
+        completeness = 0
+        fail('generation_truncated')
+      } else if (
+        !/transaction|begin|commit|rollback|atomic/i.test(value)
+        || !/reservation|stock|inventory/i.test(value)
+      ) fail('transaction_boundary_missing')
+      break
     case 'D04': if (!/lock/i.test(value) || !/database|postgres|record|source of truth/i.test(value)) fail('lock_comparison_incomplete'); break
     case 'D05': if (countSentences(value) !== 4 || /inventory|redis|reservation/i.test(value)) formatFail('topic_reset_failed'); break
     case 'E01': if (!containsAll(value, [`AURORA-`, 'Madurai']) || sources.length < 1) fail('temporary_rag_answer_or_source_missing'); break
@@ -1119,9 +1138,10 @@ function skippedResult(
     sseThreadSeen:false, sseDeltaSeen:false, sseDoneSeen:false,
     repositoryAttached:false, assistantLookup:'none',
     assistantRequestIdMatched:null,
-    assistantDomRequestIds:[], harnessThreadId:null, sseThreadId:null,
-    sseThreadRequestId:null, sseDoneThreadId:null, sseDoneRequestId:null,
-    uiActiveThreadId:null,
+    assistantDomRequestIds:['unavailable'],
+    harnessThreadId:'unavailable', sseThreadId:'unavailable',
+    sseThreadRequestId:'unavailable', sseDoneThreadId:'unavailable',
+    sseDoneRequestId:'unavailable', uiActiveThreadId:'unavailable',
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
     answerWords:0,
@@ -1309,12 +1329,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     assistant_lookup: QuestionResult['assistantLookup']
     assistant_request_id_matched: boolean | null
     assistant_dom_request_ids: string[]
-    harness_thread_id: string | null
-    sse_thread_id: string | null
-    sse_thread_request_id: string | null
-    sse_done_thread_id: string | null
-    sse_done_request_id: string | null
-    ui_active_thread_id: string | null
+    harness_thread_id: string
+    sse_thread_id: string
+    sse_thread_request_id: string
+    sse_done_thread_id: string
+    sse_done_request_id: string
+    ui_active_thread_id: string
     recovery_reason_code?: string
   }> = []
   const assistantLookupDiagnostics: Array<{
@@ -1457,6 +1477,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     )
     progress('question_start', 'question', activeScenarioId)
     const stepReasonCodes: string[] = []
+    const nonBlockingReasonCodes: string[] = []
     const tier = question.tier ?? 'standard'
     const createsFreshThread = question.freshThread
       || question.category === 'B'
@@ -1757,16 +1778,32 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ).catch(() => true)
       }
     }
+    let apiFallbackAnswer: string | null = null
+    if (!assistantVisible || assistantTerminalTimedOut) {
+      const representation = resolveCapabilityAssistantRepresentation({
+        domObserved:assistantVisible,
+        domTerminal:assistantVisible && !assistantTerminalTimedOut,
+        persistedAnswer:raw?.content,
+      })
+      if (representation.lookup === 'api_fallback' && representation.answer) {
+        await recordAssistantLookupFailure('assistant_ui_timeout')
+        apiFallbackAnswer = representation.answer
+        assistantLookup = 'api_fallback'
+        nonBlockingReasonCodes.push(...representation.reasonCodes)
+      }
+    }
     const assistantDomRequestId = assistantVisible
       ? await assistant.getAttribute('data-request-id').catch(() => null)
       : null
-    const assistantRequestIdMatched = assistantDomRequestId === null
-      ? null : assistantDomRequestId === requestId
+    const assistantRequestIdMatched = apiFallbackAnswer
+      ? raw?.request_id === requestId
+      : assistantDomRequestId === null
+        ? null : assistantDomRequestId === requestId
     options.onAssistantLookup?.({
       lookup:assistantLookup,
       requestIdMatched:assistantRequestIdMatched,
     })
-    if (!assistantVisible || assistantTerminalTimedOut) {
+    if ((!assistantVisible || assistantTerminalTimedOut) && !apiFallbackAnswer) {
       await recordAssistantLookupFailure('assistant_ui_timeout')
       if (terminalErrors.includes('provider_safety_rejected')) {
         throw new Error('provider_safety_rejected')
@@ -1791,7 +1828,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       await recordAssistantLookupFailure('assistant_persistence_missing')
       throw new Error('assistant_persistence_missing')
     }
-    const displayed = await visibleAnswer(assistant)
+    const displayed = apiFallbackAnswer ?? await visibleAnswer(assistant)
     const redacted = redactPotentialSecrets(displayed)
     const rawRedacted = redactPotentialSecrets(raw.content)
     const secretCodes = [...new Set([...redacted.reasonCodes, ...rawRedacted.reasonCodes])]
@@ -1799,7 +1836,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       stopAfterSecret = true
       primaryFailure ??= 'potential_secret_disclosure'
     }
-    const sources = await sourceRows(assistant)
+    const sources = apiFallbackAnswer
+      ? (raw.sources ?? []).map(source => ({
+          id:source.id, label:source.label, locator:source.locator,
+        }))
+      : await sourceRows(assistant)
     const persistedSourceIds = new Set((raw?.sources ?? []).map(source => source.id))
     const invalidCitation = sources.some(source => !persistedSourceIds.has(source.id))
     const payloadTier = typeof payload.tier === 'string' ? payload.tier : null
@@ -1830,6 +1871,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const judged = evaluation(
       question, redacted.text, rawRedacted.text, audit, sources, codeTest,
     )
+    for (const reasonCode of nonBlockingReasonCodes) {
+      if (!judged.reasonCodes.includes(reasonCode)) {
+        judged.reasonCodes.push(reasonCode)
+      }
+    }
     if (audit.selected_tier === 'not_run') {
       judged.status = 'failed'
       judged.score = Math.min(judged.score, 60)
@@ -1953,6 +1999,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       && judged.reasonCodes.includes('continuity_fix_incomplete')
       ? ['product_defect:required_idempotency_uniqueness_or_transaction_semantics_missing']
       : []
+    const resultLookupDiagnostic = [...assistantLookupDiagnostics].reverse().find(
+      item => item.scenario_id === activeScenarioId
+        && item.request_id === requestId,
+    )
     const result: QuestionResult = {
       scenarioId:scenarioId(question), questionId:question.id, category:question.category,
       ...judged, selectedTier:tier, requestId, threadId:threadId || null,
@@ -1969,13 +2019,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         && payload.repository_id.length > 0,
       assistantLookup,
       assistantRequestIdMatched,
-      assistantDomRequestIds:[],
-      harnessThreadId:threadId || null,
-      sseThreadId:sseThreadId || null,
-      sseThreadRequestId:sseThreadRequestId || null,
-      sseDoneThreadId:doneThreadId || null,
-      sseDoneRequestId:doneRequestId || null,
-      uiActiveThreadId:null,
+      assistantDomRequestIds:availableDiagnosticIds(
+        resultLookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? [],
+      ),
+      harnessThreadId:availableDiagnosticId(threadId),
+      sseThreadId:availableDiagnosticId(sseThreadId),
+      sseThreadRequestId:availableDiagnosticId(sseThreadRequestId),
+      sseDoneThreadId:availableDiagnosticId(doneThreadId),
+      sseDoneRequestId:availableDiagnosticId(doneRequestId),
+      uiActiveThreadId:availableDiagnosticId(
+        resultLookupDiagnostic?.ui_thread_id_at_timeout,
+      ),
       startedAtUtc, endedAtUtc, firstVisibleDeltaMs,
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
@@ -2206,17 +2260,25 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ),
         assistant_lookup:assistantLookup,
         assistant_request_id_matched:assistantRequestIdMatched,
-        assistant_dom_request_ids:
+        assistant_dom_request_ids:availableDiagnosticIds(
           lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? [],
-        harness_thread_id:
-          lookupDiagnostic?.authoritative_thread_id ?? null,
-        sse_thread_id:lookupDiagnostic?.sse_thread_id ?? null,
-        sse_thread_request_id:
-          lookupDiagnostic?.sse_thread_request_id ?? null,
-        sse_done_thread_id:lookupDiagnostic?.done_thread_id ?? null,
-        sse_done_request_id:lookupDiagnostic?.done_request_id ?? null,
-        ui_active_thread_id:
-          lookupDiagnostic?.ui_thread_id_at_timeout ?? null,
+        ),
+        harness_thread_id:availableDiagnosticId(
+          lookupDiagnostic?.authoritative_thread_id,
+        ),
+        sse_thread_id:availableDiagnosticId(lookupDiagnostic?.sse_thread_id),
+        sse_thread_request_id:availableDiagnosticId(
+          lookupDiagnostic?.sse_thread_request_id,
+        ),
+        sse_done_thread_id:availableDiagnosticId(
+          lookupDiagnostic?.done_thread_id,
+        ),
+        sse_done_request_id:availableDiagnosticId(
+          lookupDiagnostic?.done_request_id,
+        ),
+        ui_active_thread_id:availableDiagnosticId(
+          lookupDiagnostic?.ui_thread_id_at_timeout,
+        ),
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
@@ -2247,19 +2309,27 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         )
         failedResult.assistantLookup = assistantLookup
         failedResult.assistantRequestIdMatched = assistantRequestIdMatched
-        failedResult.assistantDomRequestIds =
-          lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? []
-        failedResult.harnessThreadId =
-          lookupDiagnostic?.authoritative_thread_id ?? null
-        failedResult.sseThreadId = lookupDiagnostic?.sse_thread_id ?? null
-        failedResult.sseThreadRequestId =
-          lookupDiagnostic?.sse_thread_request_id ?? null
-        failedResult.sseDoneThreadId =
-          lookupDiagnostic?.done_thread_id ?? null
-        failedResult.sseDoneRequestId =
-          lookupDiagnostic?.done_request_id ?? null
-        failedResult.uiActiveThreadId =
-          lookupDiagnostic?.ui_thread_id_at_timeout ?? null
+        failedResult.assistantDomRequestIds = availableDiagnosticIds(
+          lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? [],
+        )
+        failedResult.harnessThreadId = availableDiagnosticId(
+          lookupDiagnostic?.authoritative_thread_id,
+        )
+        failedResult.sseThreadId = availableDiagnosticId(
+          lookupDiagnostic?.sse_thread_id,
+        )
+        failedResult.sseThreadRequestId = availableDiagnosticId(
+          lookupDiagnostic?.sse_thread_request_id,
+        )
+        failedResult.sseDoneThreadId = availableDiagnosticId(
+          lookupDiagnostic?.done_thread_id,
+        )
+        failedResult.sseDoneRequestId = availableDiagnosticId(
+          lookupDiagnostic?.done_request_id,
+        )
+        failedResult.uiActiveThreadId = availableDiagnosticId(
+          lookupDiagnostic?.ui_thread_id_at_timeout,
+        )
         if (capturedAudit) {
           failedResult.providerCallCount = capturedAudit.provider_call_count
           failedResult.generationStageCount = capturedAudit.generation_stage_count

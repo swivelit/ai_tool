@@ -4,6 +4,7 @@ import {
   deleteGeneratedRepository, deleteGeneratedThread, deleteGeneratedUpload,
   isPostChatStreamRequest, isPostChatStreamResponse,
   observePlaywrightPromise, productionRequestViolation,
+  resolveCapabilityAssistantRepresentation,
   restoreProfile, restoreUsagePreferences, runCleanupActionSafely,
   runWithBoundedConcurrency, withBoundedTimeout,
   ThreadCleanupError,
@@ -553,6 +554,13 @@ test('R09 reopens the authoritative persisted thread before reporting a UI timeo
   expect(spec).toContain('dom_selector_thread_id:timeoutThreadId')
   expect(spec).toContain('repair_attempted:audit.repair_attempted')
   expect(spec).toContain("assistantLookup = 'thread_reopen'")
+  expect(spec).toContain("assistantLookup = 'api_fallback'")
+  expect(spec).toContain(
+    'const displayed = apiFallbackAnswer ?? await visibleAnswer(assistant)',
+  )
+  expect(spec).toContain(
+    "nonBlockingReasonCodes.push(...representation.reasonCodes)",
+  )
   expect(spec).toContain(
     'assistant_lookup_diagnostics:assistantLookupDiagnostics',
   )
@@ -579,13 +587,19 @@ test('all assistant lookup failures capture request, thread, DOM, and URL eviden
     'lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? []',
   )
   expect(spec).toContain(
-    'lookupDiagnostic?.authoritative_thread_id ?? null',
+    'availableDiagnosticId(\n          lookupDiagnostic?.authoritative_thread_id,',
   )
-  expect(spec).toContain('lookupDiagnostic?.sse_thread_id ?? null')
-  expect(spec).toContain('lookupDiagnostic?.done_request_id ?? null')
   expect(spec).toContain(
-    'lookupDiagnostic?.ui_thread_id_at_timeout ?? null',
+    'availableDiagnosticId(lookupDiagnostic?.sse_thread_id)',
   )
+  expect(spec).toContain(
+    'availableDiagnosticId(\n          lookupDiagnostic?.done_request_id,',
+  )
+  expect(spec).toContain(
+    'availableDiagnosticId(\n          lookupDiagnostic?.ui_thread_id_at_timeout,',
+  )
+  expect(spec).toContain("assistantLookup = 'api_fallback'")
+  expect(spec).toContain("nonBlockingReasonCodes.push(...representation.reasonCodes)")
 })
 
 test('assistant lookup falls back to the authoritative SSE message id', () => {
@@ -1069,4 +1083,36 @@ test('empty composer stable markers are ready without a Send message button', as
 test('missing composer fails deployed workspace readiness safely', async () => {
   const page = workspacePage({ composerVisible:false })
   await expect(waitForDeployedWorkspace(page, 100)).rejects.toThrow()
+})
+
+test('persisted assistant answer is an API fallback when the DOM times out', () => {
+  expect(resolveCapabilityAssistantRepresentation({
+    domObserved:false,
+    domTerminal:false,
+    persistedAnswer:'A complete persisted architecture answer.',
+  })).toEqual({
+    lookup:'api_fallback',
+    answer:'A complete persisted architecture answer.',
+    reasonCodes:['ui_render_not_observed'],
+  })
+
+  expect(resolveCapabilityAssistantRepresentation({
+    domObserved:false,
+    domTerminal:false,
+    persistedAnswer:'',
+  })).toEqual({ lookup:'unavailable', answer:null, reasonCodes:[] })
+})
+
+test('D03 reports provider truncation before content coverage', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const d03 = spec.slice(
+    spec.indexOf("case 'D03':"), spec.indexOf("case 'D04':"),
+  )
+  expect(d03).toContain("audit.finish_reason === 'length'")
+  expect(d03).toContain("fail('generation_truncated')")
+  expect(d03.indexOf("fail('generation_truncated')")).toBeLessThan(
+    d03.indexOf("fail('transaction_boundary_missing')"),
+  )
 })
