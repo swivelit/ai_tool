@@ -122,7 +122,7 @@ from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
     PromptBudgetExceeded, execute_web_turn, prepare_web_turn,
-    record_web_turn_lifecycle,
+    record_web_turn_lifecycle, record_web_turn_pre_generation_abort,
 )
 from .continuation import (
     metadata_dict as continuation_metadata_dict,
@@ -3813,19 +3813,7 @@ async def chat_stream(
                 queue.put_nowait, ("status", phase)
             )
 
-        with _active_generations_lock:
-            _active_generations[prepared.request_id] = (user_id, cancellation)
-            pending_owner = _pending_generation_cancellations.pop(
-                prepared.request_id, None
-            )
-        if pending_owner == user_id:
-            cancellation.cancel()
-        task = asyncio.create_task(asyncio.to_thread(
-            execute_web_turn,
-            prepared,
-            on_delta=delta,
-            on_status=status,
-        ))
+        task: asyncio.Task[Any] | None = None
 
         def unregister(done_task: asyncio.Task[Any]) -> None:
             with _active_generations_lock:
@@ -3850,8 +3838,23 @@ async def chat_stream(
                     },
                 )
 
-        task.add_done_callback(unregister)
         try:
+            with _active_generations_lock:
+                _active_generations[prepared.request_id] = (
+                    user_id, cancellation,
+                )
+                pending_owner = _pending_generation_cancellations.pop(
+                    prepared.request_id, None
+                )
+            if pending_owner == user_id:
+                cancellation.cancel()
+            task = asyncio.create_task(asyncio.to_thread(
+                execute_web_turn,
+                prepared,
+                on_delta=delta,
+                on_status=status,
+            ))
+            task.add_done_callback(unregister)
             yield _sse("thread", {
                 "thread_id": prepared.thread_id,
                 "continuation_render_prefix": (
@@ -3892,6 +3895,13 @@ async def chat_stream(
                     if await request.is_disconnected():
                         outcome = "client_disconnected"
                         cancellation.cancel()
+                        record_web_turn_pre_generation_abort(
+                            prepared, reason="ClientDisconnected",
+                        )
+                        yield _sse("error", {
+                            "code": "client_disconnected",
+                            "message": "The browser connection closed before the response finished.",
+                        })
                         return
                     if loop.time() - last_event_at >= heartbeat_seconds:
                         yield ": keep-alive\n\n"
@@ -3979,6 +3989,9 @@ async def chat_stream(
             outcome = "client_disconnected"
             terminal_exception_class = "CancelledError"
             cancellation.cancel()
+            record_web_turn_pre_generation_abort(
+                prepared, reason="CancelledError",
+            )
             # The cooperative worker owns settlement. Some provider consumption
             # may already have occurred before cancellation reaches the provider.
             raise
@@ -3986,10 +3999,16 @@ async def chat_stream(
             outcome = "client_disconnected"
             terminal_exception_class = "GeneratorExit"
             cancellation.cancel()
+            record_web_turn_pre_generation_abort(
+                prepared, reason="GeneratorExit",
+            )
             raise
         except GenerationCancelled as exc:
             outcome = "cancelled"
             terminal_exception_class = type(exc).__name__
+            record_web_turn_pre_generation_abort(
+                prepared, reason=type(exc).__name__,
+            )
             with SessionLocal() as session:
                 yield _sse(
                     "wallet",
@@ -4002,6 +4021,7 @@ async def chat_stream(
             yield _sse("status", {"phase": "stopped"})
             yield _sse("done", {
                 "message_id": None, "thread_id": prepared.thread_id, "cancelled": True,
+                "code": "generation_cancelled",
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
@@ -4012,6 +4032,9 @@ async def chat_stream(
             terminal_exception_class = type(exc).__name__
             terminal_provider_attempts = 0
             terminal_retry_at = str(exc.metadata["reset_at"])
+            record_web_turn_pre_generation_abort(
+                prepared, reason=type(exc).__name__,
+            )
             with SessionLocal() as session:
                 yield _sse(
                     "wallet",
@@ -4032,6 +4055,9 @@ async def chat_stream(
         except GenerationIncomplete as exc:
             outcome = "incomplete"
             terminal_exception_class = type(exc).__name__
+            record_web_turn_pre_generation_abort(
+                prepared, reason=type(exc).__name__,
+            )
             logger.warning(
                 "web_chat_generation_incomplete",
                 extra={"request_id": prepared.request_id},
@@ -4046,6 +4072,9 @@ async def chat_stream(
         except ProviderSafetyRejected:
             outcome = "safety_rejected"
             terminal_exception_class = "ProviderSafetyRejected"
+            record_web_turn_pre_generation_abort(
+                prepared, reason="ProviderSafetyRejected",
+            )
             yield _sse("error", {
                 "code": "provider_safety_rejected",
                 "message": (
@@ -4059,6 +4088,9 @@ async def chat_stream(
             terminal_exception_class = type(exc).__name__
             terminal_provider_attempts = int(
                 exc.metadata.get("provider_attempts") or 0
+            )
+            record_web_turn_pre_generation_abort(
+                prepared, reason=type(exc).__name__,
             )
             logger.warning(
                 "web_chat_stream_interrupted",
@@ -4079,6 +4111,9 @@ async def chat_stream(
         except Exception as exc:
             outcome = "error"
             terminal_exception_class = type(exc).__name__
+            record_web_turn_pre_generation_abort(
+                prepared, reason=type(exc).__name__,
+            )
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
             yield _sse("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry."})
         finally:
@@ -4086,7 +4121,7 @@ async def chat_stream(
             ownership["generator_closed"] = True
             with _active_generations_lock:
                 _active_generations.pop(prepared.request_id, None)
-            if task.done() and not ownership["observed"]:
+            if task is not None and task.done() and not ownership["observed"]:
                 ownership["observed"] = True
                 try:
                     abandoned_error = task.exception()

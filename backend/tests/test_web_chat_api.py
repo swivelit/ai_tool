@@ -10,7 +10,8 @@ import pytest
 
 from app.ai.types import AIProviderResponse, AIRequest
 from app.ai.providers.base import (
-    GenerationCancelled, GenerationIncomplete, ProviderStreamInterrupted,
+    GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
+    ProviderStreamInterrupted,
 )
 from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
@@ -481,6 +482,70 @@ def test_provider_failure_releases_complete_reservation(client, monkeypatch):
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
 
 
+def test_pre_generation_failure_records_terminal_lifecycle_and_sse_error(
+    client, monkeypatch, caplog,
+):
+    from app.web_ai.request_audit import build_request_audit
+
+    user = create_test_user(
+        "pre-generation-failure", "pre-generation-failure@example.com",
+    )
+    _fund(int(user.id))
+    provider_called = {"value": False}
+
+    def fail_retrieval(*_args, **_kwargs):
+        raise RuntimeError("synthetic early failure")
+
+    def provider(*_args, **_kwargs):
+        provider_called["value"] = True
+        raise AssertionError("provider must not run after retrieval failure")
+
+    monkeypatch.setattr(
+        "app.web_api.chat_service._execute_phase2_retrieval", fail_retrieval,
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        provider,
+    )
+    request_id = "21c72ca6-c80a-4a0f-bb01-855003efe55d"
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/web/chat/stream",
+            headers=auth_headers(
+                "pre-generation-failure",
+                "pre-generation-failure@example.com",
+            ),
+            json={
+                "request_id": request_id,
+                "message": "Explain database indexing tradeoffs",
+            },
+        )
+
+    assert response.status_code == 200
+    assert _sse_events(response, "error") == [{
+        "code": "generation_failed",
+        "message": "Swico could not complete this request. Please retry.",
+    }]
+    assert not _sse_events(response, "done")
+    assert provider_called["value"] is False
+    with SessionLocal() as session:
+        audit = build_request_audit(session, request_ids=[request_id])
+    assert audit is not None
+    assert audit[0]["turn_lifecycle_events"] == [
+        "reserved", "aborted_before_reserve", "stream_terminal",
+    ]
+    assert audit[0]["turn_lifecycle_stage"] == "stream_terminal"
+    assert audit[0]["turn_lifecycle_reason"] == "RuntimeError"
+    assert any(
+        record.getMessage() == "web_chat_turn_lifecycle"
+        and getattr(record, "lifecycle_stage", None)
+        == "aborted_before_reserve"
+        and getattr(record, "request_id", None) == request_id
+        for record in caplog.records
+    )
+
+
 def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
     client, monkeypatch
 ):
@@ -561,6 +626,91 @@ def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
         assert get_wallet_summary(session, int(user.id))[
             "reserved_micros"
         ] == 0
+
+
+def test_provider_safety_rejection_emits_terminal_error(client, monkeypatch):
+    user = create_test_user("safety-sse", "safety-sse@example.com")
+    _fund(int(user.id))
+
+    def rejected(_self, _request, route, _on_delta):
+        raise ProviderSafetyRejected(AIProviderResponse(
+            text="",
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=20,
+            output_tokens=0,
+            raw={
+                "usage_actual": True,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 1,
+            },
+        ))
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        rejected,
+    )
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("safety-sse", "safety-sse@example.com"),
+        json={
+            "request_id": "85a95db8-2147-46b2-9022-6273e2ee13d0",
+            "message": "Explain advanced database transaction isolation",
+        },
+    )
+    assert response.status_code == 200
+    assert _sse_events(response, "error") == [{
+        "code": "provider_safety_rejected",
+        "message": (
+            "Swico can’t help with that request. I can help with account "
+            "recovery and defensive security instead."
+        ),
+        "retryable": False,
+    }]
+    assert not _sse_events(response, "done")
+
+
+def test_detected_client_disconnect_emits_terminal_error(client, monkeypatch):
+    user = create_test_user("disconnect-sse", "disconnect-sse@example.com")
+    _fund(int(user.id))
+
+    async def disconnected(_request):
+        return True
+
+    def delayed(_self, request, _route, _on_delta):
+        time.sleep(0.25)
+        signal = request.metadata.get("cancellation_signal")
+        if getattr(signal, "cancelled", False):
+            raise GenerationCancelled()
+        raise AssertionError("disconnect must propagate cancellation")
+
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected", disconnected,
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        delayed,
+    )
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("disconnect-sse", "disconnect-sse@example.com"),
+        json={
+            "request_id": "3316ca0e-556d-4d34-8a8d-86fa842701e0",
+            "message": "Explain advanced database transaction isolation",
+        },
+    )
+    assert response.status_code == 200
+    assert _sse_events(response, "error") == [{
+        "code": "client_disconnected",
+        "message": (
+            "The browser connection closed before the response finished."
+        ),
+    }]
+    assert not _sse_events(response, "done")
 
 
 def test_service_budget_reached_releases_wallet_and_retry_clears_metadata(
@@ -1511,7 +1661,9 @@ def test_cancellation_before_output_releases_full_reservation(client, monkeypatc
     monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", lambda *args, **kwargs: (_ for _ in ()).throw(GenerationCancelled()))
     request_id = "d80de6e0-c5cd-4de6-bf9a-9ce2f376a3c4"
     response = client.post("/api/web/chat/stream", headers=auth_headers("test-uid"), json={"request_id":request_id,"message":"Explain database indexes"})
-    assert response.status_code == 200 and '"cancelled": true' in response.text
+    assert response.status_code == 200
+    assert _sse_events(response, "done")[-1]["code"] == "generation_cancelled"
+    assert _sse_events(response, "done")[-1]["cancelled"] is True
     with SessionLocal() as session:
         charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
         assert charge.status == "released" and charge.debited_micros == 0

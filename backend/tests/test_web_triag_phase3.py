@@ -109,6 +109,38 @@ def test_turn_lifecycle_is_content_free_and_visible_in_request_audit(
     )
 
 
+def test_turn_lifecycle_audit_falls_back_to_registered_user_message(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user(
+        "lifecycle-message-fallback", "lifecycle-message-fallback@example.com",
+    )
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain database indexes with one short example.",
+        request_id="lifecycle-message-fallback-request",
+        thread_id=None,
+        reply_language="en",
+        billing_exempt=True,
+    )
+    prepared.route = replace(prepared.route, provider="backend_tool")
+
+    record_web_turn_lifecycle(prepared, "reserved")
+    record_web_turn_lifecycle(prepared, "stream_terminal")
+
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session, request_ids=[prepared.request_id]
+        )[0]
+    assert audit["generation_stage_count"] == 0
+    assert audit["turn_lifecycle_stage"] == "stream_terminal"
+    assert audit["turn_lifecycle_events"] == ["reserved", "stream_terminal"]
+
+
 def _response(text: str) -> AIProviderResponse:
     return AIProviderResponse(
         text=text,

@@ -222,6 +222,10 @@ type Audit = {
   reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
   turn_lifecycle_stage: string | null
   turn_lifecycle_events: string[]
+  turn_lifecycle_reason: string | null
+  generation_output_tokens: number
+  generation_reasoning_tokens: number
+  generation_visible_output_tokens: number
   cancellation_state: string
   cancellation_failure_origin: string
   cancellation_failure_count: number
@@ -256,6 +260,11 @@ type QuestionResult = {
   sendErrorCode: string | null
   sendErrorMessage: string | null
   sendSseEventReceived: boolean
+  sseErrorCodes: string[]
+  sseErrorMessages: string[]
+  sseThreadSeen: boolean
+  sseDeltaSeen: boolean
+  sseDoneSeen: boolean
   threadId: string | null
   startedAtUtc: string | null
   endedAtUtc: string | null
@@ -303,6 +312,10 @@ type QuestionResult = {
   reasoningEffort: string | null
   turnLifecycleStage: string | null
   turnLifecycleEvents: string[]
+  turnLifecycleReason: string | null
+  generationOutputTokens: number
+  generationReasoningTokens: number
+  generationVisibleOutputTokens: number
   sourceKindCounts: Record<string, number>
   visibleSources: Array<{ id: string; label: string; locator: string }>
   invalidCitation: boolean
@@ -360,6 +373,39 @@ type CapabilitySendDiagnostics = {
   errorCode: string | null
   errorMessage: string | null
   sseEventReceived: boolean
+  sseEventOrder: string[]
+  sseErrorCodes: string[]
+  sseErrorMessages: string[]
+  threadSeen: boolean
+  deltaSeen: boolean
+  doneSeen: boolean
+}
+
+function safeSseDiagnostics(rawBody: string): Pick<
+  CapabilitySendDiagnostics,
+  'sseEventReceived' | 'sseEventOrder' | 'sseErrorCodes'
+  | 'sseErrorMessages' | 'threadSeen' | 'deltaSeen' | 'doneSeen'
+> {
+  const eventOrder = parseSseEventOrder(rawBody).slice(0, 64)
+  const errors = sseData(rawBody, 'error').slice(0, 8)
+  return {
+    sseEventReceived:eventOrder.length > 0,
+    sseEventOrder:eventOrder,
+    sseErrorCodes:errors.map(value => (
+      String(value.code ?? 'sse_error')
+        .replace(/[^a-z0-9_-]/gi, '').slice(0, 100) || 'sse_error'
+    )),
+    sseErrorMessages:errors.map(value => {
+      const candidate = String(value.message ?? '').slice(0, 240)
+      const redacted = redactPotentialSecrets(candidate)
+      return redacted.potentialSecret
+        ? '[REDACTED POTENTIAL SECRET]'
+        : redacted.text.replace(/[\r\n]+/g, ' ').slice(0, 240)
+    }),
+    threadSeen:eventOrder.includes('thread'),
+    deltaSeen:eventOrder.includes('delta'),
+    doneSeen:eventOrder.includes('done'),
+  }
 }
 
 function safeSendErrorDiagnostics(
@@ -392,7 +438,7 @@ function safeSendErrorDiagnostics(
     httpStatus:status,
     errorCode,
     errorMessage,
-    sseEventReceived:parseSseEventOrder(rawBody).length > 0,
+    ...safeSseDiagnostics(rawBody),
   }
 }
 
@@ -970,6 +1016,8 @@ function skippedResult(
     status, selectedTier:question.tier ?? 'not_run', requestId:null, threadId:null,
     sendHttpStatus:null, sendErrorCode:null, sendErrorMessage:null,
     sendSseEventReceived:false,
+    sseErrorCodes:[], sseErrorMessages:[],
+    sseThreadSeen:false, sseDeltaSeen:false, sseDoneSeen:false,
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
     answerWords:0,
@@ -991,7 +1039,9 @@ function skippedResult(
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
     generationStageCount:0, repairStageCount:0, reasoningEffort:null,
-    turnLifecycleStage:null, turnLifecycleEvents:[],
+    turnLifecycleStage:null, turnLifecycleEvents:[], turnLifecycleReason:null,
+    generationOutputTokens:0, generationReasoningTokens:0,
+    generationVisibleOutputTokens:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
     invalidCitation:false,
     usageStageCount:0, usageStageStatusCounts:{}, activeUsageStageNames:[],
@@ -1141,6 +1191,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     send_error_code: string | null
     send_error_message: string | null
     send_sse_event_received: boolean
+    sse_event_order: string[]
+    sse_error_codes: string[]
+    sse_error_messages: string[]
+    sse_thread_seen: boolean
+    sse_delta_seen: boolean
+    sse_done_seen: boolean
     recovery_reason_code?: string
   }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
@@ -1315,7 +1371,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     })
     options.onSendDiagnostics?.({
       httpStatus:response.status(), errorCode:null, errorMessage:null,
-      sseEventReceived:false,
+      sseEventReceived:false, sseEventOrder:[], sseErrorCodes:[],
+      sseErrorMessages:[], threadSeen:false, deltaSeen:false, doneSeen:false,
     })
     // Drain the SSE response immediately, but observe the user-visible and
     // authoritative terminal states before consuming the complete body. A
@@ -1341,6 +1398,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const assistantVisible = await assistant.waitFor({
       state:'visible', timeout:remaining(QUESTION_DEADLINE_MS),
     }).then(() => true, () => false)
+    let assistantTerminalTimedOut = false
     let firstVisibleDeltaMs: number | null = null
     if (assistantVisible) {
       const firstDeltaDeadline = Math.min(questionDeadline, Date.now() + 180_000)
@@ -1350,11 +1408,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         if (!await assistant.evaluate(element => element.classList.contains('streaming'))) break
         await new Promise(resolveWait => setTimeout(resolveWait, 50))
       }
-      await expect(assistant).not.toHaveClass(/streaming/, {
+      assistantTerminalTimedOut = !await expect(assistant).not.toHaveClass(/streaming/, {
         timeout:remaining(QUESTION_DEADLINE_MS),
-      }).catch(() => {
-        throw new Error('assistant_ui_timeout')
-      })
+      }).then(() => true, () => false)
     }
     const audit = await auditObserver.catch(() => {
       throw new Error('request_audit_timeout')
@@ -1369,17 +1425,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     } catch {
       stepReasonCodes.push('response_body_timeout')
     }
-    const sendDiagnostics = response.ok()
+    const sendDiagnostics: CapabilitySendDiagnostics = response.ok()
       ? {
           httpStatus:response.status(), errorCode:null, errorMessage:null,
-          sseEventReceived:parseSseEventOrder(rawSse).length > 0,
+          ...safeSseDiagnostics(rawSse),
         }
       : safeSendErrorDiagnostics(response.status(), rawSse)
     options.onSendDiagnostics?.(sendDiagnostics)
     const terminalErrors = sseData(rawSse, 'error').map(
       value => String(value.code ?? 'sse_error').slice(0, 100),
     )
-    if (!assistantVisible) {
+    if (!assistantVisible || assistantTerminalTimedOut) {
       if (terminalErrors.includes('provider_safety_rejected')) {
         throw new Error('provider_safety_rejected')
       }
@@ -1563,6 +1619,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       sendErrorCode:sendDiagnostics.errorCode,
       sendErrorMessage:sendDiagnostics.errorMessage,
       sendSseEventReceived:sendDiagnostics.sseEventReceived,
+      sseErrorCodes:sendDiagnostics.sseErrorCodes,
+      sseErrorMessages:sendDiagnostics.sseErrorMessages,
+      sseThreadSeen:sendDiagnostics.threadSeen,
+      sseDeltaSeen:sendDiagnostics.deltaSeen,
+      sseDoneSeen:sendDiagnostics.doneSeen,
       startedAtUtc, endedAtUtc, firstVisibleDeltaMs,
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
@@ -1602,6 +1663,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       reasoningEffort:audit.reasoning_effort,
       turnLifecycleStage:audit.turn_lifecycle_stage,
       turnLifecycleEvents:audit.turn_lifecycle_events,
+      turnLifecycleReason:audit.turn_lifecycle_reason,
+      generationOutputTokens:audit.generation_output_tokens,
+      generationReasoningTokens:audit.generation_reasoning_tokens,
+      generationVisibleOutputTokens:audit.generation_visible_output_tokens,
       visibleSources:sources, invalidCitation,
       answerCheckStatusCounts:audit.answer_check_status_counts,
       providerCallCount:audit.provider_call_count, usageStageCount:audit.usage_stage_row_count,
@@ -1678,7 +1743,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     let capturedRequestId: string | null = null
     let sendDiagnostics: CapabilitySendDiagnostics = {
       httpStatus:null, errorCode:null, errorMessage:null,
-      sseEventReceived:false,
+      sseEventReceived:false, sseEventOrder:[], sseErrorCodes:[],
+      sseErrorMessages:[], threadSeen:false, deltaSeen:false, doneSeen:false,
     }
     try {
       const result = await executeQuestion(source, {
@@ -1750,6 +1816,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         send_error_code:sendDiagnostics.errorCode,
         send_error_message:sendDiagnostics.errorMessage,
         send_sse_event_received:sendDiagnostics.sseEventReceived,
+        sse_event_order:sendDiagnostics.sseEventOrder,
+        sse_error_codes:sendDiagnostics.sseErrorCodes,
+        sse_error_messages:sendDiagnostics.sseErrorMessages,
+        sse_thread_seen:sendDiagnostics.threadSeen,
+        sse_delta_seen:sendDiagnostics.deltaSeen,
+        sse_done_seen:sendDiagnostics.doneSeen,
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
@@ -1768,6 +1840,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         failedResult.sendErrorCode = sendDiagnostics.errorCode
         failedResult.sendErrorMessage = sendDiagnostics.errorMessage
         failedResult.sendSseEventReceived = sendDiagnostics.sseEventReceived
+        failedResult.sseEventOrder = sendDiagnostics.sseEventOrder
+        failedResult.sseErrorCodes = sendDiagnostics.sseErrorCodes
+        failedResult.sseErrorMessages = sendDiagnostics.sseErrorMessages
+        failedResult.sseThreadSeen = sendDiagnostics.threadSeen
+        failedResult.sseDeltaSeen = sendDiagnostics.deltaSeen
+        failedResult.sseDoneSeen = sendDiagnostics.doneSeen
         results.push(failedResult)
         return failedResult
       }
@@ -3329,6 +3407,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         send_error_code:item.sendErrorCode,
         send_error_message:item.sendErrorMessage,
         send_sse_event_received:item.sendSseEventReceived,
+        sse_event_order:item.sseEventOrder,
+        sse_error_codes:item.sseErrorCodes,
+        sse_error_messages:item.sseErrorMessages,
+        sse_thread_seen:item.sseThreadSeen,
+        sse_delta_seen:item.sseDeltaSeen,
+        sse_done_seen:item.sseDoneSeen,
         first_delta_ms:item.firstVisibleDeltaMs, total_ms:item.totalResponseMs,
         charged_micros:item.chargedMicros,
         cache_hit:item.cacheHit,
@@ -3354,6 +3438,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         reasoning_effort:item.reasoningEffort,
         turn_lifecycle_stage:item.turnLifecycleStage,
         turn_lifecycle_events:item.turnLifecycleEvents,
+        turn_lifecycle_reason:item.turnLifecycleReason,
+        generation_output_tokens:item.generationOutputTokens,
+        generation_reasoning_tokens:item.generationReasoningTokens,
+        generation_visible_output_tokens:item.generationVisibleOutputTokens,
         visible_bullet_count:item.representationCounts.visibleBulletCount,
         raw_bullet_count:item.representationCounts.rawBulletCount,
         visible_fence_count:item.representationCounts.visibleFenceCount,

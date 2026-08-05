@@ -3675,7 +3675,8 @@ def _phase3_stage(
 
 _TURN_LIFECYCLE_STAGES = frozenset({
     "reserved", "provider_started", "provider_completed",
-    "answer_finalized", "message_persisted", "stream_terminal",
+    "answer_finalized", "message_persisted", "aborted_before_reserve",
+    "stream_terminal",
 })
 _SAFE_REASONING_EFFORTS = frozenset({
     "none", "minimal", "low", "medium", "high", "xhigh",
@@ -3695,13 +3696,16 @@ def record_web_turn_lifecycle(
     lifecycle_stage: str,
     *,
     reasoning_effort: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Record a content-free lifecycle checkpoint without risking the turn."""
-    if (
-        lifecycle_stage not in _TURN_LIFECYCLE_STAGES
-        or prepared.route.provider not in {"openai", "sarvam"}
-    ):
+    if lifecycle_stage not in _TURN_LIFECYCLE_STAGES:
         return
+    safe_reason = (
+        str(reason).strip()[:80]
+        if reason and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", str(reason).strip())
+        else None
+    )
     logger.info(
         "web_chat_turn_lifecycle",
         extra={
@@ -3712,33 +3716,68 @@ def record_web_turn_lifecycle(
                 {"reasoning_effort": reasoning_effort}
                 if reasoning_effort in _SAFE_REASONING_EFFORTS else {}
             ),
+            **({"reason": safe_reason} if safe_reason else {}),
         },
     )
     try:
         with SessionLocal() as session:
+            user_message = session.exec(select(WebChatMessage).where(
+                WebChatMessage.request_id == prepared.request_id,
+                WebChatMessage.user_id == prepared.user_id,
+                WebChatMessage.role == "user",
+            )).first()
+            if user_message is not None:
+                message_safe = _safe_metadata_json(user_message.metadata_json)
+                message_events = [
+                    str(item)
+                    for item in message_safe.get("turn_lifecycle_events", [])
+                    if str(item) in _TURN_LIFECYCLE_STAGES
+                ] if isinstance(
+                    message_safe.get("turn_lifecycle_events"), list
+                ) else []
+                message_events.append(lifecycle_stage)
+                message_safe.update({
+                    "turn_lifecycle_stage": lifecycle_stage,
+                    "turn_lifecycle_events": list(dict.fromkeys(
+                        message_events
+                    ))[-8:],
+                })
+                if safe_reason:
+                    message_safe["turn_lifecycle_reason"] = safe_reason
+                if reasoning_effort in _SAFE_REASONING_EFFORTS:
+                    message_safe["reasoning_effort"] = reasoning_effort
+                user_message.metadata_json = json.dumps(
+                    message_safe, sort_keys=True, separators=(",", ":")
+                )
+                session.add(user_message)
             stage = session.exec(select(WebUsageStage).where(
                 WebUsageStage.request_id == prepared.request_id,
                 WebUsageStage.user_id == prepared.user_id,
                 WebUsageStage.stage_name == "generation",
             )).first()
             if stage is None:
-                if lifecycle_stage != "reserved":
+                if (
+                    lifecycle_stage == "reserved"
+                    and prepared.route.provider in {"openai", "sarvam"}
+                ):
+                    parent = session.exec(select(UsageCharge).where(
+                        UsageCharge.request_id == prepared.request_id,
+                        UsageCharge.user_id == prepared.user_id,
+                    )).first()
+                    stage = get_or_create_usage_stage(
+                        session,
+                        user_id=prepared.user_id,
+                        thread_id=prepared.thread_id,
+                        request_id=prepared.request_id,
+                        usage_charge_id=parent.id if parent else None,
+                        stage_name="generation",
+                        stage_order=10,
+                        status="planned",
+                        safe_metadata={"stage_key": "generation"},
+                    )
+                else:
+                    session.commit()
                     return
-                parent = session.exec(select(UsageCharge).where(
-                    UsageCharge.request_id == prepared.request_id,
-                    UsageCharge.user_id == prepared.user_id,
-                )).first()
-                stage = get_or_create_usage_stage(
-                    session,
-                    user_id=prepared.user_id,
-                    thread_id=prepared.thread_id,
-                    request_id=prepared.request_id,
-                    usage_charge_id=parent.id if parent else None,
-                    stage_name="generation",
-                    stage_order=10,
-                    status="planned",
-                    safe_metadata={"stage_key": "generation"},
-                )
             safe = _safe_metadata_json(stage.safe_metadata_json)
             events = [
                 str(item) for item in safe.get("turn_lifecycle_events", [])
@@ -3751,6 +3790,8 @@ def record_web_turn_lifecycle(
             })
             if reasoning_effort in _SAFE_REASONING_EFFORTS:
                 safe["reasoning_effort"] = reasoning_effort
+            if safe_reason:
+                safe["turn_lifecycle_reason"] = safe_reason
             stage.safe_metadata_json = json.dumps(
                 safe, sort_keys=True, separators=(",", ":")
             )
@@ -3767,6 +3808,40 @@ def record_web_turn_lifecycle(
                 "exception_class": type(exc).__name__[:80],
             },
         )
+
+
+def record_web_turn_pre_generation_abort(
+    prepared: PreparedWebTurn,
+    *,
+    reason: str,
+) -> bool:
+    """Record an early terminal path only when provider work never started."""
+    try:
+        with SessionLocal() as session:
+            stage = session.exec(select(WebUsageStage).where(
+                WebUsageStage.request_id == prepared.request_id,
+                WebUsageStage.user_id == prepared.user_id,
+                WebUsageStage.stage_name == "generation",
+            )).first()
+            metadata = _safe_metadata_json(
+                stage.safe_metadata_json if stage is not None else None
+            )
+            events = metadata.get("turn_lifecycle_events")
+            if isinstance(events, list) and "provider_started" in events:
+                return False
+    except Exception as exc:
+        logger.warning(
+            "web_chat_pre_generation_abort_probe_failed",
+            extra={
+                "event": "web_chat_pre_generation_abort_probe_failed",
+                "request_id": prepared.request_id,
+                "exception_class": type(exc).__name__[:80],
+            },
+        )
+    record_web_turn_lifecycle(
+        prepared, "aborted_before_reserve", reason=reason,
+    )
+    return True
 
 
 def _phase3_response_price(response: AIProviderResponse) -> PriceResult:

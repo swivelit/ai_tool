@@ -255,7 +255,7 @@ test('isolated assistant persistence races are bounded without aborting the batc
   expect(spec).toContain("primaryFailure ??= 'assistant_persistence_systemic_outage'")
   expect(spec).toContain('assistant_persistence_failures:assistantPersistenceFailures')
   expect(spec).toMatch(
-    /if \(\['assistant_persistence_missing', 'assistant_ui_timeout'\][\s\S]{0,900}return failedResult/,
+    /if \(\['assistant_persistence_missing', 'assistant_ui_timeout'\][\s\S]{0,1800}return failedResult/,
   )
 })
 
@@ -386,6 +386,10 @@ test('production capability safe summary includes content-free completion diagno
     'reasoning_effort:item.reasoningEffort',
     'turn_lifecycle_stage:item.turnLifecycleStage',
     'turn_lifecycle_events:item.turnLifecycleEvents',
+    'turn_lifecycle_reason:item.turnLifecycleReason',
+    'generation_output_tokens:item.generationOutputTokens',
+    'generation_reasoning_tokens:item.generationReasoningTokens',
+    'generation_visible_output_tokens:item.generationVisibleOutputTokens',
     'persisted_quality_status:item.persistedQualityStatus',
     'sse_quality_status:item.sseQualityStatus',
     'definition_present:item.semanticEvaluation.definitionPresent',
@@ -455,8 +459,22 @@ test('capability failures retain bounded pre-reservation send diagnostics', () =
   expect(spec).toContain('send_error_code:item.sendErrorCode')
   expect(spec).toContain('send_error_message:item.sendErrorMessage')
   expect(spec).toContain('send_sse_event_received:item.sendSseEventReceived')
+  expect(spec).toContain('sse_event_order:item.sseEventOrder')
+  expect(spec).toContain('sse_error_codes:item.sseErrorCodes')
+  expect(spec).toContain('sse_error_messages:item.sseErrorMessages')
+  expect(spec).toContain('sse_thread_seen:item.sseThreadSeen')
+  expect(spec).toContain('sse_delta_seen:item.sseDeltaSeen')
+  expect(spec).toContain('sse_done_seen:item.sseDoneSeen')
   expect(spec).toContain("safeSendErrorDiagnostics(response.status(), errorBody)")
   expect(spec).toContain("'[REDACTED POTENTIAL SECRET]'")
+  const parsed = spec.indexOf(
+    'const sendDiagnostics: CapabilitySendDiagnostics',
+  )
+  const assistantFailure = spec.indexOf(
+    'if (!assistantVisible || assistantTerminalTimedOut)', parsed,
+  )
+  expect(parsed).toBeGreaterThan(0)
+  expect(assistantFailure).toBeGreaterThan(parsed)
 })
 
 test('repository capability waits for a ready composer signal before G questions', () => {

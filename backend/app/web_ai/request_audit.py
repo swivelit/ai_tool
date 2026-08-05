@@ -107,7 +107,8 @@ _REASONING_EFFORTS = frozenset({
 })
 _TURN_LIFECYCLE_STAGES = (
     "reserved", "provider_started", "provider_completed",
-    "answer_finalized", "message_persisted", "stream_terminal",
+    "answer_finalized", "message_persisted", "aborted_before_reserve",
+    "stream_terminal",
 )
 _TURN_LIFECYCLE_STAGE_SET = frozenset(_TURN_LIFECYCLE_STAGES)
 _ARCHITECTURE_AREA_IDENTIFIERS = (
@@ -366,14 +367,38 @@ def build_request_audit(
         reasoning_effort: str | None = None
         turn_lifecycle_stage: str | None = None
         turn_lifecycle_events: list[str] = []
+        turn_lifecycle_reason: str | None = None
+        generation_output_tokens = 0
+        generation_reasoning_tokens = 0
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
             message_statuses.append(str(status or ""))
             if tier in _TIERS:
                 selected_tier = str(tier)
+            metadata = _safe_json(str(metadata_json or "{}"))
+            candidate_lifecycle = str(
+                metadata.get("turn_lifecycle_stage") or ""
+            )
+            if candidate_lifecycle in _TURN_LIFECYCLE_STAGE_SET:
+                turn_lifecycle_stage = candidate_lifecycle
+            raw_lifecycle_events = metadata.get("turn_lifecycle_events")
+            if isinstance(raw_lifecycle_events, list):
+                for event in raw_lifecycle_events:
+                    normalized = str(event)
+                    if (
+                        normalized in _TURN_LIFECYCLE_STAGE_SET
+                        and normalized not in turn_lifecycle_events
+                    ):
+                        turn_lifecycle_events.append(normalized)
+            candidate_lifecycle_reason = str(
+                metadata.get("turn_lifecycle_reason") or ""
+            )
+            if re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]{0,79}", candidate_lifecycle_reason
+            ):
+                turn_lifecycle_reason = candidate_lifecycle_reason
             if str(role) != "assistant":
                 continue
-            metadata = _safe_json(str(metadata_json or "{}"))
             candidate_intent = str(metadata.get("deterministic_intent") or "")
             if candidate_intent in _DETERMINISTIC_INTENTS:
                 deterministic_intent = candidate_intent
@@ -567,6 +592,11 @@ def build_request_audit(
 
         for stage_row in stage_rows:
             stage_metadata = _safe_json(str(stage_row[7] or "{}"))
+            if str(stage_row[0]) == "generation":
+                generation_output_tokens += _bounded_count(stage_row[5])
+                generation_reasoning_tokens += _bounded_count(
+                    stage_metadata.get("reasoning_token_count")
+                )
             candidate_reasoning = str(
                 stage_metadata.get("reasoning_effort") or ""
             )
@@ -592,6 +622,13 @@ def build_request_audit(
                         and normalized not in turn_lifecycle_events
                     ):
                         turn_lifecycle_events.append(normalized)
+            candidate_lifecycle_reason = str(
+                stage_metadata.get("turn_lifecycle_reason") or ""
+            )
+            if re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]{0,79}", candidate_lifecycle_reason
+            ):
+                turn_lifecycle_reason = candidate_lifecycle_reason
 
         if failed_check_identifiers:
             if not pre_repair_failed_check_identifiers:
@@ -747,6 +784,17 @@ def build_request_audit(
             "reasoning_effort": reasoning_effort,
             "turn_lifecycle_stage": turn_lifecycle_stage,
             "turn_lifecycle_events": turn_lifecycle_events[:8],
+            "turn_lifecycle_reason": turn_lifecycle_reason,
+            "generation_output_tokens": min(
+                _COUNT_MAX, generation_output_tokens
+            ),
+            "generation_reasoning_tokens": min(
+                _COUNT_MAX, generation_reasoning_tokens
+            ),
+            "generation_visible_output_tokens": min(
+                _COUNT_MAX,
+                max(0, generation_output_tokens - generation_reasoning_tokens),
+            ),
             "phase2_fallback_reason_code": phase2_fallback_reason_code,
             "cancellation_state": cancellation_state,
             "cancellation_failure_origin": cancellation_failure_origin,
