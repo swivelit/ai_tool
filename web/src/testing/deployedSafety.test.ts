@@ -511,6 +511,11 @@ test('R09 reopens the authoritative persisted thread before reporting a UI timeo
   )
   expect(spec).toContain("question.id === 'R09'")
   expect(spec).toContain('reopenPersistedAssistantThread(')
+  expect(spec).toContain('for (let index = 0; index < count')
+  expect(spec).toContain('title_candidate_count:reopenResult.titleCandidateCount')
+  expect(spec).toContain('selected_candidate_index:reopenResult.selectedCandidateIndex')
+  expect(spec).toContain('audit_request_id:audit.request_id || null')
+  expect(spec).toContain('dom_selector_request_id:requestId')
   expect(spec).toContain("assistantLookup = 'thread_reopen'")
   expect(spec).toContain(
     'assistant_lookup_diagnostics:assistantLookupDiagnostics',

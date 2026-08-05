@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
 from ..ai.openai_catalog import get_model_spec
+from ..ai.openai_reasoning import openai_visible_output_reserve
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import (
@@ -2292,7 +2293,10 @@ def prepare_web_turn(
                     repository_snapshot.index_complete
                     and any(
                         path not in indexed_repository_paths
-                        for path in cited_repository_paths(model_message)
+                        for path in cited_repository_paths(
+                            model_message,
+                            user_message=visible_message,
+                        )
                     )
                 ),
             )
@@ -2514,6 +2518,13 @@ def prepare_web_turn(
                     if execution_plan is not None
                     else optimization.max_output_tokens
                 ),
+            )
+        if route.provider == "openai":
+            ai_request.metadata["minimum_visible_output_tokens"] = (
+                openai_visible_output_reserve(
+                    route.max_output_tokens,
+                    ai_request.metadata.get("minimum_visible_output_tokens"),
+                )
             )
         provider_messages = _hard_budget_provider_messages(ai_request, route)
         serialized_prompt = serialize_provider_messages(provider_messages)
@@ -4281,12 +4292,14 @@ def execute_web_turn(
             repository_validation_attempts = 0
             fence_autoclosed = False
             latest_generated_response: AIProviderResponse | None = None
+            finalize_stage = "provider_not_started"
 
             def generate_draft(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
                 nonlocal streamed_by_provider, guard_context, fence_autoclosed
                 nonlocal latest_generated_response
+                nonlocal finalize_stage
                 _phase3_stage(
                     prepared,
                     stage_name="generation",
@@ -4310,6 +4323,8 @@ def execute_web_turn(
                         )
                         if visible_delta:
                             visible_delta(draft.text)
+                    latest_generated_response = draft
+                    finalize_stage = "provider_response_received"
                 except GenerationIncomplete as exc:
                     usage = exc.metadata
                     if usage.get("provider_usage_received"):
@@ -4448,11 +4463,14 @@ def execute_web_turn(
                         draft.raw.get("reasoning_effort") or ""
                     ),
                 )
+                finalize_stage = "provider_usage_accounted"
+                finalize_stage = "provider_completion_metadata"
                 guard_context = replace(
                     guard_context,
                     provider_completion=ProviderCompletion.from_raw(draft.raw),
                 )
                 latest_generated_response = draft
+                finalize_stage = "fence_integrity"
                 closed_text, was_autoclosed = autoclose_unbalanced_fence(
                     draft.text
                 )
@@ -4464,6 +4482,7 @@ def execute_web_turn(
                         raw={**draft.raw, "fence_autoclosed": True},
                     )
                 latest_generated_response = draft
+                finalize_stage = "draft_ready_for_validation"
                 return draft
 
             def model_verifier(answer: str, pack: EvidencePack) -> bool:
@@ -4668,6 +4687,8 @@ def execute_web_turn(
 
             def verify(answer: str) -> AnswerQualityResult:
                 nonlocal guard_context, repository_validation_attempts
+                nonlocal finalize_stage
+                finalize_stage = "answer_guard_verification"
                 if (
                     guard_context.repository_validation_required
                     and prepared.repository_validation is None
@@ -5164,6 +5185,7 @@ def execute_web_turn(
                 return result
 
             try:
+                finalize_stage = "verified_generation"
                 generated = VerifiedGenerator(stream_policy).generate(
                     generate_draft=generate_draft,
                     verify=verify,
@@ -5187,14 +5209,14 @@ def execute_web_turn(
                     can_second_repair=can_second_strict_format_repair,
                 )
             except GenerationIncomplete as exc:
-                # A strict visible contract may consume its shared provider budget
-                # before emitting text. Use the single, already planned repair stage
-                # as a visible-output-safe fallback; never issue an untracked retry.
                 if not (
                     output_contract.strict_visible_format
                     and stream_policy.mode == "verified_buffered"
                 ):
                     raise
+                # A strict visible contract may consume its shared provider budget
+                # before emitting text. Use the single, already planned repair stage
+                # as a visible-output-safe fallback; never issue an untracked retry.
                 incomplete_context = replace(
                     guard_context,
                     provider_completion=ProviderCompletion.from_raw(exc.metadata),
@@ -5255,16 +5277,17 @@ def execute_web_turn(
                 # Provider output is the user-visible product. Deterministic
                 # validation, formatting, or telemetry enrichment must not
                 # discard a completed, already-accounted provider response.
-                if latest_generated_response is None:
-                    raise
                 logger.warning(
                     "answer_finalize_degraded",
                     extra={
                         "event": "answer_finalize_degraded",
                         "request_id": prepared.request_id,
                         "error_class": exc.__class__.__name__[:80],
+                        "finalize_stage": finalize_stage,
                     },
                 )
+                if latest_generated_response is None:
+                    raise
                 degraded_quality = AnswerQualityResult(
                     status="unverified",
                     checks=(QualityCheck(
@@ -5287,9 +5310,23 @@ def execute_web_turn(
                     repair_attempts=1 if repair_prices else 0,
                 )
                 if on_delta and stream_policy.mode == "verified_buffered":
-                    on_delta(latest_generated_response.text)
+                    try:
+                        on_delta(latest_generated_response.text)
+                    except Exception as delta_exc:
+                        logger.warning(
+                            "answer_finalize_degraded",
+                            extra={
+                                "event": "answer_finalize_degraded",
+                                "request_id": prepared.request_id,
+                                "error_class": (
+                                    delta_exc.__class__.__name__[:80]
+                                ),
+                                "finalize_stage": "degraded_delta_emission",
+                            },
+                        )
             response = generated.response
             prepared.answer_quality = generated.quality
+            finalize_stage = "post_generation_formatting"
         elif prepared.route.provider in {"openai", "sarvam"}:
             provider = provider_map.get(prepared.route.provider)
             if provider is None:
@@ -5339,6 +5376,7 @@ def execute_web_turn(
                     "event": "answer_finalize_degraded",
                     "request_id": prepared.request_id,
                     "error_class": exc.__class__.__name__[:80],
+                    "finalize_stage": "post_generation_formatting",
                 },
             )
             prepared.answer_quality = AnswerQualityResult(
@@ -5370,6 +5408,12 @@ def execute_web_turn(
             raise
     except GenerationIncomplete as exc:
         usage = exc.metadata
+        record_web_turn_lifecycle(
+            prepared,
+            "provider_completed",
+            reasoning_effort=str(usage.get("reasoning_effort") or ""),
+            reason="generation_incomplete",
+        )
         if not phase3_prices and usage.get("provider_usage_received"):
             incomplete = AIProviderResponse(
                 text="",
@@ -5550,8 +5594,14 @@ def execute_web_turn(
         if phase3_prices:
             response.input_tokens = sum(item[2] for item in phase3_prices)
             response.output_tokens = sum(item[3] for item in phase3_prices)
-            response.raw["provider_attempts"] = len(phase3_prices)
-            response.raw["provider_calls_with_usage"] = len(phase3_prices)
+            response.raw["provider_attempts"] = max(
+                len(phase3_prices),
+                int(response.raw.get("provider_attempts") or 0),
+            )
+            response.raw["provider_calls_with_usage"] = max(
+                len(phase3_prices),
+                int(response.raw.get("provider_calls_with_usage") or 0),
+            )
             response.raw["usage_actual"] = any(
                 item[2] > 0 or item[3] > 0 for item in phase3_prices
             )

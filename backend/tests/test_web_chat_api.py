@@ -35,6 +35,7 @@ from app.web_api.chat_service import (
     prepare_web_turn,
 )
 from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
+from app.web_ai.generation.answer_guard import ProviderCompletion
 
 
 def test_thread_ownership_for_read_rename_delete(client):
@@ -666,11 +667,17 @@ def test_large_completed_answer_survives_finalize_validation_error(
         "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
         lambda self, request, route, on_delta: completed(route),
     )
+    completion_calls = {"count": 0}
+    original_from_raw = ProviderCompletion.from_raw
+
+    def fail_once(value):
+        completion_calls["count"] += 1
+        if completion_calls["count"] == 1:
+            raise RuntimeError("synthetic_finalize_failure")
+        return original_from_raw(value)
+
     monkeypatch.setattr(
-        "app.web_ai.generation.answer_guard.AnswerGuard.check",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic_finalize_failure")
-        ),
+        "app.web_api.chat_service.ProviderCompletion.from_raw", fail_once,
     )
     request_id = "b1d3df27-8f31-4f5f-a7dc-aeb9db652620"
 
@@ -697,6 +704,8 @@ def test_large_completed_answer_survives_finalize_validation_error(
         record.getMessage() == "answer_finalize_degraded"
         and getattr(record, "request_id", None) == request_id
         and getattr(record, "error_class", None) == "RuntimeError"
+        and getattr(record, "finalize_stage", None)
+        == "provider_completion_metadata"
         for record in caplog.records
     )
 
@@ -724,6 +733,10 @@ def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
 
     monkeypatch.setattr(
         "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        incomplete,
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.complete",
         incomplete,
     )
     request_id = "0d0aa607-1d4a-47b3-b045-a411ca60e9f3"
@@ -777,6 +790,9 @@ def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
         assert stage.output_tokens == 320
         assert charge.debited_micros == stage.debited_micros
         assert user_message.status == "retryable"
+        assert json.loads(user_message.metadata_json)[
+            "turn_lifecycle_reason"
+        ] == "generation_incomplete"
         assert assistant is None
         assert get_wallet_summary(session, int(user.id))[
             "reserved_micros"

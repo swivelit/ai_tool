@@ -4056,7 +4056,7 @@ async def chat_stream(
             outcome = "incomplete"
             terminal_exception_class = type(exc).__name__
             record_web_turn_pre_generation_abort(
-                prepared, reason=type(exc).__name__,
+                prepared, reason="generation_incomplete",
             )
             logger.warning(
                 "web_chat_generation_incomplete",

@@ -571,6 +571,51 @@ export function hasAffirmativeWaitAdvice(value: string): boolean {
   return false
 }
 
+const REPOSITORY_PATH = /(?<![A-Za-z0-9:/])((?:(?:\.{1,2}\/)?[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,16})(?=$|[\s`'"),.:;\]])/giu
+const REPOSITORY_UNCERTAINTY = /\b(?:can(?:not|'t|’t)\s+(?:verify|determine|confirm|find)|unable\s+to\s+(?:verify|determine|confirm|find)|don(?:'t|’t)\s+have|no\s+access|not\s+available|not\s+(?:provided|stated|found|present)|doesn(?:'t|’t)\s+exist|does\s+not\s+(?:exist|contain|provide)|no\s+such\s+file|no\s+(?:repository\s+)?(?:entry|record|match)|couldn(?:'t|’t)\s+find\s+enough\s+support|insufficient)\b/iu
+const REPOSITORY_AFFIRMATIVE_CLAIM = /\b(?:exists?|is\s+present|logic\s+lives|defines?|implements?|exports?|imports?|contains?|handles?|returns?|used\s+by|imported\s+by)\b/iu
+
+export type RepositoryAbsenceEvaluation = {
+  passed: boolean
+  inabilityPresent: boolean
+  affirmativeClaimPresent: boolean
+  citedPathCount: number
+}
+
+export function evaluateRepositoryAbsenceAnswer(
+  answer: string,
+  userMessage: string,
+): RepositoryAbsenceEvaluation {
+  const value = String(answer ?? '')
+  const prompt = String(userMessage ?? '').replaceAll('\\', '/').toLocaleLowerCase()
+  const sentences = value.split(/(?<=[.!?])\s+|\n+/u)
+  let inabilityPresent = REPOSITORY_UNCERTAINTY.test(value)
+  let affirmativeClaimPresent = false
+  const cited = new Set<string>()
+  for (const sentence of sentences) {
+    const uncertain = REPOSITORY_UNCERTAINTY.test(sentence)
+    if (REPOSITORY_AFFIRMATIVE_CLAIM.test(sentence) && !uncertain) {
+      affirmativeClaimPresent = true
+    }
+    for (const match of sentence.matchAll(REPOSITORY_PATH)) {
+      const path = String(match[1] ?? '').replace(/^\.\//u, '')
+      const echoed = prompt.includes(path.toLocaleLowerCase())
+      if (!echoed && !uncertain) cited.add(path)
+    }
+  }
+  inabilityPresent ||= cited.size === 0 && REPOSITORY_UNCERTAINTY.test(value)
+  return {
+    passed:!affirmativeClaimPresent && (inabilityPresent || cited.size === 0),
+    inabilityPresent,
+    affirmativeClaimPresent,
+    citedPathCount:cited.size,
+  }
+}
+
+export function hasInsufficientEvidenceLanguage(value: string): boolean {
+  return REPOSITORY_UNCERTAINTY.test(String(value ?? ''))
+}
+
 export function percentile(values: number[], percentileValue: number): number | null {
   if (!values.length) return null
   const sorted = [...values].sort((left, right) => left - right)

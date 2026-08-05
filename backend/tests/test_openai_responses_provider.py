@@ -10,7 +10,8 @@ from app.ai.model_health import (
 )
 from app.ai.completion_quality import incomplete_markdown_reason
 from app.ai.openai_reasoning import (
-    OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
+    OpenAIReasoningEffortConfigurationError, openai_visible_output_reserve,
+    openai_web_reasoning_effort,
 )
 from app.ai.providers.base import (
     GenerationIncomplete, ProviderSafetyRejected, ProviderStreamInterrupted,
@@ -377,6 +378,29 @@ def test_web_reasoning_policy_defaults(monkeypatch):
     assert openai_web_reasoning_effort(None) is None
 
 
+def test_reasoning_share_reserves_visible_output_regardless_of_floor(monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_MAX_BUDGET_FRACTION", "0.4")
+    monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "1400")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
+
+    assert openai_visible_output_reserve(1600, 0) == 960
+    assert openai_web_reasoning_effort(
+        "long_form",
+        max_output_tokens=1600,
+        minimum_visible_output_tokens=0,
+    ) == "none"
+
+
+@pytest.mark.parametrize("configured", ["0", "1", "not-a-number"])
+def test_invalid_reasoning_budget_fraction_is_rejected(
+    monkeypatch, configured,
+):
+    monkeypatch.setenv("OPENAI_REASONING_MAX_BUDGET_FRACTION", configured)
+
+    with pytest.raises(OpenAIReasoningEffortConfigurationError):
+        openai_visible_output_reserve(1600)
+
+
 @pytest.mark.parametrize(
     ("answer_class", "expected"),
     [
@@ -462,6 +486,21 @@ def test_provider_complete_reserves_strict_repair_visible_output_metadata():
     assert call["max_output_tokens"] == 420
 
 
+def test_provider_complete_honours_internal_no_reasoning_override():
+    client = _Client()
+    request = _request("long_form")
+    request.metadata.update({
+        "reasoning_effort_override": "none",
+        "minimum_visible_output_tokens": 960,
+    })
+
+    OpenAIProvider(client).complete(
+        request, _route(max_output_tokens=1600),
+    )
+
+    assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
+
+
 def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
     monkeypatch.delenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", raising=False)
@@ -510,10 +549,10 @@ def test_strict_visible_contract_suppresses_only_below_reasoning_floor(
     assert openai_web_reasoning_effort(
         "normal", max_output_tokens=3000,
         strict_visible_format=True, minimum_visible_output_tokens=800,
-    ) == "low"
+    ) == "none"
 
 
-def test_lite_long_form_keeps_minimal_reasoning_when_visible_reserve_fits(
+def test_lite_long_form_disables_reasoning_when_fraction_cap_is_below_floor(
     monkeypatch,
 ):
     monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "1400")
@@ -524,7 +563,7 @@ def test_lite_long_form_keeps_minimal_reasoning_when_visible_reserve_fits(
         max_output_tokens=1600,
         strict_visible_format=True,
         minimum_visible_output_tokens=1200,
-    ) == "minimal"
+    ) == "none"
     assert openai_web_reasoning_effort(
         "long_form",
         max_output_tokens=1200,
@@ -660,7 +699,7 @@ def test_responses_protocol_error_after_delta_does_not_retry_or_duplicate():
     assert excinfo.value.response.text == "partial"
 
 
-def test_no_visible_output_at_limit_raises_incomplete_without_fallback():
+def test_no_visible_output_retries_once_then_remains_incomplete():
     final = _final(
         text="", status="incomplete", reason="max_output_tokens",
         output_tokens=40, reasoning_tokens=40,
@@ -674,17 +713,18 @@ def test_no_visible_output_at_limit_raises_incomplete_without_fallback():
             lambda _delta: None,
         )
 
-    assert len(client.responses.calls) == 1
+    assert len(client.responses.calls) == 2
     assert excinfo.value.metadata == {
         "completion_status": "incomplete",
         "incomplete_reason": "max_output_tokens",
         "finish_reason": "length",
-        "input_tokens": 10,
-        "output_tokens": 40,
-        "reasoning_tokens": 40,
+        "input_tokens": 20,
+        "output_tokens": 80,
+        "reasoning_tokens": 80,
         "visible_character_count": 0,
         "max_output_tokens": 40,
         "provider_usage_received": True,
+        "reasoning_effort": "none",
     }
     assert not is_model_temporarily_unavailable(
         "openai", "gpt-5.4-mini", "responses"
@@ -695,8 +735,8 @@ def test_no_visible_output_at_limit_raises_incomplete_without_fallback():
                 OpenAIUsageLog.request_id == "responses-policy"
             )
         ).all()
-    assert len(rows) == 1
-    assert rows[0].actual_output_tokens == 40
+    assert len(rows) == 2
+    assert all(row.actual_output_tokens == 40 for row in rows)
 
 
 def test_non_streaming_no_visible_output_at_limit_is_incomplete():
@@ -711,7 +751,41 @@ def test_non_streaming_no_visible_output_at_limit_is_incomplete():
     with pytest.raises(GenerationIncomplete):
         OpenAIProvider(client).complete(_request(), _route())
 
-    assert len(client.responses.calls) == 1
+    assert len(client.responses.calls) == 2
+
+
+def test_zero_visible_stream_retries_once_without_reasoning(caplog):
+    client = _Client()
+    client.responses = _SequenceRecorder([
+        [_terminal_event(_final(
+            text="", status="incomplete", reason="max_output_tokens",
+            output_tokens=40, reasoning_tokens=40,
+        ))],
+        [_terminal_event(_final(
+            text="A complete visible answer.", output_tokens=8,
+            reasoning_tokens=0,
+        ))],
+    ])
+    deltas: list[str] = []
+
+    with caplog.at_level(logging.WARNING):
+        response = OpenAIProvider(client).stream_complete(
+            _request(answer_class="long_form"),
+            _route(max_output_tokens=40),
+            deltas.append,
+        )
+
+    assert response.text == "A complete visible answer."
+    assert deltas == ["A complete visible answer."]
+    assert len(client.responses.calls) == 2
+    assert client.responses.calls[1]["reasoning"] == {"effort": "none"}
+    assert response.raw["reasoning_starved_retry"] is True
+    assert response.raw["provider_attempts"] == 2
+    assert response.output_tokens == 48
+    assert any(
+        record.getMessage() == "reasoning_starved_retry"
+        for record in caplog.records
+    )
 
 
 def test_zero_output_zero_usage_stream_failure_still_fails_over():

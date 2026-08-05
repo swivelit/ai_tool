@@ -75,6 +75,7 @@ class GenerationIncomplete(RuntimeError):
         visible_characters: int,
         max_output_tokens: int,
         provider_usage_received: bool,
+        reasoning_effort: str | None = None,
     ) -> None:
         super().__init__(
             "Generation incomplete: the response limit was reached before visible output."
@@ -89,6 +90,7 @@ class GenerationIncomplete(RuntimeError):
             "visible_character_count": max(0, int(visible_characters or 0)),
             "max_output_tokens": max(0, int(max_output_tokens or 0)),
             "provider_usage_received": bool(provider_usage_received),
+            "reasoning_effort": str(reasoning_effort or ""),
         }
 
 

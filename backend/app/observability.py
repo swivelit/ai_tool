@@ -189,6 +189,7 @@ _SAFE_EXTRA_KEYS = {
     "answer_class",
     "reasoning_effort",
     "lifecycle_stage",
+    "finalize_stage",
     "terminal_event_type",
     "completion_status",
     "provider_completion_status",

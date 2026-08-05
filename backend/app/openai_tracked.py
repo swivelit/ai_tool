@@ -613,6 +613,9 @@ def tracked_openai_generation(
                         minimum_visible_output_tokens=extra.get(
                             "minimum_visible_output_tokens"
                         ),
+                        effort_override=extra.get(
+                            "reasoning_effort_override"
+                        ),
                     )
                     request_kwargs: dict[str, Any] = {
                         "model": selection.model,

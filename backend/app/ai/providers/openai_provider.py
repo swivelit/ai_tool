@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import replace
 from typing import Any, Callable, Optional
 
 import httpx
@@ -92,6 +93,9 @@ class OpenAIProvider(AIProvider):
             minimum_visible_output_tokens=request.metadata.get(
                 "minimum_visible_output_tokens"
             ),
+            reasoning_effort_override=request.metadata.get(
+                "reasoning_effort_override"
+            ),
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
@@ -126,6 +130,54 @@ class OpenAIProvider(AIProvider):
                 "openai_generation_no_visible_output",
                 extra={"event": "openai_generation_no_visible_output", **diagnostics},
             )
+            if request.metadata.get("reasoning_starved_retry") is not True:
+                logger.warning(
+                    "reasoning_starved_retry",
+                    extra={
+                        "event": "reasoning_starved_retry",
+                        "request_id": request.request_id,
+                    },
+                )
+                retry_request = replace(
+                    request,
+                    metadata={
+                        **request.metadata,
+                        "reasoning_effort_override": "none",
+                        "reasoning_starved_retry": True,
+                        "max_provider_attempts": 1,
+                        "prompt_cache_enabled": False,
+                    },
+                )
+                first_usage = {
+                    "input_tokens": int(metadata.get("actual_input_tokens") or 0),
+                    "output_tokens": int(metadata.get("actual_output_tokens") or 0),
+                    "reasoning_tokens": reasoning_tokens,
+                    "provider_usage_received": provider_usage_received,
+                    "actual_cost_usd": float(
+                        metadata.get("actual_cost_usd") or 0.0
+                    ),
+                    "cached_input_tokens": int(
+                        metadata.get("cached_input_tokens") or 0
+                    ),
+                    "cache_write_tokens": int(
+                        metadata.get("cache_write_tokens") or 0
+                    ),
+                }
+                try:
+                    retried = self.complete(retry_request, route)
+                except GenerationIncomplete as retry_error:
+                    raise _combined_generation_incomplete(
+                        first_usage, retry_error, route.max_output_tokens,
+                    ) from retry_error
+                except ProviderSafetyRejected as retry_error:
+                    raise ProviderSafetyRejected(
+                        _combine_reasoning_starved_response(
+                            retry_error.response, first_usage=first_usage,
+                        )
+                    ) from retry_error
+                return _combine_reasoning_starved_response(
+                    retried, first_usage=first_usage,
+                )
             raise GenerationIncomplete(
                 completion_status=str(completion_metadata["completion_status"]),
                 incomplete_reason=str(completion_metadata["incomplete_reason"]),
@@ -139,6 +191,7 @@ class OpenAIProvider(AIProvider):
                     or route.max_output_tokens
                 ),
                 provider_usage_received=provider_usage_received,
+                reasoning_effort=str(metadata.get("reasoning_effort") or ""),
             )
         canonical_prompt = str(request.metadata.get("serialized_provider_prompt") or serialize_provider_messages(messages))
         input_tokens = int(metadata.get("actual_input_tokens") or metadata.get("estimated_input_tokens") or router.estimate_tokens(canonical_prompt))
@@ -368,6 +421,9 @@ class OpenAIProvider(AIProvider):
                             ),
                             minimum_visible_output_tokens=request.metadata.get(
                                 "minimum_visible_output_tokens"
+                            ),
+                            effort_override=request.metadata.get(
+                                "reasoning_effort_override"
                             ),
                         )
                         if model_spec.supports_reasoning_effort
@@ -605,6 +661,7 @@ class OpenAIProvider(AIProvider):
                         provider_attempts=provider_attempts,
                         visible_output_emitted=visible_output_emitted,
                         provider_usage_received=provider_usage_received,
+                        reasoning_effort=reasoning_effort,
                         terminal_event_type=terminal_event_type,
                         completion_status=completion_status,
                         finish_reason=finish_reason,
@@ -693,6 +750,52 @@ class OpenAIProvider(AIProvider):
                             **diagnostics,
                         },
                     )
+                    if request.metadata.get("reasoning_starved_retry") is not True:
+                        logger.warning(
+                            "reasoning_starved_retry",
+                            extra={
+                                "event": "reasoning_starved_retry",
+                                "request_id": request.request_id,
+                            },
+                        )
+                        retry_request = replace(
+                            request,
+                            metadata={
+                                **request.metadata,
+                                "reasoning_effort_override": "none",
+                                "reasoning_starved_retry": True,
+                                "max_provider_attempts": 1,
+                                "prompt_cache_enabled": False,
+                            },
+                        )
+                        first_usage = {
+                            "input_tokens": reported_input_tokens,
+                            "output_tokens": reported_output_tokens,
+                            "reasoning_tokens": reasoning_tokens,
+                            "provider_usage_received": provider_usage_received,
+                            "actual_cost_usd": actual_cost,
+                            "cached_input_tokens": cached_tokens,
+                            "cache_write_tokens": cache_write_tokens,
+                        }
+                        try:
+                            retried = self.stream_complete(
+                                retry_request, route, on_delta,
+                            )
+                        except GenerationIncomplete as retry_error:
+                            raise _combined_generation_incomplete(
+                                first_usage, retry_error,
+                                route.max_output_tokens,
+                            ) from retry_error
+                        except ProviderSafetyRejected as retry_error:
+                            raise ProviderSafetyRejected(
+                                _combine_reasoning_starved_response(
+                                    retry_error.response,
+                                    first_usage=first_usage,
+                                )
+                            ) from retry_error
+                        return _combine_reasoning_starved_response(
+                            retried, first_usage=first_usage,
+                        )
                     raise GenerationIncomplete(
                         completion_status=completion_status,
                         incomplete_reason=incomplete_reason,
@@ -703,6 +806,7 @@ class OpenAIProvider(AIProvider):
                         visible_characters=0,
                         max_output_tokens=route.max_output_tokens,
                         provider_usage_received=provider_usage_received,
+                        reasoning_effort=reasoning_effort,
                     )
                 degradation_reason = _local_degradation_reason(
                     text,
@@ -1120,6 +1224,97 @@ def _is_transient_stream_error(exc: BaseException) -> bool:
             APIConnectionError,
             APITimeoutError,
         ),
+    )
+
+
+def _combined_generation_incomplete(
+    first_usage: dict[str, Any],
+    retry_error: GenerationIncomplete,
+    max_output_tokens: int,
+) -> GenerationIncomplete:
+    retry_usage = retry_error.metadata
+    return GenerationIncomplete(
+        completion_status=str(
+            retry_usage.get("completion_status") or "incomplete"
+        ),
+        incomplete_reason=str(
+            retry_usage.get("incomplete_reason") or "max_output_tokens"
+        ),
+        finish_reason=str(retry_usage.get("finish_reason") or "length"),
+        input_tokens=(
+            int(first_usage.get("input_tokens") or 0)
+            + int(retry_usage.get("input_tokens") or 0)
+        ),
+        output_tokens=(
+            int(first_usage.get("output_tokens") or 0)
+            + int(retry_usage.get("output_tokens") or 0)
+        ),
+        reasoning_tokens=(
+            int(first_usage.get("reasoning_tokens") or 0)
+            + int(retry_usage.get("reasoning_tokens") or 0)
+        ),
+        visible_characters=int(
+            retry_usage.get("visible_character_count") or 0
+        ),
+        max_output_tokens=max_output_tokens,
+        provider_usage_received=bool(
+            first_usage.get("provider_usage_received")
+            or retry_usage.get("provider_usage_received")
+        ),
+        reasoning_effort="none",
+    )
+
+
+def _combine_reasoning_starved_response(
+    response: AIProviderResponse,
+    *,
+    first_usage: dict[str, Any],
+) -> AIProviderResponse:
+    first_usage_call = int(bool(first_usage.get("provider_usage_received")))
+    first_cost = float(first_usage.get("actual_cost_usd") or 0.0)
+    response_cost = float(response.raw.get("actual_cost_usd") or 0.0)
+    raw = {
+        **response.raw,
+        "provider_attempts": (
+            1 + int(response.raw.get("provider_attempts") or 1)
+        ),
+        "provider_calls_with_usage": (
+            first_usage_call
+            + int(response.raw.get("provider_calls_with_usage") or 0)
+        ),
+        "reasoning_tokens": (
+            int(first_usage.get("reasoning_tokens") or 0)
+            + int(response.raw.get("reasoning_tokens") or 0)
+        ),
+        "reasoning_effort": "none",
+        "reasoning_starved_retry": True,
+        "cached_input_tokens": (
+            int(first_usage.get("cached_input_tokens") or 0)
+            + int(response.raw.get("cached_input_tokens") or 0)
+        ),
+        "cache_write_tokens": (
+            int(first_usage.get("cache_write_tokens") or 0)
+            + int(response.raw.get("cache_write_tokens") or 0)
+        ),
+        "actual_cost_usd": (
+            first_cost + response_cost
+            if first_cost or response_cost else None
+        ),
+    }
+    return replace(
+        response,
+        input_tokens=(
+            int(first_usage.get("input_tokens") or 0)
+            + int(response.input_tokens or 0)
+        ),
+        output_tokens=(
+            int(first_usage.get("output_tokens") or 0)
+            + int(response.output_tokens or 0)
+        ),
+        estimated_cost_amount=(
+            float(response.estimated_cost_amount or 0.0) + first_cost
+        ),
+        raw=raw,
     )
 
 
