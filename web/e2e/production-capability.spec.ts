@@ -265,6 +265,9 @@ type QuestionResult = {
   sseThreadSeen: boolean
   sseDeltaSeen: boolean
   sseDoneSeen: boolean
+  repositoryAttached: boolean
+  assistantLookup: 'request_id' | 'message_id' | 'none'
+  assistantRequestIdMatched: boolean | null
   threadId: string | null
   startedAtUtc: string | null
   endedAtUtc: string | null
@@ -932,6 +935,7 @@ async function sourceRows(assistant: Locator): Promise<QuestionResult['visibleSo
 
 async function rawMessage(
   api: DeployedApi, threadId: string, requestId: string,
+  assistantMessageId: string | null = null,
   timeoutMilliseconds = 10_000,
 ): Promise<PublicMessage | null> {
   const response = await api.request<{ items: PublicMessage[] }>(
@@ -939,17 +943,25 @@ async function rawMessage(
     undefined, { timeoutMilliseconds },
   )
   if (response.status !== 200 || !response.data) return null
-  return response.data.items.find(item => item.role === 'assistant' && item.request_id === requestId) ?? null
+  return response.data.items.find(item => (
+    item.role === 'assistant'
+    && (
+      item.request_id === requestId
+      || Boolean(assistantMessageId && item.id === assistantMessageId)
+    )
+  )) ?? null
 }
 
 async function pollRawMessage(
-  api: DeployedApi, threadId: string, requestId: string, timeoutMilliseconds: number,
+  api: DeployedApi, threadId: string, requestId: string,
+  assistantMessageId: string | null, timeoutMilliseconds: number,
 ): Promise<PublicMessage | null> {
   const deadline = Date.now() + Math.max(1, timeoutMilliseconds)
   do {
     const remaining = deadline - Date.now()
     const message = await rawMessage(
-      api, threadId, requestId, Math.min(5_000, Math.max(1, remaining)),
+      api, threadId, requestId, assistantMessageId,
+      Math.min(5_000, Math.max(1, remaining)),
     ).catch(() => null)
     if (message) return message
     if (remaining <= 250) break
@@ -1018,6 +1030,8 @@ function skippedResult(
     sendSseEventReceived:false,
     sseErrorCodes:[], sseErrorMessages:[],
     sseThreadSeen:false, sseDeltaSeen:false, sseDoneSeen:false,
+    repositoryAttached:false, assistantLookup:'none',
+    assistantRequestIdMatched:null,
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
     answerWords:0,
@@ -1197,6 +1211,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     sse_thread_seen: boolean
     sse_delta_seen: boolean
     sse_done_seen: boolean
+    repository_attached: boolean
+    assistant_lookup: QuestionResult['assistantLookup']
+    assistant_request_id_matched: boolean | null
     recovery_reason_code?: string
   }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
@@ -1292,6 +1309,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       virtualText?: boolean
       onRequestId?: (requestId: string) => void
       onSendDiagnostics?: (diagnostics: CapabilitySendDiagnostics) => void
+      onAudit?: (audit: Audit) => void
+      onAssistantLookup?: (diagnostics: {
+        lookup: QuestionResult['assistantLookup']
+        requestIdMatched: boolean | null
+      }) => void
     } = {},
   ): Promise<QuestionResult> => {
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
@@ -1394,10 +1416,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const auditObserver = observePlaywrightPromise(
       pollAudit(api, requestId, remaining(QUESTION_DEADLINE_MS)),
     )
-    const assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
-    const assistantVisible = await assistant.waitFor({
+    let assistant = page.locator(`.message.assistant[data-request-id="${requestId}"]`)
+    const assistantVisibleObserver = assistant.waitFor({
       state:'visible', timeout:remaining(QUESTION_DEADLINE_MS),
     }).then(() => true, () => false)
+    let assistantVisible = await Promise.race([
+      assistantVisibleObserver,
+      sseBodyObserver.then(() => false, () => false),
+    ])
+    const assistantInitiallyVisible = assistantVisible
+    let assistantLookup: QuestionResult['assistantLookup'] = assistantVisible
+      ? 'request_id' : 'none'
     let assistantTerminalTimedOut = false
     let firstVisibleDeltaMs: number | null = null
     if (assistantVisible) {
@@ -1415,6 +1444,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const audit = await auditObserver.catch(() => {
       throw new Error('request_audit_timeout')
     })
+    options.onAudit?.(audit)
     let rawSse = ''
     try {
       rawSse = (await withBoundedTimeout(
@@ -1435,6 +1465,49 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const terminalErrors = sseData(rawSse, 'error').map(
       value => String(value.code ?? 'sse_error').slice(0, 100),
     )
+    const threadEvent = sseData(rawSse, 'thread').at(0)
+    const doneEvent = sseData(rawSse, 'done').at(-1)
+    if (!assistantVisible) {
+      assistantVisible = await assistant.waitFor({
+        state:'visible', timeout:Math.min(5_000, remaining(5_000)),
+      }).then(() => true, () => false)
+      if (assistantVisible) assistantLookup = 'request_id'
+    }
+    if (assistantVisible && !assistantInitiallyVisible) {
+      assistantTerminalTimedOut = !await expect(assistant).not.toHaveClass(
+        /streaming/,
+        { timeout:Math.min(10_000, remaining(10_000)) },
+      ).then(() => true, () => false)
+    }
+    const doneMessageId = String(doneEvent?.message_id ?? '')
+    if (
+      (!assistantVisible || assistantTerminalTimedOut)
+      && /^[0-9a-f-]{36}$/iu.test(doneMessageId)
+    ) {
+      const messageAssistant = page.locator(
+        `.message.assistant[data-message-id="${doneMessageId}"]`,
+      )
+      const messageVisible = await messageAssistant.waitFor({
+        state:'visible', timeout:Math.min(10_000, remaining(10_000)),
+      }).then(() => true, () => false)
+      if (messageVisible) {
+        assistant = messageAssistant
+        assistantVisible = true
+        assistantLookup = 'message_id'
+        assistantTerminalTimedOut = await assistant.evaluate(
+          element => element.classList.contains('streaming'),
+        ).catch(() => true)
+      }
+    }
+    const assistantDomRequestId = assistantVisible
+      ? await assistant.getAttribute('data-request-id').catch(() => null)
+      : null
+    const assistantRequestIdMatched = assistantDomRequestId === null
+      ? null : assistantDomRequestId === requestId
+    options.onAssistantLookup?.({
+      lookup:assistantLookup,
+      requestIdMatched:assistantRequestIdMatched,
+    })
     if (!assistantVisible || assistantTerminalTimedOut) {
       if (terminalErrors.includes('provider_safety_rejected')) {
         throw new Error('provider_safety_rejected')
@@ -1447,8 +1520,6 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const endedAt = Date.now()
     const endedAtUtc = new Date(endedAt).toISOString()
     const events = parseSseEventOrder(rawSse)
-    const threadEvent = sseData(rawSse, 'thread').at(0)
-    const doneEvent = sseData(rawSse, 'done').at(-1)
     const usageEvent = sseData(rawSse, 'usage').at(-1)
     const qualityEvent = sseData(rawSse, 'quality').at(-1)
     let threadId = String(threadEvent?.thread_id ?? payload.thread_id ?? '')
@@ -1460,7 +1531,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     if (threadId) generatedThreadIds.add(threadId)
     const raw = threadId
       ? await pollRawMessage(
-        api, threadId, requestId, Math.min(30_000, remaining(30_000)),
+        api, threadId, requestId, doneMessageId || null,
+        Math.min(30_000, remaining(30_000)),
       )
       : null
     if (!raw) throw new Error('assistant_persistence_missing')
@@ -1624,6 +1696,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       sseThreadSeen:sendDiagnostics.threadSeen,
       sseDeltaSeen:sendDiagnostics.deltaSeen,
       sseDoneSeen:sendDiagnostics.doneSeen,
+      repositoryAttached:typeof payload.repository_id === 'string'
+        && payload.repository_id.length > 0,
+      assistantLookup,
+      assistantRequestIdMatched,
       startedAtUtc, endedAtUtc, firstVisibleDeltaMs,
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
@@ -1746,11 +1822,19 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       sseEventReceived:false, sseEventOrder:[], sseErrorCodes:[],
       sseErrorMessages:[], threadSeen:false, deltaSeen:false, doneSeen:false,
     }
+    let assistantLookup: QuestionResult['assistantLookup'] = 'none'
+    let assistantRequestIdMatched: boolean | null = null
+    let capturedAudit: Audit | null = null
     try {
       const result = await executeQuestion(source, {
         ...options,
         onRequestId:requestId => { capturedRequestId = requestId },
         onSendDiagnostics:value => { sendDiagnostics = value },
+        onAudit:value => { capturedAudit = value },
+        onAssistantLookup:value => {
+          assistantLookup = value.lookup
+          assistantRequestIdMatched = value.requestIdMatched
+        },
       })
       progress('question_complete', 'question', activeScenarioId, result.requestId)
       scheduleCheckpoint()
@@ -1794,13 +1878,19 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           recoveryReason = 'request_audit_timeout'
         }
       }
-      try {
-        await freshChat(page)
+      if (source.category === 'G') {
         if (await page.locator('.message.assistant.streaming').count()) {
+          recoveryReason ??= 'previous_request_not_terminal'
+        }
+      } else {
+        try {
+          await freshChat(page)
+          if (await page.locator('.message.assistant.streaming').count()) {
+            recoveryReason ??= 'fresh_chat_recovery_failed'
+          }
+        } catch {
           recoveryReason ??= 'fresh_chat_recovery_failed'
         }
-      } catch {
-        recoveryReason ??= 'fresh_chat_recovery_failed'
       }
       progress('question_complete', 'question', activeScenarioId)
       scheduleCheckpoint()
@@ -1822,6 +1912,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         sse_thread_seen:sendDiagnostics.threadSeen,
         sse_delta_seen:sendDiagnostics.deltaSeen,
         sse_done_seen:sendDiagnostics.doneSeen,
+        repository_attached:Boolean(
+          capturedRequestId
+          && requestPayloads.get(capturedRequestId)?.repository_id,
+        ),
+        assistant_lookup:assistantLookup,
+        assistant_request_id_matched:assistantRequestIdMatched,
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
@@ -1846,6 +1942,37 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         failedResult.sseThreadSeen = sendDiagnostics.threadSeen
         failedResult.sseDeltaSeen = sendDiagnostics.deltaSeen
         failedResult.sseDoneSeen = sendDiagnostics.doneSeen
+        failedResult.repositoryAttached = Boolean(
+          capturedRequestId
+          && requestPayloads.get(capturedRequestId)?.repository_id,
+        )
+        failedResult.assistantLookup = assistantLookup
+        failedResult.assistantRequestIdMatched = assistantRequestIdMatched
+        if (capturedAudit) {
+          failedResult.providerCallCount = capturedAudit.provider_call_count
+          failedResult.generationStageCount = capturedAudit.generation_stage_count
+          failedResult.repairStageCount = capturedAudit.repair_stage_count
+          failedResult.usageStageCount = capturedAudit.usage_stage_row_count
+          failedResult.usageStageStatusCounts = capturedAudit.usage_stage_status_counts
+          failedResult.activeUsageStageNames = capturedAudit.active_usage_stage_names
+          failedResult.reservedMicros = capturedAudit.reserved_micro_inr_total
+          failedResult.chargedMicros = capturedAudit.charged_micro_inr_total
+          failedResult.settledMicros = capturedAudit.settled_micro_inr_total
+          failedResult.terminalChargeStatus = capturedAudit.last_terminal_charge_status
+          failedResult.duplicateSettlement = capturedAudit.duplicate_settlement_indicator
+          failedResult.orphanedReservation = capturedAudit.orphaned_active_reservation
+          failedResult.cancellationState = capturedAudit.cancellation_state
+          failedResult.qualityStatus = capturedAudit.quality_status
+          failedResult.persistedQualityStatus = capturedAudit.persisted_quality_status
+          failedResult.repairAttempted = capturedAudit.repair_attempted
+          failedResult.reasoningEffort = capturedAudit.reasoning_effort
+          failedResult.turnLifecycleStage = capturedAudit.turn_lifecycle_stage
+          failedResult.turnLifecycleEvents = capturedAudit.turn_lifecycle_events
+          failedResult.turnLifecycleReason = capturedAudit.turn_lifecycle_reason
+          failedResult.generationOutputTokens = capturedAudit.generation_output_tokens
+          failedResult.generationReasoningTokens = capturedAudit.generation_reasoning_tokens
+          failedResult.generationVisibleOutputTokens = capturedAudit.generation_visible_output_tokens
+        }
         results.push(failedResult)
         return failedResult
       }
@@ -3413,6 +3540,9 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         sse_thread_seen:item.sseThreadSeen,
         sse_delta_seen:item.sseDeltaSeen,
         sse_done_seen:item.sseDoneSeen,
+        repository_attached:item.repositoryAttached,
+        assistant_lookup:item.assistantLookup,
+        assistant_request_id_matched:item.assistantRequestIdMatched,
         first_delta_ms:item.firstVisibleDeltaMs, total_ms:item.totalResponseMs,
         charged_micros:item.chargedMicros,
         cache_hit:item.cacheHit,

@@ -18,7 +18,7 @@ from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
 from app.models import (
     OpenAIUsageLog, PaymentOrder, UsageCharge, WalletLedger, WebChatMessage,
-    WebChatThread, WebUsagePreferences, WebUsageStage,
+    WebAnswerCheck, WebChatThread, WebUsagePreferences, WebUsageStage,
     UserProfile,
 )
 from app.openai_tracked import (
@@ -34,6 +34,7 @@ from app.web_api.chat_service import (
     execute_web_turn,
     prepare_web_turn,
 )
+from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 
 
 def test_thread_ownership_for_read_rename_delete(client):
@@ -542,6 +543,90 @@ def test_pre_generation_failure_records_terminal_lifecycle_and_sse_error(
         and getattr(record, "lifecycle_stage", None)
         == "aborted_before_reserve"
         and getattr(record, "request_id", None) == request_id
+        for record in caplog.records
+    )
+
+
+def test_unsafe_quality_observation_does_not_destroy_completed_answer(
+    client, monkeypatch, caplog,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
+    monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
+    monkeypatch.setenv("WEB_ROLLOUT_TRIAG_MODE", "all_eligible")
+    monkeypatch.setenv("WEB_ROLLOUT_ANSWER_GUARD_MODE", "all_eligible")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None,
+    )
+    user = create_test_user("unsafe-quality", "unsafe-quality@example.com")
+    _fund(int(user.id))
+
+    def response(route):
+        return AIProviderResponse(
+            text="A complete generated answer.",
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=20,
+            output_tokens=8,
+            raw={"usage_actual": True, "finish_reason": "stop"},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.complete",
+        lambda self, request, route: response(route),
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        lambda self, request, route, on_delta: response(route),
+    )
+    monkeypatch.setattr(
+        "app.web_ai.generation.answer_guard.AnswerGuard.check",
+        lambda *args, **kwargs: AnswerQualityResult(
+            "verified",
+            (QualityCheck(
+                "synthetic_quality_check",
+                "passed",
+                observations=(("future_unallowlisted_observation", 1),),
+            ),),
+        ),
+    )
+    request_id = "21c72ca6-c80a-4a0f-bb01-855003efe55e"
+    with caplog.at_level(logging.WARNING):
+        streamed = client.post(
+            "/api/web/chat/stream",
+            headers=auth_headers("unsafe-quality", "unsafe-quality@example.com"),
+            json={
+                "request_id": request_id,
+                "message": "Explain database indexing tradeoffs",
+            },
+        )
+
+    assert streamed.status_code == 200
+    assert _sse_events(streamed, "done")
+    assert not _sse_events(streamed, "error")
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+        answer_check = session.exec(select(WebAnswerCheck).where(
+            WebAnswerCheck.request_id == request_id,
+        )).one()
+    assert assistant.content == "A complete generated answer."
+    assert "future_unallowlisted_observation" not in (
+        answer_check.safe_metadata_json
+    )
+    assert any(
+        record.getMessage() == "unsafe_quality_metadata_dropped"
+        and getattr(record, "request_id", None) == request_id
+        and getattr(record, "metadata_key", None)
+        == "future_unallowlisted_observation"
         for record in caplog.records
     )
 

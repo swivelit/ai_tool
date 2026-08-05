@@ -254,8 +254,12 @@ test('isolated assistant persistence races are bounded without aborting the batc
   expect(spec).toContain('assistantPersistenceFailures > 3')
   expect(spec).toContain("primaryFailure ??= 'assistant_persistence_systemic_outage'")
   expect(spec).toContain('assistant_persistence_failures:assistantPersistenceFailures')
-  expect(spec).toMatch(
-    /if \(\['assistant_persistence_missing', 'assistant_ui_timeout'\][\s\S]{0,1800}return failedResult/,
+  const isolatedFailure = spec.indexOf(
+    "if (['assistant_persistence_missing', 'assistant_ui_timeout']",
+  )
+  expect(isolatedFailure).toBeGreaterThan(0)
+  expect(spec.indexOf('return failedResult', isolatedFailure)).toBeGreaterThan(
+    isolatedFailure,
   )
 })
 
@@ -410,7 +414,7 @@ test('long chat streams are observed through UI and audit before bounded body co
     'const sseBodyObserver = observePlaywrightPromise(response.body())',
   )
   const assistantObserver = spec.indexOf(
-    'const assistantVisible = await assistant.waitFor', bodyObserver,
+    'const assistantVisibleObserver = assistant.waitFor', bodyObserver,
   )
   const auditTerminal = spec.indexOf(
     'const audit = await auditObserver.catch', assistantObserver,
@@ -465,6 +469,11 @@ test('capability failures retain bounded pre-reservation send diagnostics', () =
   expect(spec).toContain('sse_thread_seen:item.sseThreadSeen')
   expect(spec).toContain('sse_delta_seen:item.sseDeltaSeen')
   expect(spec).toContain('sse_done_seen:item.sseDoneSeen')
+  expect(spec).toContain('repository_attached:item.repositoryAttached')
+  expect(spec).toContain('assistant_lookup:item.assistantLookup')
+  expect(spec).toContain(
+    'assistant_request_id_matched:item.assistantRequestIdMatched',
+  )
   expect(spec).toContain("safeSendErrorDiagnostics(response.status(), errorBody)")
   expect(spec).toContain("'[REDACTED POTENTIAL SECRET]'")
   const parsed = spec.indexOf(
@@ -475,6 +484,35 @@ test('capability failures retain bounded pre-reservation send diagnostics', () =
   )
   expect(parsed).toBeGreaterThan(0)
   expect(assistantFailure).toBeGreaterThan(parsed)
+})
+
+test('repository question recovery preserves the active repository binding', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain("if (source.category === 'G')")
+  expect(spec).toMatch(
+    /if \(source\.category === 'G'\)[\s\S]{0,500}else \{[\s\S]{0,120}await freshChat\(page\)/,
+  )
+  expect(spec).toContain(
+    "repositoryAttached:typeof payload.repository_id === 'string'",
+  )
+})
+
+test('assistant lookup falls back to the authoritative SSE message id', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain("const doneMessageId = String(doneEvent?.message_id ?? '')")
+  expect(spec).toContain(
+    '`.message.assistant[data-message-id="${doneMessageId}"]`',
+  )
+  expect(spec).toContain("assistantLookup = 'message_id'")
+  expect(spec).toContain('requestIdMatched:assistantRequestIdMatched')
+  expect(spec).toContain('onAudit:value => { capturedAudit = value }')
+  expect(spec).toContain(
+    'failedResult.turnLifecycleEvents = capturedAudit.turn_lifecycle_events',
+  )
 })
 
 test('repository capability waits for a ready composer signal before G questions', () => {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Mapping
 
 from sqlmodel import Session, select
@@ -14,7 +16,62 @@ from ..models import (
 from .evidence.models import EvidencePack
 from .execution_plan import ExecutionPlan
 from .generation.models import AnswerQualityResult
-from .telemetry.metadata import sanitize_metadata
+from .telemetry.metadata import UnsafeMetadataError, sanitize_metadata
+
+
+logger = logging.getLogger(__name__)
+
+
+def _without_metadata_key(value: object, key: str) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _without_metadata_key(item_value, key)
+            for item_key, item_value in value.items()
+            if str(item_key) != key
+        }
+    if isinstance(value, (tuple, list)):
+        return [_without_metadata_key(item, key) for item in value]
+    return value
+
+
+def _sanitize_quality_metadata(
+    metadata: Mapping[str, object], *, request_id: str,
+) -> dict[str, object]:
+    candidate: object = dict(metadata)
+    dropped: set[str] = set()
+    for _attempt in range(24):
+        try:
+            return sanitize_metadata(
+                candidate if isinstance(candidate, Mapping) else {}
+            )
+        except UnsafeMetadataError as exc:
+            raw_key = str(exc.key or "")
+            unsafe_key = (
+                raw_key
+                if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", raw_key)
+                else "unknown"
+            )
+            logger.warning(
+                "unsafe_quality_metadata_dropped",
+                extra={
+                    "event": "unsafe_quality_metadata_dropped",
+                    "request_id": request_id,
+                    "metadata_key": unsafe_key,
+                },
+            )
+            if unsafe_key == "unknown" or unsafe_key in dropped:
+                break
+            dropped.add(unsafe_key)
+            candidate = _without_metadata_key(candidate, unsafe_key)
+
+    # Preserve the quality outcome even when an unsafe value cannot be
+    # attributed to one key. No observation content is worth losing an answer.
+    return sanitize_metadata({
+        "quality_outcome": metadata.get("quality_outcome", "unverified"),
+        "quality_checks": [],
+        "repair_attempted": bool(metadata.get("repair_attempted")),
+        "verifier_used": bool(metadata.get("verifier_used")),
+    })
 
 
 def persist_shadow_plan(
@@ -231,7 +288,7 @@ def persist_answer_quality(
             WebAnswerCheck.idempotency_key == key,
         )
     ).first()
-    safe = sanitize_metadata(
+    safe = _sanitize_quality_metadata(
         {
             "quality_outcome": result.status,
             **(
@@ -256,7 +313,8 @@ def persist_answer_quality(
                 }
                 if result.repository_validation_mode else {}
             ),
-        }
+        },
+        request_id=request_id,
     )
     row = existing or WebAnswerCheck(
         user_id=int(user_id),

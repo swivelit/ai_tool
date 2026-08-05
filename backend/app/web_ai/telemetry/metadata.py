@@ -89,6 +89,20 @@ _ALLOWED_KEYS = frozenset(
         "heading_present",
         "semantic_mechanism_present",
         "stable_side_effect_outcome_present",
+        "cited_path_count",
+        "invalid_path_count",
+        "index_complete",
+        "minus_header_present",
+        "plus_header_present",
+        "hunk_header_present",
+        "command_present",
+        "claim_matches_capability",
+        "validation_mode",
+        "unsupported_assumption_count",
+        "rejected_assumption_count",
+        "actual_stack_present",
+        "honest_absence_present",
+        "invented_behavior_present",
         "pre_repair_failed_check_identifiers",
         "repair_trigger_area_identifiers",
         "post_repair_failed_check_identifiers",
@@ -309,7 +323,15 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
 
 
 class UnsafeMetadataError(ValueError):
-    pass
+    def __init__(self, message: str, *, key: str | None = None) -> None:
+        super().__init__(message)
+        self.key = key
+
+
+def allowed_metadata_keys() -> frozenset[str]:
+    """Expose the immutable key contract for build-time producer checks."""
+
+    return _ALLOWED_KEYS
 
 
 def _validate_semantic_value(key: str, value: object) -> None:
@@ -363,7 +385,9 @@ def sanitize_metadata(
         key = str(raw_key or "").strip()
         lowered = key.lower()
         if key not in _ALLOWED_KEYS:
-            raise UnsafeMetadataError(f"metadata key is not allowlisted: {key}")
+            raise UnsafeMetadataError(
+                f"metadata key is not allowlisted: {key}", key=key,
+            )
         if (
             key not in _ALLOWED_KEYS
             and any(part in lowered for part in _FORBIDDEN_KEY_PARTS)
@@ -372,8 +396,13 @@ def sanitize_metadata(
             # strings or values can pass this branch.
             if not lowered.endswith("_tokens") and lowered != "max_output_tokens":
                 raise UnsafeMetadataError(f"metadata key is unsafe: {key}")
-        _validate_semantic_value(key, raw_value)
-        sanitized[key] = _safe_value(raw_value, depth=_depth)
+        try:
+            _validate_semantic_value(key, raw_value)
+            sanitized[key] = _safe_value(raw_value, depth=_depth)
+        except UnsafeMetadataError as exc:
+            if exc.key is None:
+                exc.key = key
+            raise
     encoded = json.dumps(sanitized, sort_keys=True, separators=(",", ":"))
     if len(encoded) > 8_192:
         raise UnsafeMetadataError("metadata exceeds the safe serialized bound")

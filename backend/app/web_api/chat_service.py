@@ -105,6 +105,7 @@ from ..web_ai.rollout import (
 from ..web_ai.streaming_policy import select_streaming_policy
 from ..web_ai.tier_policy import tier_policy_for
 from ..web_ai.token_allocator import DynamicTokenAllocator
+from ..web_ai.telemetry.metadata import UnsafeMetadataError
 from ..web_ai.code_quality.repository_contract import RepositoryContract
 from ..web_ai.code_quality.repository_index import (
     RepositoryIndex, build_repository_index,
@@ -5698,14 +5699,29 @@ def execute_web_turn(
         # FK target exists before settlement updates the charge on every SQLAlchemy dialect.
         session.flush([assistant])
         if prepared.answer_quality is not None:
-            persist_answer_quality(
-                session,
-                user_id=prepared.user_id,
-                thread_id=prepared.thread_id,
-                request_id=prepared.request_id,
-                assistant_message_id=assistant.id,
-                result=prepared.answer_quality,
-            )
+            try:
+                persist_answer_quality(
+                    session,
+                    user_id=prepared.user_id,
+                    thread_id=prepared.thread_id,
+                    request_id=prepared.request_id,
+                    assistant_message_id=assistant.id,
+                    result=prepared.answer_quality,
+                )
+            except UnsafeMetadataError as exc:
+                logger.warning(
+                    "unsafe_quality_metadata_dropped",
+                    extra={
+                        "event": "unsafe_quality_metadata_dropped",
+                        "request_id": prepared.request_id,
+                        "metadata_key": (
+                            str(exc.key)
+                            if exc.key and re.fullmatch(
+                                r"[A-Za-z][A-Za-z0-9_]{0,79}", str(exc.key)
+                            ) else "unknown"
+                        ),
+                    },
+                )
         if prepared.continuation_parent_message_id:
             if cancelled:
                 _release_continuation_claim(session, prepared)
