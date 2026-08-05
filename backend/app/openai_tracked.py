@@ -15,7 +15,7 @@ from sqlmodel import Session
 
 from .ai.model_health import is_model_temporarily_unavailable, mark_model_unavailable
 from .ai.openai_catalog import OpenAIModelSpec, get_model_spec
-from .ai.openai_reasoning import openai_web_reasoning_effort
+from .ai.openai_reasoning import resolve_openai_reasoning_budget
 from .openai_model_router import (
     ModelSelection,
     OpenAIModelRouter,
@@ -601,10 +601,11 @@ def tracked_openai_generation(
                 estimated_cost=estimated_cost,
             )
             attempted_models.append(selection.model)
+            reasoning_budget = None
             try:
                 if endpoint == "responses":
                     answer_class = extra.get("answer_class")
-                    reasoning_effort = openai_web_reasoning_effort(
+                    reasoning_budget = resolve_openai_reasoning_budget(
                         answer_class,
                         max_output_tokens=output_tokens,
                         strict_visible_format=(
@@ -617,6 +618,7 @@ def tracked_openai_generation(
                             "reasoning_effort_override"
                         ),
                     )
+                    reasoning_effort = reasoning_budget.reasoning_effort
                     request_kwargs: dict[str, Any] = {
                         "model": selection.model,
                         "input": _build_responses_input(messages, input_text),
@@ -639,6 +641,23 @@ def tracked_openai_generation(
                         request_kwargs["prompt_cache_key"] = str(
                             extra["prompt_cache_key"]
                         )
+                    logger.info(
+                        "openai_generation_budget_resolved",
+                        extra={
+                            "event": "openai_generation_budget_resolved",
+                            "request_id": request_id,
+                            "effective_max_output_tokens": (
+                                reasoning_budget.effective_max_output_tokens
+                            ),
+                            "visible_output_reserve_tokens": (
+                                reasoning_budget.visible_output_reserve_tokens
+                            ),
+                            "reasoning_budget_cap_tokens": (
+                                reasoning_budget.reasoning_budget_cap_tokens
+                            ),
+                            "reasoning_effort": reasoning_effort,
+                        },
+                    )
                     response = client.responses.create(**request_kwargs)
                 else:
                     request_kwargs = {
@@ -732,6 +751,18 @@ def tracked_openai_generation(
                     and spec.supports_reasoning_effort
                     else None
                 ),
+                "effective_max_output_tokens": (
+                    reasoning_budget.effective_max_output_tokens
+                    if reasoning_budget is not None else output_tokens
+                ),
+                "visible_output_reserve_tokens": (
+                    reasoning_budget.visible_output_reserve_tokens
+                    if reasoning_budget is not None else 0
+                ),
+                "reasoning_budget_cap_tokens": (
+                    reasoning_budget.reasoning_budget_cap_tokens
+                    if reasoning_budget is not None else 0
+                ),
                 **actual_metadata,
             }
             record_openai_usage(
@@ -763,6 +794,16 @@ def tracked_openai_generation(
                     "model_health_skip_reason": _model_health_skip_reason(skipped_models),
                     "estimated_input_tokens": input_tokens,
                     "estimated_output_tokens": output_tokens,
+                    "effective_max_output_tokens": metadata[
+                        "effective_max_output_tokens"
+                    ],
+                    "visible_output_reserve_tokens": metadata[
+                        "visible_output_reserve_tokens"
+                    ],
+                    "reasoning_budget_cap_tokens": metadata[
+                        "reasoning_budget_cap_tokens"
+                    ],
+                    "reasoning_effort": metadata["reasoning_effort"],
                     "estimated_cost_usd": round(estimated_cost, 8),
                     "actual_input_tokens": actual_input,
                     "actual_output_tokens": actual_output,

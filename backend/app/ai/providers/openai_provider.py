@@ -21,7 +21,7 @@ from ..completion_quality import incomplete_markdown_reason
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
 from ..openai_catalog import get_model_spec
 from ..openai_reasoning import (
-    OpenAIReasoningEffortConfigurationError, openai_web_reasoning_effort,
+    OpenAIReasoningEffortConfigurationError, resolve_openai_reasoning_budget,
 )
 from ..prompts import (
     build_provider_messages, serialize_provider_messages, stable_prompt_cache_key,
@@ -266,6 +266,19 @@ class OpenAIProvider(AIProvider):
             "actual_cost_usd": metadata.get("actual_cost_usd"),
             "reasoning_tokens": reasoning_tokens,
             "reasoning_effort": metadata.get("reasoning_effort"),
+            "effective_max_output_tokens": int(
+                metadata.get("effective_max_output_tokens")
+                or route.max_output_tokens
+            ),
+            "visible_output_reserve_tokens": int(
+                metadata.get("visible_output_reserve_tokens") or 0
+            ),
+            "reasoning_budget_cap_tokens": int(
+                metadata.get("reasoning_budget_cap_tokens") or 0
+            ),
+            "reasoning_starved_retry": bool(
+                request.metadata.get("reasoning_starved_retry")
+            ),
             **completion_metadata,
         }
         provider_response = AIProviderResponse(
@@ -350,6 +363,7 @@ class OpenAIProvider(AIProvider):
             valid_terminal_event_received = False
             trailing_transport_recovered = [False]
             stream: Any | None = None
+            reasoning_budget = None
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
@@ -412,8 +426,8 @@ class OpenAIProvider(AIProvider):
                         or route.metadata.get("answer_class")
                     )
                     model_spec = get_model_spec(model)
-                    reasoning_effort = (
-                        openai_web_reasoning_effort(
+                    reasoning_budget = (
+                        resolve_openai_reasoning_budget(
                             answer_class,
                             max_output_tokens=route.max_output_tokens,
                             strict_visible_format=(
@@ -428,6 +442,10 @@ class OpenAIProvider(AIProvider):
                         )
                         if model_spec.supports_reasoning_effort
                         else None
+                    )
+                    reasoning_effort = (
+                        reasoning_budget.reasoning_effort
+                        if reasoning_budget is not None else None
                     )
                     response_kwargs: dict[str, Any] = {
                         "model": model,
@@ -444,6 +462,27 @@ class OpenAIProvider(AIProvider):
                     prompt_cache_key = stable_prompt_cache_key(request, route)
                     if prompt_cache_key:
                         response_kwargs["prompt_cache_key"] = prompt_cache_key
+                    logger.info(
+                        "openai_generation_budget_resolved",
+                        extra={
+                            "event": "openai_generation_budget_resolved",
+                            "request_id": request.request_id,
+                            "effective_max_output_tokens": (
+                                reasoning_budget.effective_max_output_tokens
+                                if reasoning_budget is not None
+                                else route.max_output_tokens
+                            ),
+                            "visible_output_reserve_tokens": (
+                                reasoning_budget.visible_output_reserve_tokens
+                                if reasoning_budget is not None else 0
+                            ),
+                            "reasoning_budget_cap_tokens": (
+                                reasoning_budget.reasoning_budget_cap_tokens
+                                if reasoning_budget is not None else 0
+                            ),
+                            "reasoning_effort": reasoning_effort,
+                        },
+                    )
                     stream = client.responses.create(
                         **response_kwargs,
                     )
@@ -912,6 +951,22 @@ class OpenAIProvider(AIProvider):
                         ),
                         "reasoning_tokens": reasoning_tokens,
                         "reasoning_effort": reasoning_effort,
+                        "effective_max_output_tokens": (
+                            reasoning_budget.effective_max_output_tokens
+                            if reasoning_budget is not None
+                            else route.max_output_tokens
+                        ),
+                        "visible_output_reserve_tokens": (
+                            reasoning_budget.visible_output_reserve_tokens
+                            if reasoning_budget is not None else 0
+                        ),
+                        "reasoning_budget_cap_tokens": (
+                            reasoning_budget.reasoning_budget_cap_tokens
+                            if reasoning_budget is not None else 0
+                        ),
+                        "reasoning_starved_retry": bool(
+                            request.metadata.get("reasoning_starved_retry")
+                        ),
                         "degradation_reason": degradation_reason,
                         "tier_escalated": accumulated_input_tokens > 0,
                         "actual_cost_usd": (
@@ -1175,6 +1230,18 @@ def _terminal_diagnostics(
 ) -> dict[str, Any]:
     """Build the allowlisted, content-free provider diagnostic payload."""
 
+    budget = resolve_openai_reasoning_budget(
+        answer_class,
+        max_output_tokens=max_output_tokens,
+        strict_visible_format=(
+            request.metadata.get("strict_output_contract") is True
+        ),
+        minimum_visible_output_tokens=request.metadata.get(
+            "minimum_visible_output_tokens"
+        ),
+        effort_override=request.metadata.get("reasoning_effort_override"),
+    )
+
     return {
         "request_id": request.request_id,
         "internal_model": str(model or ""),
@@ -1184,6 +1251,11 @@ def _terminal_diagnostics(
             str(reasoning_effort) if reasoning_effort is not None else None
         ),
         "max_output_tokens": max(0, int(max_output_tokens or 0)),
+        "effective_max_output_tokens": budget.effective_max_output_tokens,
+        "visible_output_reserve_tokens": (
+            budget.visible_output_reserve_tokens
+        ),
+        "reasoning_budget_cap_tokens": budget.reasoning_budget_cap_tokens,
         "terminal_event_type": str(terminal_event_type or ""),
         "completion_status": str(
             completion_metadata.get("completion_status") or "unknown"

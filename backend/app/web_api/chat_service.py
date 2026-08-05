@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
 from ..ai.openai_catalog import get_model_spec
-from ..ai.openai_reasoning import openai_visible_output_reserve
+from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import (
@@ -2520,12 +2520,35 @@ def prepare_web_turn(
                 ),
             )
         if route.provider == "openai":
-            ai_request.metadata["minimum_visible_output_tokens"] = (
-                openai_visible_output_reserve(
-                    route.max_output_tokens,
-                    ai_request.metadata.get("minimum_visible_output_tokens"),
-                )
+            reasoning_budget = resolve_openai_reasoning_budget(
+                ai_request.metadata.get("answer_class")
+                or route.metadata.get("answer_class"),
+                max_output_tokens=route.max_output_tokens,
+                strict_visible_format=(
+                    ai_request.metadata.get("strict_output_contract") is True
+                ),
+                minimum_visible_output_tokens=ai_request.metadata.get(
+                    "minimum_visible_output_tokens"
+                ),
+                effort_override=ai_request.metadata.get(
+                    "reasoning_effort_override"
+                ),
             )
+            ai_request.metadata.update({
+                "minimum_visible_output_tokens": (
+                    reasoning_budget.visible_output_reserve_tokens
+                ),
+                "effective_max_output_tokens": (
+                    reasoning_budget.effective_max_output_tokens
+                ),
+                "visible_output_reserve_tokens": (
+                    reasoning_budget.visible_output_reserve_tokens
+                ),
+                "reasoning_budget_cap_tokens": (
+                    reasoning_budget.reasoning_budget_cap_tokens
+                ),
+                "resolved_reasoning_effort": reasoning_budget.reasoning_effort,
+            })
         provider_messages = _hard_budget_provider_messages(ai_request, route)
         serialized_prompt = serialize_provider_messages(provider_messages)
         if coordinator_decision is not None:
@@ -3660,6 +3683,24 @@ def _phase3_stage(
                 **(
                     {"reasoning_effort": safe_reasoning_effort}
                     if safe_reasoning_effort else {}
+                ),
+                "effective_max_output_tokens": max(0, int(
+                    prepared.ai_request.metadata.get(
+                        "effective_max_output_tokens"
+                    ) or prepared.route.max_output_tokens
+                )),
+                "visible_output_reserve_tokens": max(0, int(
+                    prepared.ai_request.metadata.get(
+                        "visible_output_reserve_tokens"
+                    ) or 0
+                )),
+                "reasoning_budget_cap_tokens": max(0, int(
+                    prepared.ai_request.metadata.get(
+                        "reasoning_budget_cap_tokens"
+                    ) or 0
+                )),
+                "reasoning_starved_retry": bool(
+                    prepared.ai_request.metadata.get("reasoning_starved_retry")
                 ),
                 **(
                     {
@@ -5652,6 +5693,19 @@ def execute_web_turn(
             )[:80],
             "fence_autoclosed": bool(
                 response.raw.get("fence_autoclosed")
+            ),
+            "effective_max_output_tokens": max(0, int(
+                response.raw.get("effective_max_output_tokens")
+                or prepared.route.max_output_tokens
+            )),
+            "visible_output_reserve_tokens": max(0, int(
+                response.raw.get("visible_output_reserve_tokens") or 0
+            )),
+            "reasoning_budget_cap_tokens": max(0, int(
+                response.raw.get("reasoning_budget_cap_tokens") or 0
+            )),
+            "reasoning_starved_retry": bool(
+                response.raw.get("reasoning_starved_retry")
             ),
         })
         response.raw.update(optimization_metrics)

@@ -365,6 +365,10 @@ def build_request_audit(
         deterministic_route: str | None = None
         scope_gate_reason: str | None = None
         reasoning_effort: str | None = None
+        effective_max_output_tokens = 0
+        visible_output_reserve_tokens = 0
+        reasoning_budget_cap_tokens = 0
+        reasoning_starved_retry = False
         turn_lifecycle_stage: str | None = None
         turn_lifecycle_events: list[str] = []
         turn_lifecycle_reason: str | None = None
@@ -429,6 +433,22 @@ def build_request_audit(
             candidate_reasoning = str(metadata.get("reasoning_effort") or "")
             if candidate_reasoning in _REASONING_EFFORTS:
                 reasoning_effort = candidate_reasoning
+            effective_max_output_tokens = max(
+                effective_max_output_tokens,
+                _bounded_count(metadata.get("effective_max_output_tokens")),
+            )
+            visible_output_reserve_tokens = max(
+                visible_output_reserve_tokens,
+                _bounded_count(metadata.get("visible_output_reserve_tokens")),
+            )
+            reasoning_budget_cap_tokens = max(
+                reasoning_budget_cap_tokens,
+                _bounded_count(metadata.get("reasoning_budget_cap_tokens")),
+            )
+            reasoning_starved_retry = (
+                reasoning_starved_retry
+                or metadata.get("reasoning_starved_retry") is True
+            )
             fence_autoclosed = (
                 fence_autoclosed
                 or metadata.get("fence_autoclosed") is True
@@ -608,6 +628,29 @@ def build_request_audit(
                 )
             ):
                 reasoning_effort = candidate_reasoning
+            if str(stage_row[0]) == "generation":
+                effective_max_output_tokens = max(
+                    effective_max_output_tokens,
+                    _bounded_count(stage_metadata.get(
+                        "effective_max_output_tokens"
+                    )),
+                )
+                visible_output_reserve_tokens = max(
+                    visible_output_reserve_tokens,
+                    _bounded_count(stage_metadata.get(
+                        "visible_output_reserve_tokens"
+                    )),
+                )
+                reasoning_budget_cap_tokens = max(
+                    reasoning_budget_cap_tokens,
+                    _bounded_count(stage_metadata.get(
+                        "reasoning_budget_cap_tokens"
+                    )),
+                )
+                reasoning_starved_retry = (
+                    reasoning_starved_retry
+                    or stage_metadata.get("reasoning_starved_retry") is True
+                )
             candidate_lifecycle = str(
                 stage_metadata.get("turn_lifecycle_stage") or ""
             )
@@ -782,6 +825,10 @@ def build_request_audit(
             "selected_tier": selected_tier,
             "repository_validation_mode": repository_validation_mode,
             "reasoning_effort": reasoning_effort,
+            "effective_max_output_tokens": effective_max_output_tokens,
+            "visible_output_reserve_tokens": visible_output_reserve_tokens,
+            "reasoning_budget_cap_tokens": reasoning_budget_cap_tokens,
+            "reasoning_starved_retry": reasoning_starved_retry,
             "turn_lifecycle_stage": turn_lifecycle_stage,
             "turn_lifecycle_events": turn_lifecycle_events[:8],
             "turn_lifecycle_reason": turn_lifecycle_reason,

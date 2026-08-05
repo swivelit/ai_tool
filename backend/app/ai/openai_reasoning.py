@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from typing import Optional
 
@@ -28,6 +29,16 @@ _STRICT_EFFORT_DOWNGRADE = {
 
 class OpenAIReasoningEffortConfigurationError(RuntimeError):
     """Raised when a configured website reasoning effort is unsupported."""
+
+
+@dataclass(frozen=True)
+class OpenAIReasoningBudget:
+    """Content-free provider budget diagnostics for a website generation."""
+
+    effective_max_output_tokens: int
+    visible_output_reserve_tokens: int
+    reasoning_budget_cap_tokens: int
+    reasoning_effort: Optional[str]
 
 
 def openai_visible_output_reserve(
@@ -76,9 +87,38 @@ def openai_web_reasoning_effort(
 ) -> Optional[str]:
     """Return the configured effort only for an explicitly classified turn."""
 
+    return resolve_openai_reasoning_budget(
+        answer_class,
+        max_output_tokens=max_output_tokens,
+        strict_visible_format=strict_visible_format,
+        minimum_visible_output_tokens=minimum_visible_output_tokens,
+        effort_override=effort_override,
+    ).reasoning_effort
+
+
+def resolve_openai_reasoning_budget(
+    answer_class: object,
+    *,
+    max_output_tokens: object | None = None,
+    strict_visible_format: bool = False,
+    minimum_visible_output_tokens: object | None = None,
+    effort_override: object | None = None,
+) -> OpenAIReasoningBudget:
+    """Resolve effort without reducing the provider's visible-output ceiling.
+
+    The Responses API shares ``max_output_tokens`` between reasoning and visible
+    output.  A reserve is therefore meaningful only while reasoning is enabled.
+    Ordinary non-strict turns keep their historical full ceiling and configured
+    effort; bounded automatic reserves are limited to long-form/strict work.
+    """
+
+    try:
+        output_budget = max(0, int(max_output_tokens or 0))
+    except (TypeError, ValueError):
+        output_budget = 0
     normalized_class = str(answer_class or "").strip().lower()
     if not normalized_class:
-        return None
+        return OpenAIReasoningBudget(output_budget, 0, 0, None)
     if normalized_class not in OPENAI_REASONING_EFFORT_DEFAULTS:
         raise OpenAIReasoningEffortConfigurationError(
             f"Unsupported OpenAI answer class: {normalized_class}"
@@ -98,18 +138,11 @@ def openai_web_reasoning_effort(
             raise OpenAIReasoningEffortConfigurationError(
                 "reasoning effort override is unsupported"
             )
-        return override
+        effort = override
     try:
-        output_budget = max(0, int(max_output_tokens or 0))
+        requested_reserve = max(0, int(minimum_visible_output_tokens or 0))
     except (TypeError, ValueError):
-        output_budget = 0
-    reserve_is_explicit = minimum_visible_output_tokens is not None
-    visible_reserve = (
-        openai_visible_output_reserve(
-            output_budget, minimum_visible_output_tokens,
-        )
-        if minimum_visible_output_tokens is not None else 0
-    )
+        requested_reserve = 0
     floor_name = "OPENAI_REASONING_MIN_BUDGET_TOKENS"
     try:
         reasoning_floor = int(os.getenv(
@@ -123,28 +156,29 @@ def openai_web_reasoning_effort(
         raise OpenAIReasoningEffortConfigurationError(
             f"{floor_name} must be a positive integer"
         )
+    # A no-reasoning request cannot consume reasoning tokens, so reserving part
+    # of its ceiling would only distort diagnostics and downstream planning.
+    if effort == "none":
+        return OpenAIReasoningBudget(output_budget, 0, 0, "none")
+
+    reserve_applies = strict_visible_format or normalized_class == "long_form"
+    visible_reserve = (
+        openai_visible_output_reserve(output_budget, requested_reserve)
+        if reserve_applies
+        else min(output_budget, requested_reserve)
+    )
     reasoning_budget = max(0, output_budget - visible_reserve)
-    downgraded = _STRICT_EFFORT_DOWNGRADE[effort]
-    if (
-        reserve_is_explicit
-        and output_budget > 0
-        and reasoning_budget < reasoning_floor
-    ):
+    if reserve_applies and output_budget > 0 and reasoning_budget < reasoning_floor:
         # The Responses API has a shared reasoning/visible-output ceiling but
         # no separate hard reasoning-token parameter. Below the configured
         # safe reasoning budget, `none` is therefore the only enforceable way
         # to guarantee the visible reserve regardless of effort configuration.
-        return "none"
+        return OpenAIReasoningBudget(output_budget, 0, 0, "none")
     if strict_visible_format:
-        return downgraded
-    # Responses reasoning tokens share max_output_tokens with visible output.
-    # Below the configured floor, reserve the bounded response budget for the
-    # explicitly requested visible deliverable. Larger plans retain their
-    # configured effort.
-    if (
-        normalized_class == "long_form"
-        and 0 < output_budget < reasoning_floor
-        and effort not in {"none", "minimal"}
-    ):
-        return "minimal"
-    return effort
+        effort = _STRICT_EFFORT_DOWNGRADE[effort]
+    return OpenAIReasoningBudget(
+        output_budget,
+        visible_reserve,
+        reasoning_budget,
+        effort,
+    )

@@ -388,6 +388,10 @@ test('production capability safe summary includes content-free completion diagno
     'generation_stage_count:item.generationStageCount',
     'repair_stage_count:item.repairStageCount',
     'reasoning_effort:item.reasoningEffort',
+    'effective_max_output_tokens:item.effectiveMaxOutputTokens',
+    'visible_output_reserve_tokens:item.visibleOutputReserveTokens',
+    'reasoning_budget_cap_tokens:item.reasoningBudgetCapTokens',
+    'reasoning_starved_retry:item.reasoningStarvedRetry',
     'turn_lifecycle_stage:item.turnLifecycleStage',
     'turn_lifecycle_events:item.turnLifecycleEvents',
     'turn_lifecycle_reason:item.turnLifecycleReason',
@@ -515,10 +519,22 @@ test('R09 reopens the authoritative persisted thread before reporting a UI timeo
   expect(spec).toContain('title_candidate_count:reopenResult.titleCandidateCount')
   expect(spec).toContain('selected_candidate_index:reopenResult.selectedCandidateIndex')
   expect(spec).toContain('audit_request_id:audit.request_id || null')
+  expect(spec).toContain('audit_lookup_request_id:requestId')
+  expect(spec).toContain('audit_lookup_thread_id:null')
   expect(spec).toContain('dom_selector_request_id:requestId')
+  expect(spec).toContain('sse_thread_request_id:sseThreadRequestId || null')
+  expect(spec).toContain('done_request_id:doneRequestId || null')
+  expect(spec).toContain('done_message_id:doneMessageId || null')
+  expect(spec).toContain('dom_assistant_request_ids_before_recovery:')
+  expect(spec).toContain('dom_assistant_request_ids_at_timeout:')
+  expect(spec).toContain('ui_thread_id_at_timeout:timeoutThreadId')
+  expect(spec).toContain('repair_attempted:audit.repair_attempted')
   expect(spec).toContain("assistantLookup = 'thread_reopen'")
   expect(spec).toContain(
     'assistant_lookup_diagnostics:assistantLookupDiagnostics',
+  )
+  expect(spec).toContain(
+    'dom_assistant_request_ids_at_timeout:timeoutRequestIds',
   )
 })
 

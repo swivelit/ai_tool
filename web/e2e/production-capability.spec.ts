@@ -222,6 +222,10 @@ type Audit = {
   selected_tier: CapabilityTier | 'not_run'
   repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null
   reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
+  effective_max_output_tokens: number
+  visible_output_reserve_tokens: number
+  reasoning_budget_cap_tokens: number
+  reasoning_starved_retry: boolean
   turn_lifecycle_stage: string | null
   turn_lifecycle_events: string[]
   turn_lifecycle_reason: string | null
@@ -315,6 +319,10 @@ type QuestionResult = {
   generationStageCount: number
   repairStageCount: number
   reasoningEffort: string | null
+  effectiveMaxOutputTokens: number
+  visibleOutputReserveTokens: number
+  reasoningBudgetCapTokens: number
+  reasoningStarvedRetry: boolean
   turnLifecycleStage: string | null
   turnLifecycleEvents: string[]
   turnLifecycleReason: string | null
@@ -1119,6 +1127,8 @@ function skippedResult(
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
     generationStageCount:0, repairStageCount:0, reasoningEffort:null,
+    effectiveMaxOutputTokens:0, visibleOutputReserveTokens:0,
+    reasoningBudgetCapTokens:0, reasoningStarvedRetry:false,
     turnLifecycleStage:null, turnLifecycleEvents:[], turnLifecycleReason:null,
     generationOutputTokens:0, generationReasoningTokens:0,
     generationVisibleOutputTokens:0,
@@ -1286,12 +1296,21 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     scenario_id: string
     request_id: string
     audit_request_id: string | null
+    audit_lookup_request_id: string
+    audit_lookup_thread_id: null
     dom_selector_request_id: string
     payload_thread_id: string | null
     sse_thread_id: string | null
     done_thread_id: string | null
+    sse_thread_request_id: string | null
+    done_request_id: string | null
+    done_message_id: string | null
     authoritative_thread_id: string | null
     ui_thread_id_before_recovery: string | null
+    ui_thread_id_at_timeout: string | null
+    dom_assistant_request_ids_before_recovery: string[]
+    dom_assistant_request_ids_at_timeout: string[]
+    repair_attempted: boolean
     title_candidate_count: number
     selected_candidate_index: number | null
     recovery_succeeded: boolean
@@ -1549,6 +1568,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const doneEvent = sseData(rawSse, 'done').at(-1)
     const sseThreadId = String(threadEvent?.thread_id ?? '')
     const doneThreadId = String(doneEvent?.thread_id ?? '')
+    const sseThreadRequestId = String(threadEvent?.request_id ?? '')
+    const doneRequestId = String(doneEvent?.request_id ?? '')
     let threadId = doneThreadId || sseThreadId || String(payload.thread_id ?? '')
     if (!threadId && threadsBefore) {
       threadId = await discoverGeneratedThread(
@@ -1569,6 +1590,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ).then(() => true, () => false)
     }
     const doneMessageId = String(doneEvent?.message_id ?? '')
+    let r09LookupDiagnosticIndex: number | null = null
     if (
       (!assistantVisible || assistantTerminalTimedOut)
       && /^[0-9a-f-]{36}$/iu.test(doneMessageId)
@@ -1606,6 +1628,11 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       && /^[0-9a-f-]{36}$/iu.test(doneMessageId)
     ) {
       const uiThreadIdBeforeRecovery = await activeUiThreadId(page, api)
+      const domRequestIdsBeforeRecovery = await page.locator(
+        '.message.assistant[data-request-id]',
+      ).evaluateAll(elements => elements.map(
+        element => element.getAttribute('data-request-id') ?? '',
+      ).filter(value => /^[0-9a-f-]{36}$/iu.test(value)).slice(-50))
       const reopenResult = await reopenPersistedAssistantThread(
         page, api, threadId, doneMessageId, Math.min(30_000, remaining(30_000)),
       )
@@ -1613,17 +1640,28 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         scenario_id:activeScenarioId,
         request_id:requestId,
         audit_request_id:audit.request_id || null,
+        audit_lookup_request_id:requestId,
+        audit_lookup_thread_id:null,
         dom_selector_request_id:requestId,
         payload_thread_id:typeof payload.thread_id === 'string'
           ? payload.thread_id : null,
         sse_thread_id:sseThreadId || null,
         done_thread_id:doneThreadId || null,
+        sse_thread_request_id:sseThreadRequestId || null,
+        done_request_id:doneRequestId || null,
+        done_message_id:doneMessageId || null,
         authoritative_thread_id:threadId || null,
         ui_thread_id_before_recovery:uiThreadIdBeforeRecovery,
+        ui_thread_id_at_timeout:null,
+        dom_assistant_request_ids_before_recovery:
+          domRequestIdsBeforeRecovery,
+        dom_assistant_request_ids_at_timeout:[],
+        repair_attempted:audit.repair_attempted,
         title_candidate_count:reopenResult.titleCandidateCount,
         selected_candidate_index:reopenResult.selectedCandidateIndex,
         recovery_succeeded:Boolean(reopenResult.assistant),
       })
+      r09LookupDiagnosticIndex = assistantLookupDiagnostics.length - 1
       if (reopenResult.assistant) {
         assistant = reopenResult.assistant
         assistantVisible = true
@@ -1643,6 +1681,45 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       requestIdMatched:assistantRequestIdMatched,
     })
     if (!assistantVisible || assistantTerminalTimedOut) {
+      if (question.id === 'R09') {
+        const timeoutRequestIds = await page.locator(
+          '.message.assistant[data-request-id]',
+        ).evaluateAll(elements => elements.map(
+          element => element.getAttribute('data-request-id') ?? '',
+        ).filter(value => /^[0-9a-f-]{36}$/iu.test(value)).slice(-50))
+        const timeoutThreadId = await activeUiThreadId(page, api)
+        const existing = r09LookupDiagnosticIndex === null
+          ? null : assistantLookupDiagnostics[r09LookupDiagnosticIndex]
+        if (existing) {
+          existing.ui_thread_id_at_timeout = timeoutThreadId
+          existing.dom_assistant_request_ids_at_timeout = timeoutRequestIds
+        } else {
+          assistantLookupDiagnostics.push({
+            scenario_id:activeScenarioId,
+            request_id:requestId,
+            audit_request_id:audit.request_id || null,
+            audit_lookup_request_id:requestId,
+            audit_lookup_thread_id:null,
+            dom_selector_request_id:requestId,
+            payload_thread_id:typeof payload.thread_id === 'string'
+              ? payload.thread_id : null,
+            sse_thread_id:sseThreadId || null,
+            done_thread_id:doneThreadId || null,
+            sse_thread_request_id:sseThreadRequestId || null,
+            done_request_id:doneRequestId || null,
+            done_message_id:doneMessageId || null,
+            authoritative_thread_id:threadId || null,
+            ui_thread_id_before_recovery:null,
+            ui_thread_id_at_timeout:timeoutThreadId,
+            dom_assistant_request_ids_before_recovery:[],
+            dom_assistant_request_ids_at_timeout:timeoutRequestIds,
+            repair_attempted:audit.repair_attempted,
+            title_candidate_count:0,
+            selected_candidate_index:null,
+            recovery_succeeded:false,
+          })
+        }
+      }
       if (terminalErrors.includes('provider_safety_rejected')) {
         throw new Error('provider_safety_rejected')
       }
@@ -1864,6 +1941,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
       reasoningEffort:audit.reasoning_effort,
+      effectiveMaxOutputTokens:audit.effective_max_output_tokens,
+      visibleOutputReserveTokens:audit.visible_output_reserve_tokens,
+      reasoningBudgetCapTokens:audit.reasoning_budget_cap_tokens,
+      reasoningStarvedRetry:audit.reasoning_starved_retry,
       turnLifecycleStage:audit.turn_lifecycle_stage,
       turnLifecycleEvents:audit.turn_lifecycle_events,
       turnLifecycleReason:audit.turn_lifecycle_reason,
@@ -2093,6 +2174,14 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           failedResult.persistedQualityStatus = capturedAudit.persisted_quality_status
           failedResult.repairAttempted = capturedAudit.repair_attempted
           failedResult.reasoningEffort = capturedAudit.reasoning_effort
+          failedResult.effectiveMaxOutputTokens =
+            capturedAudit.effective_max_output_tokens
+          failedResult.visibleOutputReserveTokens =
+            capturedAudit.visible_output_reserve_tokens
+          failedResult.reasoningBudgetCapTokens =
+            capturedAudit.reasoning_budget_cap_tokens
+          failedResult.reasoningStarvedRetry =
+            capturedAudit.reasoning_starved_retry
           failedResult.turnLifecycleStage = capturedAudit.turn_lifecycle_stage
           failedResult.turnLifecycleEvents = capturedAudit.turn_lifecycle_events
           failedResult.turnLifecycleReason = capturedAudit.turn_lifecycle_reason
@@ -3699,6 +3788,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         generation_output_tokens:item.generationOutputTokens,
         generation_reasoning_tokens:item.generationReasoningTokens,
         generation_visible_output_tokens:item.generationVisibleOutputTokens,
+        effective_max_output_tokens:item.effectiveMaxOutputTokens,
+        visible_output_reserve_tokens:item.visibleOutputReserveTokens,
+        reasoning_budget_cap_tokens:item.reasoningBudgetCapTokens,
+        reasoning_starved_retry:item.reasoningStarvedRetry,
         visible_bullet_count:item.representationCounts.visibleBulletCount,
         raw_bullet_count:item.representationCounts.rawBulletCount,
         visible_fence_count:item.representationCounts.visibleFenceCount,
@@ -3748,6 +3841,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           },
         } : {}),
       })),
+      assistant_lookup_diagnostics:assistantLookupDiagnostics,
       workflows:workflowResults.map(item => ({
         id:item.id, status:item.status, reason_codes:item.reasonCodes,
         request_ids:item.requestIds,

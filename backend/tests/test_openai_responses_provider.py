@@ -11,7 +11,7 @@ from app.ai.model_health import (
 from app.ai.completion_quality import incomplete_markdown_reason
 from app.ai.openai_reasoning import (
     OpenAIReasoningEffortConfigurationError, openai_visible_output_reserve,
-    openai_web_reasoning_effort,
+    openai_web_reasoning_effort, resolve_openai_reasoning_budget,
 )
 from app.ai.providers.base import (
     GenerationIncomplete, ProviderSafetyRejected, ProviderStreamInterrupted,
@@ -506,7 +506,7 @@ def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     monkeypatch.delenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", raising=False)
     assert openai_web_reasoning_effort(
         "long_form", max_output_tokens=1600
-    ) == "minimal"
+    ) == "none"
     assert openai_web_reasoning_effort(
         "long_form", max_output_tokens=6000
     ) == "low"
@@ -517,7 +517,92 @@ def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     OpenAIProvider(client).stream_complete(
         _request("long_form"), route, lambda _delta: None
     )
-    assert client.responses.calls[0]["reasoning"] == {"effort": "minimal"}
+    assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
+
+
+def test_non_reasoning_turn_keeps_full_output_budget_without_reserve(
+    monkeypatch, caplog,
+):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_NORMAL", "none")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "3000")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "6000")
+    budget = resolve_openai_reasoning_budget(
+        "normal", max_output_tokens=3000,
+        minimum_visible_output_tokens=1800,
+    )
+
+    assert budget.effective_max_output_tokens == 3000
+    assert budget.visible_output_reserve_tokens == 0
+    assert budget.reasoning_budget_cap_tokens == 0
+    assert budget.reasoning_effort == "none"
+
+    client = _Client()
+    with caplog.at_level(logging.INFO):
+        OpenAIProvider(client).complete(
+            _request("normal"), _route(max_output_tokens=3000),
+        )
+    assert client.responses.calls[0]["max_output_tokens"] == 3000
+    budget_record = next(
+        record for record in caplog.records
+        if record.getMessage() == "openai_generation_budget_resolved"
+    )
+    assert budget_record.effective_max_output_tokens == 3000
+    assert budget_record.visible_output_reserve_tokens == 0
+    assert budget_record.reasoning_budget_cap_tokens == 0
+
+
+def test_ordinary_non_strict_turn_does_not_acquire_fraction_reserve(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_NORMAL", "low")
+    budget = resolve_openai_reasoning_budget(
+        "normal", max_output_tokens=3000,
+        minimum_visible_output_tokens=0,
+    )
+
+    assert budget.reasoning_effort == "low"
+    assert budget.effective_max_output_tokens == 3000
+    assert budget.visible_output_reserve_tokens == 0
+    assert budget.reasoning_budget_cap_tokens == 3000
+
+
+@pytest.mark.parametrize(
+    ("prompt", "answer"),
+    [
+        (
+            "Calculate subtotal, discount, taxable amount, GST, and final total.",
+            "Subtotal: ₹726.95\nDiscount: ₹72.70\nTaxable amount: "
+            "₹654.25\nGST: ₹117.77\nFinal total: ₹772.02",
+        ),
+        (
+            "Answer total Q2, highest Q1 region, and largest percentage growth.",
+            "Total Q2: 440\nHighest Q1: Region B\nLargest growth: "
+            "Region A at 25 percent",
+        ),
+    ],
+)
+def test_complete_compact_multi_part_answers_are_not_starvation_retried(
+    monkeypatch, prompt, answer,
+):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_NORMAL", "none")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "3000")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "6000")
+    client = _Client()
+    client.responses = _SequenceRecorder([_final(
+        text=answer, status="completed", output_tokens=29,
+        reasoning_tokens=0,
+    )])
+
+    response = OpenAIProvider(client).complete(
+        _request("normal", message=prompt),
+        _route(max_output_tokens=3000),
+    )
+
+    assert response.text == answer
+    assert len(client.responses.calls) == 1
+    assert response.raw["reasoning_starved_retry"] is False
+    assert response.raw["effective_max_output_tokens"] == 3000
+    assert response.raw["visible_output_reserve_tokens"] == 0
 
 
 def test_pro_strict_visible_contract_downgrades_reasoning_one_step(monkeypatch):
