@@ -165,6 +165,33 @@ export function extractUnifiedDiff(markdown: string): string | null {
   return start >= 0 ? String(markdown).slice(start).replace(/\s+$/, '') + '\n' : null
 }
 
+export function normalizeGeneratedUnifiedDiff(diff: string): string {
+  const lines = String(diff).replace(/\r\n?/g, '\n').split('\n')
+  let inHunk = false
+  return lines.map((line, index) => {
+    if (/^diff --git |^--- |^\+\+\+ /.test(line)) {
+      inHunk = false
+      return line
+    }
+    if (/^@@\s/.test(line)) {
+      inHunk = true
+      return line
+    }
+    if (
+      !inHunk
+      || index === lines.length - 1
+      || line.startsWith(' ')
+      || line.startsWith('+')
+      || line.startsWith('-')
+      || line.startsWith('\\')
+    ) return line
+    // Models occasionally omit the mandatory single context marker from an
+    // otherwise valid unified diff. Restore only that grammar byte; path
+    // validation and the repository's real tests remain authoritative.
+    return ` ${line}`
+  }).join('\n')
+}
+
 export function validateRepositoryDiff(diff: string): string | null {
   if (!diff.trim()) return 'repository_diff_missing'
   if (/GIT binary patch|Binary files |^new file mode 120000|^old mode 120000/m.test(diff)) {
@@ -243,10 +270,11 @@ test('rejects an invalid percentage', () => {
 
 export async function testRepositoryPatch(markdown: string): Promise<IsolatedRunResult> {
   const command = 'npm test'
-  const diff = extractUnifiedDiff(markdown)
-  if (!diff) return rejected('repository_diff_missing', command)
-  const validationFailure = validateRepositoryDiff(diff)
+  const extracted = extractUnifiedDiff(markdown)
+  if (!extracted) return rejected('repository_diff_missing', command)
+  const validationFailure = validateRepositoryDiff(extracted)
   if (validationFailure) return rejected(validationFailure, command)
+  const diff = normalizeGeneratedUnifiedDiff(extracted)
   const directory = await mkdtemp(join(tmpdir(), 'swico-capability-repository-'))
   try {
     await writeRepositoryFixture(directory)

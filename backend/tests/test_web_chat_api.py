@@ -631,6 +631,76 @@ def test_unsafe_quality_observation_does_not_destroy_completed_answer(
     )
 
 
+def test_large_completed_answer_survives_finalize_validation_error(
+    client, monkeypatch, caplog,
+):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
+    monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
+    monkeypatch.setenv("WEB_ROLLOUT_TRIAG_MODE", "all_eligible")
+    monkeypatch.setenv("WEB_ROLLOUT_ANSWER_GUARD_MODE", "all_eligible")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response", lambda *args, **kwargs: None,
+    )
+    user = create_test_user("large-finalize", "large-finalize@example.com")
+    _fund(int(user.id))
+    large_answer = "```html\n" + ("<section>Landing content</section>\n" * 2_400) + "```"
+
+    def completed(route):
+        return AIProviderResponse(
+            text=large_answer,
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=100,
+            output_tokens=2_000,
+            raw={"usage_actual": True, "finish_reason": "stop"},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        lambda self, request, route, on_delta: completed(route),
+    )
+    monkeypatch.setattr(
+        "app.web_ai.generation.answer_guard.AnswerGuard.check",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic_finalize_failure")
+        ),
+    )
+    request_id = "b1d3df27-8f31-4f5f-a7dc-aeb9db652620"
+
+    with caplog.at_level(logging.WARNING):
+        streamed = client.post(
+            "/api/web/chat/stream",
+            headers=auth_headers("large-finalize", "large-finalize@example.com"),
+            json={
+                "request_id": request_id,
+                "message": "Create a detailed production landing page with markup.",
+            },
+        )
+
+    assert streamed.status_code == 200
+    assert _sse_events(streamed, "done")
+    assert not _sse_events(streamed, "error")
+    with SessionLocal() as session:
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+    assert assistant.content == large_answer
+    assert any(
+        record.getMessage() == "answer_finalize_degraded"
+        and getattr(record, "request_id", None) == request_id
+        and getattr(record, "error_class", None) == "RuntimeError"
+        for record in caplog.records
+    )
+
+
 def test_generation_incomplete_is_retryable_and_bills_reported_usage_once(
     client, monkeypatch
 ):

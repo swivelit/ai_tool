@@ -4280,11 +4280,13 @@ def execute_web_turn(
             guard = AnswerGuard()
             repository_validation_attempts = 0
             fence_autoclosed = False
+            latest_generated_response: AIProviderResponse | None = None
 
             def generate_draft(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
                 nonlocal streamed_by_provider, guard_context, fence_autoclosed
+                nonlocal latest_generated_response
                 _phase3_stage(
                     prepared,
                     stage_name="generation",
@@ -4450,6 +4452,7 @@ def execute_web_turn(
                     guard_context,
                     provider_completion=ProviderCompletion.from_raw(draft.raw),
                 )
+                latest_generated_response = draft
                 closed_text, was_autoclosed = autoclose_unbalanced_fence(
                     draft.text
                 )
@@ -4460,6 +4463,7 @@ def execute_web_turn(
                         text=closed_text,
                         raw={**draft.raw, "fence_autoclosed": True},
                     )
+                latest_generated_response = draft
                 return draft
 
             def model_verifier(answer: str, pack: EvidencePack) -> bool:
@@ -4859,7 +4863,7 @@ def execute_web_turn(
                 attempt_number: int,
             ) -> AIProviderResponse | None:
                 nonlocal guard_context, repair_reserved_total, repair_reasoning_total
-                nonlocal fence_autoclosed
+                nonlocal fence_autoclosed, latest_generated_response
                 nonlocal repair_trigger_area_identifiers
                 if architecture_area_ids and attempt_number == 1:
                     repair_trigger_area_identifiers = (
@@ -5038,6 +5042,7 @@ def execute_web_turn(
                     )
                     if spliced is not None:
                         repaired = replace(repaired, text=spliced)
+                latest_generated_response = repaired
                 return repaired
 
             def repair(
@@ -5244,6 +5249,45 @@ def execute_web_turn(
                     quality=fallback_quality,
                     repair_attempts=1,
                 )
+            except (GenerationCancelled, ProviderSafetyRejected):
+                raise
+            except Exception as exc:
+                # Provider output is the user-visible product. Deterministic
+                # validation, formatting, or telemetry enrichment must not
+                # discard a completed, already-accounted provider response.
+                if latest_generated_response is None:
+                    raise
+                logger.warning(
+                    "answer_finalize_degraded",
+                    extra={
+                        "event": "answer_finalize_degraded",
+                        "request_id": prepared.request_id,
+                        "error_class": exc.__class__.__name__[:80],
+                    },
+                )
+                degraded_quality = AnswerQualityResult(
+                    status="unverified",
+                    checks=(QualityCheck(
+                        "answer_finalization",
+                        "error",
+                        "answer_finalize_error",
+                    ),),
+                    retrieval_status=(
+                        prepared.retrieval_context.retrieval_status
+                        if prepared.retrieval_context is not None else ""
+                    ),
+                    repair_attempted=bool(repair_prices),
+                    repository_validation_mode=(
+                        guard_context.repository_validation_mode
+                    ),
+                )
+                generated = GeneratedAnswer(
+                    response=latest_generated_response,
+                    quality=degraded_quality,
+                    repair_attempts=1 if repair_prices else 0,
+                )
+                if on_delta and stream_policy.mode == "verified_buffered":
+                    on_delta(latest_generated_response.text)
             response = generated.response
             prepared.answer_quality = generated.quality
         elif prepared.route.provider in {"openai", "sarvam"}:
@@ -5269,23 +5313,47 @@ def execute_web_turn(
                 )
                 if on_delta:
                     on_delta(response.text)
-        closed_text, was_autoclosed = autoclose_unbalanced_fence(response.text)
-        if was_autoclosed:
-            response = replace(
-                response,
-                text=closed_text,
-                raw={**response.raw, "fence_autoclosed": True},
-            )
-            if prepared.answer_quality is not None:
-                prepared.answer_quality = replace(
-                    prepared.answer_quality,
-                    checks=prepared.answer_quality.checks + (
-                        fence_integrity_quality_check(autoclosed=True),
-                    ),
+        try:
+            closed_text, was_autoclosed = autoclose_unbalanced_fence(response.text)
+            if was_autoclosed:
+                response = replace(
+                    response,
+                    text=closed_text,
+                    raw={**response.raw, "fence_autoclosed": True},
                 )
-        if guard_enabled and output_contract.required:
-            prepared.answer_quality = _enforce_final_output_contract_quality(
-                response.text, output_contract, prepared.answer_quality
+                if prepared.answer_quality is not None:
+                    prepared.answer_quality = replace(
+                        prepared.answer_quality,
+                        checks=prepared.answer_quality.checks + (
+                            fence_integrity_quality_check(autoclosed=True),
+                        ),
+                    )
+            if guard_enabled and output_contract.required:
+                prepared.answer_quality = _enforce_final_output_contract_quality(
+                    response.text, output_contract, prepared.answer_quality
+                )
+        except Exception as exc:
+            logger.warning(
+                "answer_finalize_degraded",
+                extra={
+                    "event": "answer_finalize_degraded",
+                    "request_id": prepared.request_id,
+                    "error_class": exc.__class__.__name__[:80],
+                },
+            )
+            prepared.answer_quality = AnswerQualityResult(
+                status="unverified",
+                checks=(QualityCheck(
+                    "answer_finalization", "error", "answer_finalize_error",
+                ),),
+                retrieval_status=(
+                    prepared.retrieval_context.retrieval_status
+                    if prepared.retrieval_context is not None else ""
+                ),
+                repository_validation_mode=(
+                    prepared.answer_quality.repository_validation_mode
+                    if prepared.answer_quality is not None else None
+                ),
             )
         if (
             on_delta

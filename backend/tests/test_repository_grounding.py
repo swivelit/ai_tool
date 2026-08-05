@@ -93,6 +93,38 @@ def test_repository_answer_rejects_phantom_path_against_indexed_version():
     assert "do not invent its behavior or importers" in rendered
 
 
+def test_repository_grounding_does_not_treat_honest_g04_refusal_as_a_citation():
+    prompt = "What does src/nonexistent.ts do, and which functions import it?"
+    answer = (
+        "I can't determine that from the information available. I don't have the "
+        "repository contents or a file index in this chat, so I can't verify whether "
+        "`src/nonexistent.ts` exists or which functions import it."
+    )
+
+    evaluated = evaluate_repository_path_grounding(
+        answer,
+        ("src/pricing.js",),
+        user_message=prompt,
+    )
+
+    assert evaluated.cited_paths == ()
+    assert evaluated.invalid_paths == ()
+    assert evaluated.passed is True
+
+
+def test_repository_grounding_still_rejects_an_asserted_phantom_path():
+    answer = "The pricing logic lives in `src/nonexistent.ts`."
+
+    evaluated = evaluate_repository_path_grounding(
+        answer,
+        ("src/pricing.js",),
+    )
+
+    assert evaluated.cited_paths == ("src/nonexistent.ts",)
+    assert evaluated.invalid_paths == ("src/nonexistent.ts",)
+    assert evaluated.passed is False
+
+
 def test_repository_warning_never_modifies_fenced_diff_bytes():
     diff = """The following patch is proposed:
 

@@ -467,7 +467,7 @@ def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     monkeypatch.delenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", raising=False)
     assert openai_web_reasoning_effort(
         "long_form", max_output_tokens=1600
-    ) == "none"
+    ) == "minimal"
     assert openai_web_reasoning_effort(
         "long_form", max_output_tokens=6000
     ) == "low"
@@ -478,7 +478,7 @@ def test_bounded_long_form_reserves_visible_output_capacity(monkeypatch):
     OpenAIProvider(client).stream_complete(
         _request("long_form"), route, lambda _delta: None
     )
-    assert client.responses.calls[0]["reasoning"] == {"effort": "none"}
+    assert client.responses.calls[0]["reasoning"] == {"effort": "minimal"}
 
 
 def test_pro_strict_visible_contract_downgrades_reasoning_one_step(monkeypatch):
@@ -511,6 +511,26 @@ def test_strict_visible_contract_suppresses_only_below_reasoning_floor(
         "normal", max_output_tokens=3000,
         strict_visible_format=True, minimum_visible_output_tokens=800,
     ) == "low"
+
+
+def test_lite_long_form_keeps_minimal_reasoning_when_visible_reserve_fits(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "1400")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_LONG_FORM", "low")
+
+    assert openai_web_reasoning_effort(
+        "long_form",
+        max_output_tokens=1600,
+        strict_visible_format=True,
+        minimum_visible_output_tokens=1200,
+    ) == "minimal"
+    assert openai_web_reasoning_effort(
+        "long_form",
+        max_output_tokens=1200,
+        strict_visible_format=True,
+        minimum_visible_output_tokens=1200,
+    ) == "none"
 
 
 def test_invalid_reasoning_budget_floor_is_rejected(monkeypatch):

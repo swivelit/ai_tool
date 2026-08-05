@@ -266,7 +266,7 @@ type QuestionResult = {
   sseDeltaSeen: boolean
   sseDoneSeen: boolean
   repositoryAttached: boolean
-  assistantLookup: 'request_id' | 'message_id' | 'none'
+  assistantLookup: 'request_id' | 'message_id' | 'thread_reopen' | 'none'
   assistantRequestIdMatched: boolean | null
   threadId: string | null
   startedAtUtc: string | null
@@ -759,6 +759,52 @@ async function allThreads(
   throw new Error('thread_snapshot_exceeds_bound')
 }
 
+async function reopenPersistedAssistantThread(
+  page: Page,
+  api: DeployedApi,
+  threadId: string,
+  messageId: string,
+  timeoutMilliseconds: number,
+): Promise<Locator | null> {
+  const deadline = Date.now() + Math.max(1, timeoutMilliseconds)
+  const thread = (await allThreads(
+    api, false, Math.min(10_000, Math.max(1, deadline - Date.now())),
+  )).find(item => item.id === threadId)
+  if (!thread) return null
+  const open = async (): Promise<boolean> => {
+    const button = page.locator('.thread-select').filter({ hasText:thread.title }).first()
+    if (!await button.isVisible().catch(() => false)) return false
+    await button.click({ timeout:Math.min(5_000, Math.max(1, deadline - Date.now())) })
+    return true
+  }
+  if (!await open()) {
+    await page.reload({
+      waitUntil:'domcontentloaded',
+      timeout:Math.min(15_000, Math.max(1, deadline - Date.now())),
+    }).catch(() => undefined)
+    if (!await open()) return null
+  }
+  const assistant = page.locator(
+    `.message.assistant[data-message-id="${messageId}"]`,
+  )
+  return await assistant.waitFor({
+    state:'visible',
+    timeout:Math.min(15_000, Math.max(1, deadline - Date.now())),
+  }).then(() => assistant, () => null)
+}
+
+async function activeUiThreadId(
+  page: Page, api: DeployedApi,
+): Promise<string | null> {
+  const title = await page.locator(
+    '.thread-row.active .thread-select',
+  ).getAttribute('title').catch(() => null)
+  if (!title) return null
+  const matches = (await allThreads(api, false, 5_000).catch(() => []))
+    .filter(item => item.title === title)
+  return matches.length === 1 ? matches[0].id : null
+}
+
 type SearchWorkflowFailure =
   | 'search_api_failed'
   | 'search_index_timeout'
@@ -1216,6 +1262,16 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     assistant_request_id_matched: boolean | null
     recovery_reason_code?: string
   }> = []
+  const assistantLookupDiagnostics: Array<{
+    scenario_id: string
+    request_id: string
+    payload_thread_id: string | null
+    sse_thread_id: string | null
+    done_thread_id: string | null
+    authoritative_thread_id: string | null
+    ui_thread_id_before_recovery: string | null
+    recovery_succeeded: boolean
+  }> = []
   const chatPace = new PaceGate(CHAT_START_INTERVAL_MS)
   const uploadPace = new PaceGate(UPLOAD_START_INTERVAL_MS)
   const budget = new DebitBudget(gate.chatDebitCapMicros, gate.voiceDebitCapMicros)
@@ -1467,6 +1523,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     )
     const threadEvent = sseData(rawSse, 'thread').at(0)
     const doneEvent = sseData(rawSse, 'done').at(-1)
+    const sseThreadId = String(threadEvent?.thread_id ?? '')
+    const doneThreadId = String(doneEvent?.thread_id ?? '')
+    let threadId = doneThreadId || sseThreadId || String(payload.thread_id ?? '')
+    if (!threadId && threadsBefore) {
+      threadId = await discoverGeneratedThread(
+        api, threadsBefore, remaining(15_000),
+      ) ?? ''
+    }
+    if (threadId) generatedThreadIds.add(threadId)
     if (!assistantVisible) {
       assistantVisible = await assistant.waitFor({
         state:'visible', timeout:Math.min(5_000, remaining(5_000)),
@@ -1499,6 +1564,47 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ).catch(() => true)
       }
     }
+    let raw = threadId
+      ? await pollRawMessage(
+        api, threadId, requestId, doneMessageId || null,
+        Math.min(30_000, remaining(30_000)),
+      )
+      : null
+    // R09 is a fresh-thread routing probe. Its persisted message can be
+    // healthy while React is still showing the previously active thread. Use
+    // the authoritative SSE thread/message identifiers to reopen that normal
+    // UI thread before declaring an assistant timeout.
+    if (
+      question.id === 'R09'
+      && raw
+      && (!assistantVisible || assistantTerminalTimedOut)
+      && threadId
+      && /^[0-9a-f-]{36}$/iu.test(doneMessageId)
+    ) {
+      const uiThreadIdBeforeRecovery = await activeUiThreadId(page, api)
+      const reopened = await reopenPersistedAssistantThread(
+        page, api, threadId, doneMessageId, Math.min(30_000, remaining(30_000)),
+      )
+      assistantLookupDiagnostics.push({
+        scenario_id:activeScenarioId,
+        request_id:requestId,
+        payload_thread_id:typeof payload.thread_id === 'string'
+          ? payload.thread_id : null,
+        sse_thread_id:sseThreadId || null,
+        done_thread_id:doneThreadId || null,
+        authoritative_thread_id:threadId || null,
+        ui_thread_id_before_recovery:uiThreadIdBeforeRecovery,
+        recovery_succeeded:Boolean(reopened),
+      })
+      if (reopened) {
+        assistant = reopened
+        assistantVisible = true
+        assistantLookup = 'thread_reopen'
+        assistantTerminalTimedOut = await assistant.evaluate(
+          element => element.classList.contains('streaming'),
+        ).catch(() => true)
+      }
+    }
     const assistantDomRequestId = assistantVisible
       ? await assistant.getAttribute('data-request-id').catch(() => null)
       : null
@@ -1522,19 +1628,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const events = parseSseEventOrder(rawSse)
     const usageEvent = sseData(rawSse, 'usage').at(-1)
     const qualityEvent = sseData(rawSse, 'quality').at(-1)
-    let threadId = String(threadEvent?.thread_id ?? payload.thread_id ?? '')
-    if (!threadId && threadsBefore) {
-      threadId = await discoverGeneratedThread(
-        api, threadsBefore, remaining(15_000),
-      ) ?? ''
-    }
-    if (threadId) generatedThreadIds.add(threadId)
-    const raw = threadId
-      ? await pollRawMessage(
+    if (!raw && threadId) {
+      raw = await pollRawMessage(
         api, threadId, requestId, doneMessageId || null,
         Math.min(30_000, remaining(30_000)),
       )
-      : null
+    }
     if (!raw) throw new Error('assistant_persistence_missing')
     const displayed = await visibleAnswer(assistant)
     const redacted = redactPotentialSecrets(displayed)
@@ -3675,6 +3774,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       },
       startup_failure_diagnostic:startupFailureDiagnostic,
       question_failure_diagnostics:questionFailureDiagnostics,
+      assistant_lookup_diagnostics:assistantLookupDiagnostics,
       results,
       workflow_results:workflowResults,
       render_log_correlation:results.filter(item => item.requestId).map(item => ({

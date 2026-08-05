@@ -499,6 +499,24 @@ test('repository question recovery preserves the active repository binding', () 
   )
 })
 
+test('R09 reopens the authoritative persisted thread before reporting a UI timeout', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    "const doneThreadId = String(doneEvent?.thread_id ?? '')",
+  )
+  expect(spec).toContain(
+    'let threadId = doneThreadId || sseThreadId || String(payload.thread_id ?? \'\')',
+  )
+  expect(spec).toContain("question.id === 'R09'")
+  expect(spec).toContain('reopenPersistedAssistantThread(')
+  expect(spec).toContain("assistantLookup = 'thread_reopen'")
+  expect(spec).toContain(
+    'assistant_lookup_diagnostics:assistantLookupDiagnostics',
+  )
+})
+
 test('assistant lookup falls back to the authoritative SSE message id', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',

@@ -186,6 +186,7 @@ class AnswerGuard:
                 checks.append(repository_path_grounding_check(
                     answer, context.repository_file_paths,
                     index_complete=context.repository_index_complete,
+                    user_message=context.task_contract,
                 ))
         if context.repository_validation_required:
             validation = context.repository_validation

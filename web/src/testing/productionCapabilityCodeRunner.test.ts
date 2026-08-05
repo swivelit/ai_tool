@@ -3,6 +3,7 @@ import {
   assertPythonTestRuntimeAvailable,
   extractPythonBlocks,
   extractUnifiedDiff,
+  normalizeGeneratedUnifiedDiff,
   testGeneratedDiscountPython,
   testRepositoryPatch,
   validateRepositoryDiff,
@@ -102,6 +103,18 @@ describe('production capability isolated code runners', () => {
   it('safely recounts stale unified-diff hunk sizes before applying', async () => {
     const staleCounts = patchAnswer.replace('@@ -5,5 +5,8 @@', '@@ -5,5 +5,99 @@')
     const result = await testRepositoryPatch(staleCounts)
+    expect(result.accepted, JSON.stringify(result)).toBe(true)
+    expect(result.passed, JSON.stringify(result)).toBe(true)
+  }, 25_000)
+
+  it('restores omitted unified-diff context markers before isolated apply', async () => {
+    const malformed = patchAnswer
+      .replace("\n import { finalPrice }", "\nimport { finalPrice }")
+    const extracted = extractUnifiedDiff(malformed)!
+    expect(normalizeGeneratedUnifiedDiff(extracted)).toContain(
+      '\n import { finalPrice }',
+    )
+    const result = await testRepositoryPatch(malformed)
     expect(result.accepted, JSON.stringify(result)).toBe(true)
     expect(result.passed, JSON.stringify(result)).toBe(true)
   }, 25_000)

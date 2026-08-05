@@ -75,14 +75,25 @@ def openai_web_reasoning_effort(
             f"{floor_name} must be a positive integer"
         )
     reasoning_budget = max(0, output_budget - visible_reserve)
+    downgraded = _STRICT_EFFORT_DOWNGRADE[effort]
     if (
         strict_visible_format
         and output_budget > 0
         and reasoning_budget < reasoning_floor
     ):
+        if (
+            normalized_class == "long_form"
+            and reasoning_budget > 0
+            and downgraded != "none"
+        ):
+            # A bounded long-form contract still benefits from a small amount
+            # of reasoning when its visible reserve fits. Collapse to minimal
+            # rather than disabling reasoning outright merely because the
+            # remaining shared budget is below the configured comfort floor.
+            return "minimal"
         return "none"
     if strict_visible_format:
-        return _STRICT_EFFORT_DOWNGRADE[effort]
+        return downgraded
     # Responses reasoning tokens share max_output_tokens with visible output.
     # Below the configured floor, reserve the bounded response budget for the
     # explicitly requested visible deliverable. Larger plans retain their
@@ -92,5 +103,5 @@ def openai_web_reasoning_effort(
         and 0 < output_budget < reasoning_floor
         and effort not in {"none", "minimal"}
     ):
-        return "none"
+        return "minimal"
     return effort

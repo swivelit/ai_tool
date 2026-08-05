@@ -14,6 +14,14 @@ _PATH_WITH_DIRECTORY = re.compile(
 _BACKTICK_FILE = re.compile(
     r"`((?:\.{0,2}/)?[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,16})`"
 )
+_UNCERTAIN_PATH_CLAIM = re.compile(
+    r"\b(?:can(?:not|'t|’t)\s+(?:verify|determine|confirm)|"
+    r"unable\s+to\s+(?:verify|determine|confirm)|"
+    r"do(?:es)?\s+not\s+exist|doesn(?:'t|’t)\s+exist|"
+    r"no\s+such\s+file|don(?:'t|’t)\s+have)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_BOUNDARY = re.compile(r"[.!?\n]+")
 
 
 def normalize_repository_path(value: str) -> str:
@@ -25,13 +33,41 @@ def normalize_repository_path(value: str) -> str:
     return path
 
 
-def cited_repository_paths(answer: str) -> tuple[str, ...]:
+def _sentence_containing(value: str, start: int, end: int) -> str:
+    left = 0
+    for match in _SENTENCE_BOUNDARY.finditer(value, 0, start):
+        left = match.end()
+    boundary = _SENTENCE_BOUNDARY.search(value, end)
+    right = boundary.start() if boundary else len(value)
+    return value[left:right]
+
+
+def cited_repository_paths(
+    answer: str,
+    *,
+    user_message: str = "",
+) -> tuple[str, ...]:
     value = str(answer or "")
-    candidates = [match.group(1) for match in _PATH_WITH_DIRECTORY.finditer(value)]
-    candidates.extend(match.group(1) for match in _BACKTICK_FILE.finditer(value))
+    prompt = str(user_message or "").replace("\\", "/").casefold()
+    matches = (
+        list(_PATH_WITH_DIRECTORY.finditer(value))
+        + list(_BACKTICK_FILE.finditer(value))
+    )
+    candidates: list[str] = []
+    for match in sorted(matches, key=lambda item: (item.start(1), item.end(1))):
+        normalized = normalize_repository_path(match.group(1))
+        if not normalized:
+            continue
+        # Echoing a path supplied by the user is not an independent claim that
+        # the path exists in the repository.
+        if normalized.casefold() in prompt:
+            continue
+        sentence = _sentence_containing(value, match.start(1), match.end(1))
+        if _UNCERTAIN_PATH_CLAIM.search(sentence):
+            continue
+        candidates.append(normalized)
     return tuple(dict.fromkeys(
-        normalized for item in candidates
-        if (normalized := normalize_repository_path(item))
+        candidates
     ))
 
 
@@ -56,11 +92,12 @@ def evaluate_repository_path_grounding(
     indexed_file_paths: tuple[str, ...],
     *,
     index_complete: bool = True,
+    user_message: str = "",
 ) -> RepositoryPathGrounding:
     allowed = {
         normalize_repository_path(path) for path in indexed_file_paths
     }
-    cited = cited_repository_paths(answer)
+    cited = cited_repository_paths(answer, user_message=user_message)
     return RepositoryPathGrounding(
         cited_paths=cited,
         invalid_paths=tuple(path for path in cited if path not in allowed),
@@ -73,9 +110,13 @@ def repository_path_grounding_check(
     indexed_file_paths: tuple[str, ...],
     *,
     index_complete: bool = True,
+    user_message: str = "",
 ) -> QualityCheck:
     result = evaluate_repository_path_grounding(
-        answer, indexed_file_paths, index_complete=index_complete,
+        answer,
+        indexed_file_paths,
+        index_complete=index_complete,
+        user_message=user_message,
     )
     status = (
         "warning" if result.indeterminate else
