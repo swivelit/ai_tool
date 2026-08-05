@@ -5,6 +5,7 @@ import {
   cleanupUsageAuditReasons,
   forceCancelActiveCapabilityRequests,
   pollCapabilityAudits,
+  pollCapabilityStreamTerminal,
   TRIAG_REQUEST_AUDIT_BATCH_LIMIT,
 } from './productionCapabilityAudit'
 
@@ -20,6 +21,38 @@ const terminalAudit = (id: string) => ({
 })
 
 describe('production capability request-audit batching', () => {
+  it('reconciles a terminal audit until stream_terminal persistence lands', async () => {
+    let clock = 0
+    let calls = 0
+    const initial = {
+      ...terminalAudit(requestId(1)), turn_lifecycle_events:['message_persisted'],
+    }
+    const api = {
+      async request<T>() {
+        calls += 1
+        return {
+          status:200,
+          data:{ results:[{
+            ...initial,
+            turn_lifecycle_events:calls < 2
+              ? ['message_persisted']
+              : ['message_persisted', 'stream_terminal'],
+          }] } as T,
+        }
+      },
+    }
+
+    const audit = await pollCapabilityStreamTerminal({
+      api, requestId:requestId(1), initial,
+      timeoutMilliseconds:2_000,
+      now:() => clock,
+      wait:async milliseconds => { clock += milliseconds },
+    })
+
+    expect(calls).toBe(2)
+    expect(audit.turn_lifecycle_events).toContain('stream_terminal')
+  })
+
   it.each([
     [1, 1],
     [12, 1],

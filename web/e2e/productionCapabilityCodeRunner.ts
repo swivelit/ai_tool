@@ -280,16 +280,18 @@ export async function testRepositoryPatch(markdown: string): Promise<IsolatedRun
     await writeRepositoryFixture(directory)
     const patchPath = join(directory, 'answer.diff')
     await writeFile(patchPath, diff, { mode:0o600 })
+    let applyCommand = 'git apply --check --recount --whitespace=error-all answer.diff'
     try {
       await execute('git', ['apply', '--check', '--recount', '--whitespace=error-all', patchPath], {
         cwd:directory, timeout:5_000, maxBuffer:MAX_OUTPUT_BYTES,
       })
+      applyCommand = 'git apply --recount --whitespace=error-all answer.diff'
       await execute('git', ['apply', '--recount', '--whitespace=error-all', patchPath], {
         cwd:directory, timeout:5_000, maxBuffer:MAX_OUTPUT_BYTES,
       })
     } catch (error) {
       return {
-        ...rejected('repository_patch_apply_failed', command),
+        ...rejected('repository_patch_apply_failed', applyCommand),
         stderr:bounded((error as { stderr?: unknown }).stderr),
       }
     }

@@ -66,6 +66,7 @@ from ..web_ai.generation.output_contract import (
     OutputContract,
     canonicalize_output_contract,
     contract_compliant_candidate,
+    apply_reply_language_contract,
     extract_output_contract,
     output_contract_hash,
     validate_output_contract,
@@ -1471,7 +1472,9 @@ def prepare_web_turn(
                 "Continue the previous response exactly from where it stopped. "
                 "Do not repeat completed sections; finish all remaining steps end-to-end."
             )
-        output_contract = extract_output_contract(model_message)
+        output_contract = apply_reply_language_contract(
+            extract_output_contract(model_message), reply_language,
+        )
         task_requirements = extract_task_requirements(model_message)
         display_attachments = [upload.display_metadata() for upload in uploads]
         visible_content = visible_message or (

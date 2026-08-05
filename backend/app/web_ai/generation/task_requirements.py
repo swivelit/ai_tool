@@ -504,6 +504,8 @@ class TaskRequirementContract:
     forbidden_authoritative_stores: tuple[str, ...] = ()
     comparison_terms: tuple[str, ...] = ()
     explicit_subquestion_count: int = 0
+    transaction_boundary_required: bool = False
+    pseudocode_required: bool = False
     repository_unified_diff_required: bool = False
     repository_validation_command: str | None = None
     repository_validation_claim_mode: str | None = None
@@ -523,6 +525,8 @@ class TaskRequirementContract:
             or self.forbidden_authoritative_stores
             or self.comparison_terms
             or self.explicit_subquestion_count
+            or self.transaction_boundary_required
+            or self.pseudocode_required
             or self.repository_unified_diff_required
             or self.repository_validation_command
             or self.repository_validation_claim_mode
@@ -590,6 +594,10 @@ class TaskRequirementContract:
                 int(value.get("explicit_subquestion_count") or 0)
                 if isinstance(value.get("explicit_subquestion_count"), int) else 0
             ),
+            transaction_boundary_required=(
+                value.get("transaction_boundary_required") is True
+            ),
+            pseudocode_required=value.get("pseudocode_required") is True,
             repository_unified_diff_required=(
                 value.get("repository_unified_diff_required") is True
             ),
@@ -683,6 +691,16 @@ class TaskRequirementContract:
         if self.explicit_subquestion_count:
             rules.append(
                 f"Answer all {self.explicit_subquestion_count} explicit sub-questions."
+            )
+        if self.transaction_boundary_required:
+            rules.append(
+                "Show the requested transaction boundary explicitly, including "
+                "where the transaction begins and commits or rolls back."
+            )
+        if self.pseudocode_required:
+            rules.append(
+                "Include concrete pseudocode with executable-style control flow, "
+                "not only a prose description."
             )
         if self.repository_unified_diff_required:
             rules.append(
@@ -822,6 +840,16 @@ def extract_task_requirements(message: str) -> TaskRequirementContract:
         )
 
     explicit_subquestions = len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*+])\s+[^\n?]+\?\s*$", text))
+    transaction_boundary_required = bool(re.search(
+        r"\b(?:show|include|provide|define|describe)\b[^.?!\n]{0,80}"
+        r"\btransaction\s+boundar(?:y|ies)\b",
+        text, re.IGNORECASE,
+    ))
+    pseudocode_required = bool(re.search(
+        r"\b(?:in|as|using|include|provide|show)\s+pseudocode\b|"
+        r"\bpseudocode\s+(?:for|of|showing)\b",
+        text, re.IGNORECASE,
+    ))
     return TaskRequirementContract(
         definition_topics=definition_topics,
         definition_requires_explicit_meaning=definition_requires_explicit_meaning,
@@ -833,6 +861,8 @@ def extract_task_requirements(message: str) -> TaskRequirementContract:
         forbidden_authoritative_stores=forbidden_authoritative_stores,
         comparison_terms=comparison_terms,
         explicit_subquestion_count=min(20, explicit_subquestions),
+        transaction_boundary_required=transaction_boundary_required,
+        pseudocode_required=pseudocode_required,
     )
 
 
@@ -1178,5 +1208,36 @@ def validate_task_requirements(
             "task_requirement_subquestions",
             "passed" if passed else "failed",
             "" if passed else "explicit_subquestions_missing",
+        ))
+    if contract.transaction_boundary_required:
+        transaction_boundary_present = bool(
+            re.search(r"\b(?:transaction|atomic)\b", lowered)
+            and re.search(r"\b(?:begin|start|open)\w*\b", lowered)
+            and re.search(r"\b(?:commit|rollback|roll back)\w*\b", lowered)
+        )
+        checks.append(QualityCheck(
+            "task_requirement_transaction_boundary",
+            "passed" if transaction_boundary_present else "failed",
+            "" if transaction_boundary_present
+            else "transaction_boundary_missing",
+            observations=((
+                "transaction_boundary_present",
+                int(transaction_boundary_present),
+            ),),
+        ))
+    if contract.pseudocode_required:
+        pseudocode_present = bool(
+            re.search(r"```[^\n]*\n[\s\S]*?```", value)
+            or re.search(
+                r"(?im)^\s*(?:begin|if|for|while|insert|select|update|"
+                r"commit|rollback|return|def|function)\b",
+                value,
+            )
+        )
+        checks.append(QualityCheck(
+            "task_requirement_pseudocode",
+            "passed" if pseudocode_present else "failed",
+            "" if pseudocode_present else "pseudocode_missing",
+            observations=(("pseudocode_present", int(pseudocode_present)),),
         ))
     return tuple(checks)

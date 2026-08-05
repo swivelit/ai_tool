@@ -22,6 +22,10 @@ export type CancellationReadyCapabilityAudit = PollableCapabilityAudit & {
   provider_call_count: number
 }
 
+export type LifecycleCapabilityAudit = PollableCapabilityAudit & {
+  turn_lifecycle_events: string[]
+}
+
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const result: T[][] = []
   for (let index = 0; index < items.length; index += size) {
@@ -202,6 +206,42 @@ export async function pollCapabilityAudits<T extends PollableCapabilityAudit>(op
 
   if (last.size === uniqueIds.length) return last
   throw new Error('request_audit_timeout')
+}
+
+export async function pollCapabilityStreamTerminal<
+  T extends LifecycleCapabilityAudit,
+>(options: {
+  api: CapabilityAuditTransport
+  requestId: string
+  initial: T
+  timeoutMilliseconds?: number
+  now?: () => number
+  wait?: (milliseconds: number) => Promise<void>
+}): Promise<T> {
+  if (options.initial.turn_lifecycle_events.includes('stream_terminal')) {
+    return options.initial
+  }
+  const now = options.now ?? Date.now
+  const wait = options.wait ?? (
+    milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+  )
+  const deadline = now() + (options.timeoutMilliseconds ?? 10_000)
+  let latest = options.initial
+  while (now() < deadline) {
+    const response = await options.api.request<{ results: T[] }>(
+      'POST', '/api/web/admin/triag-request-audit',
+      { request_ids:[options.requestId] },
+      { timeoutMilliseconds:Math.max(1, Math.min(5_000, deadline - now())) },
+    ).catch(() => ({ status:0, data:null }))
+    const current = response.data?.results.find(
+      item => item.request_id === options.requestId,
+    )
+    if (current) latest = current
+    if (latest.turn_lifecycle_events.includes('stream_terminal')) return latest
+    const remaining = deadline - now()
+    if (remaining > 0) await wait(Math.min(200, remaining))
+  }
+  return latest
 }
 
 export function cleanupUsageAuditReasons<T extends PollableCapabilityAudit>(

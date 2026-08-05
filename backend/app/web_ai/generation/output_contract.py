@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import re
@@ -145,6 +145,16 @@ class OutputContract:
         return cls(**bounded)
 
 
+def apply_reply_language_contract(
+    contract: OutputContract, reply_language: object,
+) -> OutputContract:
+    """Make the selected profile language verifiable, not prompt-only advice."""
+
+    if str(reply_language or "").strip().casefold() != "ta":
+        return contract
+    return replace(contract, required_script="tamil")
+
+
 def extract_output_contract(message: str) -> OutputContract:
     text = str(message or "")
     bullet_count = None
@@ -223,6 +233,9 @@ def extract_output_contract(message: str) -> OutputContract:
         r"\bexactly\s+([A-Za-z]+|\d+)\s+(?:simple\s+)?(?:Tamil\s+)?sentences?\b",
         text,
         re.IGNORECASE,
+    ) or re.search(
+        r"\b(?:in|using|use)\s+([A-Za-z]+|\d+)\s+simple\s+sentences?\b",
+        text, re.IGNORECASE,
     ) or re.search(r"(ஐந்து)\s+.{0,20}வாக்கியங்களில்", text)
     if match:
         sentence_count = _number(match.group(1))

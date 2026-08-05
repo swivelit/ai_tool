@@ -10,6 +10,7 @@ from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.generation.models import QualityCheck
 from app.web_ai.generation.output_contract import (
     OutputContract,
+    apply_reply_language_contract,
     canonicalize_output_contract,
     contract_compliant_candidate,
     extract_output_contract,
@@ -22,6 +23,18 @@ from app.web_api.chat_service import (
     _cache_response,
     _enforce_final_output_contract_quality,
 )
+
+
+def test_tamil_profile_language_becomes_a_verified_script_contract():
+    base = extract_output_contract("Explain gravity in one simple sentence.")
+    contract = apply_reply_language_contract(base, "ta")
+
+    assert contract.exact_sentence_count == 1
+    assert contract.required_script == "tamil"
+    english = validate_output_contract("Gravity pulls objects together.", contract)
+    tamil = validate_output_contract("ஈர்ப்பு விசை பொருட்களை ஒன்றாக இழுக்கிறது.", contract)
+    assert any(check.status == "failed" for check in english)
+    assert all(check.status == "passed" for check in tamil)
 
 
 B01 = (

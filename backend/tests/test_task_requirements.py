@@ -58,6 +58,29 @@ def test_b01_semantic_requirements_require_definition_and_retry_example():
     assert all(check.status == "passed" for check in complete)
 
 
+def test_explicit_transaction_boundary_pseudocode_is_repairable():
+    contract = extract_task_requirements(
+        "Show the transaction boundary for that fix in pseudocode."
+    )
+    assert contract.transaction_boundary_required is True
+    assert contract.pseudocode_required is True
+
+    terse = validate_task_requirements(
+        "Use one atomic operation for the reservation.", contract,
+    )
+    assert {check.check_type for check in terse if check.status == "failed"} == {
+        "task_requirement_transaction_boundary",
+        "task_requirement_pseudocode",
+    }
+
+    complete = validate_task_requirements(
+        "```text\nBEGIN TRANSACTION\nUPDATE inventory\n"
+        "IF conflict: ROLLBACK\nCOMMIT\n```",
+        contract,
+    )
+    assert all(check.status == "passed" for check in complete)
+
+
 def test_python_and_browser_share_capability_semantic_fixtures():
     assert TASK_REQUIREMENT_VERSION == "2026-08-03.6"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"

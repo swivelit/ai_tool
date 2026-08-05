@@ -119,6 +119,20 @@ describe('production capability isolated code runners', () => {
     expect(result.passed, JSON.stringify(result)).toBe(true)
   }, 25_000)
 
+  it('retains bounded git stderr when strict whitespace rejects a patch', async () => {
+    const trailingWhitespace = patchAnswer.replace(
+      "+  return subtotalCents - Math.round(subtotalCents * discountPercent / 100)",
+      "+  return subtotalCents - Math.round(subtotalCents * discountPercent / 100) ",
+    )
+    const result = await testRepositoryPatch(trailingWhitespace)
+
+    expect(result.reasonCode).toBe('repository_patch_apply_failed')
+    expect(result.command).toBe(
+      'git apply --check --recount --whitespace=error-all answer.diff',
+    )
+    expect(result.stderr).toMatch(/whitespace|trailing/iu)
+  }, 25_000)
+
   it('rejects package and traversal modifications', () => {
     expect(validateRepositoryDiff('--- a/package.json\n+++ b/package.json\n'))
       .toBe('repository_forbidden_patch_content')

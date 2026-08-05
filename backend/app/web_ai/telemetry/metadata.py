@@ -82,6 +82,8 @@ _ALLOWED_KEYS = frozenset(
         "definition_present",
         "concrete_retry_example_present",
         "stable_outcome_present",
+        "transaction_boundary_present",
+        "pseudocode_present",
         "authoritative_store_present",
         "forbidden_authority_passed",
         "forbidden_authority_violation",

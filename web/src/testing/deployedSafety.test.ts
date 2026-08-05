@@ -407,6 +407,10 @@ test('production capability safe summary includes content-free completion diagno
     'redis_valkey_forbidden_authority_passed:',
     'covered_area_count:item.architectureEvaluation.coveredAreaCount',
     'missing_area_identifiers:item.architectureEvaluation.missingAreas',
+    'code_test_stderr:item.codeTestStderr',
+    'code_test_command:item.codeTestCommand',
+    'code_test_diff_first_20_lines:item.codeTestDiffFirst20Lines',
+    'classification_notes:item.classificationNotes',
   ]) expect(spec).toContain(field)
 })
 
@@ -421,7 +425,7 @@ test('long chat streams are observed through UI and audit before bounded body co
     'const assistantVisibleObserver = assistant.waitFor', bodyObserver,
   )
   const auditTerminal = spec.indexOf(
-    'const audit = await auditObserver.catch', assistantObserver,
+    'let audit = await auditObserver.catch', assistantObserver,
   )
   const bodyConsumption = spec.indexOf(
     '() => sseBodyObserver', auditTerminal,
@@ -436,6 +440,15 @@ test('long chat streams are observed through UI and audit before bounded body co
   expect(spec).toContain(
     'remainingCapabilitySseBodyTimeoutMs(questionDeadline, Date.now())',
   )
+})
+
+test('completed SSE streams reconcile the final stream lifecycle audit', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain('if (sendDiagnostics.doneSeen)')
+  expect(spec).toContain('audit = await pollCapabilityStreamTerminal({')
+  expect(spec).toContain('timeoutMilliseconds:Math.min(10_000, remaining(10_000))')
 })
 
 test('Tamil capability validation uses persisted Markdown for count and script', () => {
@@ -528,6 +541,8 @@ test('R09 reopens the authoritative persisted thread before reporting a UI timeo
   expect(spec).toContain('dom_assistant_request_ids_before_recovery:')
   expect(spec).toContain('dom_assistant_request_ids_at_timeout:')
   expect(spec).toContain('ui_thread_id_at_timeout:timeoutThreadId')
+  expect(spec).toContain('ui_url_at_timeout:safeCurrentUrl')
+  expect(spec).toContain('dom_selector_thread_id:timeoutThreadId')
   expect(spec).toContain('repair_attempted:audit.repair_attempted')
   expect(spec).toContain("assistantLookup = 'thread_reopen'")
   expect(spec).toContain(
@@ -536,6 +551,22 @@ test('R09 reopens the authoritative persisted thread before reporting a UI timeo
   expect(spec).toContain(
     'dom_assistant_request_ids_at_timeout:timeoutRequestIds',
   )
+})
+
+test('all assistant lookup failures capture request, thread, DOM, and URL evidence', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec).toContain(
+    "await recordAssistantLookupFailure('assistant_ui_timeout')",
+  )
+  expect(spec).toContain(
+    "await recordAssistantLookupFailure('assistant_persistence_missing')",
+  )
+  expect(spec).toContain("'.message.assistant[data-request-id]'")
+  expect(spec).toContain('sse_thread_request_id:sseThreadRequestId || null')
+  expect(spec).toContain('done_request_id:doneRequestId || null')
+  expect(spec).toContain('assistant_lookup_diagnostics:assistantLookupDiagnostics')
 })
 
 test('assistant lookup falls back to the authoritative SSE message id', () => {
