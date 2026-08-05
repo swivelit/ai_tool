@@ -119,6 +119,22 @@ describe('production capability isolated code runners', () => {
     expect(result.passed, JSON.stringify(result)).toBe(true)
   }, 25_000)
 
+  it('synthesizes a diff --git header for every file in a model-style patch', async () => {
+    const missingFileHeaders = patchAnswer.replace(/^diff --git .*\n/gmu, '')
+    const extracted = extractUnifiedDiff(missingFileHeaders)!
+    const normalized = normalizeGeneratedUnifiedDiff(extracted)
+
+    expect(normalized).toContain(
+      'diff --git a/src/pricing.js b/src/pricing.js\n--- a/src/pricing.js',
+    )
+    expect(normalized).toContain(
+      'diff --git a/src/orderService.js b/src/orderService.js\n--- a/src/orderService.js',
+    )
+    const result = await testRepositoryPatch(missingFileHeaders)
+    expect(result.accepted, JSON.stringify(result)).toBe(true)
+    expect(result.passed, JSON.stringify(result)).toBe(true)
+  }, 25_000)
+
   it('retains bounded git stderr when strict whitespace rejects a patch', async () => {
     const trailingWhitespace = patchAnswer.replace(
       "+  return subtotalCents - Math.round(subtotalCents * discountPercent / 100)",

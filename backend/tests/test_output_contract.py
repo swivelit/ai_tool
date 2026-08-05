@@ -18,6 +18,7 @@ from app.web_ai.generation.output_contract import (
 )
 from app.web_ai.streaming_policy import select_streaming_policy
 from app.web_ai.generation.repair import build_repair_request
+from app.web_ai.generation.task_requirements import extract_task_requirements
 from app.web_api.chat_service import (
     _cache_compatibility_hash,
     _cache_response,
@@ -428,6 +429,51 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
     assert "word_count_delta=-9" in rendered
     assert "smallest possible edit" in rendered
     assert "whitespace-delimited rule" in rendered
+
+
+@pytest.mark.parametrize(
+    ("prompt", "check", "required_text"),
+    (
+        (
+            "Explain idempotency in payment APIs and include one concrete retry example.",
+            QualityCheck(
+                "task_requirement_example", "failed", "concrete_example_missing",
+            ),
+            "describe an actual repeated request and its idempotent result",
+        ),
+        (
+            "Compare Policy Alpha and Policy Beta retention.",
+            QualityCheck(
+                "task_requirement_comparison", "failed", "named_comparison_missing",
+            ),
+            "Explicitly compare every requested named alternative",
+        ),
+    ),
+)
+def test_repair_prompt_names_the_specific_missing_semantic_element(
+    prompt: str,
+    check: QualityCheck,
+    required_text: str,
+):
+    requirements = extract_task_requirements(prompt)
+    repair = build_repair_request(
+        user_id=1,
+        request_id="semantic-repair",
+        reply_language="en",
+        current_answer="Incomplete draft.",
+        failed_checks=(check,),
+        evidence_pack=None,
+        task_contract=prompt,
+        task_requirements=requirements,
+    )
+    rendered = "\n".join(
+        str(item["content"])
+        for item in repair.request.metadata["provider_messages"]
+    )
+
+    assert "Targeted corrections:" in rendered
+    assert required_text in rendered
+    assert check.check_type in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

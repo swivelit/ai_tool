@@ -81,6 +81,41 @@ def test_explicit_transaction_boundary_pseudocode_is_repairable():
     assert all(check.status == "passed" for check in complete)
 
 
+def test_repository_diff_instruction_requires_a_header_for_every_file():
+    contract = with_repository_task_requirements(
+        extract_task_requirements("Provide a minimal unified diff."),
+        message="Provide a minimal unified diff.",
+        validation_command="npm test",
+        validation_mode="static_only",
+    )
+
+    instruction = contract.prompt_instruction(6000)
+
+    assert "header for every changed file" in instruction
+    assert "diff --git a/<path> b/<path>" in instruction
+
+
+def test_comparison_contract_excludes_a_following_explanation_task():
+    contract = extract_task_requirements(
+        "Using only the attached Word document, compare Policy Alpha and "
+        "Policy Beta retention and explain the legal-hold exception."
+    )
+
+    assert contract.comparison_terms == (
+        "policy", "alpha", "beta", "retention",
+    )
+    checks = validate_task_requirements(
+        "Policy Alpha retains data for 30 days, whereas Policy Beta retention "
+        "is 90 days. A legal hold suspends deletion until release.",
+        contract,
+    )
+    comparison = next(
+        check for check in checks
+        if check.check_type == "task_requirement_comparison"
+    )
+    assert comparison.status == "passed"
+
+
 def test_python_and_browser_share_capability_semantic_fixtures():
     assert TASK_REQUIREMENT_VERSION == "2026-08-03.6"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"

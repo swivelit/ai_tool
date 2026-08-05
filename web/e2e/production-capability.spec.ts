@@ -276,6 +276,13 @@ type QuestionResult = {
   repositoryAttached: boolean
   assistantLookup: 'request_id' | 'message_id' | 'thread_reopen' | 'none'
   assistantRequestIdMatched: boolean | null
+  assistantDomRequestIds: string[]
+  harnessThreadId: string | null
+  sseThreadId: string | null
+  sseThreadRequestId: string | null
+  sseDoneThreadId: string | null
+  sseDoneRequestId: string | null
+  uiActiveThreadId: string | null
   threadId: string | null
   startedAtUtc: string | null
   endedAtUtc: string | null
@@ -1112,6 +1119,9 @@ function skippedResult(
     sseThreadSeen:false, sseDeltaSeen:false, sseDoneSeen:false,
     repositoryAttached:false, assistantLookup:'none',
     assistantRequestIdMatched:null,
+    assistantDomRequestIds:[], harnessThreadId:null, sseThreadId:null,
+    sseThreadRequestId:null, sseDoneThreadId:null, sseDoneRequestId:null,
+    uiActiveThreadId:null,
     startedAtUtc:null, endedAtUtc:null, firstVisibleDeltaMs:null, totalResponseMs:null,
     visibleAnswer:'', rawMarkdown:'', expected:question.expected, answerCharacters:0,
     answerWords:0,
@@ -1298,6 +1308,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     repository_attached: boolean
     assistant_lookup: QuestionResult['assistantLookup']
     assistant_request_id_matched: boolean | null
+    assistant_dom_request_ids: string[]
+    harness_thread_id: string | null
+    sse_thread_id: string | null
+    sse_thread_request_id: string | null
+    sse_done_thread_id: string | null
+    sse_done_request_id: string | null
+    ui_active_thread_id: string | null
     recovery_reason_code?: string
   }> = []
   const assistantLookupDiagnostics: Array<{
@@ -1952,6 +1969,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         && payload.repository_id.length > 0,
       assistantLookup,
       assistantRequestIdMatched,
+      assistantDomRequestIds:[],
+      harnessThreadId:threadId || null,
+      sseThreadId:sseThreadId || null,
+      sseThreadRequestId:sseThreadRequestId || null,
+      sseDoneThreadId:doneThreadId || null,
+      sseDoneRequestId:doneRequestId || null,
+      uiActiveThreadId:null,
       startedAtUtc, endedAtUtc, firstVisibleDeltaMs,
       totalResponseMs:endedAt - startedAt, visibleAnswer:redacted.text,
       rawMarkdown:rawRedacted.text, expected:question.expected,
@@ -2156,6 +2180,10 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       scheduleCheckpoint()
       await checkpointQueue
       const reasonCode = safeHarnessReason(error)
+      const lookupDiagnostic = [...assistantLookupDiagnostics].reverse().find(
+        item => item.scenario_id === activeScenarioId
+          && item.request_id === capturedRequestId,
+      )
       questionFailureDiagnostics.push({
         scenario_id:activeScenarioId,
         reason_code:reasonCode,
@@ -2178,6 +2206,17 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         ),
         assistant_lookup:assistantLookup,
         assistant_request_id_matched:assistantRequestIdMatched,
+        assistant_dom_request_ids:
+          lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? [],
+        harness_thread_id:
+          lookupDiagnostic?.authoritative_thread_id ?? null,
+        sse_thread_id:lookupDiagnostic?.sse_thread_id ?? null,
+        sse_thread_request_id:
+          lookupDiagnostic?.sse_thread_request_id ?? null,
+        sse_done_thread_id:lookupDiagnostic?.done_thread_id ?? null,
+        sse_done_request_id:lookupDiagnostic?.done_request_id ?? null,
+        ui_active_thread_id:
+          lookupDiagnostic?.ui_thread_id_at_timeout ?? null,
         ...(recoveryReason ? { recovery_reason_code:recoveryReason } : {}),
       })
       if (['assistant_persistence_missing', 'assistant_ui_timeout'].includes(
@@ -2208,6 +2247,19 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         )
         failedResult.assistantLookup = assistantLookup
         failedResult.assistantRequestIdMatched = assistantRequestIdMatched
+        failedResult.assistantDomRequestIds =
+          lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? []
+        failedResult.harnessThreadId =
+          lookupDiagnostic?.authoritative_thread_id ?? null
+        failedResult.sseThreadId = lookupDiagnostic?.sse_thread_id ?? null
+        failedResult.sseThreadRequestId =
+          lookupDiagnostic?.sse_thread_request_id ?? null
+        failedResult.sseDoneThreadId =
+          lookupDiagnostic?.done_thread_id ?? null
+        failedResult.sseDoneRequestId =
+          lookupDiagnostic?.done_request_id ?? null
+        failedResult.uiActiveThreadId =
+          lookupDiagnostic?.ui_thread_id_at_timeout ?? null
         if (capturedAudit) {
           failedResult.providerCallCount = capturedAudit.provider_call_count
           failedResult.generationStageCount = capturedAudit.generation_stage_count
@@ -3814,6 +3866,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         repository_attached:item.repositoryAttached,
         assistant_lookup:item.assistantLookup,
         assistant_request_id_matched:item.assistantRequestIdMatched,
+        assistant_dom_request_ids:item.assistantDomRequestIds,
+        harness_thread_id:item.harnessThreadId,
+        sse_thread_id:item.sseThreadId,
+        sse_thread_request_id:item.sseThreadRequestId,
+        sse_done_thread_id:item.sseDoneThreadId,
+        sse_done_request_id:item.sseDoneRequestId,
+        ui_active_thread_id:item.uiActiveThreadId,
         code_test_stderr:item.codeTestStderr,
         code_test_command:item.codeTestCommand,
         code_test_diff_first_20_lines:item.codeTestDiffFirst20Lines,

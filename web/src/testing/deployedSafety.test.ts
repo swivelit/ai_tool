@@ -491,6 +491,14 @@ test('capability failures retain bounded pre-reservation send diagnostics', () =
   expect(spec).toContain(
     'assistant_request_id_matched:item.assistantRequestIdMatched',
   )
+  expect(spec).toContain(
+    'assistant_dom_request_ids:item.assistantDomRequestIds',
+  )
+  expect(spec).toContain('harness_thread_id:item.harnessThreadId')
+  expect(spec).toContain('sse_thread_id:item.sseThreadId')
+  expect(spec).toContain('sse_done_thread_id:item.sseDoneThreadId')
+  expect(spec).toContain('sse_done_request_id:item.sseDoneRequestId')
+  expect(spec).toContain('ui_active_thread_id:item.uiActiveThreadId')
   expect(spec).toContain("safeSendErrorDiagnostics(response.status(), errorBody)")
   expect(spec).toContain("'[REDACTED POTENTIAL SECRET]'")
   const parsed = spec.indexOf(
@@ -567,6 +575,17 @@ test('all assistant lookup failures capture request, thread, DOM, and URL eviden
   expect(spec).toContain('sse_thread_request_id:sseThreadRequestId || null')
   expect(spec).toContain('done_request_id:doneRequestId || null')
   expect(spec).toContain('assistant_lookup_diagnostics:assistantLookupDiagnostics')
+  expect(spec).toContain(
+    'lookupDiagnostic?.dom_assistant_request_ids_at_timeout ?? []',
+  )
+  expect(spec).toContain(
+    'lookupDiagnostic?.authoritative_thread_id ?? null',
+  )
+  expect(spec).toContain('lookupDiagnostic?.sse_thread_id ?? null')
+  expect(spec).toContain('lookupDiagnostic?.done_request_id ?? null')
+  expect(spec).toContain(
+    'lookupDiagnostic?.ui_thread_id_at_timeout ?? null',
+  )
 })
 
 test('assistant lookup falls back to the authoritative SSE message id', () => {

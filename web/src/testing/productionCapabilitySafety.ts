@@ -572,8 +572,29 @@ export function hasAffirmativeWaitAdvice(value: string): boolean {
 }
 
 const REPOSITORY_PATH = /(?<![A-Za-z0-9:/])((?:(?:\.{1,2}\/)?[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,16})(?=$|[\s`'"),.:;\]])/giu
-const REPOSITORY_UNCERTAINTY = /\b(?:can(?:not|'t|’t)\s+(?:verify|determine|confirm|find)|unable\s+to\s+(?:verify|determine|confirm|find)|don(?:'t|’t)\s+have|no\s+access|not\s+available|not\s+(?:provided|stated|found|present)|doesn(?:'t|’t)\s+exist|does\s+not\s+(?:exist|contain|provide)|no\s+such\s+file|no\s+(?:repository\s+)?(?:entry|record|match)|couldn(?:'t|’t)\s+find\s+enough\s+support|insufficient)\b/iu
-const REPOSITORY_AFFIRMATIVE_CLAIM = /\b(?:exists?|is\s+present|logic\s+lives|defines?|implements?|exports?|imports?|contains?|handles?|returns?|used\s+by|imported\s+by)\b/iu
+const REPOSITORY_UNCERTAINTY_VERB = '(?:verify|determine|confirm|find|identify|describe|assess|say|tell|list|answer|establish)'
+const REPOSITORY_UNCERTAINTY = new RegExp(
+  `\\b(?:can(?:not|'t|’t)\\s+(?:(?:honestly|reliably|confidently|accurately)\\s+)?${REPOSITORY_UNCERTAINTY_VERB}`
+  + `|unable\\s+to\\s+(?:(?:honestly|reliably|confidently|accurately)\\s+)?${REPOSITORY_UNCERTAINTY_VERB}`
+  + `|don(?:'t|’t)\\s+have|no\\s+access|not\\s+available`
+  + `|not\\s+(?:provided|stated|found|present)|doesn(?:'t|’t)\\s+exist`
+  + `|does\\s+not\\s+(?:exist|contain|provide)|no\\s+such\\s+file`
+  + `|no\\s+(?:repository\\s+)?(?:entry|record|match)`
+  + `|couldn(?:'t|’t)\\s+find\\s+enough\\s+support|insufficient)\\b`,
+  'iu',
+)
+const REPOSITORY_AFFIRMATIVE_CLAIM = /\b(?:exists?|is\s+present|logic\s+lives|defines?|implements?|exports?|imports?|contains?|handles?|returns?|used\s+by|imported\s+by)\b/giu
+const REPOSITORY_DIRECT_NEGATION = /\b(?:does\s+not|doesn(?:'t|’t)|is\s+not|isn(?:'t|’t)|not|never|cannot|can(?:'t|’t)|unable\s+to)\s+(?:(?:actually|currently|necessarily|appear(?:s)?\s+to)\s+)?$/iu
+
+function hasRepositoryAffirmativeClaim(sentence: string): boolean {
+  for (const match of sentence.matchAll(REPOSITORY_AFFIRMATIVE_CLAIM)) {
+    const prefix = sentence.slice(0, match.index ?? 0)
+    if (REPOSITORY_UNCERTAINTY.test(prefix)) continue
+    if (REPOSITORY_DIRECT_NEGATION.test(prefix.slice(-100))) continue
+    return true
+  }
+  return false
+}
 
 export type RepositoryAbsenceEvaluation = {
   passed: boolean
@@ -594,7 +615,7 @@ export function evaluateRepositoryAbsenceAnswer(
   const cited = new Set<string>()
   for (const sentence of sentences) {
     const uncertain = REPOSITORY_UNCERTAINTY.test(sentence)
-    if (REPOSITORY_AFFIRMATIVE_CLAIM.test(sentence) && !uncertain) {
+    if (hasRepositoryAffirmativeClaim(sentence) && !uncertain) {
       affirmativeClaimPresent = true
     }
     for (const match of sentence.matchAll(REPOSITORY_PATH)) {

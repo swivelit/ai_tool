@@ -166,7 +166,16 @@ export function extractUnifiedDiff(markdown: string): string | null {
 }
 
 export function normalizeGeneratedUnifiedDiff(diff: string): string {
-  const lines = String(diff).replace(/\r\n?/g, '\n').split('\n')
+  const sourceLines = String(diff).replace(/\r\n?/g, '\n').split('\n')
+  const lines: string[] = []
+  for (const line of sourceLines) {
+    const oldPath = line.match(/^--- a\/([^\t\r\n ]+)\s*$/)
+    if (oldPath && !/^diff --git /u.test(lines.at(-1) ?? '')) {
+      while (lines.at(-1) === '') lines.pop()
+      lines.push(`diff --git a/${oldPath[1]} b/${oldPath[1]}`)
+    }
+    lines.push(line)
+  }
   let inHunk = false
   return lines.map((line, index) => {
     if (/^diff --git |^--- |^\+\+\+ /.test(line)) {

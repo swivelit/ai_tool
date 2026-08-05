@@ -4236,6 +4236,8 @@ def execute_web_turn(
     streamed_by_provider = False
     phase3_prices: list[tuple[str, PriceResult, int, int]] = []
     prepared.phase3_stage_prices = phase3_prices
+    finalize_stage = "pre_provider"
+    completed_provider_response: AIProviderResponse | None = None
     try:
         if _generation_cancellation_requested(prepared):
             raise GenerationCancelled()
@@ -4342,7 +4344,7 @@ def execute_web_turn(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
                 nonlocal streamed_by_provider, guard_context, fence_autoclosed
-                nonlocal latest_generated_response
+                nonlocal latest_generated_response, completed_provider_response
                 nonlocal finalize_stage
                 _phase3_stage(
                     prepared,
@@ -4507,6 +4509,7 @@ def execute_web_turn(
                         draft.raw.get("reasoning_effort") or ""
                     ),
                 )
+                completed_provider_response = draft
                 finalize_stage = "provider_usage_accounted"
                 finalize_stage = "provider_completion_metadata"
                 guard_context = replace(
@@ -4929,6 +4932,7 @@ def execute_web_turn(
             ) -> AIProviderResponse | None:
                 nonlocal guard_context, repair_reserved_total, repair_reasoning_total
                 nonlocal fence_autoclosed, latest_generated_response
+                nonlocal completed_provider_response
                 nonlocal repair_trigger_area_identifiers
                 if architecture_area_ids and attempt_number == 1:
                     repair_trigger_area_identifiers = (
@@ -5083,6 +5087,7 @@ def execute_web_turn(
                     model_name=repaired.model or "",
                     attempt_number=attempt_number,
                 )
+                completed_provider_response = repaired
                 guard_context = replace(
                     guard_context,
                     provider_completion=ProviderCompletion.from_raw(
@@ -5564,6 +5569,68 @@ def execute_web_turn(
     except asyncio.CancelledError:
         _release_pre_provider_cancellation(prepared)
         raise
+    except Exception as exc:
+        if _generation_cancellation_requested(prepared):
+            _release_pre_provider_cancellation(prepared)
+            raise
+        logger.exception(
+            "web_chat_generation_stage_failed",
+            extra={
+                "event": "web_chat_generation_stage_failed",
+                "request_id": prepared.request_id,
+                "exception_class": type(exc).__name__[:80],
+                "finalize_stage": finalize_stage,
+            },
+        )
+        if completed_provider_response is not None:
+            # A completed and accounted provider answer must survive a later
+            # validation, formatting, or telemetry failure. Preserve its bytes
+            # and downgrade only the quality metadata.
+            response = completed_provider_response
+            prepared.answer_quality = AnswerQualityResult(
+                status="unverified",
+                checks=(QualityCheck(
+                    "answer_finalization", "error", "answer_finalize_error",
+                ),),
+                retrieval_status=(
+                    prepared.retrieval_context.retrieval_status
+                    if prepared.retrieval_context is not None else ""
+                ),
+                repository_validation_mode=(
+                    prepared.answer_quality.repository_validation_mode
+                    if prepared.answer_quality is not None else None
+                ),
+            )
+            if on_delta and not streamed_by_provider:
+                try:
+                    on_delta(response.text)
+                except Exception as delta_exc:
+                    logger.warning(
+                        "answer_finalize_degraded",
+                        extra={
+                            "event": "answer_finalize_degraded",
+                            "request_id": prepared.request_id,
+                            "error_class": type(delta_exc).__name__[:80],
+                            "finalize_stage": "outer_degraded_delta_emission",
+                        },
+                    )
+        else:
+            with SessionLocal() as session:
+                if prepared.billing_exempt:
+                    release_billing_exempt_usage(session, prepared.request_id)
+                else:
+                    release_usage_reservation(session, prepared.request_id)
+                user_message = session.exec(select(WebChatMessage).where(
+                    WebChatMessage.user_id == prepared.user_id,
+                    WebChatMessage.request_id == prepared.request_id,
+                    WebChatMessage.role == "user",
+                )).first()
+                if user_message:
+                    user_message.status = "retryable"
+                    session.add(user_message)
+                _release_continuation_claim(session, prepared)
+                session.commit()
+            raise
     except BaseException:
         if _generation_cancellation_requested(prepared):
             _release_pre_provider_cancellation(prepared)

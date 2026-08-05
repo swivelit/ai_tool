@@ -704,9 +704,10 @@ class TaskRequirementContract:
             )
         if self.repository_unified_diff_required:
             rules.append(
-                "Return a syntactically intact unified diff with `---` and `+++` "
-                "file headers and at least one `@@` hunk; do not replace the diff "
-                "with prose or partial snippets."
+                "Return a syntactically intact unified diff. Emit a `diff --git "
+                "a/<path> b/<path>` header for every changed file, followed by "
+                "that file's `---` and `+++` headers and at least one `@@` hunk; "
+                "do not replace the diff with prose or partial snippets."
             )
         if self.repository_validation_command:
             rules.append(
@@ -835,8 +836,14 @@ def extract_task_requirements(message: str) -> TaskRequirementContract:
         text, re.IGNORECASE,
     )
     if comparison:
+        right_side = re.split(
+            r"\s+and\s+(?:explain|describe|identify|state|answer|include)\b",
+            comparison.group(2),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
         comparison_terms = _terms(
-            comparison.group(1) + " " + comparison.group(2), 12
+            comparison.group(1) + " " + right_side, 12
         )
 
     explicit_subquestions = len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*+])\s+[^\n?]+\?\s*$", text))

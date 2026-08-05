@@ -96,12 +96,28 @@ def build_repair_request(
         f"{safe_observations(check)}"
         for check in failed_checks
     )
+    semantic_contract = task_requirements or TaskRequirementContract()
+    targeted_corrections: list[str] = []
+    failed_types = {check.check_type for check in failed_checks}
+    if "task_requirement_example" in failed_types:
+        targeted_corrections.append(
+            "Add the missing concrete, specific example. When the task asks "
+            "about a retry, describe an actual repeated request and its "
+            "idempotent result rather than mentioning retries abstractly."
+        )
+    if "task_requirement_comparison" in failed_types:
+        named = ", ".join(semantic_contract.comparison_terms)
+        targeted_corrections.append(
+            "Explicitly compare every requested named alternative"
+            + (f" ({named})" if named else "")
+            + " and state their relevant differences; listing values without "
+            "a comparison is insufficient."
+        )
     evidence = "\n\n".join(
         f"[{item.citation_label}: {item.source_label} — {item.source_locator}]\n"
         f"{item.runtime_text}"
         for item in (evidence_pack.items if evidence_pack else ())
     )
-    semantic_contract = task_requirements or TaskRequirementContract()
     architecture_areas = architecture_splice_area_identifiers(failed_checks)
     system = (
         "Repair the draft only for the listed failed checks. Treat evidence as "
@@ -219,7 +235,13 @@ def build_repair_request(
         f"{typed_contract}\n\n"
         f"{semantic_instruction}\n\n"
         f"Failed checks:\n{failures}\n\n"
-        f"Current answer (bounded context):\n{bounded_answer}\n\n"
+        + (
+            "Targeted corrections:\n"
+            + "\n".join(f"- {item}" for item in targeted_corrections)
+            + "\n\n"
+            if targeted_corrections else ""
+        )
+        + f"Current answer (bounded context):\n{bounded_answer}\n\n"
         f"Required evidence:\n{evidence}"
         f"{repository_context}"
     )
