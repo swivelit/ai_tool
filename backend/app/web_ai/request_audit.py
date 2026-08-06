@@ -376,6 +376,7 @@ def build_request_audit(
         turn_lifecycle_reason: str | None = None
         generation_output_tokens = 0
         generation_reasoning_tokens = 0
+        repair_reasoning_tokens = 0
         message_statuses: list[str] = []
         for role, status, tier, metadata_json, _created_at in message_rows:
             message_statuses.append(str(status or ""))
@@ -635,6 +636,10 @@ def build_request_audit(
                 generation_reasoning_tokens += _bounded_count(
                     stage_metadata.get("reasoning_token_count")
                 )
+            elif str(stage_row[0]) == "repair":
+                repair_reasoning_tokens += _bounded_count(
+                    stage_metadata.get("reasoning_token_count")
+                )
             candidate_reasoning = str(
                 stage_metadata.get("reasoning_effort") or ""
             )
@@ -866,6 +871,9 @@ def build_request_audit(
             "generation_visible_output_tokens": min(
                 _COUNT_MAX,
                 max(0, generation_output_tokens - generation_reasoning_tokens),
+            ),
+            "repair_reasoning_tokens": min(
+                _COUNT_MAX, repair_reasoning_tokens
             ),
             "phase2_fallback_reason_code": phase2_fallback_reason_code,
             "cancellation_state": cancellation_state,

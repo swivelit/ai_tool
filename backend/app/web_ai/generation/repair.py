@@ -197,6 +197,15 @@ def build_repair_request(
             "and what invariant or result is asserted; a heading or generic promise "
             "to test is insufficient."
         )
+    if "task_architecture_out_of_order_handling" in failed_types:
+        targeted_corrections.append(
+            "Replace the out-of-order-handling section with a concrete state "
+            "ordering mechanism: compare the incoming event's state or sequence "
+            "with the authoritative stored state, apply only valid forward "
+            "transitions, and explicitly defer sequence gaps or discard and "
+            "acknowledge stale or older events. A heading or a statement that "
+            "events may arrive out of order is insufficient."
+        )
     if "task_requirement_comparison" in failed_types:
         named = ", ".join(semantic_contract.comparison_terms)
         targeted_corrections.append(

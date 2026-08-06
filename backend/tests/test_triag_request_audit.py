@@ -83,6 +83,7 @@ EXPECTED_RESULT_KEYS = {
     "generation_output_tokens",
     "generation_reasoning_tokens",
     "generation_visible_output_tokens",
+    "repair_reasoning_tokens",
     "phase2_fallback_reason_code",
     "cancellation_state",
     "cancellation_failure_origin",
@@ -348,6 +349,7 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "generation_output_tokens": 20,
         "generation_reasoning_tokens": 5,
         "generation_visible_output_tokens": 15,
+        "repair_reasoning_tokens": 0,
         "phase2_fallback_reason_code": None,
         "cancellation_state": "complete",
         "cancellation_failure_origin": "none",
@@ -389,6 +391,7 @@ def test_request_audit_reports_repair_reasoning_effort(client, monkeypatch):
     result = response.json()["results"][0]
     assert result["reasoning_effort"] == "medium"
     assert result["repair_reasoning_effort"] == "low"
+    assert result["repair_reasoning_tokens"] == 2
     assert result["repair_stage_count"] == 1
 
     rendered = response.text

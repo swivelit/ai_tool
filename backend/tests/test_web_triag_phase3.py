@@ -1088,6 +1088,76 @@ Include:
     assert "### 1. Database tables" not in rendered
 
 
+def test_out_of_order_repair_names_the_required_state_ordering_mechanism():
+    prompt = """Design an idempotent webhook architecture.
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    answer = """### 1. Database tables and unique constraints
+Use an events table with a unique provider event ID.
+### 2. Transaction boundaries
+Use one atomic transaction and commit together.
+### 3. Event and payment state transitions
+Use monotonic state transitions.
+### 4. Pseudocode
+The worker begins, inserts, and commits.
+### 5. Duplicate-event handling
+INSERT ON CONFLICT DO NOTHING prevents a second credit.
+### 6. Out-of-order handling
+Events may arrive in a different order.
+### 7. Failure recovery
+Retry pending events after a crash.
+### 8. Reconciliation
+Run a reconciliation consistency check.
+### 9. Security checks
+Verify the HMAC signature.
+### 10. A focused test plan
+Test duplicate, concurrent, crash, refund, and replay scenarios."""
+    check = QualityCheck(
+        "task_architecture_out_of_order_handling",
+        "failed",
+        "architecture_section_missing",
+        observations=(
+            ("area_identifier", "out_of_order_handling"),
+            ("heading_present", 1),
+            ("semantic_mechanism_present", 0),
+            ("stable_side_effect_outcome_present", 0),
+        ),
+    )
+
+    contract = build_repair_request(
+        user_id=1,
+        request_id="targeted-out-of-order-repair",
+        reply_language="en",
+        current_answer=answer,
+        failed_checks=(check,),
+        evidence_pack=None,
+        task_contract=prompt,
+        task_requirements=extract_task_requirements(prompt),
+        answer_class="long_form",
+        max_output_tokens=1600,
+    )
+    rendered = "\n".join(
+        str(item["content"])
+        for item in contract.request.metadata["provider_messages"]
+    )
+
+    assert contract.architecture_splice_areas == ("out_of_order_handling",)
+    assert "compare the incoming event's state or sequence" in rendered
+    assert "apply only valid forward transitions" in rendered
+    assert "defer sequence gaps or discard" in rendered
+    assert "### 6. Out-of-order handling" in rendered
+    assert "### 5. Duplicate-event handling" not in rendered
+
+
 def test_incomplete_architecture_gets_one_targeted_duplicate_repair(monkeypatch):
     prompt = """Design an idempotent webhook architecture.
 Constraints:

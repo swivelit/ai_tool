@@ -237,6 +237,7 @@ type Audit = {
   generation_output_tokens: number
   generation_reasoning_tokens: number
   generation_visible_output_tokens: number
+  repair_reasoning_tokens: number
   cancellation_state: string
   cancellation_failure_origin: string
   cancellation_failure_count: number
@@ -343,6 +344,7 @@ type QuestionResult = {
   generationOutputTokens: number
   generationReasoningTokens: number
   generationVisibleOutputTokens: number
+  repairReasoningTokens: number
   sourceKindCounts: Record<string, number>
   visibleSources: Array<{ id: string; label: string; locator: string }>
   invalidCitation: boolean
@@ -1173,7 +1175,7 @@ function skippedResult(
     reasoningBudgetCapTokens:0, reasoningStarvedRetry:false,
     turnLifecycleStage:null, turnLifecycleEvents:[], turnLifecycleReason:null,
     generationOutputTokens:0, generationReasoningTokens:0,
-    generationVisibleOutputTokens:0,
+    generationVisibleOutputTokens:0, repairReasoningTokens:0,
     visibleSources:[], answerCheckStatusCounts:{}, providerCallCount:0,
     invalidCitation:false,
     usageStageCount:0, usageStageStatusCounts:{}, activeUsageStageNames:[],
@@ -2085,6 +2087,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       generationOutputTokens:audit.generation_output_tokens,
       generationReasoningTokens:audit.generation_reasoning_tokens,
       generationVisibleOutputTokens:audit.generation_visible_output_tokens,
+      repairReasoningTokens:audit.repair_reasoning_tokens,
       visibleSources:sources, invalidCitation,
       answerCheckStatusCounts:audit.answer_check_status_counts,
       providerCallCount:audit.provider_call_count, usageStageCount:audit.usage_stage_row_count,
@@ -2372,6 +2375,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           failedResult.generationOutputTokens = capturedAudit.generation_output_tokens
           failedResult.generationReasoningTokens = capturedAudit.generation_reasoning_tokens
           failedResult.generationVisibleOutputTokens = capturedAudit.generation_visible_output_tokens
+          failedResult.repairReasoningTokens = capturedAudit.repair_reasoning_tokens
         }
         results.push(failedResult)
         return failedResult
@@ -3930,6 +3934,15 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       chat_debit_micros:debit.chat,
       voice_debit_micros:debit.voice,
       observed_authoritative_charges:budget.snapshot(),
+      repair_turn_count:Math.min(
+        10_000, results.filter(item => item.repairAttempted).length,
+      ),
+      repair_reasoning_tokens_total:Math.min(
+        100_000_000,
+        results.reduce((total, item) => (
+          total + Math.max(0, item.repairReasoningTokens)
+        ), 0),
+      ),
       cleanup:{ status:finalCleanupErrors.length ? 'incomplete' : 'complete', reason_codes:[...finalCleanupErrors] },
       scenarios:results.map(item => ({
         scenario_id:item.scenarioId, question_id:item.questionId, status:item.status,
@@ -3989,6 +4002,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         generation_output_tokens:item.generationOutputTokens,
         generation_reasoning_tokens:item.generationReasoningTokens,
         generation_visible_output_tokens:item.generationVisibleOutputTokens,
+        repair_reasoning_tokens:item.repairReasoningTokens,
         effective_max_output_tokens:item.effectiveMaxOutputTokens,
         visible_output_reserve_tokens:item.visibleOutputReserveTokens,
         reasoning_budget_cap_tokens:item.reasoningBudgetCapTokens,

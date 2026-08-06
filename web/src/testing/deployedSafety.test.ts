@@ -401,6 +401,7 @@ test('production capability safe summary includes content-free completion diagno
     'generation_output_tokens:item.generationOutputTokens',
     'generation_reasoning_tokens:item.generationReasoningTokens',
     'generation_visible_output_tokens:item.generationVisibleOutputTokens',
+    'repair_reasoning_tokens:item.repairReasoningTokens',
     'persisted_quality_status:item.persistedQualityStatus',
     'sse_quality_status:item.sseQualityStatus',
     'definition_present:item.semanticEvaluation.definitionPresent',
@@ -415,6 +416,8 @@ test('production capability safe summary includes content-free completion diagno
     'code_test_diff_first_20_lines:item.codeTestDiffFirst20Lines',
     'classification_notes:item.classificationNotes',
   ]) expect(spec).toContain(field)
+  expect(spec).toContain('repair_turn_count:Math.min(')
+  expect(spec).toContain('repair_reasoning_tokens_total:Math.min(')
 })
 
 test('long chat streams are observed through UI and audit before bounded body consumption', () => {
