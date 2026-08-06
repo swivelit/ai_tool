@@ -277,6 +277,15 @@ def test_contract_is_in_frozen_provider_prompt_and_requires_buffering():
         max_buffer_characters=200_000,
     )
     assert ordinary.mode == "direct"
+    contextual_requirement = select_streaming_policy(
+        answer_guard_enabled=True,
+        verified_streaming_enabled=False,
+        has_evidence=False,
+        answer_class="normal",
+        max_buffer_characters=200_000,
+        task_requirements_required=True,
+    )
+    assert contextual_requirement.mode == "verified_buffered"
 
 
 def test_metadata_parser_rejects_untyped_values():
@@ -438,8 +447,13 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
             "Explain idempotency in payment APIs and include one concrete retry example.",
             QualityCheck(
                 "task_requirement_example", "failed", "concrete_example_missing",
+                observations=(
+                    ("definition_present", 1),
+                    ("concrete_retry_example_present", 0),
+                    ("stable_outcome_present", 1),
+                ),
             ),
-            "describe an actual repeated request and its idempotent result",
+            "Include a concrete retry example showing the retry in action",
         ),
         (
             "Compare Policy Alpha and Policy Beta retention.",
@@ -474,6 +488,9 @@ def test_repair_prompt_names_the_specific_missing_semantic_element(
     assert "Targeted corrections:" in rendered
     assert required_text in rendered
     assert check.check_type in rendered
+    assert "Current answer (bounded context):\nIncomplete draft." in rendered
+    if check.check_type == "task_requirement_example":
+        assert "concrete_retry_example_present=0" in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

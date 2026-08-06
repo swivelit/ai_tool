@@ -105,6 +105,31 @@ _STOP_WORDS = frozenset(
     }
 )
 
+_LEXICAL_OVERLAP_STOP_WORDS = frozenset(
+    {"likely", "most", "first", "change", "best", "next", "issue", "problem"}
+)
+
+_GENERIC_SUBJECT_TERMS = frozenset({
+    "approach", "best", "change", "failure", "first", "fix", "issue",
+    "likely", "mode", "most", "next", "option", "problem", "solution",
+    "step", "system", "thing", "way",
+})
+
+_UNBOUND_SUBJECT_RE = re.compile(
+    r"\b(?:the\s+)?(?:most\s+likely|best|first|next)\s+"
+    r"(?:failure\s+mode|approach|change|step|option|solution|fix|action|way)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?best\s+approach\b|"
+    r"\bwhat\s+should\s+(?:i|we|you)\s+(?:change|do|fix|try)\s+"
+    r"(?:first|next)\b",
+    re.IGNORECASE,
+)
+
+_NAMED_IMPLEMENTATION_SUBJECT_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9.+#-]{2,}\b|"
+    r"\b[A-Za-z0-9_-]+\.(?:py|js|jsx|ts|tsx|java|go|rs|sql|json|ya?ml)\b|"
+    r"(?:^|\s)(?:/[A-Za-z0-9_.-]+)+",
+)
+
 
 def normalize_same_thread_context_mode(value: str | None) -> SameThreadContextMode:
     normalized = str(value or "explicit_only").strip().lower()
@@ -150,11 +175,21 @@ def decide_same_thread_continuity(
         )
 
     current_terms = _meaningful_tokens(text)
+    # A named standalone subject wins before lexical overlap. Otherwise a new
+    # question can accidentally inherit history merely because both turns use
+    # a common word such as "change" or "problem".
+    if _has_clear_standalone_subject(text, current_terms):
+        return _decision(selected_mode, False, "clear_standalone_subject", 0.92, 0)
+
     history_terms: set[str] = set()
     for turn in recent_turns[-2:]:
         history_terms.update(_meaningful_tokens(turn.get("user") or ""))
         history_terms.update(_meaningful_tokens(turn.get("assistant") or ""))
-    overlap = current_terms & history_terms
+    overlap = (
+        current_terms - _LEXICAL_OVERLAP_STOP_WORDS
+    ) & (
+        history_terms - _LEXICAL_OVERLAP_STOP_WORDS
+    )
     if overlap:
         return _decision(
             selected_mode, True, "lexical_topic_overlap", _overlap_confidence(overlap),
@@ -165,9 +200,6 @@ def decide_same_thread_continuity(
         return _decision(
             selected_mode, True, "missing_application_subject", 0.74, 1
         )
-
-    if _has_clear_standalone_subject(text, current_terms):
-        return _decision(selected_mode, False, "clear_standalone_subject", 0.92, 0)
 
     word_count = len(_unicode_tokens(text))
     if word_count <= 14 or len(current_terms) <= 2:
@@ -213,15 +245,28 @@ def _overlap_confidence(overlap: set[str]) -> float:
 
 
 def _has_clear_standalone_subject(text: str, terms: set[str]) -> bool:
+    concrete_terms = terms - _GENERIC_SUBJECT_TERMS
+    if _UNBOUND_SUBJECT_RE.search(text) and not concrete_terms:
+        return False
     match = _STANDALONE_RE.match(text)
-    if match and len(_meaningful_tokens(match.group(1))) >= 1:
+    if match and (
+        _meaningful_tokens(match.group(1)) - _GENERIC_SUBJECT_TERMS
+    ):
         return True
     how_match = _HOW_STANDALONE_RE.match(text)
-    if how_match and len(_meaningful_tokens(how_match.group(1))) >= 2:
+    if how_match and _IMPLEMENTATION_FOLLOWUP_RE.match(text):
+        return bool(_NAMED_IMPLEMENTATION_SUBJECT_RE.search(how_match.group(1)))
+    if how_match and len(
+        _meaningful_tokens(how_match.group(1)) - _GENERIC_SUBJECT_TERMS
+    ) >= 2:
         return True
     # Longer questions/statements with several concrete terms are sufficiently
     # specified to stand alone even when they do not use a canned opening.
-    return len(_unicode_tokens(text)) >= 10 and len(terms) >= 4
+    return bool(
+        len(_unicode_tokens(text)) >= 10
+        and len(terms) >= 4
+        and concrete_terms
+    )
 
 
 def _unicode_tokens(text: str) -> list[str]:

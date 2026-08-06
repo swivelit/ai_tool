@@ -508,6 +508,7 @@ class TaskRequirementContract:
     pseudocode_required: bool = False
     contextual_stack_terms: tuple[str, ...] = ()
     contextual_anchor_terms: tuple[str, ...] = ()
+    prior_context_reask_forbidden: bool = False
     duplicate_retry_fix_required: bool = False
     repository_unified_diff_required: bool = False
     repository_patch_context_required: bool = False
@@ -533,6 +534,7 @@ class TaskRequirementContract:
             or self.pseudocode_required
             or self.contextual_stack_terms
             or self.contextual_anchor_terms
+            or self.prior_context_reask_forbidden
             or self.duplicate_retry_fix_required
             or self.repository_unified_diff_required
             or self.repository_patch_context_required
@@ -618,6 +620,9 @@ class TaskRequirementContract:
             ) if isinstance(
                 value.get("contextual_anchor_terms"), (list, tuple)
             ) else (),
+            prior_context_reask_forbidden=(
+                value.get("prior_context_reask_forbidden") is True
+            ),
             duplicate_retry_fix_required=(
                 value.get("duplicate_retry_fix_required") is True
             ),
@@ -739,6 +744,12 @@ class TaskRequirementContract:
                 "Ground the answer in the prior-turn problem and explicitly name "
                 "at least one relevant context anchor: "
                 + ", ".join(self.contextual_anchor_terms) + "."
+            )
+        if self.prior_context_reask_forbidden:
+            rules.append(
+                "Use the attached same-thread turns as available context. Do not "
+                "ask the user to repeat the system, stack, or problem details "
+                "already supplied there."
             )
         if self.duplicate_retry_fix_required:
             rules.append(
@@ -966,13 +977,17 @@ def with_contextual_task_requirements(
         for turn in context_turns
         if str(turn.get("user") or "").strip()
     )[-8_000:]
+    contextual_contract = replace(
+        contract,
+        prior_context_reask_forbidden=bool(prior_user_text),
+    )
     current = str(message or "")
     referential = bool(re.search(
         r"\b(?:that|those|the fix|the approach|failure mode|change first)\b",
         current, re.IGNORECASE,
     ))
     if not referential or not prior_user_text:
-        return contract
+        return contextual_contract
     stack_terms = _context_stack_terms(prior_user_text)
     anchors = tuple(
         term for term in _terms(prior_user_text, 40)
@@ -995,7 +1010,7 @@ def with_contextual_task_requirements(
                       current, re.IGNORECASE)
     )
     return replace(
-        contract,
+        contextual_contract,
         # A transaction-boundary follow-up must stay attached to the prior
         # reservation problem, but it need not gratuitously repeat every stack
         # component. The failure-mode/edit-branch question does require the
@@ -1540,6 +1555,27 @@ def validate_task_requirements(
                 ("context_anchor_count", len(contract.contextual_anchor_terms)),
                 ("context_anchor_present_count", anchor_present_count),
             ),
+        ))
+    if contract.prior_context_reask_forbidden:
+        context_reask_detected = bool(re.search(
+            r"(?im)(?:^|[.!?]\s+)"
+            r"(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
+            r"(?:share|provide|send|describe|specify|tell\s+me|give\s+me)\b"
+            r"[^.!?]{0,120}\b(?:system|stack|technolog\w*|framework|database|"
+            r"symptoms?|recent\s+changes?|errors?|logs?|problem|issue|details?|"
+            r"context|information)\b|"
+            r"(?:^|[.!?]\s+)(?:i|we)\s+(?:will|'ll|would)?\s*need\b"
+            r"[^.!?]{0,60}\b(?:information|details|context)\b",
+            value,
+        ))
+        checks.append(QualityCheck(
+            "task_requirement_prior_context_reask",
+            "failed" if context_reask_detected else "passed",
+            "prior_context_reasked" if context_reask_detected else "",
+            observations=((
+                "prior_context_reask_detected",
+                int(context_reask_detected),
+            ),),
         ))
     if contract.duplicate_retry_fix_required:
         failure_mode_present = bool(re.search(

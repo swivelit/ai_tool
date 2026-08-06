@@ -4351,6 +4351,7 @@ def execute_web_turn(
                     phase3_settings.verified_buffer_max_characters
                 ),
                 output_contract_required=output_contract.required,
+                task_requirements_required=task_requirements.required,
             )
             prepared.streaming_mode = stream_policy.mode
             guard_context = AnswerGuardContext(

@@ -23,8 +23,8 @@ from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 from app.web_ai.generation.output_format import fenced_code_quality_check
 from app.web_ai.generation.repair import build_repair_request
 from app.web_ai.generation.task_requirements import (
-    evaluate_architecture_coverage, extract_task_requirements,
-    splice_architecture_section_repair,
+    TaskRequirementContract, evaluate_architecture_coverage,
+    extract_task_requirements, splice_architecture_section_repair,
 )
 from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_quality
 from app.web_ai.request_audit import build_request_audit
@@ -674,6 +674,94 @@ def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
             session, request_ids=["contract-semantic-b01-request"]
         )[0]
     assert audit["task_requirement_check_status_counts"] == {"passed": 3}
+
+
+def test_adaptive_context_reask_gets_one_bounded_repair(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
+    monkeypatch.setattr(
+        "app.web_api.chat_service._cache_response",
+        lambda *args, **kwargs: None,
+    )
+    user = create_test_user(
+        "context-reask-repair", "context-reask-repair@example.com",
+    )
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Inventory")
+        session.add(thread)
+        session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="user",
+            content=(
+                "I am building an inventory API with FastAPI, PostgreSQL, and "
+                "Redis. The stock-reservation endpoint occasionally applies "
+                "the same reservation twice after a client retry."
+            ),
+            request_id="context-reask-prior-turn",
+            swico_tier="standard",
+            status="complete",
+        ))
+        session.add(WebChatMessage(
+            thread_id=thread.id,
+            user_id=int(user.id),
+            role="assistant",
+            content="I will keep those details in this thread.",
+            request_id="context-reask-prior-turn",
+            swico_tier="standard",
+            status="complete",
+        ))
+        session.commit()
+        thread_id = thread.id
+
+    answers = [
+        "Please share the system, symptoms, recent changes, error messages/logs, "
+        "and what you already tried.",
+        "In the FastAPI, PostgreSQL, and Redis inventory flow, the failure is a "
+        "duplicate retry without idempotency. First add a UNIQUE idempotency key "
+        "and commit its deduplication row and stock reservation atomically in one "
+        "transaction.",
+    ]
+    captured_requests = []
+
+    class Provider:
+        def complete(self, request, _route):
+            captured_requests.append(request)
+            return _response(answers[len(captured_requests) - 1])
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="What is the most likely failure mode, and what should I change first?",
+        request_id="context-reask-current-request",
+        thread_id=thread_id,
+        reply_language="en",
+        billing_exempt=True,
+    )
+    requirements = TaskRequirementContract.from_metadata(
+        prepared.ai_request.metadata["task_requirements"]
+    )
+    assert prepared.continuity_decision is not None
+    assert prepared.continuity_decision.use_context is True
+    assert requirements.prior_context_reask_forbidden is True
+    assert requirements.duplicate_retry_fix_required is True
+    prepared.triag_settings = TriagSettings(
+        enabled=True,
+        shadow_mode=False,
+        answer_guard_enabled=True,
+        verified_streaming_enabled=True,
+        answer_repair_enabled=True,
+    )
+    completed = execute_web_turn(
+        prepared, providers={prepared.route.provider: Provider()},
+    )
+    assert len(captured_requests) == 2
+    assert completed.message.quality["status"] == "verified"
+    repair_prompt = "\n".join(
+        str(item["content"])
+        for item in captured_requests[1].metadata["provider_messages"]
+    )
+    assert "Do not ask the user to repeat" in repair_prompt
 
 
 def test_complete_markdown_architecture_deliverables_need_no_repair(monkeypatch):

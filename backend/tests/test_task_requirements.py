@@ -461,6 +461,19 @@ def test_contextual_failure_fix_and_edited_stack_are_mandatory():
     assert contract.contextual_stack_terms == (
         "FastAPI", "PostgreSQL", "Redis",
     )
+    assert contract.prior_context_reask_forbidden is True
+    repeated_request = validate_task_requirements(
+        "Please share the system, symptoms, recent changes, error messages/logs, "
+        "and what you already tried.",
+        contract,
+    )
+    reask = next(
+        check for check in repeated_request
+        if check.check_type == "task_requirement_prior_context_reask"
+    )
+    assert reask.status == "failed"
+    assert reask.reason_code == "prior_context_reasked"
+    assert dict(reask.observations)["prior_context_reask_detected"] == 1
     thin = validate_task_requirements(
         "This is probably a retry issue. Add an idempotency key.", contract,
     )

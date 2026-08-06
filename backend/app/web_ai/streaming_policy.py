@@ -25,11 +25,13 @@ def select_streaming_policy(
     answer_class: str,
     max_buffer_characters: int,
     output_contract_required: bool = False,
+    task_requirements_required: bool = False,
 ) -> StreamingPolicy:
     needs_buffering = bool(
         answer_guard_enabled
         and (
             output_contract_required
+            or task_requirements_required
             or (
                 verified_streaming_enabled
                 and (

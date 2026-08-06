@@ -130,6 +130,7 @@ def build_repair_request(
             "checked_patch_hunk_count", "invalid_patch_hunk_count",
             "context_stack_term_count", "context_stack_term_present_count",
             "context_anchor_count", "context_anchor_present_count",
+            "prior_context_reask_detected",
             "failure_mode_present", "first_change_present",
             "transactional_fix_present",
         }
@@ -158,9 +159,11 @@ def build_repair_request(
     failed_types = {check.check_type for check in failed_checks}
     if "task_requirement_example" in failed_types:
         targeted_corrections.append(
-            "Add the missing concrete, specific example. When the task asks "
-            "about a retry, describe an actual repeated request and its "
-            "idempotent result rather than mentioning retries abstractly."
+            "Include a concrete retry example showing the retry in action: "
+            "identify the request that is repeated and the stable result of that "
+            "repeat. Do not merely mention retries abstractly. Preserve every "
+            "already-passing requirement; when an exact bullet count applies, "
+            "repair an existing bullet instead of adding another one."
         )
     if "task_requirement_comparison" in failed_types:
         named = ", ".join(semantic_contract.comparison_terms)
@@ -174,6 +177,11 @@ def build_repair_request(
         targeted_corrections.append(
             "Restore the current prior-turn context and edited branch exactly; "
             "do not substitute technologies or details from a superseded branch."
+        )
+    if "task_requirement_prior_context_reask" in failed_types:
+        targeted_corrections.append(
+            "Answer from the supplied prior turns. Do not ask the user to repeat "
+            "the system, stack, or problem details already present there."
         )
     if "task_requirement_duplicate_retry_fix" in failed_types:
         targeted_corrections.append(

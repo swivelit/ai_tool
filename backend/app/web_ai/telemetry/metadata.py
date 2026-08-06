@@ -88,6 +88,7 @@ _ALLOWED_KEYS = frozenset(
         "context_stack_term_present_count",
         "context_anchor_count",
         "context_anchor_present_count",
+        "prior_context_reask_detected",
         "failure_mode_present",
         "first_change_present",
         "transactional_fix_present",

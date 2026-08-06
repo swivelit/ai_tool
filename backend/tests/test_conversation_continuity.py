@@ -53,21 +53,72 @@ def test_adaptive_tamil_and_tanglish_followups_use_context(message):
     assert decide_same_thread_continuity(message, HISTORY, mode="adaptive").use_context
 
 
+def test_named_standalone_subject_wins_before_lexical_overlap():
+    previous = [{
+        "user": "Explain FastAPI dependency injection.",
+        "assistant": "FastAPI resolves dependencies per request.",
+    }]
+    decision = decide_same_thread_continuity(
+        "How would I test FastAPI dependencies?", previous, mode="adaptive",
+    )
+    assert decision.use_context is False
+    assert decision.reason == "clear_standalone_subject"
+
+
+def test_missing_application_subject_uses_context():
+    previous = [{
+        "user": "Design a FastAPI authentication service.",
+        "assistant": "Use a layered service.",
+    }]
+    decision = decide_same_thread_continuity(
+        "How do I add refresh tokens?", previous, mode="adaptive",
+    )
+    assert decision.use_context is True
+    assert decision.reason == "missing_application_subject"
+
+
+def test_inventory_failure_mode_followup_does_not_depend_on_generic_overlap():
+    history = [{
+        "user": (
+            "I am building an inventory API with FastAPI, PostgreSQL, and Redis. "
+            "The stock-reservation endpoint occasionally applies the same "
+            "reservation twice after a client retry."
+        ),
+        "assistant": "The likely cause can be diagnosed from those details.",
+    }]
+    decision = decide_same_thread_continuity(
+        "What is the most likely failure mode, and what should I change first?",
+        history,
+        mode="adaptive",
+    )
+    assert decision.use_context is True
+    assert decision.reason != "lexical_topic_overlap"
+
+
+def test_named_unrelated_subject_omits_inventory_context():
+    history = [{
+        "user": "I am building an inventory API with FastAPI and PostgreSQL.",
+        "assistant": "Understood.",
+    }]
+    decision = decide_same_thread_continuity(
+        "What is the capital of France?", history, mode="adaptive",
+    )
+    assert decision.use_context is False
+    assert decision.reason == "clear_standalone_subject"
+
+
 @pytest.mark.parametrize(
-    ("previous", "current"),
+    "message",
     [
-        (
-            [{"user": "Explain FastAPI dependency injection.", "assistant": "FastAPI resolves dependencies per request."}],
-            "How would I test FastAPI dependencies?",
-        ),
-        (
-            [{"user": "Design a FastAPI authentication service.", "assistant": "Use a layered service."}],
-            "How do I add refresh tokens?",
-        ),
+        "Show the transaction boundary for that fix in pseudocode.",
+        "Compare that approach with using a distributed lock.",
+        "Explain that fix more simply.",
     ],
 )
-def test_overlap_and_missing_application_subject_use_context(previous, current):
-    assert decide_same_thread_continuity(current, previous, mode="adaptive").use_context
+def test_explicit_inventory_followups_keep_context(message):
+    decision = decide_same_thread_continuity(message, HISTORY, mode="adaptive")
+    assert decision.use_context is True
+    assert decision.reason in {"explicit_followup", "referential_language"}
 
 
 @pytest.mark.parametrize(
