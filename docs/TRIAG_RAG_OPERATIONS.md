@@ -131,6 +131,22 @@ Phase 2 generation path. Inspect only the content-free `web_answer_check` and
 `web_usage_stage` fields; provider prompts, evidence excerpts, and repair
 prompts must never be stored there.
 
+Production Answer Guard should set:
+
+```text
+WEB_TASK_REPAIR_SECOND_ATTEMPT_ENABLED=true
+```
+
+The setting defaults to `false` when absent. When enabled, it permits at most
+one additional targeted repair after the first repair leaves only allowlisted,
+deterministic task-semantic failures, or after a section-splice architecture
+repair reduces but does not clear the missing-area set. Architecture attempt 2
+replaces only the remaining accepted section. Output-only strict correction
+keeps its existing bounded path. Safety, provider, retrieval, billing,
+authentication and cancellation failures are never eligible. Both repair
+attempts remain separately reserved by attempt identifier and are aggregated
+into the single authoritative repair usage stage and parent charge.
+
 ## Phase 4 repository operations
 
 Repository snapshots use `POST /api/web/repositories`; general uploads retain

@@ -479,7 +479,7 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
                     ("stable_outcome_present", 0),
                 ),
             ),
-            "State the stable end-state that the retry converges on",
+            "Use explicit one-operation/one-side-effect wording",
         ),
     ),
 )
@@ -512,8 +512,9 @@ def test_repair_prompt_names_the_specific_missing_semantic_element(
         assert "concrete_retry_example_present=0" in rendered
     if check.check_type == "task_requirement_stable_outcome":
         assert "stable_outcome_present=0" in rendered
-        assert "same charge or record exists exactly once" in rendered
-        assert "replay does not change the balance" in rendered
+        assert "exactly one charge or record" in rendered
+        assert "no second balance change" in rendered
+        assert "modify an existing bullet rather than adding a bullet" in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

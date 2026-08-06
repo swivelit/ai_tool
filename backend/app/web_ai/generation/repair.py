@@ -191,20 +191,22 @@ def build_repair_request(
         )
     if "task_requirement_stable_outcome" in failed_types:
         targeted_corrections.append(
-            "State the stable end-state that the retry converges on: the same "
-            "charge or record exists exactly once, and replay does not change "
-            "the balance or create another side effect. Do not merely say that "
-            "retries are safe. Preserve every already-passing requirement; when "
-            "an exact bullet count applies, repair an existing bullet instead "
-            "of adding another one."
+            "Use explicit one-operation/one-side-effect wording for the stable "
+            "end-state: the repeated request converges on exactly one charge or "
+            "record, and replay causes no second balance change, duplicate "
+            "payment, or other repeated side effect. Do not merely say retries "
+            "are safe. Preserve every already-passing output constraint. When "
+            "an exact bullet count applies, modify an existing bullet rather "
+            "than adding a bullet."
         )
     if "task_architecture_test_plan" in failed_types:
         targeted_corrections.append(
-            "Replace the focused test-plan section with concrete scenarios for "
-            "duplicate delivery, out-of-order delivery, crash and replay recovery, "
-            "and partial/full refunds. For each scenario, state how it is exercised "
-            "and what invariant or result is asserted; a heading or generic promise "
-            "to test is insufficient."
+            "Replace the focused test-plan section with four separate concrete "
+            "cases using clear `Exercise ...; Assert ...` wording: duplicate "
+            "delivery; out-of-order delivery; crash/replay recovery; and partial "
+            "plus full refunds. Every case must state both how it is exercised "
+            "and the invariant or result asserted. A heading, topic list, or "
+            "generic promise to test is insufficient."
         )
     if "task_architecture_out_of_order_handling" in failed_types:
         targeted_corrections.append(

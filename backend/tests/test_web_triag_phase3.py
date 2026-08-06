@@ -33,6 +33,7 @@ from app.web_ai.streaming_policy import StreamingPolicy
 from app.web_ai.triage import AttachmentMetadata, TriageInput, build_execution_plan
 from app.web_api.chat_service import (
     _missing_requested_private_identifier, _parse_verifier_status,
+    _second_task_repair_eligible,
     execute_web_turn,
     prepare_web_turn,
     record_web_turn_lifecycle,
@@ -670,10 +671,171 @@ def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
     assert "task_requirement_definition" in check_types
     assert "task_requirement_example" in check_types
     with SessionLocal() as session:
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == "contract-semantic-b01-request"
+        )).all()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == "contract-semantic-b01-request"
+        )).one()
         audit = build_request_audit(
             session, request_ids=["contract-semantic-b01-request"]
         )[0]
     assert audit["task_requirement_check_status_counts"] == {"passed": 3}
+    repair_stage = next(
+        stage for stage in stages if stage.stage_name == "repair"
+    )
+    repair_metadata = json.loads(repair_stage.safe_metadata_json)
+    assert repair_metadata["attempt_number"] == 1
+    assert repair_stage.input_tokens == 8
+    assert repair_stage.output_tokens == 4
+    assert audit["provider_call_count"] == 2
+    assert audit["repair_stage_count"] == 1
+    assert charge.debited_micros == sum(stage.debited_micros for stage in stages)
+
+
+def test_b01_stable_outcome_gets_one_flagged_second_semantic_repair(monkeypatch):
+    prompt = (
+        "Explain idempotency in payment APIs to a junior developer. Use exactly "
+        "four bullet points, include one concrete retry example, and use no more "
+        "than 140 words."
+    )
+    without_stable_outcome = (
+        "- Idempotency in a payment API means one logical payment is handled consistently.\n"
+        "- Store an idempotency key with each request.\n"
+        "- For example, retry POST /payments with key RETRY-1 after a timeout.\n"
+        "- The server handles that retry safely."
+    )
+    first_repair_still_missing = (
+        "- Idempotency in a payment API means one logical payment is handled consistently.\n"
+        "- Store an idempotency key with each request.\n"
+        "- For example, retry POST /payments with key RETRY-1 after a timeout.\n"
+        "- Replaying the request is safe for the client."
+    )
+    second_repair_complete = (
+        "- Idempotency in a payment API means one logical payment is handled consistently.\n"
+        "- Store an idempotency key with each request.\n"
+        "- For example, retry POST /payments with key RETRY-1 after a timeout.\n"
+        "- The repeated request produces one charge exactly once, with no second balance change."
+    )
+    captured_requests = []
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-second-semantic-stable-outcome",
+        prompt=prompt,
+        answers=[
+            without_stable_outcome,
+            first_repair_still_missing,
+            second_repair_complete,
+        ],
+        captured_requests=captured_requests,
+        task_repair_second_attempt_enabled=True,
+    )
+
+    assert calls == 3
+    assert [request.request_id for request in captured_requests] == [
+        "contract-second-semantic-stable-outcome-request",
+        "contract-second-semantic-stable-outcome-request:repair:1",
+        "contract-second-semantic-stable-outcome-request:repair:2",
+    ]
+    assert completed.message.content == second_repair_complete
+    assert len([
+        line for line in completed.message.content.splitlines()
+        if line.startswith("- ")
+    ]) == 4
+    assert len(completed.message.content.split()) <= 140
+    assert completed.message.quality["status"] == "verified"
+
+    request_id = "contract-second-semantic-stable-outcome-request"
+    with SessionLocal() as session:
+        stages = session.exec(select(WebUsageStage).where(
+            WebUsageStage.request_id == request_id
+        )).all()
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        audit = build_request_audit(session, request_ids=[request_id])[0]
+    repair_stage = next(
+        stage for stage in stages if stage.stage_name == "repair"
+    )
+    repair_metadata = json.loads(repair_stage.safe_metadata_json)
+    assert repair_metadata["attempt_number"] == 2
+    assert repair_stage.input_tokens == 16
+    assert repair_stage.output_tokens == 8
+    assert audit["provider_call_count"] == 3
+    assert audit["repair_stage_count"] == 1
+    assert audit["task_requirement_check_status_counts"] == {"passed": 3}
+    assert charge.debited_micros == sum(stage.debited_micros for stage in stages)
+
+
+def test_second_semantic_repair_is_disabled_without_flag(monkeypatch):
+    prompt = (
+        "Explain idempotency in payment APIs. Use exactly four bullet points, "
+        "include one concrete retry example, and use no more than 140 words."
+    )
+    still_missing = (
+        "- Idempotency in a payment API means consistent request handling.\n"
+        "- Store an idempotency key.\n"
+        "- For example, retry POST /payments after a timeout.\n"
+        "- The retry is handled safely."
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-second-semantic-disabled",
+        prompt=prompt,
+        answers=[still_missing, still_missing, still_missing],
+        task_repair_second_attempt_enabled=False,
+    )
+
+    assert calls == 2
+    assert completed.message.quality["status"] == "unverified"
+    failed = {
+        check["type"] for check in completed.message.quality["checks"]
+        if check["status"] == "failed"
+    }
+    assert "task_requirement_stable_outcome" in failed
+
+
+def test_second_semantic_repair_never_exceeds_two_repair_calls(monkeypatch):
+    prompt = (
+        "Explain idempotency in payment APIs. Use exactly four bullet points, "
+        "include one concrete retry example, and use no more than 140 words."
+    )
+    still_missing = (
+        "- Idempotency in a payment API means consistent request handling.\n"
+        "- Store an idempotency key.\n"
+        "- For example, retry POST /payments after a timeout.\n"
+        "- The retry is handled safely."
+    )
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-second-semantic-bounded",
+        prompt=prompt,
+        answers=[still_missing, still_missing, still_missing, still_missing],
+        task_repair_second_attempt_enabled=True,
+    )
+
+    assert calls == 3
+    assert completed.message.quality["status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "check_type",
+    (
+        "provider_completion",
+        "evidence_support",
+        "citation_validity",
+        "repository_validation",
+        "structural",
+        "cancellation",
+        "billing_settlement",
+        "authentication",
+    ),
+)
+def test_second_task_repair_rejects_nonsemantic_failures(check_type):
+    assert _second_task_repair_eligible((
+        QualityCheck(check_type, "failed", "bounded_failure"),
+    )) is False
 
 
 def test_adaptive_context_reask_gets_one_bounded_repair(monkeypatch):
@@ -1157,9 +1319,10 @@ Include:
 
     assert contract.architecture_splice_areas == ("test_plan",)
     assert "Replace the focused test-plan section" in rendered
-    assert "duplicate delivery, out-of-order delivery" in rendered
-    assert "crash and replay recovery" in rendered
-    assert "partial/full refunds" in rendered
+    assert "duplicate delivery; out-of-order delivery" in rendered
+    assert "crash/replay recovery" in rendered
+    assert "partial plus full refunds" in rendered
+    assert "Exercise ...; Assert ..." in rendered
     assert current_test_plan in rendered
     assert "[prior detail omitted]" not in rendered
     assert "### 1. Database tables" not in rendered
@@ -1379,6 +1542,103 @@ Verify the X-Razorpay-Signature header against the webhook secret using a consta
         "task_architecture_security_checks",
     ]
     assert audit["post_repair_failed_check_identifiers"] == []
+
+
+def test_second_architecture_repair_targets_only_residual_test_plan(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    draft = """PostgreSQL is the source of truth. Redis and Valkey are non-authoritative caches.
+### 1. Database tables and unique constraints
+Use event tables with a UNIQUE provider event ID.
+### 2. Transaction boundaries
+Coordinate the related writes.
+### 3. Event and payment state transitions
+Use monotonic state transitions and a status rank.
+### 4. Pseudocode
+The worker function inserts the event and commits.
+### 5. Duplicate-event handling
+Use INSERT ON CONFLICT DO NOTHING for an already processed event.
+### 6. Out-of-order handling
+Consider event timing carefully.
+### 7. Failure recovery
+Requeue pending events after a crash and resume expired leases.
+### 8. Reconciliation
+Run a reconciliation audit job against PostgreSQL.
+### 9. Security checks
+Verify the webhook HMAC signature and reject replayed timestamps.
+### 10. A focused test plan
+A focused plan will be prepared."""
+    first_repair = """### 2. Transaction boundaries
+Use one atomic transaction with SELECT FOR UPDATE, then commit or rollback.
+### 6. Out-of-order handling
+Compare incoming and stored status, apply only forward transitions, and discard stale events.
+### 10. A focused test plan
+Prepare coverage for important webhook behavior."""
+    second_repair = """### 10. A focused test plan
+1. Exercise duplicate delivery by replaying one event; Assert one wallet credit.
+2. Exercise out-of-order delivery by sending an older state late; Assert no backward transition.
+3. Exercise crash/replay recovery around commit; Assert exactly one durable ledger mutation.
+4. Exercise partial and full refunds in sequence; Assert bounded totals and the correct terminal state."""
+    expected_after_first = splice_architecture_section_repair(
+        draft,
+        first_repair,
+        ("transaction_boundaries", "out_of_order_handling", "test_plan"),
+    )
+    assert expected_after_first is not None
+    assert evaluate_architecture_coverage(
+        expected_after_first
+    ).missing_area_identifiers == ("test_plan",)
+    captured_requests = []
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-second-residual-test-plan",
+        prompt=prompt,
+        answers=[draft, first_repair, second_repair],
+        captured_requests=captured_requests,
+        task_repair_second_attempt_enabled=True,
+    )
+
+    assert calls == 3
+    assert completed.message.quality["status"] == "verified"
+    final_prefix = completed.message.content[:
+        completed.message.content.index("### 10.")
+    ]
+    expected_prefix = expected_after_first[:expected_after_first.index("### 10.")]
+    assert final_prefix == expected_prefix
+    assert evaluate_architecture_coverage(
+        completed.message.content
+    ).missing_area_identifiers == ()
+    second_messages = captured_requests[2].metadata["provider_messages"]
+    assert "### 10. a focused test plan" in second_messages[0]["content"]
+    assert "### 2. transaction boundaries" not in second_messages[0]["content"]
+    assert "### 6. out-of-order handling" not in second_messages[0]["content"]
+    assert "Exercise ...; Assert ..." in second_messages[1]["content"]
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session,
+            request_ids=["contract-second-residual-test-plan-request"],
+        )[0]
+    assert audit["pre_repair_failed_check_identifiers"] == [
+        "task_architecture_transaction_boundaries",
+        "task_architecture_out_of_order_handling",
+        "task_architecture_test_plan",
+    ]
+    assert audit["post_repair_failed_check_identifiers"] == []
+    assert audit["architecture_repair_mode"] == "section_splice"
 
 
 def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):

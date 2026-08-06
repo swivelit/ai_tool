@@ -175,6 +175,31 @@ from .web_memory import (
 logger = logging.getLogger(__name__)
 
 
+_SECOND_TASK_REPAIR_CHECK_TYPES = frozenset({
+    "task_requirement_definition",
+    "task_requirement_example",
+    "task_requirement_stable_outcome",
+    "task_requirement_comparison",
+    "task_requirement_subquestions",
+    "task_requirement_transaction_boundary",
+    "task_requirement_pseudocode",
+    "task_requirement_context_grounding",
+    "task_requirement_prior_context_reask",
+    "task_requirement_duplicate_retry_fix",
+})
+
+
+def _second_task_repair_eligible(
+    failed_checks: tuple[QualityCheck, ...],
+) -> bool:
+    """Allow only bounded, deterministic answer-semantic repair checks."""
+
+    return bool(failed_checks) and all(
+        check.check_type in _SECOND_TASK_REPAIR_CHECK_TYPES
+        for check in failed_checks
+    )
+
+
 _REPOSITORY_VALIDATION_CAPABILITY_TTL_SECONDS = 30.0
 _repository_validation_capability_cache: tuple[
     tuple[str, str, int], float, str,
@@ -5249,7 +5274,15 @@ def execute_web_turn(
                     and len(current_architecture_areas)
                     < len(repair_trigger_area_identifiers)
                 )
-                return strict_format_retry or architecture_retry
+                semantic_retry = bool(
+                    phase3_settings.task_repair_second_attempt_enabled
+                    and _second_task_repair_eligible(failed)
+                )
+                return (
+                    strict_format_retry
+                    or architecture_retry
+                    or semantic_retry
+                )
 
             def verify_repaired(
                 answer: str, prior: AnswerQualityResult
