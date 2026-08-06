@@ -189,6 +189,15 @@ def build_repair_request(
             "already-passing requirement; when an exact bullet count applies, "
             "repair an existing bullet instead of adding another one."
         )
+    if "task_requirement_stable_outcome" in failed_types:
+        targeted_corrections.append(
+            "State the stable end-state that the retry converges on: the same "
+            "charge or record exists exactly once, and replay does not change "
+            "the balance or create another side effect. Do not merely say that "
+            "retries are safe. Preserve every already-passing requirement; when "
+            "an exact bullet count applies, repair an existing bullet instead "
+            "of adding another one."
+        )
     if "task_architecture_test_plan" in failed_types:
         targeted_corrections.append(
             "Replace the focused test-plan section with concrete scenarios for "

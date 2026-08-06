@@ -484,7 +484,7 @@ describe('production capability safety', () => {
       Tables and unique constraints. Transaction boundaries. State transitions.
       Processing flow pseudocode. Idempotency handles duplicates. Late event ordering.
       Retry and failure recovery. Reconciliation job. Signature verification security checks.
-      Focused test plan.
+      Run duplicate, crash-replay, refund, and concurrency failure-injection integration tests.
     `)
     expect(result.postgresAuthoritative).toBe(true)
     expect(result.nonPostgresAuthoritativeClaim).toBe(false)
@@ -583,12 +583,12 @@ describe('production capability safety', () => {
   })
 
   it('shares all architecture coverage semantics with the backend', () => {
-    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.6')
+    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.7')
     for (const fixture of semanticFixtures.architecture_coverage) {
       const result = evaluateWebhookArchitecture(fixture.text)
       expect(result.coveredAreas, fixture.id).toEqual(fixture.covered_areas)
       expect(result.missingAreas, fixture.id).toEqual(fixture.missing_areas)
-      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.6')
+      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.7')
       const duplicate = result.areaEvaluations.find(
         area => area.areaIdentifier === 'duplicate_handling',
       )

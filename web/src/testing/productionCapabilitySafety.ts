@@ -715,7 +715,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.6'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.7'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -921,10 +921,19 @@ function architectureMechanism(
     failure_recovery:/\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b/u,
     reconciliation:/\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b/u,
     security_checks:/\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body|(?:verif\w*|validat\w*|authenticat\w*|recomput\w*|check\w*)[^.;]{0,50}(?:signature|hmac|digest|secret)|(?:signature|hmac|digest)[^.;]{0,50}(?:verif\w*|validat\w*|match\w*|mismatch\w*|reject\w*)|webhook secret|shared secret|x razorpay signature|constant time|timestamp[^.;]{0,40}(?:check\w*|validat\w*|reject\w*))\b/u,
-    test_plan:/\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b/u,
+    test_plan:/\b(?:concurrency tests?|failure injection|integration tests?)\b|\btests?\s+(?:cover|exercise)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:cover|exercise)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\bscenarios?\b/u,
   }
   if (area === 'pseudocode' && /```[\s\S]*?```/u.test(rawValue)) return true
   if (area === 'state_transitions' && /(?:->|→|=>)/u.test(rawValue)) return true
+  if (area === 'test_plan') {
+    const scenario = /\b(?:duplicate\w*|out[ -]of[ -]order|stale\w*|crash\w*|replay\w*|refund\w*|concurren\w*|sequence[ -]gap|retry\w*)\b/u
+    const assertion = /\b(?:assert\w*|expect\w*|verif\w*|confirm\w*|check\w*)\b/u
+    const matchingLines = rawValue.split(/\r?\n/u).filter((rawLine) => {
+      const line = normalizeArchitectureSemantics(rawLine)
+      return scenario.test(line) && assertion.test(line)
+    }).length
+    if (matchingLines >= 3) return true
+  }
   return area !== 'duplicate_handling' && patterns[area].test(value)
 }
 

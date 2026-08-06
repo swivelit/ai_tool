@@ -215,6 +215,33 @@
       "duplicate_heading_present": true,
       "duplicate_semantic_mechanism_present": true,
       "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "test-plan-deliver-assert-shape",
+      "text": "### 1. Database tables and unique constraints\nUse webhook event tables with a UNIQUE provider event ID.\n### 2. Transaction boundaries\nUse one atomic transaction and commit or rollback.\n### 3. Event and payment state transitions\nUse monotonic state transitions and a status rank.\n### 4. Pseudocode\nThe worker flow begins a transaction, inserts the event, and commits.\n### 5. Duplicate-event handling\nUse INSERT ON CONFLICT DO NOTHING for an already processed event.\n### 6. Out-of-order handling\nIgnore stale or older events that arrive late and allow only forward transitions.\n### 7. Failure recovery\nRequeue pending events after a crash and resume expired leases.\n### 8. Reconciliation\nRun a reconciliation audit job against PostgreSQL.\n### 9. Security checks\nVerify the raw-body HMAC signature and replay window.\n### 10. Focused test plan\n1. Duplicate delivery: deliver the same event twice; assert one wallet credit.\n2. Duplicate refund delivery: replay the refund; assert one ledger mutation.\n3. Out-of-order refund before capture: deliver it early; verify it is deferred.\n4. Stale state delivery: send an older status; confirm the stored state is unchanged.\n5. Sequence-gap delivery: omit a predecessor; check that processing waits.\n6. Crash before commit and replay: interrupt the worker; assert no partial state.\n7. Crash after commit and replay: retry the event; assert no second credit.\n8. Partial refund: deliver two partial refunds; verify their total.\n9. Full refund: deliver the full refund; confirm the terminal state.\n10. Refund amount safety: send an excessive refund; expect rejection.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks", "test_plan"],
+      "missing_areas": [],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "test-plan-vague-promise-rejected",
+      "text": "### 1. Database tables and unique constraints\nUse webhook event tables with a UNIQUE provider event ID.\n### 2. Transaction boundaries\nUse one atomic transaction and commit or rollback.\n### 3. Event and payment state transitions\nUse monotonic state transitions and a status rank.\n### 4. Pseudocode\nThe worker flow begins a transaction, inserts the event, and commits.\n### 5. Duplicate-event handling\nUse INSERT ON CONFLICT DO NOTHING for an already processed event.\n### 6. Out-of-order handling\nIgnore stale or older events that arrive late and allow only forward transitions.\n### 7. Failure recovery\nRequeue pending events after a crash and resume expired leases.\n### 8. Reconciliation\nRun a reconciliation audit job against PostgreSQL.\n### 9. Security checks\nVerify the raw-body HMAC signature and replay window.\n### 10. Focused test plan\nA focused test plan will be prepared covering the main scenarios.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks"],
+      "missing_areas": ["test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
+    },
+    {
+      "id": "test-plan-single-generic-line-rejected",
+      "text": "### 1. Database tables and unique constraints\nUse webhook event tables with a UNIQUE provider event ID.\n### 2. Transaction boundaries\nUse one atomic transaction and commit or rollback.\n### 3. Event and payment state transitions\nUse monotonic state transitions and a status rank.\n### 4. Pseudocode\nThe worker flow begins a transaction, inserts the event, and commits.\n### 5. Duplicate-event handling\nUse INSERT ON CONFLICT DO NOTHING for an already processed event.\n### 6. Out-of-order handling\nIgnore stale or older events that arrive late and allow only forward transitions.\n### 7. Failure recovery\nRequeue pending events after a crash and resume expired leases.\n### 8. Reconciliation\nRun a reconciliation audit job against PostgreSQL.\n### 9. Security checks\nVerify the raw-body HMAC signature and replay window.\n### 10. Focused test plan\nWe will test duplicates, crashes and refunds thoroughly.",
+      "covered_areas": ["database_schema", "transaction_boundaries", "state_transitions", "pseudocode", "duplicate_handling", "out_of_order_handling", "failure_recovery", "reconciliation", "security_checks"],
+      "missing_areas": ["test_plan"],
+      "duplicate_heading_present": true,
+      "duplicate_semantic_mechanism_present": true,
+      "duplicate_stable_side_effect_outcome_present": true
     }
   ]
 }

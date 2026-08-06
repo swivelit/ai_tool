@@ -870,7 +870,8 @@ Run a reconciliation consistency check against PostgreSQL.
 ### 9. Security checks
 Verify the webhook HMAC signature and reject replayed timestamps.
 ### 10. A focused test plan
-Test duplicates, concurrency, crashes, refunds, replay, and out-of-order events."""
+Run duplicate, concurrency, crash, refund, replay, and out-of-order
+failure-injection integration tests."""
     repaired_section = """### 1. Database tables and unique constraints
 Use event and payment tables with a unique provider event ID. PostgreSQL is the system of record. Redis and Valkey are explicitly non-authoritative stores."""
     captured_requests = []
@@ -948,7 +949,8 @@ Run a reconciliation consistency check.
 ### 9. Security checks
 Protect the webhook.
 ### 10. A focused test plan
-Test duplicates, concurrency, crashes, refunds, and replay scenarios."""
+Run duplicate, concurrency, crash, refund, and replay failure-injection
+integration tests."""
     destructive_repair = (
         "Use PostgreSQL as the system of record. Redis and Valkey are "
         "non-authoritative. Add some security checks later."
@@ -1024,7 +1026,8 @@ Run a reconciliation consistency check against PostgreSQL.
 ### 9. Security checks
 Verify the webhook HMAC signature and reject replayed timestamps.
 ### 10. A focused test plan
-Test duplicates, concurrency, crashes, refunds, replay, and out-of-order events."""
+Run duplicate, concurrency, crash, refund, replay, and out-of-order
+failure-injection integration tests."""
     repaired_section = """### 4. Pseudocode
 ```python
 def handle_event(event):
@@ -1076,8 +1079,8 @@ def handle_event(event):
     assert completion_contract.architecture_splice_areas == ("test_plan",)
     completion_repaired = splice_architecture_section_repair(
         answer,
-        "### 10. A focused test plan\nTest duplicate, concurrent, crash, refund, "
-        "replay, and out-of-order scenarios.",
+        "### 10. A focused test plan\nRun duplicate, concurrent, crash, refund, "
+        "replay, and out-of-order failure-injection integration tests.",
         completion_contract.architecture_splice_areas,
     )
     assert completion_repaired is not None

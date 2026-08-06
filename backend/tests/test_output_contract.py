@@ -467,6 +467,20 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
             ),
             "Explicitly compare every requested named alternative",
         ),
+        (
+            "Explain idempotency in payment APIs and include one concrete retry example.",
+            QualityCheck(
+                "task_requirement_stable_outcome",
+                "failed",
+                "stable_idempotent_outcome_missing",
+                observations=(
+                    ("definition_present", 1),
+                    ("concrete_retry_example_present", 1),
+                    ("stable_outcome_present", 0),
+                ),
+            ),
+            "State the stable end-state that the retry converges on",
+        ),
     ),
 )
 def test_repair_prompt_names_the_specific_missing_semantic_element(
@@ -496,6 +510,10 @@ def test_repair_prompt_names_the_specific_missing_semantic_element(
     assert "Current answer (bounded context):\nIncomplete draft." in rendered
     if check.check_type == "task_requirement_example":
         assert "concrete_retry_example_present=0" in rendered
+    if check.check_type == "task_requirement_stable_outcome":
+        assert "stable_outcome_present=0" in rendered
+        assert "same charge or record exists exactly once" in rendered
+        assert "replay does not change the balance" in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.6"
+TASK_REQUIREMENT_VERSION = "2026-08-03.7"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -278,7 +278,7 @@ def _architecture_mechanism(
         "failure_recovery": r"\b(?:failure recovery|retryable inbox|safe replay|dead letter|crash\w*|lease recovery|re queue|requeue|retry|resume|sweeper|lease|pending events?)\b",
         "reconciliation": r"\b(?:reconciliation|reconcile|audit job|consistency check|provider poll)\b",
         "security_checks": r"\b(?:security checks?|signature verification|hmac|replay attack|replay window|timestamp validation|raw body|(?:verif\w*|validat\w*|authenticat\w*|recomput\w*|check\w*)[^.;]{0,50}(?:signature|hmac|digest|secret)|(?:signature|hmac|digest)[^.;]{0,50}(?:verif\w*|validat\w*|match\w*|mismatch\w*|reject\w*)|webhook secret|shared secret|x razorpay signature|constant time|timestamp[^.;]{0,40}(?:check\w*|validat\w*|reject\w*))\b",
-        "test_plan": r"\b(?:test plan|testing strategy|test cases?|concurrency test|failure injection|integration tests?)\b|\b(?:tests?|scenarios?|coverage)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\b(?:tests?|scenarios?|coverage)\b",
+        "test_plan": r"\b(?:concurrency tests?|failure injection|integration tests?)\b|\btests?\s+(?:cover|exercise)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b|\b(?:cover|exercise)\b[^.;]{0,80}\b(?:duplicate|concurren\w*|crash\w*|refund\w*|replay|out of order)\b[^.;]{0,80}\bscenarios?\b",
     }
     if area_identifier == "pseudocode" and re.search(
         r"```[\s\S]*?```", raw_value
@@ -288,6 +288,22 @@ def _architecture_mechanism(
         r"(?:->|→|=>)", raw_value
     ):
         return True
+    if area_identifier == "test_plan":
+        scenario = re.compile(
+            r"\b(?:duplicate\w*|out[ -]of[ -]order|stale\w*|crash\w*|"
+            r"replay\w*|refund\w*|concurren\w*|sequence[ -]gap|retry\w*)\b"
+        )
+        assertion = re.compile(
+            r"\b(?:assert\w*|expect\w*|verif\w*|confirm\w*|check\w*)\b"
+        )
+        matching_lines = sum(
+            1
+            for raw_line in raw_value.splitlines()
+            if scenario.search(normalize_architecture_semantics(raw_line))
+            and assertion.search(normalize_architecture_semantics(raw_line))
+        )
+        if matching_lines >= 3:
+            return True
     return bool(re.search(patterns[area_identifier], value))
 
 
