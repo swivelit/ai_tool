@@ -361,6 +361,7 @@ def build_request_audit(
         repair_trigger_area_identifiers: list[str] = []
         post_repair_failed_check_identifiers: list[str] = []
         architecture_repair_mode = "not_attempted"
+        repair_rejected_regression = False
         phase2_fallback_reason_code: str | None = None
         deterministic_intent: str | None = None
         deterministic_route: str | None = None
@@ -542,6 +543,12 @@ def build_request_audit(
                             "full_rewrite_fallback",
                         }:
                             architecture_repair_mode = candidate_repair_mode
+                        repair_rejected_regression = (
+                            repair_rejected_regression
+                            or observations.get(
+                                "repair_rejected_regression"
+                            ) in {1, True}
+                        )
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
@@ -628,6 +635,12 @@ def build_request_audit(
                         "full_rewrite_fallback",
                     }:
                         architecture_repair_mode = candidate_repair_mode
+                    repair_rejected_regression = (
+                        repair_rejected_regression
+                        or raw_check.get(
+                            "repair_rejected_regression"
+                        ) in {1, True}
+                    )
 
         for stage_row in stage_rows:
             stage_metadata = _safe_json(str(stage_row[7] or "{}"))
@@ -832,6 +845,7 @@ def build_request_audit(
                 post_repair_failed_check_identifiers
             ),
             "architecture_repair_mode": architecture_repair_mode,
+            "repair_rejected_regression": repair_rejected_regression,
             "failed_check_identifiers": failed_check_identifiers[:16],
             "deterministic_intent": deterministic_intent,
             "deterministic_route": deterministic_route,

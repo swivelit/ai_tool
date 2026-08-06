@@ -121,6 +121,7 @@ _ALLOWED_KEYS = frozenset(
         "repair_trigger_area_identifiers",
         "post_repair_failed_check_identifiers",
         "repair_mode",
+        "repair_rejected_regression",
         "validator_version",
         "repair_attempted",
         "verifier_used",

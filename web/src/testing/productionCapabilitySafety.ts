@@ -584,6 +584,7 @@ const REPOSITORY_UNCERTAINTY = new RegExp(
   'iu',
 )
 const REPOSITORY_GENERIC_INABILITY = /\b(?:can(?:not|'t|’t)|unable\s+to|won(?:'t|’t)|will\s+not|do(?:n(?:'t|’t)|\s+not)|no\s+way\s+to|without)\b/iu
+const REPOSITORY_MODAL_OR_HYPOTHETICAL = /\b(?:would|could|should|might|to\s+state|to\s+say|to\s+determine|to\s+confirm|need(?:s|ed)?\s+(?:access|to)|require[sd]?\s+access|if\s|once\s|in\s+order\s+to)\b/iu
 const REPOSITORY_AFFIRMATIVE_CLAIM = /\b(?:exists?|is\s+present|logic\s+lives|defines?|implements?|exports?|imports?|contains?|handles?|returns?|used\s+by|imported\s+by)\b/giu
 const REPOSITORY_DIRECT_NEGATION = /\b(?:does\s+not|doesn(?:'t|’t)|is\s+not|isn(?:'t|’t)|not|never|cannot|can(?:'t|’t)|unable\s+to)\s+(?:(?:actually|currently|necessarily|appear(?:s)?\s+to)\s+)?$/iu
 
@@ -591,6 +592,7 @@ function hasRepositoryAffirmativeClaim(sentence: string): boolean {
   for (const match of sentence.matchAll(REPOSITORY_AFFIRMATIVE_CLAIM)) {
     const prefix = sentence.slice(0, match.index ?? 0)
     if (REPOSITORY_GENERIC_INABILITY.test(prefix)) continue
+    if (REPOSITORY_MODAL_OR_HYPOTHETICAL.test(prefix)) continue
     if (REPOSITORY_UNCERTAINTY.test(prefix)) continue
     if (REPOSITORY_DIRECT_NEGATION.test(prefix.slice(-100))) continue
     return true

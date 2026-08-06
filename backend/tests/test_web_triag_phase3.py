@@ -912,6 +912,80 @@ Use event and payment tables with a unique provider event ID. PostgreSQL is the 
     assert audit["architecture_repair_mode"] == "section_splice"
 
 
+def test_destructive_architecture_repair_is_rejected(monkeypatch):
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    draft = """PostgreSQL is the system of record. Redis and Valkey are non-authoritative.
+### 1. Database tables and unique constraints
+Use event tables with a unique provider event ID.
+### 2. Transaction boundaries
+Use one atomic transaction and commit or rollback.
+### 3. Event and payment state transitions
+Use monotonic state transitions and a status rank.
+### 4. Pseudocode
+The worker function inserts the event and commits.
+### 5. Duplicate-event handling
+INSERT ON CONFLICT DO NOTHING prevents a second wallet credit.
+### 6. Out-of-order handling
+Defer out-of-sequence events and discard outdated updates.
+### 7. Failure recovery
+Requeue pending events after a crash.
+### 8. Reconciliation
+Run a reconciliation consistency check.
+### 9. Security checks
+Protect the webhook.
+### 10. A focused test plan
+Test duplicates, concurrency, crashes, refunds, and replay scenarios."""
+    destructive_repair = (
+        "Use PostgreSQL as the system of record. Redis and Valkey are "
+        "non-authoritative. Add some security checks later."
+    )
+
+    completed, calls = _execute_contract_turn(
+        monkeypatch,
+        slug="contract-reject-destructive-architecture-repair",
+        prompt=prompt,
+        answers=[draft, destructive_repair],
+    )
+
+    assert calls == 2
+    assert completed.message.content == draft
+    failed = {
+        check["type"] for check in completed.message.quality["checks"]
+        if check["status"] == "failed"
+    }
+    assert "task_architecture_security_checks" in failed
+    assert "task_architecture_state_transitions" not in failed
+    with SessionLocal() as session:
+        audit = build_request_audit(
+            session,
+            request_ids=[
+                "contract-reject-destructive-architecture-repair-request"
+            ],
+        )[0]
+    assert audit["architecture_repair_mode"] == "full_rewrite_fallback"
+    assert audit["repair_rejected_regression"] is True
+    assert audit["pre_repair_failed_check_identifiers"] == [
+        "task_architecture_security_checks"
+    ]
+    assert audit["post_repair_failed_check_identifiers"] == [
+        "task_architecture_security_checks"
+    ]
+
+
 def test_non_architecture_format_repair_preserves_all_architecture_areas():
     prompt = """Design an idempotent webhook architecture.
 Constraints:

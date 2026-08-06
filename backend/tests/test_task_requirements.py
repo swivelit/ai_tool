@@ -247,6 +247,21 @@ Verify the X-Razorpay-Signature header against the webhook secret using a consta
     ] == original_section_six
     assert evaluate_architecture_coverage(spliced).missing_area_identifiers == ()
 
+    verbose_repair = (
+        "Here are the corrected sections.\n"
+        + prior.replace(
+            "### 9. Security checks\nProtect the webhook.",
+            "### 9. Security checks\nVerify the webhook HMAC signature.",
+        )
+    )
+    tolerant_splice = splice_architecture_section_repair(
+        prior, verbose_repair, ("security_checks",)
+    )
+    assert tolerant_splice is not None
+    assert tolerant_splice.startswith("### 1. Database tables")
+    assert "Here are the corrected sections" not in tolerant_splice
+    assert "Verify the webhook HMAC signature" in tolerant_splice
+
 
 def test_architecture_quality_observations_never_contain_answer_text():
     private_phrase = "private architecture response phrase"

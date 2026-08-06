@@ -230,16 +230,21 @@ def splice_architecture_section_repair(
         for span in architecture_section_spans(prior)
     }
     repair_spans = architecture_section_spans(repair)
-    if (
-        set(span.area_identifier for span in repair_spans) != set(expected)
-        or any(area not in prior_spans for area in expected)
-        or not repair_spans
-        or repair[:repair_spans[0].start].strip()
+    repair_span_by_area = {
+        span.area_identifier: span for span in repair_spans
+    }
+    # A repair model may add a short preface or repeat otherwise-valid
+    # sections despite being told to return only the targets. Those bytes are
+    # never spliced. Accept the response whenever every expected section is
+    # parseable, and extract only those exact replacements.
+    if any(area not in prior_spans for area in expected) or any(
+        area not in repair_span_by_area for area in expected
     ):
         return None
     replacements = {
-        span.area_identifier: repair[span.start:span.end].strip()
-        for span in repair_spans
+        area_identifier: repair[span.start:span.end].strip()
+        for area_identifier in expected
+        if (span := repair_span_by_area.get(area_identifier)) is not None
     }
     if any(not replacements.get(area) for area in expected):
         return None

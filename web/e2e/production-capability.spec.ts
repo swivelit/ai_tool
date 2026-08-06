@@ -65,6 +65,7 @@ import {
   weightedScore,
   type CapabilityTierEvidence,
   type DeploymentReleaseObservation,
+  type WebhookArchitectureEvaluation,
 } from '../src/testing/productionCapabilitySafety'
 import {
   capabilityAuditIsCancellationReady,
@@ -215,6 +216,7 @@ type Audit = {
   repair_trigger_area_identifiers: string[]
   post_repair_failed_check_identifiers: string[]
   architecture_repair_mode: 'not_attempted' | 'section_splice' | 'full_rewrite' | 'full_rewrite_fallback'
+  repair_rejected_regression: boolean
   failed_check_identifiers: string[]
   deterministic_intent: string | null
   deterministic_route: 'backend_tool' | null
@@ -325,6 +327,7 @@ type QuestionResult = {
   repairTriggerAreaIdentifiers: string[]
   postRepairFailedCheckIdentifiers: string[]
   architectureRepairMode: string
+  repairRejectedRegression: boolean
   failedCheckIdentifiers: string[]
   deterministicIntent: string | null
   deterministicRoute: 'backend_tool' | null
@@ -562,6 +565,7 @@ function evaluation(
   audit: Audit,
   sources: QuestionResult['visibleSources'],
   codeTest?: IsolatedRunResult,
+  architectureEvaluation?: WebhookArchitectureEvaluation,
 ): Pick<QuestionResult, 'status' | 'score' | 'redistributedWeights' | 'reasonCodes' | 'defectSeverity'> {
   const value = displayedAnswer.trim()
   const structure = rawMarkdown.trim()
@@ -636,7 +640,8 @@ function evaluation(
       }
       break
     case 'B03': {
-      const architecture = evaluateWebhookArchitecture(structure)
+      const architecture = architectureEvaluation
+        ?? evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
         reasons.push('architecture_sections_missing')
@@ -657,7 +662,8 @@ function evaluation(
         reasons.push('routing_variation_truncated')
         break
       }
-      const architecture = evaluateWebhookArchitecture(structure)
+      const architecture = architectureEvaluation
+        ?? evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
         reasons.push('architecture_sections_missing')
@@ -1166,6 +1172,7 @@ function skippedResult(
     preRepairFailedCheckIdentifiers:[], repairTriggerAreaIdentifiers:[],
     postRepairFailedCheckIdentifiers:[],
     architectureRepairMode:'not_attempted',
+    repairRejectedRegression:false,
     failedCheckIdentifiers:[], deterministicIntent:null,
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
@@ -1876,8 +1883,13 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ? extractedDiff.split(/\r?\n/u).slice(0, 20).map(
         line => redactPotentialSecrets(line).text,
       ) : []
+    const sharedArchitectureEvaluation = (
+      ['B03', 'R09'].includes(question.id)
+      && (question.id !== 'R09' || audit.finish_reason === 'stop')
+    ) ? evaluateWebhookArchitecture(rawRedacted.text) : undefined
     const judged = evaluation(
       question, redacted.text, rawRedacted.text, audit, sources, codeTest,
+      sharedArchitectureEvaluation,
     )
     for (const reasonCode of nonBlockingReasonCodes) {
       if (!judged.reasonCodes.includes(reasonCode)) {
@@ -1950,7 +1962,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ['B03', 'R09'].includes(question.id)
       && (question.id !== 'R09' || audit.finish_reason === 'stop')
     ) {
-      const architecture = evaluateWebhookArchitecture(rawRedacted.text)
+      const architecture = sharedArchitectureEvaluation
+      if (!architecture) throw new Error('architecture_evaluation_missing')
       const browserMissing = [...architecture.missingAreas].sort()
       const backendMissing = [
         ...audit.architecture_missing_area_identifiers,
@@ -2045,14 +2058,20 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       representationCounts:capabilityAnswerRepresentationCounts(
         redacted.text, rawRedacted.text,
       ),
-      contractValidationDisagreement,
+      contractValidationDisagreement:(
+        contractValidationDisagreement || architectureContractDisagreement
+      ),
       contractDisagreementChecks:contractValidationDisagreement
-        ? mandatoryStructureFailures : [],
+        ? mandatoryStructureFailures
+        : architectureContractDisagreement
+          ? ['architecture_contract_disagreement'] : [],
       truncated:typeof doneEvent?.truncated === 'boolean' ? doneEvent.truncated : raw?.truncated ?? null,
       fenceAutoclosed:audit.fence_autoclosed === true,
       continueAvailable:typeof doneEvent?.can_continue === 'boolean' ? doneEvent.can_continue : raw?.can_continue ?? null,
       sseEventOrder:events, retrievalStatus:audit.retrieval_status,
-      qualityStatus:contractValidationDisagreement
+      qualityStatus:(
+        contractValidationDisagreement || architectureContractDisagreement
+      )
         ? 'unverified' : audit.quality_status,
       sourceKindCounts:audit.source_kind_counts,
       persistedQualityStatus:audit.persisted_quality_status,
@@ -2068,6 +2087,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       postRepairFailedCheckIdentifiers:
         audit.post_repair_failed_check_identifiers,
       architectureRepairMode:audit.architecture_repair_mode,
+      repairRejectedRegression:audit.repair_rejected_regression,
       failedCheckIdentifiers:audit.failed_check_identifiers,
       deterministicIntent:audit.deterministic_intent,
       deterministicRoute:audit.deterministic_route,
@@ -2116,7 +2136,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       ...(['B03', 'R09'].includes(question.id)
         && (question.id !== 'R09' || audit.finish_reason === 'stop') ? {
         architectureEvaluation:(() => {
-          const architecture = evaluateWebhookArchitecture(rawRedacted.text)
+          const architecture = sharedArchitectureEvaluation
+          if (!architecture) throw new Error('architecture_evaluation_missing')
           return {
             missingAreas:architecture.missingAreas,
             backendMissingAreas:audit.architecture_missing_area_identifiers,
@@ -2361,6 +2382,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           failedResult.reasoningEffort = capturedAudit.reasoning_effort
           failedResult.repairReasoningEffort =
             capturedAudit.repair_reasoning_effort
+          failedResult.repairRejectedRegression =
+            capturedAudit.repair_rejected_regression
           failedResult.effectiveMaxOutputTokens =
             capturedAudit.effective_max_output_tokens
           failedResult.visibleOutputReserveTokens =
@@ -3904,6 +3927,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       assertUniqueCapabilityScenarioIds(
         results.map(item => item.scenarioId),
       )
+      if (results.some(item => (
+        item.reasonCodes.includes('architecture_contract_disagreement')
+        && !item.contractValidationDisagreement
+      ))) {
+        throw new Error('architecture_disagreement_flag_inconsistent')
+      }
       return ({
       run_id:runId,
       commit_sha:process.env.GITHUB_SHA?.slice(0, 40) ?? 'local',
@@ -3988,6 +4017,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         post_repair_failed_check_identifiers:
           item.postRepairFailedCheckIdentifiers,
         architecture_repair_mode:item.architectureRepairMode,
+        repair_rejected_regression:item.repairRejectedRegression,
         failed_check_identifiers:item.failedCheckIdentifiers,
         deterministic_intent:item.deterministicIntent,
         deterministic_route:item.deterministicRoute,

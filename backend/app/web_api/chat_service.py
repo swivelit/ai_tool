@@ -80,6 +80,7 @@ from ..web_ai.generation.repository_grounding import (
 )
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
+    evaluate_architecture_coverage,
     extract_task_requirements, splice_architecture_section_repair,
     render_repository_patch_source_context, with_repository_task_requirements,
     with_contextual_task_requirements,
@@ -4749,6 +4750,7 @@ def execute_web_turn(
             repair_trigger_area_identifiers: tuple[str, ...] = ()
             post_repair_failed_check_identifiers: tuple[str, ...] = ()
             architecture_repair_mode = "not_attempted"
+            repair_rejected_regression = False
 
             def failed_check_identifiers(
                 result: AnswerQualityResult,
@@ -4992,6 +4994,7 @@ def execute_web_turn(
                 nonlocal completed_provider_response
                 nonlocal repair_trigger_area_identifiers
                 nonlocal architecture_repair_mode
+                nonlocal repair_rejected_regression
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -5192,6 +5195,20 @@ def execute_web_turn(
                         repaired = replace(repaired, text=spliced)
                     else:
                         architecture_repair_mode = "full_rewrite_fallback"
+                if architecture_area_ids:
+                    prior_missing = set(
+                        evaluate_architecture_coverage(
+                            answer
+                        ).missing_area_identifiers
+                    )
+                    repaired_missing = set(
+                        evaluate_architecture_coverage(
+                            repaired.text
+                        ).missing_area_identifiers
+                    )
+                    if repaired_missing - prior_missing:
+                        repair_rejected_regression = True
+                        repaired = replace(repaired, text=answer)
                 latest_generated_response = repaired
                 return repaired
 
@@ -5309,6 +5326,10 @@ def execute_web_turn(
                             ),
                             ("validator_version", task_requirements.version),
                             ("repair_mode", architecture_repair_mode),
+                            (
+                                "repair_rejected_regression",
+                                int(repair_rejected_regression),
+                            ),
                         ),
                     )
                     result = replace(result, checks=result.checks + (trace,))
