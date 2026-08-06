@@ -12,6 +12,7 @@ from .task_requirements import (
     ARCHITECTURE_AREA_IDENTIFIERS,
     TaskRequirementContract,
     architecture_section_spans,
+    render_repository_patch_source_context,
 )
 
 
@@ -108,6 +109,8 @@ def build_repair_request(
     attempt_number: int = 1,
     strict_format_correction: bool = False,
     repository_file_paths: tuple[str, ...] = (),
+    repository_source_files: tuple[tuple[str, str], ...] = (),
+    repository_patch_permitted_paths: tuple[str, ...] = (),
 ) -> RepairContract:
     attempt_number = max(1, min(2, int(attempt_number)))
 
@@ -123,6 +126,12 @@ def build_repair_request(
             "stable_side_effect_outcome_present",
             "validator_version",
             "cited_path_count", "invalid_path_count", "index_complete",
+            "patch_file_count", "patch_hunk_count",
+            "checked_patch_hunk_count", "invalid_patch_hunk_count",
+            "context_stack_term_count", "context_stack_term_present_count",
+            "context_anchor_count", "context_anchor_present_count",
+            "failure_mode_present", "first_change_present",
+            "transactional_fix_present",
         }
         values = [
             f"{key}={value}"
@@ -160,6 +169,23 @@ def build_repair_request(
             + (f" ({named})" if named else "")
             + " and state their relevant differences; listing values without "
             "a comparison is insufficient."
+        )
+    if "task_requirement_context_grounding" in failed_types:
+        targeted_corrections.append(
+            "Restore the current prior-turn context and edited branch exactly; "
+            "do not substitute technologies or details from a superseded branch."
+        )
+    if "task_requirement_duplicate_retry_fix" in failed_types:
+        targeted_corrections.append(
+            "Name the duplicate/retry idempotency failure, give the first "
+            "uniqueness or idempotency-key change, and keep the reservation plus "
+            "deduplication write in one atomic transaction."
+        )
+    if "task_requirement_repository_patch_context" in failed_types:
+        targeted_corrections.append(
+            "Rebuild each hunk from the authoritative line-numbered files. Copy "
+            "all context and removed lines byte-for-byte after the display-only "
+            "line prefix; do not collapse or recreate source lines."
         )
     evidence = "\n\n".join(
         f"[{item.citation_label}: {item.source_label} — {item.source_locator}]\n"
@@ -281,6 +307,14 @@ def build_repair_request(
         + "\n".join(f"- {path}" for path in repository_file_paths[:200])[:6000]
         if repository_file_paths else ""
     )
+    repository_patch_context = (
+        "\n\n" + render_repository_patch_source_context(
+            repository_source_files,
+            repository_patch_permitted_paths,
+        )
+        if semantic_contract.repository_patch_context_required
+        and repository_source_files else ""
+    )
     user = (
         f"Minimum task contract:\n{task_contract_context}\n\n"
         f"{typed_contract}\n\n"
@@ -295,6 +329,7 @@ def build_repair_request(
         + f"Current answer (bounded context):\n{bounded_answer}\n\n"
         f"Required evidence:\n{evidence}"
         f"{repository_context}"
+        f"{repository_patch_context}"
     )
     request = AIRequest(
         user_id=user_id,

@@ -360,6 +360,7 @@ def build_request_audit(
         pre_repair_failed_check_identifiers: list[str] = []
         repair_trigger_area_identifiers: list[str] = []
         post_repair_failed_check_identifiers: list[str] = []
+        architecture_repair_mode = "not_attempted"
         phase2_fallback_reason_code: str | None = None
         deterministic_intent: str | None = None
         deterministic_route: str | None = None
@@ -531,6 +532,14 @@ def build_request_audit(
                                 "post_repair_failed_check_identifiers"
                             ))
                         )
+                        candidate_repair_mode = str(
+                            observations.get("repair_mode") or ""
+                        )
+                        if candidate_repair_mode in {
+                            "not_attempted", "section_splice", "full_rewrite",
+                            "full_rewrite_fallback",
+                        }:
+                            architecture_repair_mode = candidate_repair_mode
                 candidate_quality = quality.get("status")
                 if candidate_quality in _QUALITY_STATUSES:
                     quality_status = str(candidate_quality)
@@ -609,6 +618,14 @@ def build_request_audit(
                             "post_repair_failed_check_identifiers"
                         ))
                     )
+                    candidate_repair_mode = str(
+                        raw_check.get("repair_mode") or ""
+                    )
+                    if candidate_repair_mode in {
+                        "not_attempted", "section_splice", "full_rewrite",
+                        "full_rewrite_fallback",
+                    }:
+                        architecture_repair_mode = candidate_repair_mode
 
         for stage_row in stage_rows:
             stage_metadata = _safe_json(str(stage_row[7] or "{}"))
@@ -803,6 +820,7 @@ def build_request_audit(
             "post_repair_failed_check_identifiers": (
                 post_repair_failed_check_identifiers
             ),
+            "architecture_repair_mode": architecture_repair_mode,
             "failed_check_identifiers": failed_check_identifiers[:16],
             "deterministic_intent": deterministic_intent,
             "deterministic_route": deterministic_route,

@@ -111,7 +111,8 @@ def retrieve_repository_contract(
         item.path for item in index.files
         if (
             re.search(
-                rf"\b(?:do not|don't|must not)\s+change\s+"
+                rf"\b(?:do not|don't|must not)\s+"
+                rf"(?:change|modify|edit|touch)\s+"
                 rf"{re.escape(item.path.casefold())}\b",
                 query_folded,
             )

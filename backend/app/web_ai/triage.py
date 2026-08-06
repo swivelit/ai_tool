@@ -121,13 +121,13 @@ def build_execution_plan(
     repository_task = bool(
         re.search(
             r"\b(?:repository|repo|codebase|source|file|module|class|function|"
-            r"debug|bug|fix|implement|refactor|test|typecheck|lint)\b",
+            r"debug|bug|fix|implement|refactor|patch|diff|test|typecheck|lint)\b",
             triage_input.message,
             re.IGNORECASE,
         )
         and re.search(
             r"\b(?:code|repository|repo|codebase|file|module|class|function|"
-            r"debug|bug|fix|implement|refactor|test|typecheck|lint)\b",
+            r"debug|bug|fix|implement|refactor|patch|diff|test|typecheck|lint)\b",
             triage_input.message,
             re.IGNORECASE,
         )

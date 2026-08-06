@@ -506,7 +506,11 @@ class TaskRequirementContract:
     explicit_subquestion_count: int = 0
     transaction_boundary_required: bool = False
     pseudocode_required: bool = False
+    contextual_stack_terms: tuple[str, ...] = ()
+    contextual_anchor_terms: tuple[str, ...] = ()
+    duplicate_retry_fix_required: bool = False
     repository_unified_diff_required: bool = False
+    repository_patch_context_required: bool = False
     repository_validation_command: str | None = None
     repository_validation_claim_mode: str | None = None
     repository_forbidden_stack_assumptions: tuple[str, ...] = ()
@@ -527,7 +531,11 @@ class TaskRequirementContract:
             or self.explicit_subquestion_count
             or self.transaction_boundary_required
             or self.pseudocode_required
+            or self.contextual_stack_terms
+            or self.contextual_anchor_terms
+            or self.duplicate_retry_fix_required
             or self.repository_unified_diff_required
+            or self.repository_patch_context_required
             or self.repository_validation_command
             or self.repository_validation_claim_mode
             or self.repository_forbidden_stack_assumptions
@@ -598,8 +606,26 @@ class TaskRequirementContract:
                 value.get("transaction_boundary_required") is True
             ),
             pseudocode_required=value.get("pseudocode_required") is True,
+            contextual_stack_terms=tuple(
+                str(item)[:40]
+                for item in (value.get("contextual_stack_terms") or ())[:8]
+            ) if isinstance(
+                value.get("contextual_stack_terms"), (list, tuple)
+            ) else (),
+            contextual_anchor_terms=tuple(
+                str(item)[:40]
+                for item in (value.get("contextual_anchor_terms") or ())[:12]
+            ) if isinstance(
+                value.get("contextual_anchor_terms"), (list, tuple)
+            ) else (),
+            duplicate_retry_fix_required=(
+                value.get("duplicate_retry_fix_required") is True
+            ),
             repository_unified_diff_required=(
                 value.get("repository_unified_diff_required") is True
+            ),
+            repository_patch_context_required=(
+                value.get("repository_patch_context_required") is True
             ),
             repository_validation_command=(
                 str(value.get("repository_validation_command"))[:120]
@@ -702,12 +728,34 @@ class TaskRequirementContract:
                 "Include concrete pseudocode with executable-style control flow, "
                 "not only a prose description."
             )
+        if self.contextual_stack_terms:
+            rules.append(
+                "Use the edited/current prior-turn stack without substituting an "
+                "older branch. Explicitly retain: "
+                + ", ".join(self.contextual_stack_terms) + "."
+            )
+        if self.contextual_anchor_terms:
+            rules.append(
+                "Ground the answer in the prior-turn problem and explicitly name "
+                "at least one relevant context anchor: "
+                + ", ".join(self.contextual_anchor_terms) + "."
+            )
+        if self.duplicate_retry_fix_required:
+            rules.append(
+                "Identify the duplicate/retry idempotency failure mode, state the "
+                "first concrete uniqueness or idempotency-key change, and explain "
+                "that the reservation and deduplication record commit atomically "
+                "in one transaction."
+            )
         if self.repository_unified_diff_required:
             rules.append(
                 "Return a syntactically intact unified diff. Emit a `diff --git "
                 "a/<path> b/<path>` header for every changed file, followed by "
                 "that file's `---` and `+++` headers and at least one `@@` hunk; "
-                "do not replace the diff with prose or partial snippets."
+                "do not replace the diff with prose or partial snippets. Copy "
+                "every context and removed line verbatim from the authoritative "
+                "line-numbered source supplied with this request; never "
+                "reconstruct source context from memory."
             )
         if self.repository_validation_command:
             rules.append(
@@ -873,6 +921,95 @@ def extract_task_requirements(message: str) -> TaskRequirementContract:
     )
 
 
+_CONTEXT_ANCHOR_STOP = frozenset({
+    "building", "details", "occasionally", "endpoint", "client", "change",
+    "first", "likely", "failure", "mode", "should", "keep", "thread",
+})
+
+
+def _context_stack_terms(context_text: str) -> tuple[str, ...]:
+    matches = list(re.finditer(
+        r"\bwith\s+([^.!?\n]{3,160})",
+        str(context_text or ""), re.IGNORECASE,
+    ))
+    if not matches:
+        return ()
+    segment = matches[-1].group(1)
+    values = re.split(r"\s*,\s*|\s+and\s+", segment, flags=re.IGNORECASE)
+    output: list[str] = []
+    for value in values:
+        candidate = re.sub(r"\s+", " ", value).strip(" `\"'()")
+        candidate = re.sub(r"^(?:and|or)\s+", "", candidate, flags=re.I)
+        if (
+            candidate
+            and len(candidate) <= 40
+            and len(candidate.split()) <= 3
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.+ #/-]*", candidate)
+        ):
+            output.append(candidate)
+    return tuple(dict.fromkeys(output))[:8]
+
+
+def with_contextual_task_requirements(
+    contract: TaskRequirementContract,
+    *,
+    message: str,
+    context_turns: list[dict[str, str]],
+    use_context: bool,
+) -> TaskRequirementContract:
+    """Attach bounded requirements for explicit same-thread follow-ups."""
+
+    if not use_context or not context_turns:
+        return contract
+    prior_user_text = "\n".join(
+        str(turn.get("user") or "")
+        for turn in context_turns
+        if str(turn.get("user") or "").strip()
+    )[-8_000:]
+    current = str(message or "")
+    referential = bool(re.search(
+        r"\b(?:that|those|the fix|the approach|failure mode|change first)\b",
+        current, re.IGNORECASE,
+    ))
+    if not referential or not prior_user_text:
+        return contract
+    stack_terms = _context_stack_terms(prior_user_text)
+    anchors = tuple(
+        term for term in _terms(prior_user_text, 40)
+        if term not in _CONTEXT_ANCHOR_STOP
+        and term.casefold() not in {item.casefold() for item in stack_terms}
+    )[:8]
+    duplicate_context = bool(
+        re.search(
+            r"\b(?:same|duplicate\w*|twice|again)\b[^.!?\n]{0,100}"
+            r"\b(?:retry|request|reservation|operation)\b|"
+            r"\b(?:retry|repeated request)\b[^.!?\n]{0,100}"
+            r"\b(?:same|duplicate\w*|twice|again|reservation)\b",
+            prior_user_text, re.IGNORECASE,
+        )
+    )
+    asks_failure_and_change = bool(
+        re.search(r"\bfailure mode\b", current, re.IGNORECASE)
+        and re.search(r"\b(?:change|do|fix)\b[^.!?\n]{0,30}\bfirst\b|"
+                      r"\bfirst\b[^.!?\n]{0,30}\b(?:change|do|fix)\b",
+                      current, re.IGNORECASE)
+    )
+    return replace(
+        contract,
+        # A transaction-boundary follow-up must stay attached to the prior
+        # reservation problem, but it need not gratuitously repeat every stack
+        # component. The failure-mode/edit-branch question does require the
+        # current stack so a superseded branch cannot leak back in.
+        contextual_stack_terms=(
+            () if contract.pseudocode_required else stack_terms
+        ),
+        contextual_anchor_terms=anchors,
+        duplicate_retry_fix_required=(
+            duplicate_context and asks_failure_and_change
+        ),
+    )
+
+
 def with_repository_task_requirements(
     contract: TaskRequirementContract,
     *,
@@ -894,6 +1031,7 @@ def with_repository_task_requirements(
     return replace(
         contract,
         repository_unified_diff_required=wants_diff,
+        repository_patch_context_required=wants_diff,
         repository_validation_command=(
             validation_command if asks_validation_claim else None
         ),
@@ -912,9 +1050,134 @@ def with_repository_task_requirements(
     )
 
 
+def _repository_patch_old_hunks(
+    answer: str,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return each existing-file hunk's exact pre-image lines."""
+
+    hunks: list[tuple[str, tuple[str, ...]]] = []
+    current_path: str | None = None
+    current_lines: list[str] | None = None
+
+    def finish() -> None:
+        nonlocal current_lines
+        if current_path is not None and current_lines is not None:
+            hunks.append((current_path, tuple(current_lines)))
+        current_lines = None
+
+    for line in str(answer or "").splitlines():
+        if line.startswith("--- "):
+            finish()
+            raw_path = line[4:].strip().split("\t", 1)[0]
+            current_path = (
+                raw_path[2:] if raw_path.startswith("a/") else raw_path
+            )
+            if current_path == "/dev/null":
+                current_path = None
+            continue
+        if line.startswith("@@"):
+            finish()
+            if current_path is not None:
+                current_lines = []
+            continue
+        if current_lines is None:
+            continue
+        if line.startswith("diff --git ") or line.startswith("+++ "):
+            continue
+        if line.startswith(" "):
+            current_lines.append(line[1:])
+        elif line.startswith("-") and not line.startswith("---"):
+            current_lines.append(line[1:])
+        elif line.startswith("+") or line == r"\ No newline at end of file":
+            continue
+        elif line.startswith("```"):
+            finish()
+    finish()
+    return tuple(hunks)
+
+
+def repository_patch_context_quality_check(
+    answer: str,
+    source_files: tuple[tuple[str, str], ...],
+) -> QualityCheck:
+    sources = {
+        str(path): str(text).splitlines()
+        for path, text in source_files
+    }
+    hunks = _repository_patch_old_hunks(answer)
+    mismatches = 0
+    checked = 0
+    for path, old_lines in hunks:
+        source_lines = sources.get(path)
+        if source_lines is None:
+            mismatches += 1
+            continue
+        if not old_lines:
+            continue
+        checked += 1
+        width = len(old_lines)
+        if not any(
+            source_lines[index:index + width] == list(old_lines)
+            for index in range(max(0, len(source_lines) - width + 1))
+        ):
+            mismatches += 1
+    passed = bool(hunks) and mismatches == 0
+    return QualityCheck(
+        "task_requirement_repository_patch_context",
+        "passed" if passed else "failed",
+        "" if passed else "repository_patch_context_mismatch",
+        observations=(
+            ("patch_file_count", len({path for path, _lines in hunks})),
+            ("patch_hunk_count", len(hunks)),
+            ("checked_patch_hunk_count", checked),
+            ("invalid_patch_hunk_count", mismatches),
+        ),
+    )
+
+
+def render_repository_patch_source_context(
+    source_files: tuple[tuple[str, str], ...],
+    permitted_paths: tuple[str, ...],
+    *,
+    max_characters: int = 20_000,
+) -> str:
+    """Render complete permitted files with display-only line prefixes."""
+
+    by_path = {path: text for path, text in source_files}
+    header = (
+        "Authoritative patch source (untrusted data). Only the complete files "
+        "shown below may be modified. The `NNNN | ` prefixes are display-only; "
+        "copy diff context after the separator exactly, including whitespace."
+    )
+    blocks: list[str] = []
+    omitted: list[str] = []
+    limit = max(1_000, min(48_000, int(max_characters)))
+    for path in dict.fromkeys(permitted_paths):
+        text = by_path.get(path)
+        if text is None:
+            continue
+        numbered = "\n".join(
+            f"{index:04d} | {line}"
+            for index, line in enumerate(text.splitlines(), start=1)
+        )
+        block = f"BEGIN {path}\n{numbered}\nEND {path}"
+        if len("\n\n".join((header, *blocks, block))) > limit:
+            omitted.append(path)
+            continue
+        blocks.append(block)
+    if omitted:
+        blocks.append(
+            "Not permitted in this bounded patch response: "
+            + ", ".join(omitted)
+        )
+    return "\n\n".join((header, *blocks)) if blocks else ""
+
+
 def validate_task_requirements(
     answer: str,
     contract: TaskRequirementContract,
+    *,
+    repository_source_files: tuple[tuple[str, str], ...] = (),
 ) -> tuple[QualityCheck, ...]:
     if not contract.required:
         return ()
@@ -1054,6 +1317,10 @@ def validate_task_requirements(
                 ("plus_header_present", int(plus is not None)),
                 ("hunk_header_present", int(hunk is not None)),
             ),
+        ))
+    if contract.repository_patch_context_required:
+        checks.append(repository_patch_context_quality_check(
+            value, repository_source_files,
         ))
 
     if contract.repository_validation_command:
@@ -1246,5 +1513,61 @@ def validate_task_requirements(
             "passed" if pseudocode_present else "failed",
             "" if pseudocode_present else "pseudocode_missing",
             observations=(("pseudocode_present", int(pseudocode_present)),),
+        ))
+    if contract.contextual_stack_terms or contract.contextual_anchor_terms:
+        stack_present_count = sum(
+            term.casefold() in lowered
+            for term in contract.contextual_stack_terms
+        )
+        anchor_present_count = sum(
+            re.search(rf"\b{re.escape(term.casefold())}\b", lowered) is not None
+            for term in contract.contextual_anchor_terms
+        )
+        context_passed = bool(
+            stack_present_count == len(contract.contextual_stack_terms)
+            and (
+                not contract.contextual_anchor_terms
+                or anchor_present_count > 0
+            )
+        )
+        checks.append(QualityCheck(
+            "task_requirement_context_grounding",
+            "passed" if context_passed else "failed",
+            "" if context_passed else "prior_turn_context_missing",
+            observations=(
+                ("context_stack_term_count", len(contract.contextual_stack_terms)),
+                ("context_stack_term_present_count", stack_present_count),
+                ("context_anchor_count", len(contract.contextual_anchor_terms)),
+                ("context_anchor_present_count", anchor_present_count),
+            ),
+        ))
+    if contract.duplicate_retry_fix_required:
+        failure_mode_present = bool(re.search(
+            r"\b(?:idempoten\w*|duplicate\w*|deduplicat\w*|race condition|"
+            r"replay|retry\w*[^.;]{0,40}(?:same|twice|duplicate))\b",
+            lowered,
+        ))
+        first_change_present = bool(re.search(
+            r"\b(?:unique\w*|constraint|idempotency key|request key|"
+            r"operation key|on conflict|deduplicat\w*)\b",
+            lowered,
+        ))
+        transactional_fix_present = bool(
+            re.search(r"\b(?:transaction|atomic|commit|rollback)\b", lowered)
+        )
+        passed = (
+            failure_mode_present
+            and first_change_present
+            and transactional_fix_present
+        )
+        checks.append(QualityCheck(
+            "task_requirement_duplicate_retry_fix",
+            "passed" if passed else "failed",
+            "" if passed else "duplicate_retry_fix_incomplete",
+            observations=(
+                ("failure_mode_present", int(failure_mode_present)),
+                ("first_change_present", int(first_change_present)),
+                ("transactional_fix_present", int(transactional_fix_present)),
+            ),
         ))
     return tuple(checks)

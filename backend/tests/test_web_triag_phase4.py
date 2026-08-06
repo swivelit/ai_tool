@@ -215,13 +215,14 @@ def test_repository_contract_is_repeatable_and_token_bounded():
     assert first.evidence_pack.total_token_count <= 120
 
 
-def test_repository_contract_honors_explicit_unchanged_files():
+@pytest.mark.parametrize("verb", ["change", "modify", "edit", "touch"])
+def test_repository_contract_honors_explicit_unchanged_files(verb):
     result = retrieve_repository_contract(
         owner_user_id=1, request_id="unchanged",
         repository_id=str(uuid4()), source_version="version1",
         index=_index(),
         query=(
-            "Fix list_items in app/main.py but do not change "
+            f"Fix list_items in app/main.py but do not {verb} "
             "tests/test_main.py"
         ),
         token_cap=160, evidence_item_limit=3,
@@ -481,6 +482,28 @@ def test_dedicated_repository_api_is_owner_scoped_and_persists_no_source(
     assert "unsupported framework assumptions: react" in str(
         prepared.provider_messages[0]["content"]
     ).casefold()
+    patch_prepared = prepare_web_turn(
+        user_id=int(owner.id),
+        message=(
+            "Provide a minimal unified diff modifying only app/main.py; "
+            "do not modify tests/test_main.py."
+        ),
+        request_id=str(uuid4()), thread_id=None, reply_language="en",
+        repository_id=repository_id, billing_exempt=True,
+    )
+    patch_prompt_context = "\n".join(
+        str(item.get("content") or "")
+        for item in patch_prepared.provider_messages
+    )
+    patch_task_metadata = patch_prepared.ai_request.metadata.get(
+        "task_requirements"
+    )
+    assert "Authoritative patch source" in patch_prompt_context
+    assert "BEGIN app/main.py" in patch_prompt_context
+    assert "0001 | def hello() -> str:" in patch_prompt_context
+    assert "BEGIN tests/test_main.py" not in patch_prompt_context
+    assert isinstance(patch_task_metadata, dict)
+    assert patch_task_metadata["repository_patch_context_required"] is True
     cross_owner = client.post(
         "/api/web/chat/stream",
         headers=auth_headers("repo-other", "repo-other@example.com"),

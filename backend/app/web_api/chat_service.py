@@ -81,7 +81,8 @@ from ..web_ai.generation.repository_grounding import (
 from ..web_ai.generation.task_requirements import (
     TaskRequirementContract, architecture_area_ids_for_contract,
     extract_task_requirements, splice_architecture_section_repair,
-    with_repository_task_requirements,
+    render_repository_patch_source_context, with_repository_task_requirements,
+    with_contextual_task_requirements,
 )
 from ..web_ai.generation.repair import (
     architecture_splice_area_identifiers,
@@ -1593,6 +1594,13 @@ def prepare_web_turn(
                 model_message, all_context, mode=context_mode
             )
 
+        task_requirements = with_contextual_task_requirements(
+            task_requirements,
+            message=model_message,
+            context_turns=all_context,
+            use_context=continuity.use_context,
+        )
+
         fresh_thread = not all_context and continuation_row is None
         if fresh_thread and not continuity.use_context:
             # Probe intent with a non-user placeholder because the continuity
@@ -2307,7 +2315,22 @@ def prepare_web_turn(
                 task_requirements.as_metadata()
             )
             base_metadata["task_requirements_hash"] = task_requirements.hash
+            repository_source_files = tuple(
+                (item.path, item.text) for item in repository_snapshot.files
+            )
+            patch_source_context = (
+                render_repository_patch_source_context(
+                    repository_source_files,
+                    repository_contract.target_files,
+                    max_characters=min(
+                        48_000,
+                        max(4_000, policy.repository_contract_token_cap * 4),
+                    ),
+                )
+                if task_requirements.repository_patch_context_required else ""
+            )
             repository_prompt = "\n\n".join((
+                patch_source_context,
                 repository_contract.prompt_contract(
                     policy.repository_contract_token_cap
                 ),
@@ -3264,6 +3287,28 @@ def _execute_phase2_retrieval(
     if not document_planned and not knowledge_planned:
         return
     policy = tier_policy_for(prepared.swico_tier)
+    phase2_task_requirements = TaskRequirementContract.from_metadata(
+        prepared.ai_request.metadata.get("task_requirements")
+    )
+
+    def repository_patch_context() -> str:
+        if (
+            prepared.repository_contract is None
+            or prepared.repository_snapshot is None
+            or not phase2_task_requirements.repository_patch_context_required
+        ):
+            return ""
+        return render_repository_patch_source_context(
+            tuple(
+                (item.path, item.text)
+                for item in prepared.repository_snapshot.files
+            ),
+            prepared.repository_contract.target_files,
+            max_characters=min(
+                48_000,
+                max(4_000, policy.repository_contract_token_cap * 4),
+            ),
+        )
     counters = {
         "attempted_calls": 0,
         "successful_calls": 0,
@@ -3412,11 +3457,12 @@ def _execute_phase2_retrieval(
         evidence_context = evidence_prompt(pack)
         if prepared.repository_contract is not None:
             evidence_context = "\n\n".join((
+                repository_patch_context(),
                 prepared.repository_contract.prompt_contract(
                     policy.repository_contract_token_cap
                 ),
                 evidence_context,
-            ))
+            )).strip()
         prepared.ai_request.metadata["attachment_prompt_context"] = evidence_context
         # Remove the Phase 1 frozen prompt and freeze a new exact prompt only
         # after bounded retrieval has completed.
@@ -3518,11 +3564,12 @@ def _execute_phase2_retrieval(
         fallback_context = evidence_prompt(pack)
         if prepared.repository_contract is not None:
             fallback_context = "\n\n".join((
+                repository_patch_context(),
                 prepared.repository_contract.prompt_contract(
                     policy.repository_contract_token_cap
                 ),
                 fallback_context,
-            ))
+            )).strip()
         prepared.ai_request.metadata["attachment_prompt_context"] = (
             fallback_context
         )
@@ -4327,6 +4374,10 @@ def execute_web_turn(
                 repository_file_paths=tuple(
                     item.path for item in prepared.repository_snapshot.files
                 ) if prepared.repository_snapshot is not None else (),
+                repository_source_files=tuple(
+                    (item.path, item.text)
+                    for item in prepared.repository_snapshot.files
+                ) if prepared.repository_snapshot is not None else (),
                 repository_index_complete=(
                     prepared.repository_snapshot.index_complete
                     if prepared.repository_snapshot is not None else True
@@ -4696,6 +4747,7 @@ def execute_web_turn(
             pre_repair_failed_check_identifiers: tuple[str, ...] = ()
             repair_trigger_area_identifiers: tuple[str, ...] = ()
             post_repair_failed_check_identifiers: tuple[str, ...] = ()
+            architecture_repair_mode = "not_attempted"
 
             def failed_check_identifiers(
                 result: AnswerQualityResult,
@@ -4934,6 +4986,7 @@ def execute_web_turn(
                 nonlocal fence_autoclosed, latest_generated_response
                 nonlocal completed_provider_response
                 nonlocal repair_trigger_area_identifiers
+                nonlocal architecture_repair_mode
                 if not phase3_settings.answer_repair_enabled:
                     _phase3_stage(
                         prepared,
@@ -4964,6 +5017,17 @@ def execute_web_turn(
                         and output_contract.strict_visible_format
                     ),
                     repository_file_paths=guard_context.repository_file_paths,
+                    repository_source_files=(
+                        guard_context.repository_source_files
+                    ),
+                    repository_patch_permitted_paths=(
+                        prepared.repository_contract.target_files
+                        if prepared.repository_contract is not None else ()
+                    ),
+                )
+                architecture_repair_mode = (
+                    "section_splice"
+                    if contract.architecture_splice_areas else "full_rewrite"
                 )
                 if architecture_area_ids and attempt_number == 1:
                     repair_trigger_area_identifiers = (
@@ -5113,6 +5177,8 @@ def execute_web_turn(
                     )
                     if spliced is not None:
                         repaired = replace(repaired, text=spliced)
+                    else:
+                        architecture_repair_mode = "full_rewrite_fallback"
                 latest_generated_response = repaired
                 return repaired
 
@@ -5229,6 +5295,7 @@ def execute_web_turn(
                                 )[:256],
                             ),
                             ("validator_version", task_requirements.version),
+                            ("repair_mode", architecture_repair_mode),
                         ),
                     )
                     result = replace(result, checks=result.checks + (trace,))

@@ -214,6 +214,7 @@ type Audit = {
   pre_repair_failed_check_identifiers: string[]
   repair_trigger_area_identifiers: string[]
   post_repair_failed_check_identifiers: string[]
+  architecture_repair_mode: 'not_attempted' | 'section_splice' | 'full_rewrite' | 'full_rewrite_fallback'
   failed_check_identifiers: string[]
   deterministic_intent: string | null
   deterministic_route: 'backend_tool' | null
@@ -321,6 +322,7 @@ type QuestionResult = {
   preRepairFailedCheckIdentifiers: string[]
   repairTriggerAreaIdentifiers: string[]
   postRepairFailedCheckIdentifiers: string[]
+  architectureRepairMode: string
   failedCheckIdentifiers: string[]
   deterministicIntent: string | null
   deterministicRoute: 'backend_tool' | null
@@ -1159,6 +1161,7 @@ function skippedResult(
     outputContractCheckStatusCounts:{}, taskRequirementCheckStatusCounts:{},
     preRepairFailedCheckIdentifiers:[], repairTriggerAreaIdentifiers:[],
     postRepairFailedCheckIdentifiers:[],
+    architectureRepairMode:'not_attempted',
     failedCheckIdentifiers:[], deterministicIntent:null,
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
@@ -2059,6 +2062,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       repairTriggerAreaIdentifiers:audit.repair_trigger_area_identifiers,
       postRepairFailedCheckIdentifiers:
         audit.post_repair_failed_check_identifiers,
+      architectureRepairMode:audit.architecture_repair_mode,
       failedCheckIdentifiers:audit.failed_check_identifiers,
       deterministicIntent:audit.deterministic_intent,
       deterministicRoute:audit.deterministic_route,
@@ -3964,6 +3968,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         repair_trigger_area_identifiers:item.repairTriggerAreaIdentifiers,
         post_repair_failed_check_identifiers:
           item.postRepairFailedCheckIdentifiers,
+        architecture_repair_mode:item.architectureRepairMode,
         failed_check_identifiers:item.failedCheckIdentifiers,
         deterministic_intent:item.deterministicIntent,
         deterministic_route:item.deterministicRoute,

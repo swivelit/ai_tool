@@ -224,6 +224,7 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).toContain('pre_repair_failed_check_identifiers')
   expect(spec).toContain('repair_trigger_area_identifiers')
   expect(spec).toContain('post_repair_failed_check_identifiers')
+  expect(spec).toContain('architecture_repair_mode')
   expect(spec).toContain('const architecture = evaluateWebhookArchitecture(structure)')
   expect(spec.match(/evaluateWebhookArchitecture\(rawRedacted\.text\)/g))
     .toHaveLength(2)

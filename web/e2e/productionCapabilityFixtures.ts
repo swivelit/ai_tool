@@ -212,6 +212,7 @@ export function longPastedText(
 }
 
 export function pricingRepositoryZip(runId: string): Buffer {
+  if (!runId.trim()) throw new Error('repository fixture run id is required')
   return storedZip([
     { name:'package.json', data:Buffer.from(`{
   "type": "module",
@@ -245,7 +246,17 @@ test('applies a percentage discount', () => {
 })
 
 test('creates an order with the discounted total', () => {
-  assert.deepEqual(createOrder({ id: 'ORDER-${runId}', subtotalCents: 10000, discountPercent: 15 }), { id: 'ORDER-${runId}', totalCents: 8500 })
+  assert.deepEqual(
+    createOrder({
+      id: 'ORDER-1',
+      subtotalCents: 10000,
+      discountPercent: 15,
+    }),
+    {
+      id: 'ORDER-1',
+      totalCents: 8500,
+    },
+  )
 })
 
 test('rejects an invalid percentage', () => {

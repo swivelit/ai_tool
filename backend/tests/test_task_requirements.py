@@ -10,7 +10,8 @@ from app.web_ai.generation.task_requirements import (
     evaluate_authority_semantics,
     evaluate_idempotency_semantics,
     extract_task_requirements, splice_architecture_section_repair,
-    validate_task_requirements, with_repository_task_requirements,
+    render_repository_patch_source_context, validate_task_requirements,
+    with_contextual_task_requirements, with_repository_task_requirements,
 )
 
 
@@ -346,8 +347,11 @@ def test_repository_unified_diff_requirement_rejects_prose_and_accepts_intact_di
         validation_mode="static_only",
     )
     failed = validate_task_requirements("Change src/app.js.", contract)
-    assert failed[-1].check_type == "task_requirement_repository_unified_diff"
-    assert failed[-1].status == "failed"
+    unified = next(
+        check for check in failed
+        if check.check_type == "task_requirement_repository_unified_diff"
+    )
+    assert unified.status == "failed"
     answer = """```diff
 --- a/src/app.js
 +++ b/src/app.js
@@ -355,7 +359,179 @@ def test_repository_unified_diff_requirement_rejects_prose_and_accepts_intact_di
 -return 1
 +return 2
 ```"""
-    assert validate_task_requirements(answer, contract)[-1].status == "passed"
+    checks = validate_task_requirements(
+        answer, contract,
+        repository_source_files=(("src/app.js", "return 1\n"),),
+    )
+    assert all(check.status == "passed" for check in checks)
+
+
+def test_repository_patch_context_must_match_real_fixture_verbatim():
+    source = """import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createOrder } from '../src/orderService.js'
+import { finalPrice } from '../src/pricing.js'
+
+test('applies a percentage discount', () => {
+  assert.equal(finalPrice(10000, 15), 8500)
+})
+
+test('creates an order with the discounted total', () => {
+  assert.deepEqual(
+    createOrder({
+      id: 'ORDER-1',
+      subtotalCents: 10000,
+      discountPercent: 15,
+    }),
+    {
+      id: 'ORDER-1',
+      totalCents: 8500,
+    },
+  )
+})
+
+test('rejects an invalid percentage', () => {
+  assert.throws(() => finalPrice(10000, 101))
+})
+"""
+    source_files = (("test/order.test.js", source),)
+    contract = with_repository_task_requirements(
+        extract_task_requirements("Provide a minimal unified diff."),
+        message="Provide a minimal unified diff.",
+        validation_command=None,
+        validation_mode="static_only",
+    )
+    correct = """```diff
+diff --git a/test/order.test.js b/test/order.test.js
+--- a/test/order.test.js
++++ b/test/order.test.js
+@@ -10,4 +10,4 @@
+ test('creates an order with the discounted total', () => {
+   assert.deepEqual(
+-    createOrder({
++    createOrder({
+       id: 'ORDER-1',
+```"""
+    collapsed = """```diff
+diff --git a/test/order.test.js b/test/order.test.js
+--- a/test/order.test.js
++++ b/test/order.test.js
+@@ -10,2 +10,2 @@
+ test('creates an order with the discounted total', () => {
+-  assert.deepEqual(createOrder({ id: 'ORDER-SWICO-CAP-RUN', subtotalCents: 10000, discountPercent: 15 }), { id: 'ORDER-SWICO-CAP-RUN', totalCents: 8500 })
++  assert.deepEqual(createOrder({ id: 'ORDER-1', subtotalCents: 10000, discountPercent: 15 }), { id: 'ORDER-1', totalCents: 8500 })
+```"""
+
+    def context_check(answer: str):
+        return next(
+            check for check in validate_task_requirements(
+                answer, contract, repository_source_files=source_files,
+            )
+            if check.check_type == "task_requirement_repository_patch_context"
+        )
+
+    assert context_check(correct).status == "passed"
+    failed = context_check(collapsed)
+    assert failed.status == "failed"
+    assert failed.reason_code == "repository_patch_context_mismatch"
+    rendered = render_repository_patch_source_context(
+        source_files, ("test/order.test.js",),
+    )
+    assert "0011 |   assert.deepEqual(" in rendered
+    assert "0013 |       id: 'ORDER-1'," in rendered
+
+
+def test_contextual_failure_fix_and_edited_stack_are_mandatory():
+    prompt = "What is the most likely failure mode, and what should I change first?"
+    original_context = [{
+        "user": (
+            "I am building an inventory API with FastAPI, PostgreSQL, and Redis. "
+            "The stock-reservation endpoint occasionally applies the same "
+            "reservation twice after a client retry."
+        ),
+        "assistant": "Understood.",
+    }]
+    contract = with_contextual_task_requirements(
+        extract_task_requirements(prompt),
+        message=prompt,
+        context_turns=original_context,
+        use_context=True,
+    )
+    assert contract.duplicate_retry_fix_required is True
+    assert contract.contextual_stack_terms == (
+        "FastAPI", "PostgreSQL", "Redis",
+    )
+    thin = validate_task_requirements(
+        "This is probably a retry issue. Add an idempotency key.", contract,
+    )
+    assert {check.check_type for check in thin if check.status == "failed"} == {
+        "task_requirement_context_grounding",
+        "task_requirement_duplicate_retry_fix",
+    }
+    complete = validate_task_requirements(
+        "In the FastAPI, PostgreSQL, and Redis inventory flow, the failure is a "
+        "duplicate retry without idempotency. First add a UNIQUE idempotency key "
+        "and commit its deduplication row and stock reservation atomically in one "
+        "transaction.",
+        contract,
+    )
+    assert all(check.status == "passed" for check in complete)
+
+    edited_context = [{
+        "user": (
+            "I am building an inventory API with Django, MySQL, and Valkey. "
+            "The stock-reservation endpoint applies the same reservation twice "
+            "after a retry."
+        ),
+        "assistant": "Understood.",
+    }]
+    edited = with_contextual_task_requirements(
+        extract_task_requirements(prompt), message=prompt,
+        context_turns=edited_context, use_context=True,
+    )
+    assert edited.contextual_stack_terms == ("Django", "MySQL", "Valkey")
+    mixed = validate_task_requirements(
+        "FastAPI and PostgreSQL should add an atomic UNIQUE idempotency key for "
+        "the duplicate retry.", edited,
+    )
+    context_check = next(
+        check for check in mixed
+        if check.check_type == "task_requirement_context_grounding"
+    )
+    assert context_check.status == "failed"
+
+
+def test_contextual_transaction_pseudocode_requires_prior_problem_anchor():
+    prompt = "Show the transaction boundary for that fix in pseudocode."
+    context = [{
+        "user": (
+            "I am building an inventory API with FastAPI, PostgreSQL, and Redis. "
+            "The stock-reservation endpoint applies the same reservation twice "
+            "after a retry."
+        ),
+        "assistant": "Use an idempotency key.",
+    }]
+    contract = with_contextual_task_requirements(
+        extract_task_requirements(prompt), message=prompt,
+        context_turns=context, use_context=True,
+    )
+    assert contract.transaction_boundary_required is True
+    assert contract.pseudocode_required is True
+    assert contract.contextual_stack_terms == ()
+    assert "inventory" in contract.contextual_anchor_terms
+    unrelated = validate_task_requirements(
+        "```text\nBEGIN TRANSACTION\nCOMMIT\n```", contract,
+    )
+    assert next(
+        check for check in unrelated
+        if check.check_type == "task_requirement_context_grounding"
+    ).status == "failed"
+    grounded = validate_task_requirements(
+        "```text\nBEGIN TRANSACTION\nINSERT inventory reservation\nCOMMIT\n```\n"
+        "The FastAPI, PostgreSQL, and Redis stock flow stays atomic.",
+        contract,
+    )
+    assert all(check.status == "passed" for check in grounded)
 
 
 def test_repository_validation_claim_must_match_static_only_capability():

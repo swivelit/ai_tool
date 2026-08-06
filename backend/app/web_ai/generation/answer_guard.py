@@ -77,6 +77,7 @@ class AnswerGuardContext:
     repository_context_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
     repository_file_paths: tuple[str, ...] = ()
+    repository_source_files: tuple[tuple[str, str], ...] = ()
     repository_index_complete: bool = True
     output_contract: OutputContract | None = None
     task_requirements: TaskRequirementContract | None = None
@@ -175,7 +176,8 @@ class AnswerGuard:
         if context.task_requirements and context.task_requirements.required:
             checks.extend(
                 check for check in validate_task_requirements(
-                    answer, context.task_requirements
+                    answer, context.task_requirements,
+                    repository_source_files=context.repository_source_files,
                 ) if include(check.check_type)
             )
         if context.repository_context_used:

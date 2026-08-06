@@ -821,6 +821,7 @@ Use event and payment tables with a unique provider event ID. PostgreSQL is the 
     ]
     assert audit["repair_trigger_area_identifiers"] == ["database_schema"]
     assert audit["post_repair_failed_check_identifiers"] == []
+    assert audit["architecture_repair_mode"] == "section_splice"
 
 
 def test_non_architecture_format_repair_preserves_all_architecture_areas():
@@ -996,6 +997,7 @@ Run concurrency and failure-injection integration tests."""
     ]
     assert audit["repair_trigger_area_identifiers"] == ["duplicate_handling"]
     assert audit["post_repair_failed_check_identifiers"] == []
+    assert audit["architecture_repair_mode"] == "section_splice"
 
 
 def test_second_architecture_splice_repair_is_bounded_and_flagged(monkeypatch):
