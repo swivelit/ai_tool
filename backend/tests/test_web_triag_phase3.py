@@ -20,6 +20,12 @@ from app.web_ai.generation.answer_guard import (
 )
 from app.web_ai.generation.generator import VerifiedGenerator
 from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
+from app.web_ai.generation.output_format import fenced_code_quality_check
+from app.web_ai.generation.repair import build_repair_request
+from app.web_ai.generation.task_requirements import (
+    evaluate_architecture_coverage, extract_task_requirements,
+    splice_architecture_section_repair,
+)
 from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_quality
 from app.web_ai.request_audit import build_request_audit
 from app.web_ai.settings import TriagSettings
@@ -815,6 +821,109 @@ Use event and payment tables with a unique provider event ID. PostgreSQL is the 
     ]
     assert audit["repair_trigger_area_identifiers"] == ["database_schema"]
     assert audit["post_repair_failed_check_identifiers"] == []
+
+
+def test_non_architecture_format_repair_preserves_all_architecture_areas():
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    answer = """PostgreSQL is the system of record. Redis and Valkey are non-authoritative.
+### 1. Database tables and unique constraints
+Use event and payment tables with a unique provider event ID.
+### 2. Transaction boundaries
+One atomic transaction commits wallet and event changes.
+### 3. Event and payment state transitions
+Use monotonic event and payment status transitions.
+### 4. Pseudocode
+def handle_event(event):
+    insert(event)
+    commit()
+### 5. Duplicate-event handling
+INSERT ON CONFLICT DO NOTHING prevents a second wallet credit.
+### 6. Out-of-order handling
+Defer out-of-sequence events and discard outdated updates.
+### 7. Failure recovery
+Requeue pending events after a crash and resume expired leases.
+### 8. Reconciliation
+Run a reconciliation consistency check against PostgreSQL.
+### 9. Security checks
+Verify the webhook HMAC signature and reject replayed timestamps.
+### 10. A focused test plan
+Test duplicates, concurrency, crashes, refunds, replay, and out-of-order events."""
+    repaired_section = """### 4. Pseudocode
+```python
+def handle_event(event):
+    insert(event)
+    commit()
+```"""
+    failed_check = fenced_code_quality_check(answer)
+    assert failed_check.status == "failed"
+    contract = build_repair_request(
+        user_id=1,
+        request_id="contract-format-only-architecture-repair-request",
+        reply_language="en",
+        current_answer=answer,
+        failed_checks=(failed_check,),
+        evidence_pack=None,
+        task_contract=prompt,
+        task_requirements=extract_task_requirements(prompt),
+        answer_class="long_form",
+        max_output_tokens=6000,
+    )
+    assert contract.architecture_splice_areas == ("pseudocode",)
+    repaired = splice_architecture_section_repair(
+        answer, repaired_section, contract.architecture_splice_areas,
+    )
+    assert repaired is not None
+    assert repaired[:repaired.index("### 4.")] == (
+        answer[:answer.index("### 4.")]
+    )
+    assert repaired[repaired.index("### 5."):] == (
+        answer[answer.index("### 5."):]
+    )
+    assert evaluate_architecture_coverage(repaired).missing_area_identifiers == ()
+    assert fenced_code_quality_check(repaired).status == "passed"
+
+    completion_contract = build_repair_request(
+        user_id=1,
+        request_id="contract-completion-architecture-repair-request",
+        reply_language="en",
+        current_answer=answer,
+        failed_checks=(QualityCheck(
+            "provider_completion", "failed", "provider_output_incomplete",
+        ),),
+        evidence_pack=None,
+        task_contract=prompt,
+        task_requirements=extract_task_requirements(prompt),
+        answer_class="long_form",
+        max_output_tokens=6000,
+    )
+    assert completion_contract.architecture_splice_areas == ("test_plan",)
+    completion_repaired = splice_architecture_section_repair(
+        answer,
+        "### 10. A focused test plan\nTest duplicate, concurrent, crash, refund, "
+        "replay, and out-of-order scenarios.",
+        completion_contract.architecture_splice_areas,
+    )
+    assert completion_repaired is not None
+    assert completion_repaired[:completion_repaired.index("### 10.")] == (
+        answer[:answer.index("### 10.")]
+    )
+    assert evaluate_architecture_coverage(
+        completion_repaired
+    ).missing_area_identifiers == ()
 
 
 def test_incomplete_architecture_gets_one_targeted_duplicate_repair(monkeypatch):

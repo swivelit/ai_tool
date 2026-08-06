@@ -744,6 +744,7 @@ test('routing scenarios assert content-free deterministic request-audit fields',
     'provider_call_count', 'generation_stage_count',
   ]) expect(spec).toContain(field)
   expect(spec).toContain("result.deterministicRoute === 'backend_tool'")
+  expect(spec).toContain("['R04', 'R10'].includes(question.id)")
   expect(spec).toContain("id:'R-ROUTING-AUDIT'")
   expect(spec).toContain("['all', 'full'].includes(gate.batch)")
 })

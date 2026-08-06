@@ -101,13 +101,21 @@ _TOPUP_CUSTOM = re.compile(
     r"(?:top[ -]?up|recharge).{0,20}(?:any|arbitrary|custom|own amount))\b",
     re.IGNORECASE,
 )
-_PLAN_PRICING = re.compile(
-    r"\b(?:swico )?(?:plans?|pricing|tiers?|modes?)\b.*"
-    r"\b(?:price|pricing|cost|difference|available|compare|which|what)\b|"
-    r"\b(?:price|pricing|cost|compare|difference)\b.*"
-    r"\b(?:swico )?(?:plans?|tiers?|modes?)\b",
+_PLAN_PRICING_TERM = re.compile(
+    r"\b(?:plans?|pricing|tiers?)\b",
     re.IGNORECASE,
 )
+_PLAN_MODE_TERM = re.compile(r"\bmodes?\b", re.IGNORECASE)
+_PLAN_PRICING_CUE = re.compile(
+    r"\b(?:price|pricing|cost|difference|available|compare|which|what|"
+    r"enna|sollunga)\b",
+    re.IGNORECASE,
+)
+_PLAN_PRODUCT_CONTEXT = re.compile(
+    r"\b(?:swico|plans?|tiers?|pricing|credits?)\b",
+    re.IGNORECASE,
+)
+_PLAN_PRICING_MAX_PAIR_DISTANCE = 60
 
 _BINARY_OPERATORS: dict[type[ast.operator], Callable[[float, float], float]] = {
     ast.Add: operator.add,
@@ -167,17 +175,37 @@ class DeterministicScopeDecision:
     scope_gate_reason: str | None
 
 
-def _billing_intent_match(message: str) -> tuple[str, re.Match[str]] | None:
+def _plan_pricing_match(message: str) -> re.Match[str] | None:
+    terms = list(_PLAN_PRICING_TERM.finditer(message))
+    if _PLAN_PRODUCT_CONTEXT.search(message) is not None:
+        terms.extend(_PLAN_MODE_TERM.finditer(message))
+    cues = list(_PLAN_PRICING_CUE.finditer(message))
+    pairs = [
+        (min(term.start(), cue.start()), term, cue)
+        for term in terms
+        for cue in cues
+        if term.span() != cue.span()
+        and abs(term.start() - cue.start()) <= _PLAN_PRICING_MAX_PAIR_DISTANCE
+    ]
+    if not pairs:
+        return None
+    _start, term, cue = min(pairs, key=lambda item: item[0])
+    return term if term.start() <= cue.start() else cue
+
+
+def _billing_intent_match(message: str) -> tuple[str, int] | None:
     for intent, pattern in (
         ("billing_topup_how", _TOPUP_HOW),
         ("billing_topup_packages", _TOPUP_PACKAGES),
         ("billing_topup_bounds", _TOPUP_BOUNDS),
         ("billing_custom_topup", _TOPUP_CUSTOM),
-        ("billing_tier_pricing", _PLAN_PRICING),
     ):
         match = pattern.search(message)
         if match is not None:
-            return intent, match
+            return intent, match.start()
+    pricing_match = _plan_pricing_match(message)
+    if pricing_match is not None:
+        return "billing_tier_pricing", pricing_match.start()
     return None
 
 
@@ -198,7 +226,7 @@ def _candidate_intent(
         return "json_validation", json_match.start()
     billing = _billing_intent_match(message)
     if billing is not None:
-        return billing[0], billing[1].start()
+        return billing
     if classify_swico_brand_query(message, previous_topic=previous_topic) is not None:
         anchor = _BRAND_SCOPE_ANCHOR.search(message)
         return "swico_brand", anchor.start() if anchor is not None else 0
@@ -451,7 +479,7 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
             f"No. Choose one of the configured packages: {package_text}.",
             "billing_custom_topup",
         )
-    if _PLAN_PRICING.search(text):
+    if _plan_pricing_match(text) is not None:
         settings = public_tier_settings(
             os.getenv("SWICO_DEFAULT_TIER", "lite")
         )

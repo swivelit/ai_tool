@@ -356,6 +356,29 @@ def test_deterministic_scope_keeps_direct_tanglish_pricing_question():
     assert "Swico-oda" in response.text
 
 
+def test_pricing_intent_rejects_unqualified_mode_questions():
+    user = create_test_user(
+        "scope-unqualified-mode", "scope-unqualified-mode@example.com"
+    )
+    messages = (
+        "What is the most likely failure mode, and what should I change first?",
+        "The system has two failure modes; what causes each?",
+        "How do I turn on dark mode?",
+    )
+    with SessionLocal() as session:
+        for index, message in enumerate(messages, start=1):
+            decision = deterministic_scope_decision(message)
+            response = try_deterministic_answer(
+                session,
+                user_id=int(user.id),
+                message=message,
+                reply_language="en",
+                request_id=f"scope-unqualified-mode-{index}",
+            )
+            assert decision.intent != "billing_tier_pricing", message
+            assert response is None, message
+
+
 def test_deterministic_scope_character_and_line_boundaries():
     base = "What are Swico plans and pricing?"
     exactly_240 = base + ("x" * (240 - len(base)))

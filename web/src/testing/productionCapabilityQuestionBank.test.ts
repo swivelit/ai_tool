@@ -13,7 +13,7 @@ describe('production capability question bank', () => {
     for (const prefix of [
       ['A', 9], ['B', 3], ['C', 9], ['D', 5], ['E', 9],
       ['F', 4], ['G', 5], ['H', 5], ['I', 4],
-      ['R', 9],
+      ['R', 10],
     ] as const) {
       for (let index = 1; index <= prefix[1]; index += 1) {
         expect(ids.has(`${prefix[0]}${String(index).padStart(2, '0')}`)).toBe(true)
@@ -43,7 +43,7 @@ describe('production capability question bank', () => {
   })
 
   it('defines the routing batch with fresh isolated threads and route probes', () => {
-    expect(ROUTING_QUESTIONS).toHaveLength(9)
+    expect(ROUTING_QUESTIONS).toHaveLength(10)
     expect(ROUTING_QUESTIONS.every(item => (
       item.batch === 'routing' && item.freshThread === true
     ))).toBe(true)
@@ -55,5 +55,7 @@ describe('production capability question bank', () => {
       .toHaveLength(3)
     expect(ROUTING_QUESTIONS.find(item => item.id === 'R07')?.prompt)
       .toBe("Swico plans enna, pricing sollunga?")
+    expect(ROUTING_QUESTIONS.find(item => item.id === 'R10')?.prompt)
+      .toBe('What is the most likely failure mode, and what should I change first?')
   })
 })

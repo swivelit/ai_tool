@@ -579,6 +579,17 @@ def test_large_explicit_architecture_contract_is_long_form_but_ordinary_is_detai
     ) == "long_form"
 
 
+def test_explicit_transaction_pseudocode_is_detailed_not_simple(monkeypatch):
+    monkeypatch.setenv("WEB_DETAILED_MAX_OUTPUT_TOKENS", "6000")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "6000")
+    prompt = "Show the transaction boundary for that fix in pseudocode."
+
+    assert classify_answer_class(prompt, "general") == "detailed"
+    optimized = optimize_web_turn(prompt)
+    assert optimized.answer_class == "detailed"
+    assert optimized.max_output_tokens == 6000
+
+
 def test_compact_profile_is_selective_private_and_bounded(monkeypatch):
     monkeypatch.setenv("WEB_PROFILE_PROMPT_MAX_CHARS", "500")
     profile = {

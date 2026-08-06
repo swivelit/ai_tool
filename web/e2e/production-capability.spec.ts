@@ -2461,7 +2461,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         if (['R01', 'R06', 'R08', 'R09'].includes(question.id) && !generated) {
           markRoutingFailure(result, 'routing_model_path_not_observed')
         }
-        if (question.id === 'R04' && result.deterministicRoute !== null) {
+        if (['R04', 'R10'].includes(question.id)
+          && result.deterministicRoute !== null) {
           markRoutingFailure(result, 'routing_model_path_not_observed')
         }
         if (question.id === 'R01') {

@@ -262,6 +262,11 @@ Explain how to check the result and how to present the exercise accessibly.`,
 Cover these ten numbered areas concisely: database schema and unique constraints; transaction boundaries; event and payment state transitions; pseudocode; duplicate handling; out-of-order handling; failure recovery; reconciliation; security checks; and a focused test plan.`,
     expected:'Accepted complete ten-area architecture with correct authoritative-store semantics.',
   },
+  {
+    id:'R10', category:'R', batch:'routing', tier:'standard', freshThread:true,
+    prompt:'What is the most likely failure mode, and what should I change first?',
+    expected:'Provider generation; an unqualified failure-mode question must not select deterministic pricing.',
+  },
 ]
 
 export const ALL_CAPABILITY_QUESTIONS = [

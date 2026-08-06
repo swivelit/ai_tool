@@ -421,6 +421,15 @@ def classify_answer_class(message: str, intent: str = "") -> AnswerClass:
     ))
     if many_required_sections or large_numbered_contract:
         return "long_form"
+    if (
+        re.search(r"\bpseudocode\b", lowered)
+        and re.search(
+            r"\b(?:transaction|boundary|algorithm|flow|architecture|design|"
+            r"implement(?:ation)?)\b",
+            lowered,
+        )
+    ):
+        return "detailed"
     if intent in {"coding", "complex_reasoning"} or detailed_answer_requested(text):
         return "detailed"
     if len(text.split()) <= 12 and (
