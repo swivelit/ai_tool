@@ -28,6 +28,7 @@ from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.request_coordinator import _apply_prompt_budget
 from app.web_api.router import _serialize_message
 from app.web_api.turn_optimizer import WebTurnOptimization, select_context_turns
+from app.web_ai.generation.output_contract import extract_output_contract
 from app.web_api.web_memory import (
     parse_durable_memory_fact,
     retrieve_memory,
@@ -396,6 +397,23 @@ def test_deterministic_scope_character_and_line_boundaries():
     assert deterministic_scope_decision(
         "Convert 5 km to miles\nUse it in lesson two.\nExplain the lesson."
     ).scope_gate_reason == "too_many_nonempty_lines"
+
+
+def test_multiline_scope_gate_does_not_remove_the_output_contract():
+    prompt = """Write a micro-story of exactly 120 words.
+Include the phrase “blue umbrella” exactly once.
+End with the word “home”.
+Do not include a title."""
+
+    assert deterministic_scope_decision(prompt).scope_gate_reason == (
+        "too_many_nonempty_lines"
+    )
+    contract = extract_output_contract(prompt)
+    assert contract.exact_word_count == 120
+    assert contract.required_phrase == "blue umbrella"
+    assert contract.required_phrase_count == 1
+    assert contract.required_final_word == "home"
+    assert contract.no_title is True
 
 
 def test_deterministic_scope_creation_verb_and_early_match_boundaries():

@@ -157,6 +157,30 @@ def build_repair_request(
     semantic_contract = task_requirements or TaskRequirementContract()
     targeted_corrections: list[str] = []
     failed_types = {check.check_type for check in failed_checks}
+    word_count_check = next((
+        check for check in failed_checks
+        if check.check_type == "output_contract_word_count"
+    ), None)
+    if word_count_check is not None:
+        observations = dict(word_count_check.observations)
+        expected = observations.get("expected_word_count")
+        observed = observations.get("observed_word_count")
+        if not isinstance(expected, int) and output_contract is not None:
+            expected = output_contract.exact_word_count
+        if not isinstance(observed, int):
+            observed = len(str(current_answer or "").split())
+        if isinstance(expected, int):
+            difference = expected - observed
+            edit = "add" if difference >= 0 else "remove"
+            targeted_corrections.append(
+                f"The draft is {observed} words; the contract requires exactly "
+                f"{expected}. {edit.capitalize()} exactly {abs(difference)} words "
+                "using the verifier's whitespace-delimited count. Preserve every "
+                "other constraint from the minimum task contract, including the "
+                "required phrase and occurrence count, requested setting, dialogue "
+                "restriction, final word, and no-title rule. Return only the "
+                "corrected answer."
+            )
     if "task_requirement_example" in failed_types:
         targeted_corrections.append(
             "Include a concrete retry example showing the retry in action: "
@@ -164,6 +188,14 @@ def build_repair_request(
             "repeat. Do not merely mention retries abstractly. Preserve every "
             "already-passing requirement; when an exact bullet count applies, "
             "repair an existing bullet instead of adding another one."
+        )
+    if "task_architecture_test_plan" in failed_types:
+        targeted_corrections.append(
+            "Replace the focused test-plan section with concrete scenarios for "
+            "duplicate delivery, out-of-order delivery, crash and replay recovery, "
+            "and partial/full refunds. For each scenario, state how it is exercised "
+            "and what invariant or result is asserted; a heading or generic promise "
+            "to test is insufficient."
         )
     if "task_requirement_comparison" in failed_types:
         named = ", ".join(semantic_contract.comparison_terms)
@@ -278,6 +310,22 @@ def build_repair_request(
         output_contract or OutputContract()
     )
     bounded_answer = str(current_answer or "")
+    if architecture_areas:
+        # Section-splice repairs need the exact bytes of the failed sections,
+        # not a generic head/tail sample of a large architecture answer. This
+        # also keeps the replacement context small without hiding the text the
+        # model must repair.
+        span_by_area = {
+            span.area_identifier: span
+            for span in architecture_section_spans(bounded_answer)
+        }
+        targeted_sections = [
+            bounded_answer[span.start:span.end]
+            for area_identifier in architecture_areas
+            if (span := span_by_area.get(area_identifier)) is not None
+        ]
+        if targeted_sections:
+            bounded_answer = "\n\n".join(targeted_sections)
     if len(bounded_answer) > 6000:
         bounded_answer = (
             bounded_answer[:4000]
@@ -370,6 +418,8 @@ def build_repair_request(
                 if output_contract else 0
             ),
             "task_requirements": semantic_contract.as_metadata(),
+            "reasoning_effort_override": "low",
+            "repair_reasoning": True,
         },
         context_turns=[],
     )

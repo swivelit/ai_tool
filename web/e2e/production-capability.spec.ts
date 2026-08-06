@@ -226,6 +226,7 @@ type Audit = {
   selected_tier: CapabilityTier | 'not_run'
   repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null
   reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
+  repair_reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null
   effective_max_output_tokens: number
   visible_output_reserve_tokens: number
   reasoning_budget_cap_tokens: number
@@ -331,6 +332,7 @@ type QuestionResult = {
   generationStageCount: number
   repairStageCount: number
   reasoningEffort: string | null
+  repairReasoningEffort: string | null
   effectiveMaxOutputTokens: number
   visibleOutputReserveTokens: number
   reasoningBudgetCapTokens: number
@@ -1166,6 +1168,7 @@ function skippedResult(
     deterministicRoute:null, scopeGateReason:null,
     repairAttempted:false,
     generationStageCount:0, repairStageCount:0, reasoningEffort:null,
+    repairReasoningEffort:null,
     effectiveMaxOutputTokens:0, visibleOutputReserveTokens:0,
     reasoningBudgetCapTokens:0, reasoningStarvedRetry:false,
     turnLifecycleStage:null, turnLifecycleEvents:[], turnLifecycleReason:null,
@@ -2071,6 +2074,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
       generationStageCount:audit.generation_stage_count,
       repairStageCount:audit.repair_stage_count,
       reasoningEffort:audit.reasoning_effort,
+      repairReasoningEffort:audit.repair_reasoning_effort,
       effectiveMaxOutputTokens:audit.effective_max_output_tokens,
       visibleOutputReserveTokens:audit.visible_output_reserve_tokens,
       reasoningBudgetCapTokens:audit.reasoning_budget_cap_tokens,
@@ -2352,6 +2356,8 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           failedResult.persistedQualityStatus = capturedAudit.persisted_quality_status
           failedResult.repairAttempted = capturedAudit.repair_attempted
           failedResult.reasoningEffort = capturedAudit.reasoning_effort
+          failedResult.repairReasoningEffort =
+            capturedAudit.repair_reasoning_effort
           failedResult.effectiveMaxOutputTokens =
             capturedAudit.effective_max_output_tokens
           failedResult.visibleOutputReserveTokens =
@@ -3976,6 +3982,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
         generation_stage_count:item.generationStageCount,
         repair_stage_count:item.repairStageCount,
         reasoning_effort:item.reasoningEffort,
+        repair_reasoning_effort:item.repairReasoningEffort,
         turn_lifecycle_stage:item.turnLifecycleStage,
         turn_lifecycle_events:item.turnLifecycleEvents,
         turn_lifecycle_reason:item.turnLifecycleReason,

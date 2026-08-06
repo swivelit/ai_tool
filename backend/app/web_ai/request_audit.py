@@ -366,6 +366,7 @@ def build_request_audit(
         deterministic_route: str | None = None
         scope_gate_reason: str | None = None
         reasoning_effort: str | None = None
+        repair_reasoning_effort: str | None = None
         effective_max_output_tokens = 0
         visible_output_reserve_tokens = 0
         reasoning_budget_cap_tokens = 0
@@ -638,6 +639,11 @@ def build_request_audit(
                 stage_metadata.get("reasoning_effort") or ""
             )
             if (
+                str(stage_row[0]) == "repair"
+                and candidate_reasoning in _REASONING_EFFORTS
+            ):
+                repair_reasoning_effort = candidate_reasoning
+            if (
                 candidate_reasoning in _REASONING_EFFORTS
                 and (
                     str(stage_row[0]) == "generation"
@@ -843,6 +849,7 @@ def build_request_audit(
             "selected_tier": selected_tier,
             "repository_validation_mode": repository_validation_mode,
             "reasoning_effort": reasoning_effort,
+            "repair_reasoning_effort": repair_reasoning_effort,
             "effective_max_output_tokens": effective_max_output_tokens,
             "visible_output_reserve_tokens": visible_output_reserve_tokens,
             "reasoning_budget_cap_tokens": reasoning_budget_cap_tokens,

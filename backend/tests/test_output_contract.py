@@ -436,8 +436,13 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
     assert repair.request.metadata["max_provider_attempts"] == 1
     assert "observed_word_count=111" in rendered
     assert "word_count_delta=-9" in rendered
+    assert "draft is 111 words; the contract requires exactly 120" in rendered
+    assert "Add exactly 9 words" in rendered
+    assert "required phrase and occurrence count" in rendered
     assert "smallest possible edit" in rendered
     assert "whitespace-delimited rule" in rendered
+    assert repair.request.metadata["reasoning_effort_override"] == "low"
+    assert repair.request.metadata["repair_reasoning"] is True
 
 
 @pytest.mark.parametrize(

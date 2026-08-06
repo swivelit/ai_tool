@@ -637,6 +637,38 @@ def test_strict_visible_contract_suppresses_only_below_reasoning_floor(
     ) == "none"
 
 
+def test_strict_repair_turn_keeps_low_reasoning_with_visible_reserve(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_REASONING_MIN_BUDGET_TOKENS", "2000")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_NORMAL", "none")
+    budget = resolve_openai_reasoning_budget(
+        "normal",
+        max_output_tokens=420,
+        strict_visible_format=True,
+        minimum_visible_output_tokens=228,
+        effort_override="low",
+        repair_turn=True,
+    )
+    assert budget.reasoning_effort == "low"
+    assert budget.visible_output_reserve_tokens == 252
+    assert budget.reasoning_budget_cap_tokens == 168
+
+    client = _Client()
+    client.responses = _SequenceRecorder([_final(text="repaired answer")])
+    request = _request("normal")
+    request.metadata.update({
+        "strict_output_contract": True,
+        "minimum_visible_output_tokens": 228,
+        "reasoning_effort_override": "low",
+        "repair_reasoning": True,
+    })
+    OpenAIProvider(client).complete(
+        request, _route(max_output_tokens=420),
+    )
+    assert client.responses.calls[0]["reasoning"] == {"effort": "low"}
+
+
 def test_lite_long_form_disables_reasoning_when_fraction_cap_is_below_floor(
     monkeypatch,
 ):

@@ -84,6 +84,7 @@ def openai_web_reasoning_effort(
     strict_visible_format: bool = False,
     minimum_visible_output_tokens: object | None = None,
     effort_override: object | None = None,
+    repair_turn: bool = False,
 ) -> Optional[str]:
     """Return the configured effort only for an explicitly classified turn."""
 
@@ -93,6 +94,7 @@ def openai_web_reasoning_effort(
         strict_visible_format=strict_visible_format,
         minimum_visible_output_tokens=minimum_visible_output_tokens,
         effort_override=effort_override,
+        repair_turn=repair_turn,
     ).reasoning_effort
 
 
@@ -103,6 +105,7 @@ def resolve_openai_reasoning_budget(
     strict_visible_format: bool = False,
     minimum_visible_output_tokens: object | None = None,
     effort_override: object | None = None,
+    repair_turn: bool = False,
 ) -> OpenAIReasoningBudget:
     """Resolve effort without reducing the provider's visible-output ceiling.
 
@@ -139,6 +142,8 @@ def resolve_openai_reasoning_budget(
                 "reasoning effort override is unsupported"
             )
         effort = override
+    if repair_turn and effort in {"none", "minimal"}:
+        effort = "low"
     try:
         requested_reserve = max(0, int(minimum_visible_output_tokens or 0))
     except (TypeError, ValueError):
@@ -168,13 +173,20 @@ def resolve_openai_reasoning_budget(
         else min(output_budget, requested_reserve)
     )
     reasoning_budget = max(0, output_budget - visible_reserve)
-    if reserve_applies and output_budget > 0 and reasoning_budget < reasoning_floor:
+    if (
+        reserve_applies
+        and output_budget > 0
+        and reasoning_budget < reasoning_floor
+        and not repair_turn
+    ):
         # The Responses API has a shared reasoning/visible-output ceiling but
         # no separate hard reasoning-token parameter. Below the configured
         # safe reasoning budget, `none` is therefore the only enforceable way
         # to guarantee the visible reserve regardless of effort configuration.
         return OpenAIReasoningBudget(output_budget, 0, 0, "none")
-    if strict_visible_format:
+    if repair_turn and reasoning_budget <= 0:
+        return OpenAIReasoningBudget(output_budget, 0, 0, "none")
+    if strict_visible_format and not repair_turn:
         effort = _STRICT_EFFORT_DOWNGRADE[effort]
     return OpenAIReasoningBudget(
         output_budget,

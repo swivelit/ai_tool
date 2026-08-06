@@ -617,6 +617,7 @@ def tracked_openai_generation(
                         effort_override=extra.get(
                             "reasoning_effort_override"
                         ),
+                        repair_turn=extra.get("repair_turn") is True,
                     )
                     reasoning_effort = reasoning_budget.reasoning_effort
                     request_kwargs: dict[str, Any] = {

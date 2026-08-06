@@ -1015,6 +1015,79 @@ def handle_event(event):
     ).missing_area_identifiers == ()
 
 
+def test_test_plan_repair_is_targeted_and_receives_exact_failed_section():
+    prompt = """Design an idempotent webhook architecture.
+Constraints:
+- PostgreSQL is the source of truth
+- Redis or Valkey must not be the source of truth
+Include:
+1. database tables and unique constraints
+2. transaction boundaries
+3. event and payment state transitions
+4. pseudocode
+5. duplicate-event handling
+6. out-of-order handling
+7. failure recovery
+8. reconciliation
+9. security checks
+10. a focused test plan"""
+    labels = (
+        "Database tables and unique constraints",
+        "Transaction boundaries",
+        "Event and payment state transitions",
+        "Pseudocode",
+        "Duplicate-event handling",
+        "Out-of-order handling",
+        "Failure recovery",
+        "Reconciliation",
+        "Security checks",
+    )
+    oversized_prefix = "\n".join(
+        f"### {index}. {label}\n" + "architecture detail " * 90
+        for index, label in enumerate(labels, start=1)
+    )
+    current_test_plan = (
+        "### 10. A focused test plan\n"
+        "Review expected behavior before release."
+    )
+    answer = oversized_prefix + "\n" + current_test_plan
+    check = QualityCheck(
+        "task_architecture_test_plan",
+        "failed",
+        "architecture_section_missing",
+        observations=(
+            ("area_identifier", "test_plan"),
+            ("heading_present", 1),
+            ("semantic_mechanism_present", 0),
+            ("stable_side_effect_outcome_present", 0),
+        ),
+    )
+
+    contract = build_repair_request(
+        user_id=1,
+        request_id="targeted-test-plan-repair",
+        reply_language="en",
+        current_answer=answer,
+        failed_checks=(check,),
+        evidence_pack=None,
+        task_contract=prompt,
+        task_requirements=extract_task_requirements(prompt),
+        answer_class="long_form",
+        max_output_tokens=3000,
+    )
+    messages = contract.request.metadata["provider_messages"]
+    rendered = "\n".join(str(item["content"]) for item in messages)
+
+    assert contract.architecture_splice_areas == ("test_plan",)
+    assert "Replace the focused test-plan section" in rendered
+    assert "duplicate delivery, out-of-order delivery" in rendered
+    assert "crash and replay recovery" in rendered
+    assert "partial/full refunds" in rendered
+    assert current_test_plan in rendered
+    assert "[prior detail omitted]" not in rendered
+    assert "### 1. Database tables" not in rendered
+
+
 def test_incomplete_architecture_gets_one_targeted_duplicate_repair(monkeypatch):
     prompt = """Design an idempotent webhook architecture.
 Constraints:

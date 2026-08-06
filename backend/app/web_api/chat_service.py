@@ -4941,6 +4941,7 @@ def execute_web_turn(
             repair_prices: list[tuple[str, PriceResult, int, int]] = []
             repair_reserved_total = 0
             repair_reasoning_total = 0
+            repair_reasoning_effort: str | None = None
 
             def settle_repair_stage(
                 *,
@@ -4965,6 +4966,7 @@ def execute_web_turn(
                         output_tokens=sum(item[3] for item in repair_prices),
                         reasoning_tokens=repair_reasoning_total,
                         reserved_micros=repair_reserved_total,
+                        reasoning_effort=repair_reasoning_effort,
                     )
                     return
                 _phase3_stage(
@@ -4975,6 +4977,7 @@ def execute_web_turn(
                     model=model_name,
                     attempt_number=attempt_number,
                     reserved_micros=repair_reserved_total,
+                    reasoning_effort=repair_reasoning_effort,
                 )
 
             def repair_attempt(
@@ -4984,6 +4987,7 @@ def execute_web_turn(
                 attempt_number: int,
             ) -> AIProviderResponse | None:
                 nonlocal guard_context, repair_reserved_total, repair_reasoning_total
+                nonlocal repair_reasoning_effort
                 nonlocal fence_autoclosed, latest_generated_response
                 nonlocal completed_provider_response
                 nonlocal repair_trigger_area_identifiers
@@ -5076,6 +5080,9 @@ def execute_web_turn(
                     )
                 except GenerationIncomplete as exc:
                     usage = exc.metadata
+                    candidate_effort = str(usage.get("reasoning_effort") or "")
+                    if candidate_effort in _SAFE_REASONING_EFFORTS:
+                        repair_reasoning_effort = candidate_effort
                     if usage.get("provider_usage_received"):
                         incomplete = AIProviderResponse(
                             text="",
@@ -5147,6 +5154,11 @@ def execute_web_turn(
                 repair_reasoning_total += int(
                     repaired.raw.get("reasoning_tokens") or 0
                 )
+                candidate_effort = str(
+                    repaired.raw.get("reasoning_effort") or ""
+                )
+                if candidate_effort in _SAFE_REASONING_EFFORTS:
+                    repair_reasoning_effort = candidate_effort
                 settle_repair_stage(
                     status="settled",
                     provider_name=repaired.provider,

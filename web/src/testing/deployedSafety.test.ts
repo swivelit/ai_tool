@@ -390,6 +390,7 @@ test('production capability safe summary includes content-free completion diagno
     'generation_stage_count:item.generationStageCount',
     'repair_stage_count:item.repairStageCount',
     'reasoning_effort:item.reasoningEffort',
+    'repair_reasoning_effort:item.repairReasoningEffort',
     'effective_max_output_tokens:item.effectiveMaxOutputTokens',
     'visible_output_reserve_tokens:item.visibleOutputReserveTokens',
     'reasoning_budget_cap_tokens:item.reasoningBudgetCapTokens',

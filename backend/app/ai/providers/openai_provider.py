@@ -96,6 +96,7 @@ class OpenAIProvider(AIProvider):
             reasoning_effort_override=request.metadata.get(
                 "reasoning_effort_override"
             ),
+            repair_turn=request.metadata.get("repair_reasoning") is True,
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
@@ -438,6 +439,9 @@ class OpenAIProvider(AIProvider):
                             ),
                             effort_override=request.metadata.get(
                                 "reasoning_effort_override"
+                            ),
+                            repair_turn=(
+                                request.metadata.get("repair_reasoning") is True
                             ),
                         )
                         if model_spec.supports_reasoning_effort
@@ -1240,6 +1244,7 @@ def _terminal_diagnostics(
             "minimum_visible_output_tokens"
         ),
         effort_override=request.metadata.get("reasoning_effort_override"),
+        repair_turn=request.metadata.get("repair_reasoning") is True,
     )
 
     return {

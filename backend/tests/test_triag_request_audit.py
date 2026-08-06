@@ -72,6 +72,7 @@ EXPECTED_RESULT_KEYS = {
     "selected_tier",
     "repository_validation_mode",
     "reasoning_effort",
+    "repair_reasoning_effort",
     "effective_max_output_tokens",
     "visible_output_reserve_tokens",
     "reasoning_budget_cap_tokens",
@@ -333,6 +334,7 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "selected_tier": "pro",
         "repository_validation_mode": None,
         "reasoning_effort": "medium",
+        "repair_reasoning_effort": None,
         "effective_max_output_tokens": 3000,
         "visible_output_reserve_tokens": 0,
         "reasoning_budget_cap_tokens": 3000,
@@ -352,6 +354,42 @@ def test_request_audit_serialization_is_content_free(client, monkeypatch):
         "cancellation_failure_count": 0,
         "orphaned_active_reservation": False,
     }
+
+
+def test_request_audit_reports_repair_reasoning_effort(client, monkeypatch):
+    _seed_request()
+    with SessionLocal() as session:
+        thread = session.exec(select(WebChatThread)).one()
+        session.add(WebUsageStage(
+            user_id=thread.user_id,
+            thread_id=thread.id,
+            request_id=REQUEST_ID,
+            idempotency_key=f"stage:{REQUEST_ID}:repair",
+            stage_name="repair",
+            status="settled",
+            reserved_micros=0,
+            debited_micros=0,
+            input_tokens=5,
+            output_tokens=8,
+            settled_at=utc_now(),
+            safe_metadata_json=json.dumps({
+                "reasoning_effort": "low",
+                "reasoning_token_count": 2,
+            }),
+        ))
+        session.commit()
+
+    response = client.post(
+        "/api/web/admin/triag-request-audit",
+        headers=_configure_admin(monkeypatch),
+        json={"request_ids": [REQUEST_ID]},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["reasoning_effort"] == "medium"
+    assert result["repair_reasoning_effort"] == "low"
+    assert result["repair_stage_count"] == 1
 
     rendered = response.text
     for forbidden in (
