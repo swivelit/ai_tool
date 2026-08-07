@@ -23,6 +23,7 @@ from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
 from ..ai.providers.base import (
     GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
+    ProviderStreamInterrupted,
 )
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
@@ -4215,6 +4216,7 @@ def execute_web_turn(
     *,
     on_delta: Callable[[str], None] | None = None,
     on_status: Callable[[str], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
     providers: dict[str, Any] | None = None,
 ) -> CompletedWebTurn:
     if prepared.existing_response_id is not None:
@@ -4554,6 +4556,43 @@ def execute_web_turn(
                             model=prepared.route.model or "",
                             reserved_micros=prepared.reserved_micros,
                         )
+                    raise
+                except ProviderStreamInterrupted as exc:
+                    signal = prepared.ai_request.metadata.get(
+                        "cancellation_signal"
+                    )
+                    client_disconnected = (
+                        getattr(signal, "reason", None)
+                        == "client_disconnected"
+                    )
+                    partial = exc.response
+                    provider_usage_received = bool(
+                        exc.metadata.get("provider_usage_received")
+                    )
+                    partial_price = (
+                        _phase3_response_price(partial)
+                        if partial is not None and provider_usage_received
+                        else None
+                    )
+                    if partial is not None and partial_price is not None:
+                        phase3_prices.append((
+                            "generation", partial_price,
+                            partial.input_tokens, partial.output_tokens,
+                        ))
+                    _phase3_stage(
+                        prepared,
+                        stage_name="generation",
+                        status=(
+                            "settled" if client_disconnected and partial_price
+                            else "released" if client_disconnected else "failed"
+                        ),
+                        provider=prepared.route.provider,
+                        model=prepared.route.model or "",
+                        price=partial_price,
+                        input_tokens=(partial.input_tokens if partial else 0),
+                        output_tokens=(partial.output_tokens if partial else 0),
+                        reserved_micros=prepared.reserved_micros,
+                    )
                     raise
                 except Exception:
                     _phase3_stage(
@@ -5391,6 +5430,7 @@ def execute_web_turn(
                         if stream_policy.mode == "verified_buffered" else None
                     ),
                     can_second_repair=can_second_strict_format_repair,
+                    on_progress=on_progress,
                 )
             except GenerationIncomplete as exc:
                 if not (
@@ -5705,19 +5745,93 @@ def execute_web_turn(
         _release_pre_provider_cancellation(prepared)
         raise
     except Exception as exc:
-        if _generation_cancellation_requested(prepared):
+        signal = prepared.ai_request.metadata.get("cancellation_signal")
+        interrupted_partial = (
+            isinstance(exc, ProviderStreamInterrupted)
+            and exc.response is not None
+            and bool(exc.response.text.strip())
+            and getattr(signal, "reason", None) == "client_disconnected"
+        )
+        if interrupted_partial:
+            assert isinstance(exc, ProviderStreamInterrupted)
+            assert exc.response is not None
+            response = replace(
+                exc.response,
+                raw={
+                    **exc.response.raw,
+                    "completion_status": "interrupted",
+                    "incomplete_reason": "client_disconnected",
+                    "finish_reason": str(
+                        exc.metadata.get("finish_reason") or "unknown"
+                    ),
+                    "truncated": True,
+                    "interrupted": True,
+                    "provider_attempts": int(
+                        exc.metadata.get("provider_attempts") or 0
+                    ),
+                    "provider_calls_with_usage": (
+                        1 if exc.metadata.get("provider_usage_received") else 0
+                    ),
+                    "usage_actual": bool(
+                        exc.metadata.get("provider_usage_received")
+                    ),
+                    "client_disconnected_partial_persisted": True,
+                },
+            )
+            prepared.answer_quality = AnswerQualityResult(
+                status="unverified",
+                checks=(QualityCheck(
+                    "provider_completion", "failed",
+                    "provider_completion_incomplete",
+                ),),
+                retrieval_status=(
+                    prepared.retrieval_context.retrieval_status
+                    if prepared.retrieval_context is not None else ""
+                ),
+                repository_validation_mode=(
+                    _resolved_repository_validation_mode(
+                        phase3_settings,
+                        repository_context_used=(
+                            prepared.repository_contract is not None
+                        ),
+                    )
+                ),
+            )
+            record_web_turn_lifecycle(
+                prepared,
+                "provider_completed",
+                reasoning_effort=str(
+                    response.raw.get("reasoning_effort") or ""
+                ),
+                reason="client_disconnected_partial_persisted",
+            )
+            logger.warning(
+                "web_chat_partial_answer_salvaged",
+                extra={
+                    "event": "web_chat_partial_answer_salvaged",
+                    "request_id": prepared.request_id,
+                    "visible_character_count": len(response.text),
+                    "provider_usage_received": bool(
+                        exc.metadata.get("provider_usage_received")
+                    ),
+                },
+            )
+        elif _generation_cancellation_requested(prepared):
             _release_pre_provider_cancellation(prepared)
             raise
-        logger.exception(
-            "web_chat_generation_stage_failed",
-            extra={
-                "event": "web_chat_generation_stage_failed",
-                "request_id": prepared.request_id,
-                "exception_class": type(exc).__name__[:80],
-                "finalize_stage": finalize_stage,
-            },
-        )
-        if completed_provider_response is not None:
+        elif not interrupted_partial:
+            logger.exception(
+                "web_chat_generation_stage_failed",
+                extra={
+                    "event": "web_chat_generation_stage_failed",
+                    "request_id": prepared.request_id,
+                    "exception_class": type(exc).__name__[:80],
+                    "finalize_stage": finalize_stage,
+                },
+            )
+        if interrupted_partial:
+            pass
+        elif completed_provider_response is not None:
             # A completed and accounted provider answer must survive a later
             # validation, formatting, or telemetry failure. Preserve its bytes
             # and downgrade only the quality metadata.
@@ -6002,7 +6116,14 @@ def execute_web_turn(
                 response.model or "", Decimal(str(response.raw["actual_cost_usd"])), price.snapshot
             )
         price = _aggregate_phase3_prices(phase3_prices, price)
-        optimization_metrics["charged_micros"] = 0 if prepared.billing_exempt else price.micros
+        interrupted_without_usage = bool(
+            response.raw.get("client_disconnected_partial_persisted")
+            and not response.raw.get("usage_actual")
+        )
+        optimization_metrics["charged_micros"] = (
+            0 if prepared.billing_exempt or interrupted_without_usage
+            else price.micros
+        )
         response.raw["charged_micros"] = optimization_metrics["charged_micros"]
         assistant = WebChatMessage(
             thread_id=prepared.thread_id, user_id=prepared.user_id, role="assistant",
@@ -6013,7 +6134,10 @@ def execute_web_turn(
                 usage_source
                 if prepared.route.provider in {"openai", "sarvam"} else None
             ),
-            charge_micros=0 if prepared.billing_exempt else price.micros,
+            charge_micros=(
+                0 if prepared.billing_exempt or interrupted_without_usage
+                else price.micros
+            ),
             status="cancelled" if cancelled else "complete",
             replaces_message_id=prepared.replaces_assistant_message_id,
             revision_number=prepared.replacement_revision_number,
@@ -6124,7 +6248,18 @@ def execute_web_turn(
         if not cancelled:
             _clear_capacity_failure_metadata(user_message)
         session.add(user_message)
-        if prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
+        if interrupted_without_usage:
+            release = (
+                release_billing_exempt_usage
+                if prepared.billing_exempt else release_usage_reservation
+            )
+            release(
+                session,
+                prepared.request_id,
+                reason="client_disconnected_partial_persisted",
+                annotate_terminal=True,
+            )
+        elif prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
             settle_billing_exempt_usage(
                 session, request_id=prepared.request_id,
                 provider_cost_amount=price.amount,

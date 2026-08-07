@@ -50,6 +50,7 @@ class VerifiedGenerator:
             [str, AnswerQualityResult], AIProviderResponse | None
         ] | None = None,
         can_second_repair: Callable[[AnswerQualityResult], bool] | None = None,
+        on_progress: Callable[[int], None] | None = None,
     ) -> GeneratedAnswer:
         def status(value: str) -> None:
             if on_status:
@@ -68,9 +69,10 @@ class VerifiedGenerator:
 
         status("generating")
         size = 0
+        last_progress_size = 0
 
         def buffer(chunk: str) -> None:
-            nonlocal size
+            nonlocal size, last_progress_size
             _check_cancelled(cancellation_signal)
             size += len(chunk)
             if size > self.policy.max_buffer_characters:
@@ -78,6 +80,11 @@ class VerifiedGenerator:
                 if callable(cancel):
                     cancel()
                 raise GenerationCancelled()
+            if on_progress and (
+                last_progress_size == 0 or size - last_progress_size >= 512
+            ):
+                on_progress(size)
+                last_progress_size = size
 
         response = generate_draft(buffer)
         if canonicalize is not None:

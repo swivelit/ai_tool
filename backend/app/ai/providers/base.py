@@ -20,10 +20,16 @@ class GenerationCancellation:
         self._event = Event()
         self._lock = Lock()
         self._stream: Any | None = None
+        self._reason: str | None = None
 
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
 
     def bind_stream(self, stream: Any) -> None:
         with self._lock:
@@ -36,9 +42,14 @@ class GenerationCancellation:
             if self._stream is stream:
                 self._stream = None
 
-    def cancel(self) -> None:
+    def cancel(self, *, reason: str | None = None) -> None:
+        safe_reason = (
+            reason if reason in {"client_disconnected"} else None
+        )
         self._event.set()
         with self._lock:
+            if safe_reason and self._reason is None:
+                self._reason = safe_reason
             stream = self._stream
         self._close_stream(stream)
 

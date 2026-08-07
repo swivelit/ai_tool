@@ -217,6 +217,15 @@ def build_repair_request(
             "acknowledge stale or older events. A heading or a statement that "
             "events may arrive out of order is insufficient."
         )
+    if "task_architecture_transaction_boundaries" in failed_types:
+        targeted_corrections.append(
+            "Replace the transaction-boundaries section with one explicit atomic "
+            "transaction. Name the exact statements performed inside it, including "
+            "the authoritative event/payment/wallet reads and writes; name the row "
+            "locks taken (for example SELECT ... FOR UPDATE); and show the commit "
+            "boundary plus rollback on every failure. A generic statement that the "
+            "operation is transactional is insufficient."
+        )
     if "task_requirement_comparison" in failed_types:
         named = ", ".join(semantic_contract.comparison_terms)
         targeted_corrections.append(

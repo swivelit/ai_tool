@@ -481,6 +481,16 @@ def test_second_exact_count_repair_is_strict_bounded_and_observation_aware():
             ),
             "Use explicit one-operation/one-side-effect wording",
         ),
+        (
+            "Design a webhook architecture and include transaction boundaries.",
+            QualityCheck(
+                "task_architecture_transaction_boundaries",
+                "failed",
+                "architecture_area_missing",
+                observations=(("area_identifier", "transaction_boundaries"),),
+            ),
+            "Replace the transaction-boundaries section with one explicit atomic transaction",
+        ),
     ),
 )
 def test_repair_prompt_names_the_specific_missing_semantic_element(
@@ -515,6 +525,9 @@ def test_repair_prompt_names_the_specific_missing_semantic_element(
         assert "exactly one charge or record" in rendered
         assert "no second balance change" in rendered
         assert "modify an existing bullet rather than adding a bullet" in rendered
+    if check.check_type == "task_architecture_transaction_boundaries":
+        assert "SELECT ... FOR UPDATE" in rendered
+        assert "commit boundary plus rollback" in rendered
 
 
 def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():

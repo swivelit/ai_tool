@@ -642,8 +642,10 @@ function evaluation(
       }
       break
     case 'B03': {
+      if (!architectureEvaluation) {
+        throw new Error('architecture_evaluation_missing')
+      }
       const architecture = architectureEvaluation
-        ?? evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
         reasons.push('architecture_sections_missing')
@@ -664,8 +666,10 @@ function evaluation(
         reasons.push('routing_variation_truncated')
         break
       }
+      if (!architectureEvaluation) {
+        throw new Error('architecture_evaluation_missing')
+      }
       const architecture = architectureEvaluation
-        ?? evaluateWebhookArchitecture(structure)
       correctness = architecture.coveredAreas.length / 10
       if (architecture.missingAreas.length) {
         reasons.push('architecture_sections_missing')

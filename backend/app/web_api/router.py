@@ -3797,6 +3797,7 @@ async def chat_stream(
         )
         last_event_at = loop.time()
         visible_character_count = 0
+        heartbeat_count = 0
         outcome = "cancelled"
         terminal_exception_class: str | None = None
         terminal_provider_attempts = 0
@@ -3811,6 +3812,11 @@ async def chat_stream(
         def status(phase: str) -> None:
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("status", phase)
+            )
+
+        def progress(character_count: int) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, ("progress", str(max(0, character_count)))
             )
 
         task: asyncio.Task[Any] | None = None
@@ -3853,6 +3859,7 @@ async def chat_stream(
                 prepared,
                 on_delta=delta,
                 on_status=status,
+                on_progress=progress,
             ))
             task.add_done_callback(unregister)
             yield _sse("thread", {
@@ -3887,6 +3894,11 @@ async def chat_stream(
                     )
                     if event_name == "status":
                         yield _sse("status", {"phase": value})
+                    elif event_name == "progress":
+                        yield _sse("progress", {
+                            "phase": "generating",
+                            "buffered_character_count": int(value),
+                        })
                     else:
                         visible_character_count += len(value)
                         yield _sse("delta", {"text": value})
@@ -3894,7 +3906,7 @@ async def chat_stream(
                 except asyncio.TimeoutError:
                     if await request.is_disconnected():
                         outcome = "client_disconnected"
-                        cancellation.cancel()
+                        cancellation.cancel(reason="client_disconnected")
                         record_web_turn_pre_generation_abort(
                             prepared, reason="ClientDisconnected",
                         )
@@ -3905,12 +3917,22 @@ async def chat_stream(
                         return
                     if loop.time() - last_event_at >= heartbeat_seconds:
                         yield ": keep-alive\n\n"
+                        heartbeat_count += 1
                         last_event_at = loop.time()
                     continue
+            # Provider callbacks use call_soon_threadsafe.  The worker can reach its
+            # terminal state before the event loop has run the final scheduled queue
+            # callback, so give those callbacks one turn before draining the queue.
+            await asyncio.sleep(0)
             while not queue.empty():
                 event_name, value = queue.get_nowait()
                 if event_name == "status":
                     yield _sse("status", {"phase": value})
+                elif event_name == "progress":
+                    yield _sse("progress", {
+                        "phase": "generating",
+                        "buffered_character_count": int(value),
+                    })
                 else:
                     visible_character_count += len(value)
                     yield _sse("delta", {"text": value})
@@ -3988,7 +4010,7 @@ async def chat_stream(
         except asyncio.CancelledError:
             outcome = "client_disconnected"
             terminal_exception_class = "CancelledError"
-            cancellation.cancel()
+            cancellation.cancel(reason="client_disconnected")
             record_web_turn_pre_generation_abort(
                 prepared, reason="CancelledError",
             )
@@ -3998,7 +4020,7 @@ async def chat_stream(
         except GeneratorExit:
             outcome = "client_disconnected"
             terminal_exception_class = "GeneratorExit"
-            cancellation.cancel()
+            cancellation.cancel(reason="client_disconnected")
             record_web_turn_pre_generation_abort(
                 prepared, reason="GeneratorExit",
             )
@@ -4155,6 +4177,7 @@ async def chat_stream(
                     "visible_character_count": visible_character_count,
                     "exception_class": terminal_exception_class,
                     "provider_attempts": terminal_provider_attempts,
+                    "heartbeat_count": heartbeat_count,
                     "retry_at": terminal_retry_at,
                 },
             )

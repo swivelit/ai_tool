@@ -227,9 +227,9 @@ test('production capability uses persisted Markdown for structural scoring and b
   expect(spec).toContain('architecture_repair_mode')
   expect(spec).toContain('repair_rejected_regression')
   expect(spec).toContain('const sharedArchitectureEvaluation = (')
-  expect(spec).toContain('architectureEvaluation\n        ?? evaluateWebhookArchitecture(structure)')
   expect(spec.match(/evaluateWebhookArchitecture\(rawRedacted\.text\)/g))
     .toHaveLength(1)
+  expect(spec).not.toContain('evaluateWebhookArchitecture(structure)')
   expect(spec).not.toContain('evaluateWebhookArchitecture(redacted.text)')
   expect(spec.match(/evaluateIdempotencySemantics\(structure\)/g))
     .toHaveLength(2)
@@ -315,6 +315,17 @@ test('targeted architecture fixtures use the shared coverage expectations', () =
     expect(result.missingAreas, id).toEqual(fixture?.missing_areas)
     expect(result.validatorVersion, id).toBe('2026-08-03.7')
   }
+})
+
+test('B03 and R09 consume the single raw-Markdown architecture evaluation', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  expect(spec.match(/evaluateWebhookArchitecture\(/gu)).toHaveLength(1)
+  expect(spec).toContain(
+    '? evaluateWebhookArchitecture(rawRedacted.text) : undefined',
+  )
+  expect(spec.match(/const architecture = architectureEvaluation/gu)).toHaveLength(2)
 })
 
 test('hanging deployed API requests fail with a bounded transport reason', async () => {

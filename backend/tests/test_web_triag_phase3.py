@@ -358,6 +358,7 @@ def test_direct_mode_continues_streaming_before_checks_finish():
 def test_verified_mode_emits_no_delta_before_checks_finish():
     visible: list[str] = []
     statuses: list[str] = []
+    progress: list[int] = []
 
     def generate(delta):
         assert delta is not None
@@ -382,11 +383,13 @@ def test_verified_mode_emits_no_delta_before_checks_finish():
         on_delta=visible.append,
         on_status=statuses.append,
         cancellation_signal=None,
+        on_progress=progress.append,
     )
     assert visible == ["accepted answer"]
     assert statuses == [
         "generating", "verifying_sources", "responding",
     ]
+    assert progress == [len("private draft")]
     assert result.quality and result.quality.status == "verified"
 
 

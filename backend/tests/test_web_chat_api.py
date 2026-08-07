@@ -1124,6 +1124,91 @@ def test_partial_transport_interruption_is_retryable_without_post_turn_work(
     assert request_id not in _active_generations
 
 
+def test_disconnected_buffered_turn_persists_partial_answer(client, monkeypatch):
+    user = create_test_user(
+        "buffered-partial", "buffered-partial@example.com",
+    )
+    _fund(int(user.id))
+    partial_text = (
+        "- First bounded result.\n"
+        "- Second bounded result.\n"
+        "- Third bounded result.\n"
+        "- Partial fourth result that can be continued."
+    )
+
+    def interrupted(self, request, route, on_delta):
+        on_delta(partial_text)
+        signal = request.metadata["cancellation_signal"]
+        signal.cancel(reason="client_disconnected")
+        partial = AIProviderResponse(
+            text=partial_text,
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=40,
+            output_tokens=30,
+            raw={
+                "usage_actual": False,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 0,
+                "interrupted": True,
+            },
+        )
+        raise ProviderStreamInterrupted(
+            response=partial,
+            provider_attempts=1,
+            visible_output_emitted=True,
+            provider_usage_received=False,
+            completion_status="in_progress",
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        interrupted,
+    )
+    request_id = "dd07c91e-7261-47dd-896d-8f2628ec76ce"
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers(
+            "buffered-partial", "buffered-partial@example.com",
+        ),
+        json={
+            "request_id": request_id,
+            "message": "Return exactly four bullet points about safe retries.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _sse_events(response, "done")[-1]["completion_status"] == "interrupted"
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id,
+        )).one()
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "user",
+        )).one()
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+        metadata = json.loads(assistant.metadata_json)
+        user_metadata = json.loads(user_message.metadata_json)
+        assert assistant.content == partial_text
+        assert assistant.status == "complete"
+        assert metadata["completion_status"] == "interrupted"
+        assert metadata["truncated"] is True
+        assert user_metadata["turn_lifecycle_reason"] == (
+            "client_disconnected_partial_persisted"
+        )
+        assert user_message.status == "complete"
+        assert charge.status == "released"
+        assert assistant.charge_micros == 0
+
+
 def test_web_stream_emits_configured_heartbeat(client, monkeypatch):
     user = create_test_user("heartbeat-user", "heartbeat-user@example.com")
     _fund(int(user.id))
