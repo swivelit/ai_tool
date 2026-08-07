@@ -806,7 +806,7 @@ export const WEBHOOK_ARCHITECTURE_AREAS = [
   'failure_recovery', 'reconciliation', 'security_checks', 'test_plan',
 ] as const
 
-export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.7'
+export const CAPABILITY_SEMANTIC_VALIDATOR_VERSION = '2026-08-03.8'
 
 export type IdempotencySemanticEvaluation = {
   definitionPresent: boolean
@@ -853,7 +853,7 @@ export function evaluateIdempotencySemantics(
     && /\b(?:means|is|refers to|ensures|allows|prevents|guarantees|describes|when)\b/i.test(value)
   const retryPresent = /\b(?:retry|retries|retried|repeated request|request again|sends? (?:it|the request) again|second attempt)\b/i.test(value)
   const concreteMarker = /\b(?:GET|POST|PUT|PATCH|DELETE)\b|\/[A-Za-z][A-Za-z0-9_/-]*|\b(?:after (?:a )?timeout|client|identifier|request id|payment id|order id|idempotency key)\b/i.test(value)
-  const stableOutcomePresent = /\b(?:reuse[sd]? (?:the |an? )?(?:same )?(?:identifier|key|id)|same (?:identifier|key|id|result|response|outcome)|(?:return|receive[sd]?|gets?) (?:the )?(?:stored|previous|original|same|first) (?:result|response|outcome)|(?:without|no|prevent(?:s|ing)?|avoid(?:s|ing)?) (?:a |the )?(?:second|additional|duplicate) (?:charge|payment|processing|operation)|(?:one|single) (?:charge|payment|operation|result|outcome)|already processed|does not (?:charge|process|create) (?:it )?again|instead of duplicate processing|prevents? duplicate (?:work|processing|charges?|payments?))\b/i.test(value)
+  const stableOutcomePresent = /\b(?:reuse[sd]? (?:the |an? )?(?:same )?(?:identifier|key|id)|same (?:identifier|key|id|result|response|outcome)|(?:return(?:s|ed|ing)?|receiv(?:e|es|ed|ing)|get(?:s|ting)?|got) (?:the )?(?:(?:stored|previous|original|same|first) ){1,2}(?:result|response|outcome)|(?:without|no|prevent(?:s|ing)?|avoid(?:s|ing)?) (?:a |the )?(?:second|additional|duplicate) (?:charge|payment|processing|operation|balance change|side effect|debit|credit|state change)|(?:one|single) (?:charge|payment|operation|record|result|outcome|balance change|side effect|debit|credit|state change)|(?:exactly one|a single|single) (?:[^.;\n]{1,30} )(?:charge|payment|operation|record|result|outcome|balance change|side effect|debit|credit|state change)|already processed|does not (?:charge|process|create) (?:it )?again|instead of duplicate processing|prevents? duplicate (?:work|processing|charges?|payments?))\b/i.test(value)
   return {
     definitionPresent,
     concreteRetryExamplePresent:retryPresent && concreteMarker,

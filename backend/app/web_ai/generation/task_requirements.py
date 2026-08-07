@@ -9,7 +9,7 @@ from typing import Any
 from .models import QualityCheck
 
 
-TASK_REQUIREMENT_VERSION = "2026-08-03.7"
+TASK_REQUIREMENT_VERSION = "2026-08-03.8"
 _NUMBERED = re.compile(r"(?m)^\s*(\d{1,2})[.)]\s+(.{3,240}?)\s*$")
 _ANSWER_NUMBERED = re.compile(
     r"(?m)^\s{0,3}(?:#{1,6}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+"
@@ -399,11 +399,17 @@ def evaluate_idempotency_semantics(
     stable_outcome_present = bool(re.search(
         r"\b(?:reuse[sd]? (?:the |an? )?(?:same )?(?:identifier|key|id)|"
         r"same (?:identifier|key|id|result|response|outcome)|"
-        r"(?:return|receive[sd]?|gets?) (?:the )?(?:stored|previous|original|"
-        r"same|first) (?:result|response|outcome)|"
+        r"(?:return(?:s|ed|ing)?|receiv(?:e|es|ed|ing)|get(?:s|ting)?|got) "
+        r"(?:the )?(?:(?:stored|previous|original|same|first) ){1,2}"
+        r"(?:result|response|outcome)|"
         r"(?:without|no|prevent(?:s|ing)?|avoid(?:s|ing)?) (?:a |the )?"
-        r"(?:second|additional|duplicate) (?:charge|payment|processing|operation)|"
-        r"(?:one|single) (?:charge|payment|operation|result|outcome)|"
+        r"(?:second|additional|duplicate) (?:charge|payment|processing|operation|"
+        r"balance change|side effect|debit|credit|state change)|"
+        r"(?:one|single) (?:charge|payment|operation|record|result|outcome|"
+        r"balance change|side effect|debit|credit|state change)|"
+        r"(?:exactly one|a single|single) (?:[^.;\n]{1,30} )"
+        r"(?:charge|payment|operation|record|result|outcome|balance change|"
+        r"side effect|debit|credit|state change)|"
         r"already processed|does not (?:charge|process|create) (?:it )?again|"
         r"instead of duplicate processing|prevents? duplicate (?:work|processing|"
         r"charges?|payments?))\b",

@@ -313,7 +313,7 @@ test('targeted architecture fixtures use the shared coverage expectations', () =
     expect(fixture, id).toBeDefined()
     const result = evaluateWebhookArchitecture(fixture?.text ?? '')
     expect(result.missingAreas, id).toEqual(fixture?.missing_areas)
-    expect(result.validatorVersion, id).toBe('2026-08-03.7')
+    expect(result.validatorVersion, id).toBe('2026-08-03.8')
   }
 })
 

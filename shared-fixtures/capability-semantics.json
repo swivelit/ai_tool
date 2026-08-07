@@ -34,6 +34,20 @@
       "definition_present": false,
       "concrete_retry_example_present": true,
       "stable_outcome_present": true
+    },
+    {
+      "id": "b01-pro-natural-stable-outcome",
+      "text": "- Idempotency in payment APIs means a repeated request produces exactly one logical operation and one side effect.\n- For example, after a timeout the client retries POST /payments with the same idempotency key.\n- The server returns the original stored result rather than processing another payment.\n- Exactly one $50 charge exists, and no second balance change occurs.",
+      "definition_present": true,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": true
+    },
+    {
+      "id": "definition-and-retry-without-invariant",
+      "text": "Idempotency in payment APIs means repeated requests are safe. For example, after a timeout the client retries POST /payments with an idempotency key.",
+      "definition_present": true,
+      "concrete_retry_example_present": true,
+      "stable_outcome_present": false
     }
   ],
   "architecture_authority": [

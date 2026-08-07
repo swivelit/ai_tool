@@ -647,12 +647,12 @@ describe('production capability safety', () => {
   })
 
   it('shares all architecture coverage semantics with the backend', () => {
-    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.7')
+    expect(CAPABILITY_SEMANTIC_VALIDATOR_VERSION).toBe('2026-08-03.8')
     for (const fixture of semanticFixtures.architecture_coverage) {
       const result = evaluateWebhookArchitecture(fixture.text)
       expect(result.coveredAreas, fixture.id).toEqual(fixture.covered_areas)
       expect(result.missingAreas, fixture.id).toEqual(fixture.missing_areas)
-      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.7')
+      expect(result.validatorVersion, fixture.id).toBe('2026-08-03.8')
       const duplicate = result.areaEvaluations.find(
         area => area.areaIdentifier === 'duplicate_handling',
       )

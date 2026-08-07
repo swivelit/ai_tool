@@ -118,7 +118,7 @@ def test_comparison_contract_excludes_a_following_explanation_task():
 
 
 def test_python_and_browser_share_capability_semantic_fixtures():
-    assert TASK_REQUIREMENT_VERSION == "2026-08-03.7"
+    assert TASK_REQUIREMENT_VERSION == "2026-08-03.8"
     fixture = Path(__file__).parents[2] / "shared-fixtures" / "capability-semantics.json"
     cases = json.loads(fixture.read_text(encoding="utf-8"))
     for case in cases["idempotency"]:
@@ -161,7 +161,7 @@ def test_python_and_browser_share_capability_semantic_fixtures():
         assert duplicate.stable_side_effect_outcome_present is case[
             "duplicate_stable_side_effect_outcome_present"
         ], case["id"]
-        assert result.validator_version == "2026-08-03.7", case["id"]
+        assert result.validator_version == "2026-08-03.8", case["id"]
 
 
 def test_architecture_headings_without_semantics_remain_unverified():
