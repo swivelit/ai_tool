@@ -328,6 +328,31 @@ test('B03 and R09 consume the single raw-Markdown architecture evaluation', () =
   expect(spec.match(/const architecture = architectureEvaluation/gu)).toHaveLength(2)
 })
 
+test('production capability requires and exercises the second owner-isolation account', () => {
+  const spec = readFileSync(
+    resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
+  )
+  const workflow = readFileSync(
+    resolve(process.cwd(), '../.github/workflows/deployed-smoke.yml'), 'utf8',
+  )
+  for (const secret of [
+    'E2E_SECOND_TEST_EMAIL', 'E2E_SECOND_TEST_PASSWORD',
+  ]) {
+    expect(workflow).toContain(`${secret}: \${{ secrets.${secret} }}`)
+    expect(spec).toContain(`process.env.${secret}`)
+  }
+  expect(spec).toContain('owner_isolation_accounts_not_billing_exempt')
+  expect(spec).toContain("account_a_billing_exempt:true")
+  expect(spec).toContain("account_b_billing_exempt:true")
+  expect(spec).toContain("thread:await second.api.request(\n          'GET', `/api/web/threads/")
+  expect(spec).toContain("upload:await second.api.request('POST', '/api/web/chat/stream'")
+  expect(spec).toContain("knowledge:await second.api.request(\n          'GET', `/api/web/knowledge/")
+  expect(spec).toContain("repository:await second.api.request('POST', '/api/web/chat/stream'")
+  expect(spec).toContain('Object.values(statuses).every(status => [403, 404].includes(status))')
+  expect(spec).toContain('second_account_thread_cleanup_failed')
+  expect(spec).not.toContain("status:'skipped', reasonCodes:['second_account_credentials_unavailable']")
+})
+
 test('hanging deployed API requests fail with a bounded transport reason', async () => {
   const requestContext = {
     fetch:vi.fn(() => new Promise(() => undefined)),

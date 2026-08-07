@@ -2,6 +2,8 @@
 
 Release acceptance metadata is recorded in
 [TRIAG_RAG_RELEASE_CLOSEOUT.md](TRIAG_RAG_RELEASE_CLOSEOUT.md).
+The full-site capability baseline and validator-risk inventory are recorded in
+[PRODUCTION_CAPABILITY_BASELINE.md](PRODUCTION_CAPABILITY_BASELINE.md).
 
 ## Production capability deployment parity
 
@@ -24,6 +26,8 @@ GitHub Settings
 Environment secrets:
 - E2E_TEST_EMAIL
 - E2E_TEST_PASSWORD
+- E2E_SECOND_TEST_EMAIL
+- E2E_SECOND_TEST_PASSWORD
 - PLAYWRIGHT_BASE_URL
 
 Environment variables:
@@ -35,6 +39,14 @@ backend API origin independently of `PLAYWRIGHT_BASE_URL`, which remains the
 website UI origin. The workflow prefers the Environment variable. A same-named
 Environment secret remains a temporary compatibility fallback and produces a
 non-failing migration warning; move it to Environment variables.
+
+The two credential pairs must identify different dedicated Firebase acceptance
+accounts. Both normalized account emails must be present in the backend's
+existing `SWICO_INTERNAL_TEST_EMAILS` value so bootstrap reports
+`wallet.billing_exempt=true` for each. The capability preflight fails when the
+second pair is absent or duplicates the primary account; K-OWNER-ISOLATION also
+fails before its access probes unless both sessions are billing-exempt. Never
+print either email or password in workflow logs or artifacts.
 
 The benchmark compares the workflow's `GITHUB_SHA` with the public backend
 release SHA before login or production state creation. It checks immediately,

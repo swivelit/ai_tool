@@ -89,6 +89,9 @@ jobs:
           PRODUCTION_CAPABILITY_CONFIRMATION: ${{ inputs.production_capability_confirmation }}
           PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS: ${{ inputs.production_capability_max_chat_debit_micros }}
           PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS: ${{ inputs.production_capability_max_voice_debit_micros }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_SECOND_TEST_EMAIL: ${{ secrets.E2E_SECOND_TEST_EMAIL }}
+          E2E_SECOND_TEST_PASSWORD: ${{ secrets.E2E_SECOND_TEST_PASSWORD }}
           PLAYWRIGHT_API_BASE_URL: ${{ vars.PLAYWRIGHT_API_BASE_URL || secrets.PLAYWRIGHT_API_BASE_URL }}
           PLAYWRIGHT_API_BASE_URL_SOURCE: ${{ vars.PLAYWRIGHT_API_BASE_URL && 'environment_variable' || secrets.PLAYWRIGHT_API_BASE_URL && 'environment_secret_fallback' || 'missing' }}
         run: |
@@ -138,6 +141,19 @@ jobs:
           fi
           if [[ "$PRODUCTION_CAPABILITY_CONFIRMATION" != 'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS' ]]; then
             echo 'production-capability requires the exact billable capability confirmation' >&2
+            exit 1
+          fi
+          for name in E2E_SECOND_TEST_EMAIL E2E_SECOND_TEST_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              reason="$(printf '%s_missing' "$name" | tr '[:upper:]' '[:lower:]')"
+              write_api_base_preflight_summary "$reason"
+              printf 'Missing required production-capability environment secret: %s\n' "$name" >&2
+              exit 1
+            fi
+          done
+          if [[ "${E2E_TEST_EMAIL,,}" == "${E2E_SECOND_TEST_EMAIL,,}" ]]; then
+            write_api_base_preflight_summary 'second_acceptance_account_not_distinct'
+            echo 'The two production-capability acceptance accounts must be distinct.' >&2
             exit 1
           fi
           for name in PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS; do

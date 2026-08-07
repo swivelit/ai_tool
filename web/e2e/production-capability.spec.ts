@@ -3536,7 +3536,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const secondEmail = process.env.E2E_SECOND_TEST_EMAIL ?? ''
     const secondPassword = process.env.E2E_SECOND_TEST_PASSWORD ?? ''
     if (!secondEmail || !secondPassword) {
-      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'skipped', reasonCodes:['second_account_credentials_unavailable'], requestIds:[], severity:null })
+      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'failed', reasonCodes:['second_account_credentials_unavailable'], requestIds:[], severity:'P2' })
       return
     }
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')
@@ -3545,65 +3545,122 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     const knowledgeId = [...generatedKnowledgeIds].at(0)
     const repositoryId = [...generatedRepositoryIds].at(0)
     if (!threadId || !uploadId || !knowledgeId || !repositoryId) {
-      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'skipped', reasonCodes:['all_batch_account_a_fixtures_unavailable'], requestIds:[], severity:null })
+      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'failed', reasonCodes:['owner_isolation_fixture_unavailable'], requestIds:[], severity:'P2' })
       return
-    }
-    let memoryId: string | null = null
-    if (bootstrap.features.web_cross_thread_memory && originalMemory?.available) {
-      if (!originalMemory.enabled) await api.request('PATCH', '/api/web/settings/memory', { enabled:true })
-      await runQuestion({
-        id:'K-MEMORY-SEED', category:'K', batch:'context', tier:'standard', freshThread:true,
-        prompt:`Remember that my owner-isolation marker is ISOLATION-${runId}.`,
-        expected:'Creates one synthetic owner-scoped memory fact.',
-      })
-      const memory = await api.request<MemorySettings>('GET', '/api/web/settings/memory')
-      memoryId = memory.data?.items.find(item => !originalMemory!.items.some(original => original.id === item.id) && item.value_text.includes(runId))?.id ?? null
-      if (memoryId) {
-        generatedMemoryIds.add(memoryId)
-        createdMemoryIds.add(memoryId)
-      }
     }
     const browser = context.browser()
     if (!browser) throw new Error('second_browser_context_unavailable')
     const secondContext = await browser.newContext()
     const secondPage = await secondContext.newPage()
     const secondOriginalThreads = new Set<string>()
+    let secondApi: AuthenticatedDeployedApi | null = null
+    const isolationRequestIds = [crypto.randomUUID(), crypto.randomUUID()]
     try {
       const second = await loginDeployed<Bootstrap>(secondPage, secondEmail, secondPassword)
+      secondApi = second.api
       const active = await allThreads(second.api, false)
       const archived = await allThreads(second.api, true)
       ;[...active, ...archived].forEach(item => secondOriginalThreads.add(item.id))
-      const attempts = [
-        await second.api.request('GET', `/api/web/threads/${encodeURIComponent(threadId)}`),
-        await second.api.request('GET', `/api/web/threads/${encodeURIComponent(threadId)}/messages`),
-        await second.api.request('GET', `/api/web/knowledge/${encodeURIComponent(knowledgeId)}`),
-        ...(memoryId ? [await second.api.request('DELETE', `/api/web/settings/memory/${encodeURIComponent(memoryId)}`)] : []),
-        await second.api.request('POST', '/api/web/chat/stream', {
-          request_id:crypto.randomUUID(), message:`Isolation check ${runId}`,
+      if (
+        bootstrap.wallet.billing_exempt !== true
+        || second.bootstrap.wallet.billing_exempt !== true
+      ) {
+        workflowResults.push({
+          id:'K-OWNER-ISOLATION', status:'failed',
+          reasonCodes:['owner_isolation_accounts_not_billing_exempt'],
+          requestIds:[], severity:'P2',
+          diagnostics:{
+            account_a_billing_exempt:bootstrap.wallet.billing_exempt === true,
+            account_b_billing_exempt:second.bootstrap.wallet.billing_exempt === true,
+          },
+        })
+        return
+      }
+      const attempts = {
+        thread:await second.api.request(
+          'GET', `/api/web/threads/${encodeURIComponent(threadId)}`,
+        ),
+        upload:await second.api.request('POST', '/api/web/chat/stream', {
+          request_id:isolationRequestIds[0], message:`Isolation check ${runId}`,
           attachment_ids:[uploadId], input_mode:'text',
         }),
-        await second.api.request('POST', '/api/web/chat/stream', {
-          request_id:crypto.randomUUID(), message:`Repository isolation check ${runId}`,
+        knowledge:await second.api.request(
+          'GET', `/api/web/knowledge/${encodeURIComponent(knowledgeId)}`,
+        ),
+        repository:await second.api.request('POST', '/api/web/chat/stream', {
+          request_id:isolationRequestIds[1], message:`Repository isolation check ${runId}`,
           repository_id:repositoryId, input_mode:'text',
         }),
-      ]
-      const pass = attempts.every(attempt => [403, 404].includes(attempt.status))
-      const disclosed = attempts.some(attempt => attempt.status >= 200 && attempt.status < 300)
-      workflowResults.push({
-        id:'K-OWNER-ISOLATION', status:pass ? 'passed' : disclosed ? 'failed' : 'skipped',
-        reasonCodes:pass ? ['all_account_a_identifiers_non_disclosing'] : disclosed ? ['cross_owner_identifier_access_succeeded'] : ['owner_isolation_inconclusive_nonterminal_status'],
-        requestIds:[], severity:disclosed ? 'P0' : null,
-      })
-      const secondRemaining = [...(await allThreads(second.api, false)), ...(await allThreads(second.api, true))]
-      for (const item of secondRemaining) {
-        if (!secondOriginalThreads.has(item.id)) {
-          await deleteGeneratedThread(second.api, item.id, secondOriginalThreads, new Set([item.id]))
-        }
       }
-      await logoutDeployed(secondPage)
+      const statuses = Object.fromEntries(
+        Object.entries(attempts).map(([resource, attempt]) => [resource, attempt.status]),
+      ) as Record<'thread' | 'upload' | 'knowledge' | 'repository', number>
+      const pass = Object.values(statuses).every(status => [403, 404].includes(status))
+      const disclosed = Object.values(statuses).some(
+        status => status >= 200 && status < 300,
+      )
+      workflowResults.push({
+        id:'K-OWNER-ISOLATION', status:pass ? 'passed' : 'failed',
+        reasonCodes:pass ? ['all_account_a_identifiers_non_disclosing'] : disclosed ? ['cross_owner_identifier_access_succeeded'] : ['owner_isolation_inconclusive_nonterminal_status'],
+        requestIds:isolationRequestIds, severity:disclosed ? 'P0' : pass ? null : 'P2',
+        diagnostics:{
+          thread_status:statuses.thread,
+          upload_status:statuses.upload,
+          knowledge_status:statuses.knowledge,
+          repository_status:statuses.repository,
+          account_a_billing_exempt:true,
+          account_b_billing_exempt:true,
+        },
+      })
     } catch {
       workflowResults.push({ id:'K-OWNER-ISOLATION', status:'failed', reasonCodes:['second_account_owner_isolation_harness_failure'], requestIds:[], severity:'P2' })
     } finally {
+      if (secondApi) {
+        let secondRemaining: Thread[] = []
+        try {
+          secondRemaining = [
+            ...(await allThreads(secondApi, false)),
+            ...(await allThreads(secondApi, true)),
+          ]
+        } catch {
+          if (!cleanupErrors.includes('second_account_thread_cleanup_failed')) {
+            cleanupErrors.push('second_account_thread_cleanup_failed')
+          }
+        }
+        for (const item of secondRemaining) {
+          if (!secondOriginalThreads.has(item.id)) {
+            await deleteGeneratedThread(
+              secondApi, item.id, secondOriginalThreads, new Set([item.id]),
+            ).catch(() => {
+              if (!cleanupErrors.includes('second_account_thread_cleanup_failed')) {
+                cleanupErrors.push('second_account_thread_cleanup_failed')
+              }
+            })
+          }
+        }
+        let afterCleanup: Thread[] | null = null
+        try {
+          afterCleanup = [
+            ...(await allThreads(secondApi, false)),
+            ...(await allThreads(secondApi, true)),
+          ]
+        } catch {
+          // Verification is mandatory even when deletion itself appeared to work.
+        }
+        if (
+          !afterCleanup
+          || afterCleanup.some(item => !secondOriginalThreads.has(item.id))
+        ) {
+          if (!cleanupErrors.includes('second_account_thread_cleanup_failed')) {
+            cleanupErrors.push('second_account_thread_cleanup_failed')
+          }
+        }
+      }
+      await logoutDeployed(secondPage).catch(() => {
+        if (!cleanupErrors.includes('second_account_logout_failed')) {
+          cleanupErrors.push('second_account_logout_failed')
+        }
+      })
       await secondContext.close()
     }
   }

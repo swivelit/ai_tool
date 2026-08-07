@@ -77,6 +77,8 @@ const valid = {
   PLAYWRIGHT_API_BASE_URL:'https://api.example.test',
   E2E_TEST_EMAIL:'acceptance@example.invalid',
   E2E_TEST_PASSWORD:'not-a-real-password',
+  E2E_SECOND_TEST_EMAIL:'acceptance-second@example.invalid',
+  E2E_SECOND_TEST_PASSWORD:'not-a-real-second-password',
   PRODUCTION_CAPABILITY_CONFIRMATION,
   PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS:'1000',
   PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS:'2000',
@@ -461,6 +463,15 @@ describe('production capability safety', () => {
     expect(() => productionCapabilityGate({
       ...valid, PRODUCTION_CAPABILITY_CONFIRMATION:'almost',
     })).toThrow(/confirmation_invalid/)
+    expect(() => productionCapabilityGate({
+      ...valid, E2E_SECOND_TEST_EMAIL:undefined,
+    })).toThrow(/e2e_second_test_email_missing/)
+    expect(() => productionCapabilityGate({
+      ...valid, E2E_SECOND_TEST_PASSWORD:undefined,
+    })).toThrow(/e2e_second_test_password_missing/)
+    expect(() => productionCapabilityGate({
+      ...valid, E2E_SECOND_TEST_EMAIL:valid.E2E_TEST_EMAIL.toUpperCase(),
+    })).toThrow(/second_acceptance_account_not_distinct/)
   })
 
   it('selects only the requested batch, all, or its full alias', () => {

@@ -162,3 +162,29 @@ before enabling the apply job and alert on platform-absorbed usage overages.
 Some upstream provider consumption can occur before a cancellation reaches the
 provider. Swico settles reported or conservatively estimated partial usage; it
 releases the full reservation only when no provider usage/output was observed.
+
+## Generated-answer preservation invariants
+
+Changes to generation, verification, repair, persistence, or streaming must
+preserve these rules:
+
+1. Telemetry, validation, and formatting are subordinate to answer delivery. A
+   failure in one of those stages must downgrade or discard unsafe metadata,
+   never destroy an answer that generation already produced. Enforcement lives
+   in `app/web_ai/persistence.py::persist_answer_quality()` and the degraded
+   finalize path in `app/web_api/chat_service.py::execute_web_turn()`. Regression
+   coverage includes `test_unsafe_quality_observation_does_not_destroy_completed_answer` in
+   `tests/test_web_chat_api.py`.
+2. A repair may not make an answer worse. If the repaired answer fails more
+   deterministic checks than the draft, keep the draft and record
+   `repair_rejected_regression`. Enforcement is in the verified-generation
+   repair callbacks in `app/web_api/chat_service.py::execute_web_turn()`;
+   `test_destructive_architecture_repair_is_rejected` in
+   `tests/test_web_triag_phase3.py` pins the behavior.
+3. A client disconnect must not discard visible output already received from a
+   provider. Persist the partial response as interrupted/unverified and release
+   or settle its reservation from authoritative usage. Enforcement is in
+   `app/web_api/chat_service.py::execute_web_turn()` and
+   `app/web_api/router.py::chat_stream()`;
+   `test_disconnected_buffered_turn_persists_partial_answer` in
+   `tests/test_web_chat_api.py` pins persistence, lifecycle, and settlement.

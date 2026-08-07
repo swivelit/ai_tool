@@ -135,6 +135,8 @@ export type CapabilityEnvironment = {
   PLAYWRIGHT_API_BASE_URL?: string
   E2E_TEST_EMAIL?: string
   E2E_TEST_PASSWORD?: string
+  E2E_SECOND_TEST_EMAIL?: string
+  E2E_SECOND_TEST_PASSWORD?: string
   PRODUCTION_CAPABILITY_CONFIRMATION?: string
   PRODUCTION_CAPABILITY_MAX_CHAT_DEBIT_MICROS?: string
   PRODUCTION_CAPABILITY_MAX_VOICE_DEBIT_MICROS?: string
@@ -406,12 +408,21 @@ export function productionCapabilityGate(
 ): CapabilityGate {
   for (const name of [
     'PLAYWRIGHT_BASE_URL', 'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD',
+    'E2E_SECOND_TEST_EMAIL', 'E2E_SECOND_TEST_PASSWORD',
   ] as const) {
     if (!env[name]?.trim()) {
       throw new ProductionCapabilityGateError(
         `${name.toLowerCase()}_missing`,
       )
     }
+  }
+  if (
+    env.E2E_TEST_EMAIL?.trim().toLocaleLowerCase()
+    === env.E2E_SECOND_TEST_EMAIL?.trim().toLocaleLowerCase()
+  ) {
+    throw new ProductionCapabilityGateError(
+      'second_acceptance_account_not_distinct',
+    )
   }
   if (!env.PLAYWRIGHT_API_BASE_URL?.trim()) {
     throw new ProductionCapabilityGateError(
