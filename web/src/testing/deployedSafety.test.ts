@@ -328,7 +328,7 @@ test('B03 and R09 consume the single raw-Markdown architecture evaluation', () =
   expect(spec.match(/const architecture = architectureEvaluation/gu)).toHaveLength(2)
 })
 
-test('production capability requires and exercises the second owner-isolation account', () => {
+test('production capability optionally exercises a fully configured owner-isolation account', () => {
   const spec = readFileSync(
     resolve(process.cwd(), 'e2e/production-capability.spec.ts'), 'utf8',
   )
@@ -350,7 +350,13 @@ test('production capability requires and exercises the second owner-isolation ac
   expect(spec).toContain("repository:await second.api.request('POST', '/api/web/chat/stream'")
   expect(spec).toContain('Object.values(statuses).every(status => [403, 404].includes(status))')
   expect(spec).toContain('second_account_thread_cleanup_failed')
-  expect(spec).not.toContain("status:'skipped', reasonCodes:['second_account_credentials_unavailable']")
+  expect(spec).toContain("status:'skipped', reasonCodes:['second_account_credentials_unavailable']")
+  expect(workflow).toContain(
+    'second acceptance account not configured; K-OWNER-ISOLATION will be skipped',
+  )
+  expect(workflow).toContain(
+    'Optional coverage inputs must degrade to a skipped workflow',
+  )
 })
 
 test('hanging deployed API requests fail with a bounded transport reason', async () => {

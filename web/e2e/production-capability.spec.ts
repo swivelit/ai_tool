@@ -3535,8 +3535,12 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
   const runOwnerIsolation = async () => {
     const secondEmail = process.env.E2E_SECOND_TEST_EMAIL ?? ''
     const secondPassword = process.env.E2E_SECOND_TEST_PASSWORD ?? ''
+    if (!secondEmail && !secondPassword) {
+      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'skipped', reasonCodes:['second_account_credentials_unavailable'], requestIds:[], severity:null })
+      return
+    }
     if (!secondEmail || !secondPassword) {
-      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'failed', reasonCodes:['second_account_credentials_unavailable'], requestIds:[], severity:'P2' })
+      workflowResults.push({ id:'K-OWNER-ISOLATION', status:'failed', reasonCodes:['second_account_credentials_incomplete'], requestIds:[], severity:'P2' })
       return
     }
     if (!api || !bootstrap) throw new Error('benchmark_not_authenticated')

@@ -26,9 +26,11 @@ GitHub Settings
 Environment secrets:
 - E2E_TEST_EMAIL
 - E2E_TEST_PASSWORD
+- PLAYWRIGHT_BASE_URL
+
+Optional owner-isolation Environment secrets:
 - E2E_SECOND_TEST_EMAIL
 - E2E_SECOND_TEST_PASSWORD
-- PLAYWRIGHT_BASE_URL
 
 Environment variables:
 - PLAYWRIGHT_API_BASE_URL=https://ai-tool-rrau.onrender.com
@@ -40,13 +42,15 @@ website UI origin. The workflow prefers the Environment variable. A same-named
 Environment secret remains a temporary compatibility fallback and produces a
 non-failing migration warning; move it to Environment variables.
 
-The two credential pairs must identify different dedicated Firebase acceptance
-accounts. Both normalized account emails must be present in the backend's
-existing `SWICO_INTERNAL_TEST_EMAILS` value so bootstrap reports
-`wallet.billing_exempt=true` for each. The capability preflight fails when the
-second pair is absent or duplicates the primary account; K-OWNER-ISOLATION also
-fails before its access probes unless both sessions are billing-exempt. Never
-print either email or password in workflow logs or artifacts.
+`E2E_SECOND_TEST_EMAIL` and `E2E_SECOND_TEST_PASSWORD` are optional **GitHub
+Environment secrets**, not Render environment variables. With both absent, the
+benchmark runs normally and records K-OWNER-ISOLATION as skipped. If either is
+configured, both are required and the secondary email must differ from the
+primary email. The two credential pairs must identify different dedicated
+Firebase acceptance accounts, and both normalized account emails must be
+present in the backend's existing `SWICO_INTERNAL_TEST_EMAILS` value so
+bootstrap reports `wallet.billing_exempt=true` for each. Never print either
+email or password in workflow logs or artifacts.
 
 The benchmark compares the workflow's `GITHUB_SHA` with the public backend
 release SHA before login or production state creation. It checks immediately,

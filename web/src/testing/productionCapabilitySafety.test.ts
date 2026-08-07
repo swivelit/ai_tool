@@ -472,6 +472,15 @@ describe('production capability safety', () => {
     expect(() => productionCapabilityGate({
       ...valid, E2E_SECOND_TEST_EMAIL:valid.E2E_TEST_EMAIL.toUpperCase(),
     })).toThrow(/second_acceptance_account_not_distinct/)
+    expect(productionCapabilityGate({
+      ...valid,
+      E2E_SECOND_TEST_EMAIL:undefined,
+      E2E_SECOND_TEST_PASSWORD:undefined,
+    })).toEqual({
+      batch:'rag', chatDebitCapMicros:1000, voiceDebitCapMicros:2000,
+      apiBaseUrl:'https://api.example.test',
+      apiHostname:'api.example.test',
+    })
   })
 
   it('selects only the requested batch, all, or its full alias', () => {

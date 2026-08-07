@@ -30,10 +30,15 @@ breakdown explicitly unasserted rather than publishing invented numbers.
 | J-DISCONNECT-RECOVERY | Existing production helpers do not expose safe stream-disconnect injection. | Add coverage only through a product-supported failure mechanism. |
 | J-BILLING-UI | The dedicated acceptance account is billing-exempt, so the real add-credit flow is unavailable. | Validate the real payment path manually. |
 | J-FEEDBACK | The deployed capability/eligible-message precondition was unavailable for this run. | Keep the workflow honest until both are available. |
-| K-OWNER-ISOLATION | A second acceptance credential pair was unavailable at this historical baseline. | The gate now requires the second account and fails rather than skips when it is absent. |
+| K-OWNER-ISOLATION | A second acceptance credential pair was unavailable. | Optional coverage: add the GitHub Environment secrets `E2E_SECOND_TEST_EMAIL` and `E2E_SECOND_TEST_PASSWORD` to enable it. With both absent, this workflow remains honestly skipped. |
 
 The scenario total counts I01-I03 as the three skipped question scenarios. The
 J/K rows are workflow coverage and are not part of that 73-question count.
+
+The two optional K-OWNER-ISOLATION values are GitHub Actions Environment
+secrets under `production-triag`; they are not Render environment variables.
+Supplying only one is invalid configuration, while supplying neither leaves the
+single-account capability gate fully runnable.
 
 The real Razorpay payment path is **not covered** by this billing-exempt gate.
 Each release still requires a separately authorized manual top-up test; the

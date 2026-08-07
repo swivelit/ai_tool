@@ -408,7 +408,6 @@ export function productionCapabilityGate(
 ): CapabilityGate {
   for (const name of [
     'PLAYWRIGHT_BASE_URL', 'E2E_TEST_EMAIL', 'E2E_TEST_PASSWORD',
-    'E2E_SECOND_TEST_EMAIL', 'E2E_SECOND_TEST_PASSWORD',
   ] as const) {
     if (!env[name]?.trim()) {
       throw new ProductionCapabilityGateError(
@@ -416,13 +415,27 @@ export function productionCapabilityGate(
       )
     }
   }
-  if (
-    env.E2E_TEST_EMAIL?.trim().toLocaleLowerCase()
-    === env.E2E_SECOND_TEST_EMAIL?.trim().toLocaleLowerCase()
-  ) {
-    throw new ProductionCapabilityGateError(
-      'second_acceptance_account_not_distinct',
-    )
+  const secondEmail = env.E2E_SECOND_TEST_EMAIL?.trim() ?? ''
+  const secondPassword = env.E2E_SECOND_TEST_PASSWORD?.trim() ?? ''
+  if (secondEmail || secondPassword) {
+    if (!secondEmail) {
+      throw new ProductionCapabilityGateError(
+        'e2e_second_test_email_missing',
+      )
+    }
+    if (!secondPassword) {
+      throw new ProductionCapabilityGateError(
+        'e2e_second_test_password_missing',
+      )
+    }
+    if (
+      env.E2E_TEST_EMAIL?.trim().toLocaleLowerCase()
+      === secondEmail.toLocaleLowerCase()
+    ) {
+      throw new ProductionCapabilityGateError(
+        'second_acceptance_account_not_distinct',
+      )
+    }
   }
   if (!env.PLAYWRIGHT_API_BASE_URL?.trim()) {
     throw new ProductionCapabilityGateError(
