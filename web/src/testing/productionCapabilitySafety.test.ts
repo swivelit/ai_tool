@@ -22,6 +22,8 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateIdempotencySemantics,
+  evaluateEditedBranchStack,
+  editedBranchFailureClassification,
   evaluateRepositoryAbsenceAnswer,
   idempotencySemanticContractPassed,
   idempotencySemanticFailureReasons,
@@ -156,6 +158,48 @@ describe('production capability safety', () => {
       passed:false,
       affirmativeClaimPresent:true,
     })
+  })
+
+  it('distinguishes an edited-stack warning from adopting superseded technology', () => {
+    const round28 = [
+      'Use Django with MySQL for the transactional correctness boundary.',
+      'Valkey can cache idempotency responses or reduce duplicate work, but MySQL is the correctness boundary; do not rely on Redis/Valkey alone for deduplication.',
+    ].join(' ')
+    const postgresAndRedis = [
+      'Use Django, MySQL, and Valkey for the edited stack.',
+      'Store the reservation in PostgreSQL and cache it in Redis.',
+    ].join(' ')
+    const fastApi = 'Use Django, MySQL, and Valkey. We use FastAPI for the endpoint.'
+
+    expect(evaluateEditedBranchStack(round28)).toEqual({
+      passed:true,
+      requiredStackPresent:true,
+      forbiddenAssertions:[],
+    })
+    expect(evaluateEditedBranchStack(postgresAndRedis)).toMatchObject({
+      passed:false,
+      requiredStackPresent:true,
+      forbiddenAssertions:['PostgreSQL', 'Redis'],
+    })
+    expect(evaluateEditedBranchStack(fastApi)).toMatchObject({
+      passed:false,
+      requiredStackPresent:true,
+      forbiddenAssertions:['FastAPI'],
+    })
+  })
+
+  it('does not classify an unsupported harness stack assertion as a product defect', () => {
+    const failedHarnessEvaluation = evaluateEditedBranchStack(
+      'Use Django, MySQL, and Valkey. Redis stores the reservation.',
+    )
+    expect(editedBranchFailureClassification(failedHarnessEvaluation, {
+      persistedQualityStatus:'verified',
+      failedCheckIdentifiers:[],
+    })).toBe('benchmark_defect:edited_branch_stack_assertion')
+    expect(editedBranchFailureClassification(failedHarnessEvaluation, {
+      persistedQualityStatus:'unverified',
+      failedCheckIdentifiers:['task_requirement_context_grounding'],
+    })).toBe('product_defect:edited_branch_stack_not_preserved')
   })
 
   it('scales cleanup for generated threads and caps the global budget', () => {

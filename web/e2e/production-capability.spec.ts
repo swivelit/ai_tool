@@ -46,6 +46,8 @@ import {
   deploymentVersionUrl,
   enforceProductionDeploymentParity,
   evaluateIdempotencySemantics,
+  evaluateEditedBranchStack,
+  editedBranchFailureClassification,
   evaluateRepositoryAbsenceAnswer,
   idempotencySemanticContractPassed,
   evaluateWebhookArchitecture,
@@ -2625,16 +2627,24 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
           id:'D06-EDIT',
           expected:'Uses Django, MySQL and Valkey without mixing FastAPI, PostgreSQL or Redis.',
         })
-        const editedStackPass = containsAll(editedD02.visibleAnswer, ['Django', 'MySQL', 'Valkey'])
-          && !/FastAPI|PostgreSQL|Redis/i.test(editedD02.visibleAnswer)
+        const editedStackEvaluation = evaluateEditedBranchStack(
+          editedD02.rawMarkdown,
+        )
+        const editedStackPass = editedStackEvaluation.passed
         if (!editedStackPass) {
           editedD02.status = 'failed'
           editedD02.score = Math.min(editedD02.score, 45)
           editedD02.reasonCodes.push('edited_stack_branch_mixed_or_missing')
-          editedD02.defectSeverity = 'P2'
-          editedD02.classificationNotes.push(
-            'product_defect:edited_branch_stack_not_preserved',
+          const classification = editedBranchFailureClassification(
+            editedStackEvaluation,
+            {
+              persistedQualityStatus:editedD02.persistedQualityStatus,
+              failedCheckIdentifiers:editedD02.failedCheckIdentifiers,
+            },
           )
+          if (classification) editedD02.classificationNotes.push(classification)
+          editedD02.defectSeverity = classification?.startsWith('product_defect:')
+            ? 'P2' : 'P3'
         }
         budget.assertRequestMayStart('chat')
         await chatPace.wait()

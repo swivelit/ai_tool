@@ -571,6 +571,73 @@ export function hasAffirmativeWaitAdvice(value: string): boolean {
   return false
 }
 
+const SUPERSEDED_STACK_ADVISORY = /\b(?:do\s+not|don(?:'t|’t)|never|avoid|rather\s+than|instead\s+of|not\s+rely|without|no\s+longer|migrated\s+(?:away\s+)?from|replaced\s+by|unlike)\b/iu
+
+export type EditedBranchStackEvaluation = {
+  passed: boolean
+  requiredStackPresent: boolean
+  forbiddenAssertions: string[]
+}
+
+function escapedPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Distinguish use of a superseded technology from advice warning against it.
+ * Diagnostics contain only the configured technology labels, never answer text.
+ */
+export function evaluateEditedBranchStack(
+  answer: string,
+  requiredStack: readonly string[] = ['Django', 'MySQL', 'Valkey'],
+  forbiddenStack: readonly string[] = ['FastAPI', 'PostgreSQL', 'Redis'],
+): EditedBranchStackEvaluation {
+  const value = String(answer ?? '')
+  const lowered = value.toLocaleLowerCase()
+  const requiredStackPresent = requiredStack.every(
+    term => lowered.includes(term.toLocaleLowerCase()),
+  )
+  const forbiddenAssertions = new Set<string>()
+  const clauses = value.split(/(?<=[.!?;])\s+|\n+/u)
+  for (const clause of clauses) {
+    for (const technology of forbiddenStack) {
+      const pattern = new RegExp(`\\b${escapedPattern(technology)}\\b`, 'giu')
+      for (const match of clause.matchAll(pattern)) {
+        const prefix = clause.slice(0, match.index ?? 0)
+        if (SUPERSEDED_STACK_ADVISORY.test(prefix)) continue
+        forbiddenAssertions.add(technology)
+      }
+    }
+  }
+  return {
+    passed:requiredStackPresent && forbiddenAssertions.size === 0,
+    requiredStackPresent,
+    forbiddenAssertions:[...forbiddenAssertions],
+  }
+}
+
+const EDITED_CONTEXT_CHECK_IDENTIFIERS = new Set([
+  'task_requirement_context_grounding',
+  'task_requirement_prior_context_reask',
+])
+
+export function editedBranchFailureClassification(
+  evaluation: EditedBranchStackEvaluation,
+  backend: {
+    persistedQualityStatus: string
+    failedCheckIdentifiers: readonly string[]
+  },
+): string | null {
+  if (evaluation.passed) return null
+  const backendConfirmsFailure = backend.persistedQualityStatus === 'unverified'
+    && backend.failedCheckIdentifiers.some(
+      identifier => EDITED_CONTEXT_CHECK_IDENTIFIERS.has(identifier),
+    )
+  return backendConfirmsFailure
+    ? 'product_defect:edited_branch_stack_not_preserved'
+    : 'benchmark_defect:edited_branch_stack_assertion'
+}
+
 const REPOSITORY_PATH = /(?<![A-Za-z0-9:/])((?:(?:\.{1,2}\/)?[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,16})(?=$|[\s`'"),.:;\]])/giu
 const REPOSITORY_UNCERTAINTY_VERB = '(?:verify|determine|confirm|find|identify|describe|assess|say|tell|list|answer|establish)'
 const REPOSITORY_UNCERTAINTY = new RegExp(

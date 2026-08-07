@@ -290,6 +290,9 @@ test('edited continuity branch has a unique scenario id and summaries enforce it
   expect(spec).toContain("id:'D06-EDIT'")
   expect(spec).toContain('assertUniqueCapabilityScenarioIds(')
   expect(spec).toContain('results.map(item => item.scenarioId)')
+  expect(spec).toContain('evaluateEditedBranchStack(')
+  expect(spec).toContain('editedBranchFailureClassification(')
+  expect(spec).not.toContain('!/FastAPI|PostgreSQL|Redis/i.test')
 })
 
 test('targeted architecture fixtures use the shared coverage expectations', () => {
