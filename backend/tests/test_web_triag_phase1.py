@@ -79,6 +79,7 @@ def test_identical_input_and_config_produce_repeatable_immutable_plan():
 def test_tier_policies_and_allocations_never_exceed_ceiling():
     policies = validated_tier_policies()
     assert [policy.tier_id for policy in policies] == [
+        "free",
         "lite",
         "standard",
         "pro",

@@ -320,6 +320,117 @@ def create_billing_exempt_usage(
     return charge
 
 
+def create_swico_free_usage(
+    session: Session, *, request_id: str, user_id: int, thread_id: str | None,
+    pricing_snapshot_json: str, swico_tier: str = "free",
+    provider: str = "swico_free", model: str = "free",
+    usage_kind: str = "chat", credit_bucket: str = "chat",
+    voice_turn_id: str | None = None, assistant_message_id: str | None = None,
+) -> UsageCharge:
+    """Create a zero-charge Free audit row without touching wallet state."""
+    usage_kind = _usage_kind(usage_kind)
+    bucket = normalize_credit_bucket(credit_bucket)
+    existing = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if existing is not None and existing.credit_bucket != bucket:
+        raise PaymentValidationError("Request ID was already used for another credit bucket.")
+    if existing is not None and existing.status not in {"released", "free_pending"}:
+        return existing
+    charge = existing or UsageCharge(
+        request_id=request_id, user_id=int(user_id), thread_id=thread_id,
+        provider=provider, model=model,
+    )
+    charge.user_id = int(user_id)
+    charge.thread_id = thread_id
+    charge.provider = provider
+    charge.model = model
+    charge.swico_tier = swico_tier
+    charge.usage_kind = usage_kind
+    charge.credit_bucket = bucket
+    charge.voice_turn_id = voice_turn_id
+    charge.assistant_message_id = assistant_message_id
+    charge.reserved_micros = 0
+    charge.provider_cost_micros = 0
+    charge.debited_micros = 0
+    charge.status = "free_pending"
+    charge.settled_at = None
+    try:
+        snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot.update({
+        "provider": provider, "zero_charge": True,
+        "reserved_micros": 0, "provider_cost_micros": 0, "debited_micros": 0,
+    })
+    charge.pricing_snapshot_json = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    session.add(charge)
+    session.flush()
+    return charge
+
+
+def settle_swico_free_usage(
+    session: Session, *, request_id: str, input_tokens: int,
+    cached_input_tokens: int, output_tokens: int, usage_source: str,
+    pricing_snapshot_json: str, assistant_message_id: str | None = None,
+    provider: str = "swico_free", model: str = "free",
+    usage_kind: str = "chat", swico_tier: str = "free",
+) -> UsageCharge:
+    charge = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if charge is None or charge.status not in {"free_pending", "free"}:
+        raise PaymentValidationError("Swico Free usage record is not active.")
+    charge.provider = provider
+    charge.model = model
+    charge.swico_tier = swico_tier
+    charge.usage_kind = _usage_kind(usage_kind)
+    charge.provider_cost_amount_decimal = Decimal("0")
+    charge.provider_cost_currency = "INR"
+    charge.provider_cost_micros = 0
+    charge.reserved_micros = 0
+    charge.debited_micros = 0
+    charge.input_tokens = max(0, int(input_tokens))
+    charge.cached_input_tokens = max(0, int(cached_input_tokens))
+    charge.output_tokens = max(0, int(output_tokens))
+    charge.usage_source = usage_source if usage_source in {"actual", "estimated"} else "estimated"
+    charge.assistant_message_id = assistant_message_id
+    try:
+        snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot.update({
+        "provider": provider, "zero_charge": True,
+        "reserved_micros": 0, "provider_cost_micros": 0, "debited_micros": 0,
+    })
+    charge.pricing_snapshot_json = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    charge.status = "free"
+    charge.settled_at = utc_now()
+    session.add(charge)
+    return charge
+
+
+def release_swico_free_usage(
+    session: Session, request_id: str, *, reason: str = "provider_failed_or_cancelled",
+    annotate_terminal: bool = False,
+) -> UsageCharge | None:
+    charge = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if charge is None:
+        return None
+    if charge.status not in {"free_pending"}:
+        if annotate_terminal and charge.status in {"free", "released", "failed"}:
+            _annotate_release_reason(charge, reason)
+            session.add(charge)
+        return charge
+    _annotate_release_reason(charge, reason)
+    charge.status = "released"
+    charge.settled_at = utc_now()
+    session.add(charge)
+    return charge
+
+
 def expand_usage_reservation(
     session: Session, *, request_id: str, additional_micros: int,
     expansion_id: str,

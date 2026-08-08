@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from ..openai_model_router import OpenAIModelRouter
+from .swico_tiers import SwicoTierUnavailableError, free_enabled
 from .intent import IntentDecision, classify_intent_with_metadata, normalize_voice_query_for_intent
 from .language import detect_language
 from .prompts import concise_max_output_tokens
@@ -102,6 +103,22 @@ class AIProviderRouter:
 
         swico_tier = str(request.metadata.get("swico_tier") or "").strip().lower()
         if request.metadata.get("client_surface") == "web" and swico_tier:
+            if swico_tier == "free":
+                if not free_enabled():
+                    raise SwicoTierUnavailableError("Swico Free is not enabled")
+                return AIRoute(
+                    provider="swico_free",
+                    model=None,
+                    route=f"swico_free_{intent.intent}",
+                    reason=f"{intent.reason}:configured_swico_free",
+                    language=language.language,
+                    intent=intent.intent,
+                    max_output_tokens=min(
+                        max_output_tokens,
+                        int(request.metadata.get("swico_free_max_output_tokens") or 512),
+                    ),
+                    metadata={**intent_metadata, "swico_tier": "free"},
+                )
             permission_tier = str(request.metadata.get("user_tier") or "paid")
             model_router = OpenAIModelRouter()
             selections = model_router.select_swico_candidates(

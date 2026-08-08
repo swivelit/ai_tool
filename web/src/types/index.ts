@@ -6,7 +6,7 @@ export type Wallet = {
 }
 export type CreditBucket = 'chat' | 'voice'
 export type Wallets = { chat: Wallet; voice: Wallet }
-export type SwicoTier = 'lite' | 'standard' | 'pro'
+export type SwicoTier = 'free' | 'lite' | 'standard' | 'pro'
 export type SwicoTierOption = {
   id: SwicoTier; label: string; description: string; available: boolean; selected: boolean;
 }

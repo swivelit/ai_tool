@@ -6,7 +6,7 @@ import os
 from typing import Literal, cast
 
 
-TierId = Literal["lite", "standard", "pro"]
+TierId = Literal["free", "lite", "standard", "pro"]
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,32 @@ class TierPolicy:
 
 
 _BASE_POLICY: dict[TierId, dict[str, object]] = {
+    "free": {
+        "max_prompt_tokens": 4_096,
+        "max_output_tokens": 512,
+        "max_history_tokens": 700,
+        "max_memory_tokens": 0,
+        "max_profile_tokens": 0,
+        "max_document_tokens": 1_400,
+        "candidate_limit": 6,
+        "evidence_item_limit": 4,
+        "evidence_token_cap": 1_400,
+        "query_variant_limit": 1,
+        "retrieval_round_limit": 1,
+        "dense_retrieval_allowed": True,
+        "corrective_retrieval_allowed": False,
+        "claim_verifier_allowed": False,
+        "repository_retrieval_allowed": False,
+        "repository_validation_allowed": False,
+        "repository_contract_token_cap": 0,
+        "repository_required_validation_categories": (),
+        "persistent_knowledge_allowed": False,
+        "triplet_retrieval_allowed": False,
+        "hierarchical_retrieval_allowed": False,
+        "knowledge_token_cap": 0,
+        "hierarchy_summary_token_cap": 0,
+        "max_provider_calls": 1,
+    },
     "lite": {
         "max_prompt_tokens": 3_000,
         "max_output_tokens": 1_600,
@@ -246,4 +272,4 @@ def validated_tier_policies(
     environ: Mapping[str, str] | None = None,
 ) -> tuple[TierPolicy, ...]:
     env = os.environ if environ is None else environ
-    return tuple(_build_policy(tier, env) for tier in ("lite", "standard", "pro"))
+    return tuple(_build_policy(tier, env) for tier in ("free", "lite", "standard", "pro"))

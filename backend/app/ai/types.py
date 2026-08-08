@@ -17,7 +17,7 @@ class AIRequest:
 
 @dataclass(frozen=True)
 class AIRoute:
-    provider: Literal["cache", "backend_tool", "sarvam", "openai", "blocked"]
+    provider: Literal["cache", "backend_tool", "sarvam", "openai", "swico_free", "blocked"]
     model: Optional[str]
     route: str
     reason: str

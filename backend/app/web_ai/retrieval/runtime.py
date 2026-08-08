@@ -44,6 +44,7 @@ def execute_hybrid_retrieval(
     uploads: list[EphemeralUpload],
     store: EphemeralUploadStore,
     embed: EmbeddingFunction | None = None,
+    query_embed: EmbeddingFunction | None = None,
     dense_accounted: bool = False,
     knowledge_session_factory: Callable[[], Session] | None = None,
     cancellation_signal: object | None = None,
@@ -60,6 +61,7 @@ def execute_hybrid_retrieval(
             TemporaryDenseRetriever(
                 store=store,
                 embed=embed,
+                query_embed=query_embed,
                 model=settings.embedding_model,
                 dimensions=settings.embedding_dimensions,
                 query_cache_ttl_seconds=(
@@ -85,7 +87,7 @@ def execute_hybrid_retrieval(
             and embed is not None
         ):
             def query_embedding(value: str) -> list[float]:
-                vectors = embed((value,))
+                vectors = (query_embed or embed)((value,))
                 return [float(item) for item in (vectors[0] if vectors else ())]
         retrievers.append(
             PersistentKnowledgeRetriever(

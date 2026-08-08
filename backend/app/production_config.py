@@ -237,6 +237,31 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("SWICO_TIER_SELECTION_ENABLED must be a boolean")
     if pro_is_enabled is None:
         errors.append("SWICO_PRO_ENABLED must be a boolean")
+    free_is_enabled = _bool(env, "SWICO_FREE_ENABLED", False)
+    if free_is_enabled is None:
+        errors.append("SWICO_FREE_ENABLED must be a boolean")
+    free_timeout = _integer(env, "SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90")
+    if free_timeout is None or free_timeout <= 0 or free_timeout > 120:
+        errors.append("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS must be between 1 and 120")
+    free_dimensions = _integer(env, "SWICO_FREE_EMBEDDING_DIMENSIONS", "384")
+    if free_dimensions != 384:
+        errors.append("SWICO_FREE_EMBEDDING_DIMENSIONS must be 384")
+    if free_is_enabled is True:
+        free_url = _value(env, "SWICO_FREE_INFERENCE_BASE_URL")
+        parsed_free_url = urlsplit(free_url)
+        if (
+            not free_url
+            or parsed_free_url.scheme != "https"
+            or not parsed_free_url.hostname
+            or parsed_free_url.username
+            or parsed_free_url.password
+            or parsed_free_url.query
+            or parsed_free_url.fragment
+        ):
+            errors.append("SWICO_FREE_INFERENCE_BASE_URL must be an HTTPS URL")
+        free_token = _value(env, "SWICO_FREE_INFERENCE_TOKEN")
+        if len(free_token) < 32 or any(character.isspace() for character in free_token):
+            errors.append("SWICO_FREE_INFERENCE_TOKEN must be a strong non-empty token")
     if default_tier == "pro" and pro_is_enabled is not True:
         errors.append("SWICO_DEFAULT_TIER cannot be pro while SWICO_PRO_ENABLED is false")
     configured_tier_models: dict[str, list[str]] = {}

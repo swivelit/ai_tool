@@ -21,6 +21,7 @@ from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
+from ..ai.providers.swico_free_provider import SwicoFreeProvider
 from ..ai.providers.base import (
     GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
     ProviderStreamInterrupted,
@@ -39,10 +40,12 @@ from ..billing.pricing import (
 from ..billing.errors import BillingError, PaymentValidationError
 from ..billing.service import (
     create_billing_exempt_usage, create_usage_reservation,
+    create_swico_free_usage,
     expand_usage_reservation, get_wallet_summary,
     normalize_credit_bucket,
     release_billing_exempt_usage, release_usage_reservation,
     settle_billing_exempt_usage, settle_usage_reservation,
+    settle_swico_free_usage, release_swico_free_usage,
 )
 from ..database import SessionLocal
 from ..job_queue import (
@@ -2160,7 +2163,7 @@ def prepare_web_turn(
                 )
             else:
                 route = AIProviderRouter().select_route(ai_request)
-                if route.provider in {"openai", "sarvam"}:
+                if route.provider in {"openai", "sarvam", "swico_free"}:
                     route = AIRoute(
                         "backend_tool", None, "unsupported_web_capability",
                         "web_capability_not_available", route.language,
@@ -2528,7 +2531,7 @@ def prepare_web_turn(
                 422,
             )
 
-        if route.provider not in {"openai", "sarvam"}:
+        if route.provider not in {"openai", "sarvam", "swico_free"}:
             # Deterministic safety blocks do not consume wallet credit.
             session.commit()
             return PreparedWebTurn(
@@ -2762,7 +2765,16 @@ def prepare_web_turn(
                     "reserved_provider_attempts": len(attempt_reserves),
                 },
             )
-        if billing_exempt:
+        if route.provider == "swico_free":
+            create_swico_free_usage(
+                session, request_id=request_id, user_id=user_id, thread_id=thread.id,
+                pricing_snapshot_json=snapshot_json({
+                    "provider": "swico_free", "zero_charge": True,
+                    "reserved_micros": 0, "provider_cost_micros": 0,
+                }), swico_tier=swico_tier, usage_kind="chat",
+                credit_bucket=authoritative_bucket, voice_turn_id=voice_turn_id,
+            )
+        elif billing_exempt:
             create_billing_exempt_usage(
                 session, request_id=request_id, user_id=user_id, thread_id=thread.id,
                 provider=route.provider, model=route.model or "",
@@ -2812,10 +2824,8 @@ def prepare_web_turn(
                     for chunk in upload.chunks
                 )
             embedding_reserve = reserve_price(
-                "openai",
-                active_triag_settings.embedding_model,
-                embedding_tokens,
-                0,
+                "openai", active_triag_settings.embedding_model,
+                embedding_tokens, 0,
             )
             stage = get_or_create_usage_stage(
                 session,
@@ -2832,7 +2842,23 @@ def prepare_web_turn(
                 },
             )
             try:
-                if billing_exempt:
+                if swico_tier == "free":
+                    embedding_charge = create_swico_free_usage(
+                        session,
+                        request_id=embedding_request_id,
+                        user_id=user_id,
+                        thread_id=thread.id,
+                        provider="swico_free",
+                        model="free",
+                        pricing_snapshot_json=snapshot_json({
+                            "provider": "swico_free", "zero_charge": True,
+                            "embedding_dimensions": 384,
+                        }),
+                        swico_tier=swico_tier,
+                        usage_kind="chat",
+                        credit_bucket=authoritative_bucket,
+                    )
+                elif billing_exempt:
                     embedding_charge = create_billing_exempt_usage(
                         session,
                         request_id=embedding_request_id,
@@ -2865,7 +2891,7 @@ def prepare_web_turn(
                     )
                 stage.usage_charge_id = embedding_charge.id
                 stage.reserved_micros = (
-                    0 if billing_exempt else embedding_reserve.micros
+                    0 if billing_exempt or swico_tier == "free" else embedding_reserve.micros
                 )
                 stage.status = "reserved"
                 session.add(stage)
@@ -2887,7 +2913,7 @@ def prepare_web_turn(
         return PreparedWebTurn(
             request_id=request_id, user_id=user_id, thread_id=thread.id,
             ai_request=ai_request, route=route,
-            reserved_micros=0 if billing_exempt else reserve.micros,
+            reserved_micros=0 if billing_exempt or route.provider == "swico_free" else reserve.micros,
             swico_tier=swico_tier, input_mode=input_mode,
             voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
             billing_exempt=billing_exempt,
@@ -3021,7 +3047,7 @@ def _phase2_embedding_vectors(
 ) -> Callable[[list[str]], list[list[float]]]:
     injected = providers.get("embedding")
 
-    def embed(values: list[str]) -> list[list[float]]:
+    def embed(values: list[str], mode: str = "passage") -> list[list[float]]:
         if not prepared.embedding_accounted:
             raise RuntimeError("embedding_budget_unavailable")
         estimated = sum(estimate_tokens(value) for value in values)
@@ -3030,6 +3056,9 @@ def _phase2_embedding_vectors(
         if callable(injected):
             result = injected(values)
             vectors = [list(vector) for vector in result]
+        elif prepared.swico_tier == "free":
+            provider = providers.get("swico_free") or SwicoFreeProvider()
+            vectors = provider.embed(values, mode=mode)
         else:
             provider = OpenAIProvider()
             client = provider._client_or_create()
@@ -3087,7 +3116,13 @@ def _finalize_embedding_stage(
             0, int(counters["attempted_input_tokens"])
         )
         if successful_calls <= 0:
-            if prepared.billing_exempt:
+            if prepared.swico_tier == "free":
+                release_swico_free_usage(
+                    session,
+                    prepared.embedding_request_id,
+                    reason="embedding_not_used_or_unavailable",
+                )
+            elif prepared.billing_exempt:
                 release_billing_exempt_usage(
                     session,
                     prepared.embedding_request_id,
@@ -3114,10 +3149,28 @@ def _finalize_embedding_stage(
                 session.add(stage)
             session.commit()
             return
-        price = price_usage(
-            "openai", settings.embedding_model, input_tokens, 0
-        )
-        if prepared.billing_exempt:
+        if prepared.swico_tier == "free":
+            price = PriceResult(
+                Decimal("0"), "INR", 0,
+                {"provider": "swico_free", "zero_charge": True, "embedding_dimensions": 384},
+            )
+        else:
+            price = price_usage(
+                "openai", settings.embedding_model, input_tokens, 0
+            )
+        if prepared.swico_tier == "free":
+            settle_swico_free_usage(
+                session,
+                request_id=prepared.embedding_request_id,
+                input_tokens=input_tokens,
+                cached_input_tokens=0,
+                output_tokens=0,
+                usage_source="estimated",
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                provider="swico_free", model="free", usage_kind="chat",
+                swico_tier=prepared.swico_tier,
+            )
+        elif prepared.billing_exempt:
             settle_billing_exempt_usage(
                 session,
                 request_id=prepared.embedding_request_id,
@@ -3296,7 +3349,7 @@ def _execute_phase2_retrieval(
     if (
         not settings.hybrid_runtime_enabled
         or prepared.execution_plan is None
-        or prepared.route.provider not in {"openai", "sarvam"}
+        or prepared.route.provider not in {"openai", "sarvam", "swico_free"}
     ):
         return
     document_planned = bool(
@@ -3345,6 +3398,10 @@ def _execute_phase2_retrieval(
     embed = _phase2_embedding_vectors(
         prepared, settings, providers, counters
     )
+    query_embed = (
+        (lambda values: embed(list(values), mode="query"))
+        if prepared.swico_tier == "free" else None
+    )
     stage = "hybrid_retrieval"
     try:
         result = execute_hybrid_retrieval(
@@ -3357,6 +3414,7 @@ def _execute_phase2_retrieval(
             uploads=list(prepared.retrieval_uploads),
             store=get_upload_store(),
             embed=embed,
+            query_embed=query_embed,
             dense_accounted=prepared.embedding_accounted,
             knowledge_session_factory=SessionLocal,
             cancellation_signal=prepared.ai_request.metadata.get(
@@ -3888,7 +3946,7 @@ def record_web_turn_lifecycle(
             if stage is None:
                 if (
                     lifecycle_stage == "reserved"
-                    and prepared.route.provider in {"openai", "sarvam"}
+                    and prepared.route.provider in {"openai", "sarvam", "swico_free"}
                 ):
                     parent = session.exec(select(UsageCharge).where(
                         UsageCharge.request_id == prepared.request_id,
@@ -4015,7 +4073,7 @@ def _expand_phase3_reservation(
         ),
         route.max_output_tokens,
     )
-    if prepared.billing_exempt:
+    if prepared.billing_exempt or prepared.route.provider == "swico_free":
         return estimate.micros
     with SessionLocal() as session:
         expand_usage_reservation(
@@ -4074,6 +4132,16 @@ def _settle_incomplete_phase3_parent(
     input_tokens = sum(item[2] for item in prices)
     output_tokens = sum(item[3] for item in prices)
     with SessionLocal() as session:
+        if prepared.route.provider == "swico_free":
+            settle_swico_free_usage(
+                session, request_id=prepared.request_id,
+                input_tokens=input_tokens, cached_input_tokens=0,
+                output_tokens=output_tokens, usage_source="actual",
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                provider="swico_free", model="free", swico_tier=prepared.swico_tier,
+            )
+            session.commit()
+            return
         settle = (
             settle_billing_exempt_usage
             if prepared.billing_exempt else settle_usage_reservation
@@ -4115,7 +4183,9 @@ def _terminalize_usage_on_persistence_error(
             else:
                 with SessionLocal() as usage_session:
                     release = (
-                        release_billing_exempt_usage
+                        release_swico_free_usage
+                        if prepared.route.provider == "swico_free"
+                        else release_billing_exempt_usage
                         if prepared.billing_exempt
                         else release_usage_reservation
                     )
@@ -4134,7 +4204,9 @@ def _terminalize_usage_on_persistence_error(
             try:
                 with SessionLocal() as fallback_session:
                     release = (
-                        release_billing_exempt_usage
+                        release_swico_free_usage
+                        if prepared.route.provider == "swico_free"
+                        else release_billing_exempt_usage
                         if prepared.billing_exempt
                         else release_usage_reservation
                     )
@@ -4185,7 +4257,12 @@ def _generation_cancellation_requested(prepared: PreparedWebTurn) -> bool:
 
 def _release_pre_provider_cancellation(prepared: PreparedWebTurn) -> None:
     with SessionLocal() as session:
-        if prepared.billing_exempt:
+        if prepared.route.provider == "swico_free":
+            release_swico_free_usage(
+                session, prepared.request_id,
+                reason="cancelled_before_provider_usage", annotate_terminal=True,
+            )
+        elif prepared.billing_exempt:
             release_billing_exempt_usage(
                 session,
                 prepared.request_id,
@@ -5551,10 +5628,14 @@ def execute_web_turn(
             response = generated.response
             prepared.answer_quality = generated.quality
             finalize_stage = "post_generation_formatting"
-        elif prepared.route.provider in {"openai", "sarvam"}:
+        elif prepared.route.provider in {"openai", "sarvam", "swico_free"}:
             provider = provider_map.get(prepared.route.provider)
             if provider is None:
-                provider = OpenAIProvider() if prepared.route.provider == "openai" else SarvamProvider()
+                provider = (
+                    OpenAIProvider() if prepared.route.provider == "openai"
+                    else SarvamProvider() if prepared.route.provider == "sarvam"
+                    else SwicoFreeProvider()
+                )
             if on_delta and hasattr(provider, "stream_complete"):
                 streamed_by_provider = True
                 response = provider.stream_complete(prepared.ai_request, prepared.route, on_delta)
@@ -5672,7 +5753,12 @@ def execute_web_turn(
             _settle_incomplete_phase3_parent(prepared, phase3_prices)
         else:
             with SessionLocal() as session:
-                if prepared.billing_exempt:
+                if prepared.route.provider == "swico_free":
+                    release_swico_free_usage(
+                        session, prepared.request_id,
+                        reason="provider_incomplete_without_usage",
+                    )
+                elif prepared.billing_exempt:
                     release_billing_exempt_usage(
                         session, prepared.request_id,
                         reason="provider_incomplete_without_usage",
@@ -5714,7 +5800,11 @@ def execute_web_turn(
         raise
     except OpenAIBudgetExceededError as exc:
         with SessionLocal() as session:
-            if prepared.billing_exempt:
+            if prepared.route.provider == "swico_free":
+                release_swico_free_usage(
+                    session, prepared.request_id, reason="service_budget_reached",
+                )
+            elif prepared.billing_exempt:
                 release_billing_exempt_usage(
                     session,
                     prepared.request_id,
@@ -5865,7 +5955,9 @@ def execute_web_turn(
                     )
         else:
             with SessionLocal() as session:
-                if prepared.billing_exempt:
+                if prepared.route.provider == "swico_free":
+                    release_swico_free_usage(session, prepared.request_id)
+                elif prepared.billing_exempt:
                     release_billing_exempt_usage(session, prepared.request_id)
                 else:
                     release_usage_reservation(session, prepared.request_id)
@@ -5885,7 +5977,9 @@ def execute_web_turn(
             _release_pre_provider_cancellation(prepared)
             raise
         with SessionLocal() as session:
-            if prepared.billing_exempt:
+            if prepared.route.provider == "swico_free":
+                release_swico_free_usage(session, prepared.request_id)
+            elif prepared.billing_exempt:
                 release_billing_exempt_usage(session, prepared.request_id)
             else:
                 release_usage_reservation(session, prepared.request_id)
@@ -5968,7 +6062,7 @@ def execute_web_turn(
         provider_attempts = int(response.raw.get("provider_attempts") or 0)
         if (
             prepared.precomputed_response is None
-            and prepared.route.provider in {"openai", "sarvam"}
+            and prepared.route.provider in {"openai", "sarvam", "swico_free"}
             and provider_attempts <= 0
         ):
             provider_attempts = 1
@@ -6132,7 +6226,7 @@ def execute_web_turn(
             input_tokens=response.input_tokens, output_tokens=response.output_tokens,
             usage_source=(
                 usage_source
-                if prepared.route.provider in {"openai", "sarvam"} else None
+                if prepared.route.provider in {"openai", "sarvam", "swico_free"} else None
             ),
             charge_micros=(
                 0 if prepared.billing_exempt or interrupted_without_usage
@@ -6250,7 +6344,9 @@ def execute_web_turn(
         session.add(user_message)
         if interrupted_without_usage:
             release = (
-                release_billing_exempt_usage
+                release_swico_free_usage
+                if prepared.route.provider == "swico_free"
+                else release_billing_exempt_usage
                 if prepared.billing_exempt else release_usage_reservation
             )
             release(
@@ -6258,6 +6354,18 @@ def execute_web_turn(
                 prepared.request_id,
                 reason="client_disconnected_partial_persisted",
                 annotate_terminal=True,
+            )
+        elif prepared.route.provider == "swico_free":
+            settle_swico_free_usage(
+                session, request_id=prepared.request_id,
+                input_tokens=response.input_tokens,
+                cached_input_tokens=cached_tokens,
+                output_tokens=response.output_tokens,
+                usage_source=usage_source,
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                assistant_message_id=assistant.id,
+                provider="swico_free", model="free", usage_kind="chat",
+                swico_tier=prepared.swico_tier,
             )
         elif prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
             settle_billing_exempt_usage(

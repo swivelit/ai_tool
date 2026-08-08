@@ -17,6 +17,7 @@ from .intent import classify_contextual_followup
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
+from .providers.swico_free_provider import SwicoFreeProvider
 from .router import AIProviderRouter
 from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
@@ -149,6 +150,8 @@ def _provider_for_route(route: AIRoute, context: dict[str, Any]):
         return context.get("sarvam_provider") or SarvamProvider()
     if route.provider == "openai":
         return context.get("openai_provider") or OpenAIProvider()
+    if route.provider == "swico_free":
+        return context.get("swico_free_provider") or SwicoFreeProvider()
     raise RuntimeError(f"Unsupported provider route: {route.provider}")
 
 
@@ -230,11 +233,14 @@ def _call_provider(
     route: AIRoute,
     context: dict[str, Any],
 ) -> AIProviderResponse:
-    enforce_provider_budget(session, route.provider, currency="INR" if route.provider == "sarvam" else "USD")
+    if route.provider != "swico_free":
+        enforce_provider_budget(session, route.provider, currency="INR" if route.provider == "sarvam" else "USD")
     return _provider_for_route(route, context).complete(request, route)
 
 
 def _fallback_route(route: AIRoute, request: AIRequest, context: dict[str, Any]) -> Optional[AIRoute]:
+    if route.provider == "swico_free":
+        return None
     if _max_provider_calls_hard(context) < 2:
         return None
     if route.intent == "unsafe_or_sensitive" or route.route == "live_data_disabled":

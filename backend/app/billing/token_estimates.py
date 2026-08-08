@@ -55,6 +55,14 @@ def token_estimate(
         "pricing_as_of": pricing_as_of,
         "blended_assumption": "70% input tokens and 30% output tokens; cached input excluded.",
     }
+    if selected == "free":
+        return {
+            **base,
+            "estimated_blended_tokens": 0,
+            "range_min_tokens": 0,
+            "range_max_tokens": 0,
+            "explanation": "Swico Free uses zero chat credits.",
+        }
     notice = (
         f"Estimated for {label}. Actual usage depends on message size, "
         "response length, and task complexity."

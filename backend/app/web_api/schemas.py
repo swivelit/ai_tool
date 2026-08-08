@@ -258,7 +258,7 @@ class UsagePreferencesPatch(BaseModel):
 class AssistantSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tier: Literal["lite", "standard", "pro"]
+    tier: Literal["free", "lite", "standard", "pro"]
 
 
 class MemorySettingsPatch(BaseModel):

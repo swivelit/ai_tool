@@ -27,7 +27,7 @@ function safeError(error: unknown) {
 }
 
 function UsageBars({ usage }: { usage: UsageSummary }) {
-  const tiers = (['lite', 'standard', 'pro'] as const).map(id => {
+  const tiers = (['free', 'lite', 'standard', 'pro'] as const).map(id => {
     const item = usage.by_tier[id]
     return {
       id, label: item.label, credits: item.debited_token_credits,
@@ -129,7 +129,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
 
   const estimate = loaded?.usage.estimated_tokens_remaining
   const billingExempt = loaded?.usage.billing_exempt === true
-  const tokenRange = useMemo(() => estimate ? fullTokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable', [estimate])
+  const tokenRange = useMemo(() => loaded?.usage.tier === 'free' ? '0 chat credits' : estimate ? fullTokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable', [estimate, loaded?.usage.tier])
   const saveProfile = async () => {
     if (!profile) return
     if (!profile.name.trim() || !profile.assistant_name.trim() || !profile.timezone.trim()) { setNotice('Name, timezone, and assistant name are required.'); return }

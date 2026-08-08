@@ -117,7 +117,7 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         ...state,
         assistant: state.assistant ? {
           ...state.assistant,
-          tier: ['lite', 'standard', 'pro'].includes(String(data.tier)) ? String(data.tier) as SwicoTier : state.assistant.tier,
+          tier: ['free', 'lite', 'standard', 'pro'].includes(String(data.tier)) ? String(data.tier) as SwicoTier : state.assistant.tier,
           tier_label: data.tier_label ? String(data.tier_label) : state.assistant.tier_label,
           input_tokens: Number(data.input_tokens ?? 0), output_tokens: Number(data.output_tokens ?? 0),
           usage_source: data.usage_source === 'actual' ? 'actual' : 'estimated',

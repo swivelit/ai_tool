@@ -4,15 +4,17 @@ import os
 from typing import Literal, cast
 
 
-SwicoTier = Literal["lite", "standard", "pro"]
+SwicoTier = Literal["free", "lite", "standard", "pro"]
 
-SWICO_TIER_IDS: tuple[SwicoTier, ...] = ("lite", "standard", "pro")
+SWICO_TIER_IDS: tuple[SwicoTier, ...] = ("free", "lite", "standard", "pro")
 SWICO_TIER_LABELS: dict[SwicoTier, str] = {
+    "free": "Swico Free",
     "lite": "Swico Lite",
     "standard": "Swico",
     "pro": "Swico Pro",
 }
 SWICO_TIER_DESCRIPTIONS: dict[SwicoTier, str] = {
+    "free": "Free AI for everyday questions.",
     "lite": "Fast and efficient for everyday questions.",
     "standard": "Balanced quality and speed for most tasks.",
     "pro": "Best for complex reasoning, planning, and coding.",
@@ -67,16 +69,25 @@ def pro_enabled() -> bool:
     return _env_bool("SWICO_PRO_ENABLED", False)
 
 
+def free_enabled() -> bool:
+    return _env_bool("SWICO_FREE_ENABLED", False)
+
+
 def normalize_swico_tier(value: object, *, enforce_availability: bool = True) -> SwicoTier:
     normalized = str(value or "").strip().lower()
     tier = cast(SwicoTier, normalized) if normalized in SWICO_TIER_IDS else "lite"
-    if enforce_availability and tier == "pro" and not pro_enabled():
-        return "lite"
+    if enforce_availability:
+        if tier == "free" and not free_enabled():
+            return "lite"
+        if tier == "pro" and not pro_enabled():
+            return "lite"
     return tier
 
 
 def configured_model_ladder(tier: SwicoTier) -> list[str]:
     normalized = normalize_swico_tier(tier, enforce_availability=False)
+    if normalized == "free":
+        raise SwicoTierConfigurationError("Swico Free does not use the paid model ladder")
     primary_default, fallback_default = _MODEL_DEFAULTS[normalized]
     prefix = f"SWICO_{normalized.upper()}_MODEL"
     primary = str(os.getenv(f"{prefix}_PRIMARY", primary_default) or "").strip()
@@ -111,7 +122,11 @@ def public_tier_settings(tier: object) -> dict[str, object]:
                 "id": item,
                 "label": SWICO_TIER_LABELS[item],
                 "description": SWICO_TIER_DESCRIPTIONS[item],
-                "available": item != "pro" or pro_enabled(),
+                "available": (
+                    free_enabled() if item == "free"
+                    else pro_enabled() if item == "pro"
+                    else True
+                ),
                 "selected": item == current,
             }
             for item in SWICO_TIER_IDS

@@ -1,0 +1,7 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.8,<3
+python-dotenv>=1.0,<2
+torch>=2.3,<3
+transformers>=4.45,<5
+llama-cpp-python>=0.3,<1

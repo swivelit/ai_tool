@@ -108,6 +108,7 @@ class TemporaryDenseRetriever:
         *,
         store: EphemeralUploadStore,
         embed: EmbeddingFunction,
+        query_embed: EmbeddingFunction | None = None,
         model: str,
         dimensions: int,
         query_cache_ttl_seconds: int,
@@ -115,6 +116,7 @@ class TemporaryDenseRetriever:
     ) -> None:
         self.store = store
         self.embed = embed
+        self.query_embed = query_embed or embed
         self.model = model
         self.dimensions = int(dimensions)
         self.query_cache_ttl_seconds = int(query_cache_ttl_seconds)
@@ -231,7 +233,7 @@ class TemporaryDenseRetriever:
             self.store.get_auxiliary(query_key), self.dimensions
         )
         if query_vector is None:
-            embedded_query = self.embed([query])
+            embedded_query = self.query_embed([query])
             if len(embedded_query) != 1:
                 raise DenseRetrievalUnavailable("malformed_vector")
             encoded_query = _encode_vector(

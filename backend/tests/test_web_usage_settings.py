@@ -95,7 +95,7 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
     )
     assert response.status_code == 200
     body = response.json()
-    assert set(body["by_tier"]) == {"lite", "standard", "pro"}
+    assert set(body["by_tier"]) == {"free", "lite", "standard", "pro"}
     assert body["by_tier"]["lite"]["request_count"] == 1
     assert body["by_tier"]["lite"]["total_tokens"] == 140
     assert body["by_tier"]["standard"]["request_count"] == 0
@@ -235,7 +235,7 @@ def test_assistant_tier_defaults_persists_and_does_not_change_value_limits(
     assert initial.status_code == 200
     assert initial.json()["tier"] == "lite"
     assert {item["label"] for item in initial.json()["tiers"]} == {
-        "Swico Lite", "Swico", "Swico Pro",
+        "Swico Free", "Swico Lite", "Swico", "Swico Pro",
     }
     with SessionLocal() as session:
         before_wallet = get_wallet_summary(session, int(user.id))["balance_micros"]

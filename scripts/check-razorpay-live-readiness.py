@@ -57,8 +57,8 @@ def _known_alembic_head() -> str | None:
     parents: set[str] = set()
     for path in MIGRATIONS.glob("*.py"):
         source = path.read_text(encoding="utf-8")
-        revision = re.search(r'^revision:\s*str\s*=\s*["\']([^"\']+)', source, re.MULTILINE)
-        down = re.search(r'^down_revision:.*=\s*["\']([^"\']+)', source, re.MULTILINE)
+        revision = re.search(r'^revision(?:\s*:\s*[^=]+)?\s*=\s*["\']([^"\']+)', source, re.MULTILINE)
+        down = re.search(r'^down_revision(?:\s*:\s*[^=]+)?\s*=\s*["\']([^"\']+)', source, re.MULTILINE)
         if revision:
             revisions.add(revision.group(1))
         if down:

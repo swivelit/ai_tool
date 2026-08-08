@@ -40,7 +40,7 @@ def _period_bounds(
         first = session.exec(
             select(UsageCharge).where(
                 UsageCharge.user_id == int(user.id),
-                UsageCharge.status.in_(["settled", "billing_exempt"]),
+                UsageCharge.status.in_(["settled", "billing_exempt", "free"]),
             ).order_by(UsageCharge.settled_at.asc())
         ).first()
         start = ensure_utc(first.settled_at) if first and first.settled_at else ensure_utc(user.created_at)
@@ -61,7 +61,7 @@ def usage_summary(
     rows = session.exec(
         select(UsageCharge).where(
             UsageCharge.user_id == int(user.id),
-            UsageCharge.status.in_(["settled", "billing_exempt"]),
+            UsageCharge.status.in_(["settled", "billing_exempt", "free"]),
             UsageCharge.settled_at >= start,
             UsageCharge.settled_at < end,
         ).order_by(UsageCharge.settled_at.asc())
@@ -95,7 +95,7 @@ def usage_summary(
             "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
             "total_tokens": 0, "debited_micros": 0,
         }
-        for tier in ("lite", "standard", "pro")
+        for tier in ("free", "lite", "standard", "pro")
     }
     voice: dict[str, Any] = {
         "label": "Voice", "stt_request_count": 0, "tts_request_count": 0,

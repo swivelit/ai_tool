@@ -55,6 +55,7 @@ from ..ai.providers.base import (
     ProviderSafetyRejected,
     ProviderStreamInterrupted,
 )
+from ..ai.providers.swico_free_provider import SwicoFreeProviderError
 from ..ai.budget import enforce_provider_budget
 from ..ai.providers.sarvam_provider import (
     SarvamProvider, estimate_audio_duration_details,
@@ -76,6 +77,7 @@ from ..ai.swico_tiers import (
     SwicoTierUnavailableError,
     default_swico_tier,
     configured_model_ladder,
+    free_enabled,
     pro_enabled,
     public_tier_settings,
     tier_selection_enabled,
@@ -917,6 +919,11 @@ def create_voice_session(
     if len(body) > 1 or any(key != "browser_capabilities" for key in body):
         raise HTTPException(422, "Invalid voice session metadata")
     playback = _voice_playback_selection(body.get("browser_capabilities"))
+    if tier == "free":
+        return _temporary_error(
+            422, "swico_free_text_only",
+            "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro for voice.",
+        )
 
     def outcome(status: int, code: str) -> None:
         logger.info("voice_session_creation", extra={
@@ -2117,6 +2124,11 @@ def patch_assistant_settings(
             "code": "tier_selection_disabled",
             "message": "Swico mode selection is temporarily unavailable.",
         })
+    if payload.tier == "free" and not free_enabled():
+        raise HTTPException(422, {
+            "code": "tier_unavailable",
+            "message": "Swico Free is not available yet.",
+        })
     if payload.tier == "pro" and not pro_enabled():
         raise HTTPException(422, {
             "code": "tier_unavailable",
@@ -3301,6 +3313,12 @@ async def transcribe_web_audio(
 ):
     user = get_owned_user(session, auth)
     language = language or request.query_params.get("language")
+    if selected_swico_tier(session, int(user.id)) == "free":
+        await file.close()
+        return _temporary_error(
+            422, "swico_free_text_only",
+            "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro for voice.",
+        )
     if not _env_enabled("WEB_VOICE_RECORDING_ENABLED"):
         return _temporary_error(503, "web_voice_recording_disabled", "Voice dictation is unavailable.")
     if not _env_enabled("WEB_VOICE_BILLING_ENABLED"):
@@ -3505,6 +3523,11 @@ async def synthesize_web_audio(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    if selected_swico_tier(session, int(user.id)) == "free":
+        return _temporary_error(
+            422, "swico_free_text_only",
+            "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro for voice.",
+        )
     if not _env_enabled("WEB_VOICE_REPLY_ENABLED"):
         return _temporary_error(503, "web_voice_reply_disabled", "Voice replies are unavailable.")
     if not _env_enabled("WEB_VOICE_BILLING_ENABLED"):
@@ -4129,6 +4152,22 @@ async def chat_stream(
                 "message": (
                     "The connection ended before Swico finished. Retry."
                 ),
+            })
+        except SwicoFreeProviderError as exc:
+            outcome = "capacity_limited" if exc.code == "swico_free_busy" else "error"
+            terminal_exception_class = type(exc).__name__
+            record_web_turn_pre_generation_abort(
+                prepared, reason=exc.code,
+            )
+            yield _sse("error", {
+                "code": exc.code,
+                "message": (
+                    "Swico Free is busy. Please try again shortly."
+                    if exc.code == "swico_free_busy"
+                    else "Swico Free is temporarily unavailable. Please try again shortly."
+                ),
+                "retryable": True,
+                "http_status": exc.status_code,
             })
         except Exception as exc:
             outcome = "error"

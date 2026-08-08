@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Callable, Iterator
+from typing import Any
+
+import httpx
+
+from ..prompts import build_provider_messages, serialize_provider_messages
+from ..types import AIProviderResponse, AIRequest, AIRoute
+from .base import AIProvider, GenerationCancellation, GenerationCancelled
+
+
+class SwicoFreeProviderError(RuntimeError):
+    def __init__(self, code: str, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.metadata = {"provider_error_type": code, "status_code": status_code}
+
+
+class SwicoFreeUnavailableError(SwicoFreeProviderError):
+    def __init__(self) -> None:
+        super().__init__("swico_free_unavailable", 503, "Swico Free is temporarily unavailable.")
+
+
+class SwicoFreeBusyError(SwicoFreeProviderError):
+    def __init__(self) -> None:
+        super().__init__("swico_free_busy", 429, "Swico Free is busy. Please try again shortly.")
+
+
+def _settings() -> tuple[str, str, float]:
+    if os.getenv("SWICO_FREE_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise SwicoFreeUnavailableError()
+    base_url = os.getenv("SWICO_FREE_INFERENCE_BASE_URL", "").strip().rstrip("/")
+    token = os.getenv("SWICO_FREE_INFERENCE_TOKEN", "").strip()
+    try:
+        timeout = float(os.getenv("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90"))
+    except ValueError:
+        timeout = 90.0
+    if not base_url or not token or timeout <= 0 or timeout > 120:
+        raise SwicoFreeUnavailableError()
+    return base_url, token, timeout
+
+
+def _safe_usage(payload: Any, text: str, prompt: str) -> tuple[int, int]:
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    usage = usage if isinstance(usage, dict) else payload if isinstance(payload, dict) else {}
+    input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or max(1, len(prompt.encode("utf-8")) // 3))
+    output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or max(1, len(text.encode("utf-8")) // 3))
+    return max(0, input_tokens), max(0, output_tokens)
+
+
+def _messages(request: AIRequest, route: AIRoute) -> list[dict[str, str]]:
+    return [
+        {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")}
+        for item in build_provider_messages(request, route, provider="swico_free")
+    ]
+
+
+class SwicoFreeProvider(AIProvider):
+    """Authenticated Render-to-laptop provider with no paid-provider fallback."""
+
+    def _post(self, endpoint: str, payload: dict[str, Any]) -> httpx.Response:
+        base_url, token, timeout = _settings()
+        try:
+            response = httpx.post(
+                f"{base_url}{endpoint}",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                json=payload,
+                timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
+            )
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
+            raise SwicoFreeUnavailableError() from exc
+        if response.status_code == 429:
+            raise SwicoFreeBusyError()
+        if response.status_code >= 400:
+            raise SwicoFreeUnavailableError()
+        return response
+
+    def complete(self, request: AIRequest, route: AIRoute) -> AIProviderResponse:
+        messages = _messages(request, route)
+        prompt = serialize_provider_messages(messages)
+        response = self._post("/v1/generate", {
+            "messages": messages,
+            "max_output_tokens": min(512, max(1, int(route.max_output_tokens))),
+        })
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SwicoFreeUnavailableError() from exc
+        text = str(payload.get("text") or payload.get("output") or "").strip()
+        if not text:
+            raise SwicoFreeUnavailableError()
+        input_tokens, output_tokens = _safe_usage(payload, text, prompt)
+        return AIProviderResponse(
+            text=text, provider="swico_free", model=None, route=route.route,
+            reason=route.reason, language=route.language, intent=route.intent,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            characters=len(text), estimated_cost_amount=0,
+            estimated_cost_currency="INR",
+            raw={"usage_actual": bool(payload.get("usage")), "provider_attempts": 1,
+                 "provider_calls_with_usage": 1 if payload.get("usage") else 0,
+                 "fallback_attempted": False, "finish_reason": str(payload.get("finish_reason") or "stop")},
+        )
+
+    def embed(self, values: list[str], *, mode: str = "passage") -> list[list[float]]:
+        if mode not in {"query", "passage"}:
+            raise ValueError("Unsupported Swico Free embedding mode")
+        response = self._post("/v1/embed", {
+            "texts": [str(value) for value in values],
+            "modes": [mode for _ in values],
+        })
+        try:
+            payload = response.json()
+            vectors = payload.get("vectors") if isinstance(payload, dict) else None
+        except ValueError as exc:
+            raise SwicoFreeUnavailableError() from exc
+        if not isinstance(vectors, list) or len(vectors) != len(values):
+            raise SwicoFreeUnavailableError()
+        normalized: list[list[float]] = []
+        for vector in vectors:
+            if not isinstance(vector, list) or len(vector) != 384:
+                raise SwicoFreeUnavailableError()
+            normalized.append([float(item) for item in vector])
+        return normalized
+
+    def stream_complete(
+        self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
+    ) -> AIProviderResponse:
+        base_url, token, timeout = _settings()
+        messages = _messages(request, route)
+        prompt = serialize_provider_messages(messages)
+        cancellation = request.metadata.get("cancellation_signal")
+        if isinstance(cancellation, GenerationCancellation) and cancellation.cancelled:
+            raise GenerationCancelled()
+        parts: list[str] = []
+        usage: dict[str, Any] = {}
+        try:
+            with httpx.stream(
+                "POST", f"{base_url}/v1/generate/stream",
+                headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"},
+                json={"messages": messages, "max_output_tokens": min(512, max(1, int(route.max_output_tokens)))},
+                timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
+            ) as response:
+                if isinstance(cancellation, GenerationCancellation):
+                    cancellation.bind_stream(response)
+                if response.status_code == 429:
+                    raise SwicoFreeBusyError()
+                if response.status_code >= 400:
+                    raise SwicoFreeUnavailableError()
+                for line in response.iter_lines():
+                    if isinstance(cancellation, GenerationCancellation) and cancellation.cancelled:
+                        text = "".join(parts).strip()
+                        raise GenerationCancelled(
+                            AIProviderResponse(
+                                text=text, provider="swico_free", model=None, route=route.route,
+                                reason=route.reason, language=route.language, intent=route.intent,
+                                input_tokens=int(usage.get("input_tokens") or 0),
+                                output_tokens=int(usage.get("output_tokens") or max(0, len(text.encode("utf-8")) // 3)),
+                                characters=len(text), raw={"cancelled": True, "usage_actual": bool(usage)},
+                            ) if text else None
+                        )
+                    value = str(line or "")
+                    if not value.startswith("data:"):
+                        continue
+                    data = value[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        raise SwicoFreeUnavailableError()
+                    if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+                        usage.update(event["usage"])
+                    delta = event.get("delta") if isinstance(event, dict) else None
+                    if delta is None and isinstance(event, dict):
+                        delta = event.get("text")
+                    if delta:
+                        chunk = str(delta)
+                        parts.append(chunk)
+                        on_delta(chunk)
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
+            raise SwicoFreeUnavailableError() from exc
+        finally:
+            if isinstance(cancellation, GenerationCancellation):
+                cancellation.unbind_stream(locals().get("response"))
+        text = "".join(parts).strip()
+        if not text:
+            raise SwicoFreeUnavailableError()
+        input_tokens, output_tokens = _safe_usage(usage, text, prompt)
+        return AIProviderResponse(
+            text=text, provider="swico_free", model=None, route=route.route,
+            reason=route.reason, language=route.language, intent=route.intent,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            characters=len(text), estimated_cost_amount=0,
+            estimated_cost_currency="INR",
+            raw={"usage_actual": bool(usage), "provider_attempts": 1,
+                 "provider_calls_with_usage": 1 if usage else 0,
+                 "fallback_attempted": False, "finish_reason": "stop"},
+        )
