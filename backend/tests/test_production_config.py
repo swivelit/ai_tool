@@ -87,6 +87,18 @@ def test_production_requires_checkout_switch_to_be_explicit() -> None:
     validate_production_configuration({**valid_environment(), "BILLING_CHECKOUT_ENABLED": "false"})
 
 
+def test_production_rejects_free_default_when_free_is_disabled() -> None:
+    errors = production_configuration_errors({
+        **valid_environment(), "SWICO_DEFAULT_TIER": "free", "SWICO_FREE_ENABLED": "false",
+    })
+    assert "SWICO_DEFAULT_TIER cannot be free while SWICO_FREE_ENABLED is false" in errors
+    validate_production_configuration({
+        **valid_environment(), "SWICO_DEFAULT_TIER": "free", "SWICO_FREE_ENABLED": "true",
+        "SWICO_FREE_INFERENCE_BASE_URL": "https://free.example",
+        "SWICO_FREE_INFERENCE_TOKEN": "x" * 40,
+    })
+
+
 def test_production_requires_custom_topup_presets_and_bounds() -> None:
     validate_production_configuration(valid_environment())
     validate_production_configuration({

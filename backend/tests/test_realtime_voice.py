@@ -15,6 +15,7 @@ from app.ai.providers.sarvam_streaming_provider import (
     SarvamStreamingProvider, _handshake_category, sarvam_stt_message_encoding,
     sarvam_tts_output_codec, sarvam_tts_sample_rate,
 )
+from app.alembic_utils import repository_alembic_head
 from app.billing.pricing import stt_price
 from app.billing.service import get_or_create_wallet
 from app.database import SessionLocal
@@ -132,7 +133,7 @@ def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert body["backend_release"] == "208e3024abcd"
-    assert body["alembic_head"] == "f2a7c9e4b1d6"
+    assert body["alembic_head"] == repository_alembic_head()
     assert body["authentication"] == {
         "internal_test_user": True, "email_verified": True, "owned_email_matches": True,
     }

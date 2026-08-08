@@ -22,9 +22,14 @@ class NodeConfig:
     e5_model_path: Path
     host: str
     port: int
+    qwen_threads: int
+    qwen_batch_size: int
+    e5_threads: int
     max_concurrent_generations: int
     max_queue_size: int
     max_output_tokens: int
+    max_concurrent_embeddings: int
+    max_embedding_queue_size: int
 
     @classmethod
     def from_environment(cls) -> "NodeConfig":
@@ -44,7 +49,12 @@ class NodeConfig:
             token=token, qwen_gguf_path=qwen, e5_model_path=e5,
             host=host,
             port=_int("SWICO_FREE_NODE_PORT", 8765, 1, 65_535),
+            qwen_threads=_int("SWICO_FREE_QWEN_THREADS", 4, 1, 4),
+            qwen_batch_size=_int("SWICO_FREE_QWEN_BATCH_SIZE", 128, 16, 256),
+            e5_threads=_int("SWICO_FREE_E5_THREADS", 2, 1, 2),
             max_concurrent_generations=_int("SWICO_FREE_MAX_CONCURRENT_GENERATIONS", 1, 1, 1),
             max_queue_size=_int("SWICO_FREE_MAX_QUEUE_SIZE", 10, 0, 10),
             max_output_tokens=_int("SWICO_FREE_MAX_OUTPUT_TOKENS", 512, 1, 512),
+            max_concurrent_embeddings=_int("SWICO_FREE_MAX_CONCURRENT_EMBEDDINGS", 1, 1, 1),
+            max_embedding_queue_size=_int("SWICO_FREE_MAX_EMBEDDING_QUEUE_SIZE", 4, 0, 4),
         )

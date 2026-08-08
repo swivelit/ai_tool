@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -189,3 +190,75 @@ def test_bounded_node_capacity_maps_queue_full_to_429():
         await capacity.release()
 
     asyncio.run(check())
+
+
+def test_node_cpu_defaults_are_conservative_and_configurable(monkeypatch, tmp_path):
+    from swico_free_node.config import NodeConfig
+
+    qwen_path = tmp_path / "custom.Q4.gguf"
+    qwen_path.write_bytes(b"GGUF" + b"model")
+    e5_path = tmp_path / "e5"
+    e5_path.mkdir()
+    monkeypatch.setenv("SWICO_FREE_NODE_TOKEN", "x" * 40)
+    monkeypatch.setenv("SWICO_FREE_QWEN_GGUF_PATH", str(qwen_path))
+    monkeypatch.setenv("SWICO_FREE_E5_MODEL_PATH", str(e5_path))
+    config = NodeConfig.from_environment()
+    assert (config.qwen_threads, config.qwen_batch_size, config.e5_threads) == (4, 128, 2)
+    assert (config.max_concurrent_embeddings, config.max_embedding_queue_size) == (1, 4)
+
+
+def test_sentence_transformers_e5_layout_is_resolved_without_network(tmp_path):
+    from swico_free_node.e5_runtime import validate_e5_artifacts
+
+    root = tmp_path / "sentence-transformer"
+    transformer = root / "0_Transformer"
+    transformer.mkdir(parents=True)
+    (root / "modules.json").write_text("[]")
+    (transformer / "config.json").write_text("{}")
+    (transformer / "tokenizer.json").write_text("{}")
+    (transformer / "model.safetensors").write_bytes(b"local")
+    assert validate_e5_artifacts(root) == transformer
+
+
+def test_qwen_stream_signals_abort_and_closes_stream():
+    from swico_free_node.qwen_runtime import QwenRuntime
+
+    class FakeStream:
+        def __init__(self):
+            self.index = 0
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index >= 2:
+                raise StopIteration
+            self.index += 1
+            return {"choices": [{"delta": {"content": "x"}}]}
+
+        def close(self):
+            self.closed = True
+
+    class FakeLlama:
+        def __init__(self):
+            self.callbacks = []
+            self.stream_instance = FakeStream()
+
+        def set_abort_callback(self, callback):
+            self.callbacks.append(callback)
+
+        def create_chat_completion(self, **_kwargs):
+            return self.stream_instance
+
+    runtime = object.__new__(QwenRuntime)
+    runtime._llama = FakeLlama()
+    cancellation = threading.Event()
+    stream = runtime.stream([{"role": "user", "content": "x"}], 8, cancellation)
+    assert next(stream) == ("x", {})
+    cancellation.set()
+    with pytest.raises(StopIteration):
+        next(stream)
+    assert runtime._llama.stream_instance.closed is True
+    assert runtime._llama.callbacks[0] is not None
+    assert runtime._llama.callbacks[-1] is None

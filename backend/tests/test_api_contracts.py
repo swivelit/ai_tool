@@ -13,12 +13,16 @@ from alembic.runtime.migration import MigrationContext
 
 import app.main as main_module
 import app.observability as observability
+from app.alembic_utils import repository_alembic_head
 from app.database import SessionLocal
 from app.models import AIUsageEvent, Conversation, Item, QACache, RagEmbedding, UserProfile
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIProviderResponse
 from app.ai.usage import record_ai_usage_event
 from conftest import auth_headers, create_test_user
+
+
+CURRENT_ALEMBIC_HEAD = repository_alembic_head()
 
 
 def _stub_chat_pipeline(
@@ -677,7 +681,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
     class Context:
         @staticmethod
         def get_current_revision():
-            return "7b4c9e1a2d6f"
+            return CURRENT_ALEMBIC_HEAD
 
     monkeypatch.setattr(
         MigrationContext, "configure",
@@ -701,7 +705,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
         SimpleNamespace(get_bind=lambda: EngineLike())
     )
     assert engine_status == {
-        "current": "7b4c9e1a2d6f", "head": "7b4c9e1a2d6f", "ok": True,
+        "current": CURRENT_ALEMBIC_HEAD, "head": CURRENT_ALEMBIC_HEAD, "ok": True,
     }
     assert configured_with[-1] is connection
     assert connection.closed is True
@@ -713,7 +717,7 @@ def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch
             SimpleNamespace(get_bind=lambda: live_connection)
         )
         assert configured_with[-1] is live_connection
-        assert direct_status["head"] == "7b4c9e1a2d6f"
+        assert direct_status["head"] == CURRENT_ALEMBIC_HEAD
 
 
 def test_alembic_status_failure_is_publicly_safe(monkeypatch):
@@ -727,7 +731,7 @@ def test_alembic_status_failure_is_publicly_safe(monkeypatch):
         SimpleNamespace(get_bind=lambda: BrokenEngine())
     )
     assert status == {
-        "current": None, "head": "7b4c9e1a2d6f", "ok": False,
+        "current": None, "head": CURRENT_ALEMBIC_HEAD, "ok": False,
         "error": "alembic_connection_failed",
     }
     assert secret not in json.dumps(status)

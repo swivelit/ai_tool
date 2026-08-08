@@ -187,7 +187,7 @@ self-check is unavailable and never falls back to weak execution.
 
 ## Phase 5 knowledge operations
 
-The current additive head is `f2a7c9e4b1d6`. Inspect content-free counts only:
+The current additive head is `7b4c9e1a2d6f`. Inspect content-free counts only:
 
 ```sql
 select status, count(*) from web_knowledge_document group by status;

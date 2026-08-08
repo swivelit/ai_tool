@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -59,16 +61,35 @@ config: NodeConfig | None = None
 qwen: QwenRuntime | None = None
 e5: E5Runtime | None = None
 capacity: GenerationCapacity | None = None
+embedding_capacity: GenerationCapacity | None = None
+startup_metrics: dict[str, int] = {}
 bearer = HTTPBearer(auto_error=False)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global config, qwen, e5, capacity
+    global config, qwen, e5, capacity, embedding_capacity, startup_metrics
+    started = time.perf_counter()
     config = NodeConfig.from_environment()
-    qwen = QwenRuntime(config.qwen_gguf_path)
-    e5 = E5Runtime(config.e5_model_path)
+    qwen_started = time.perf_counter()
+    qwen = QwenRuntime(
+        config.qwen_gguf_path,
+        threads=config.qwen_threads,
+        batch_size=config.qwen_batch_size,
+    )
+    qwen_elapsed = time.perf_counter()
+    e5_started = time.perf_counter()
+    e5 = E5Runtime(config.e5_model_path, threads=config.e5_threads)
+    e5_elapsed = time.perf_counter()
     capacity = GenerationCapacity(config.max_concurrent_generations, config.max_queue_size)
+    embedding_capacity = GenerationCapacity(
+        config.max_concurrent_embeddings, config.max_embedding_queue_size,
+    )
+    startup_metrics = {
+        "qwen_startup_ms": int((qwen_elapsed - qwen_started) * 1000),
+        "e5_startup_ms": int((e5_elapsed - e5_started) * 1000),
+        "model_startup_ms": int((e5_elapsed - started) * 1000),
+    }
     yield
 
 
@@ -80,10 +101,10 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(401, {"code": "unauthorized", "message": "Authentication required."}, headers={"WWW-Authenticate": "Bearer"})
 
 
-def _runtime() -> tuple[NodeConfig, QwenRuntime, E5Runtime, GenerationCapacity]:
-    if config is None or qwen is None or e5 is None or capacity is None:
+def _runtime() -> tuple[NodeConfig, QwenRuntime, E5Runtime, GenerationCapacity, GenerationCapacity]:
+    if config is None or qwen is None or e5 is None or capacity is None or embedding_capacity is None:
         raise HTTPException(503, {"code": "swico_free_unavailable", "message": "Swico Free is unavailable."})
-    return config, qwen, e5, capacity
+    return config, qwen, e5, capacity, embedding_capacity
 
 
 @app.middleware("http")
@@ -96,20 +117,31 @@ async def request_size_limit(request: Request, call_next):
 
 @app.get("/health")
 async def health(_: None = Depends(require_auth)) -> dict[str, Any]:
-    node, _qwen, _e5, limit = _runtime()
-    return {"status": "ok", "ready": True, "active_or_queued_generations": limit.waiting_or_active, "max_queue_size": node.max_queue_size}
+    node, _qwen, _e5, limit, embeddings = _runtime()
+    return {
+        "status": "ok", "ready": True,
+        "active_or_queued_generations": limit.waiting_or_active,
+        "max_queue_size": node.max_queue_size,
+        "active_or_queued_embeddings": embeddings.waiting_or_active,
+        "max_embedding_queue_size": node.max_embedding_queue_size,
+        **startup_metrics,
+    }
 
 
 @app.post("/v1/embed")
 async def embed(payload: EmbedRequest, _: None = Depends(require_auth)) -> dict[str, Any]:
-    _node, _qwen, runtime, _capacity = _runtime()
-    vectors = await asyncio.to_thread(runtime.embed, payload.texts, payload.modes)
-    return {"vectors": vectors, "dimensions": 384}
+    _node, _qwen, runtime, _capacity, embeddings = _runtime()
+    await embeddings.acquire()
+    try:
+        vectors = await asyncio.to_thread(runtime.embed, payload.texts, payload.modes)
+        return {"vectors": vectors, "dimensions": 384}
+    finally:
+        await embeddings.release()
 
 
 @app.post("/v1/generate")
 async def generate(payload: GenerateRequest, _: None = Depends(require_auth)) -> dict[str, Any]:
-    node, runtime, _e5, limit = _runtime()
+    node, runtime, _e5, limit, _embeddings = _runtime()
     await limit.acquire()
     try:
         messages = [item.model_dump() for item in payload.messages]
@@ -120,22 +152,38 @@ async def generate(payload: GenerateRequest, _: None = Depends(require_auth)) ->
 
 
 @app.post("/v1/generate/stream")
-async def generate_stream(payload: GenerateRequest, _: None = Depends(require_auth)) -> StreamingResponse:
-    node, runtime, _e5, limit = _runtime()
+async def generate_stream(request: Request, payload: GenerateRequest, _: None = Depends(require_auth)) -> StreamingResponse:
+    node, runtime, _e5, limit, _embeddings = _runtime()
     await limit.acquire()
     messages = [item.model_dump() for item in payload.messages]
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+    cancellation = threading.Event()
 
     def worker() -> None:
         try:
-            for delta, usage in runtime.stream(messages, min(node.max_output_tokens, payload.max_output_tokens)):
+            for delta, usage in runtime.stream(
+                messages,
+                min(node.max_output_tokens, payload.max_output_tokens),
+                cancellation,
+            ):
                 loop.call_soon_threadsafe(queue.put_nowait, ("usage" if usage else "delta", usage or delta))
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
         except Exception:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", None))
 
     task = asyncio.create_task(asyncio.to_thread(worker))
+
+    async def watch_disconnect() -> None:
+        try:
+            while not await request.is_disconnected():
+                await asyncio.sleep(0.2)
+            cancellation.set()
+            queue.put_nowait(("cancel", None))
+        except asyncio.CancelledError:
+            raise
+
+    disconnect_task = asyncio.create_task(watch_disconnect())
 
     async def body():
         try:
@@ -148,16 +196,24 @@ async def generate_stream(payload: GenerateRequest, _: None = Depends(require_au
                 elif kind == "error":
                     yield "data: {\"error\": \"swico_free_unavailable\"}\n\n"
                     break
+                elif kind == "cancel":
+                    break
                 else:
                     yield "data: [DONE]\n\n"
                     break
         finally:
-            if not task.done():
-                try:
-                    await asyncio.shield(task)
-                except Exception:
-                    pass
-            await limit.release()
+            cancellation.set()
+            disconnect_task.cancel()
+            if task.done():
+                await limit.release()
+            else:
+                async def finish_worker() -> None:
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+                    await limit.release()
+                asyncio.create_task(finish_worker())
 
     return StreamingResponse(body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

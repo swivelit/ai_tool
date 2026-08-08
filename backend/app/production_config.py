@@ -246,6 +246,8 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_dimensions = _integer(env, "SWICO_FREE_EMBEDDING_DIMENSIONS", "384")
     if free_dimensions != 384:
         errors.append("SWICO_FREE_EMBEDDING_DIMENSIONS must be 384")
+    if default_tier == "free" and free_is_enabled is not True:
+        errors.append("SWICO_DEFAULT_TIER cannot be free while SWICO_FREE_ENABLED is false")
     if free_is_enabled is True:
         free_url = _value(env, "SWICO_FREE_INFERENCE_BASE_URL")
         parsed_free_url = urlsplit(free_url)

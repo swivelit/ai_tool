@@ -351,9 +351,9 @@ they persist. Test 320 px portrait and mobile landscape with keyboard focus,
 Escape, reduced motion, and microphone denial.
 
 Before the live smoke, `GET /api/version` must include
-`"alembic":{"current":"e2b7c4d9a1f3","head":"e2b7c4d9a1f3","ok":true}`.
+`"alembic":{"current":"7b4c9e1a2d6f","head":"7b4c9e1a2d6f","ok":true}`.
 Use the internal diagnostics endpoint/panel to verify
-matching frontend/backend releases, Alembic head `e2b7c4d9a1f3`, all three
+matching frontend/backend releases, Alembic head `7b4c9e1a2d6f`, all three
 Voice features, billing exemption, Valkey and Sarvam configuration, and Origin.
 In DevTools filter `voice/sessions` or **All**, not only `ws`, so prerequisite
 HTTP 201/402/409/503 remains visible. Ignore extension `background.js`, service

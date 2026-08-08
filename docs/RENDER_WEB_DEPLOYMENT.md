@@ -181,7 +181,7 @@ Never give it Firebase, Razorpay, SMTP, download-token, validator-token, Valkey
 or public-site variables. The current GA worker and API both keep
 `WEB_KNOWLEDGE_WORKER_ENABLED=true`; do not change only one side.
 
-The database is already at Alembic head/current `f2a7c9e4b1d6`. No migration is
+The database is already at Alembic head/current `7b4c9e1a2d6f`. No migration is
 required for the acceptance endpoint. Keep the deployed GA settings below and
 correct any non-zero rollout percentages to `0` in one reviewed update to the
 existing API service:
@@ -349,7 +349,7 @@ worker declared in `render.staging.yaml`. Keep production API and worker flags
 false until the staging billing, claim-isolation, cancellation, and restart
 gates pass; the direct-GA procedure below then covers the separately created
 production worker. Neither service adds a public variable.
-The single Alembic head `f2a7c9e4b1d6` (which descends from
+The single Alembic head `7b4c9e1a2d6f` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
 The historical `f9c2d7a4e1b6` requirement still applies before enabling message editing or
@@ -573,7 +573,7 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. The current single
-head is `f2a7c9e4b1d6`. Historical revision `b4e8c1d6a2f9` adds the
+head is `7b4c9e1a2d6f`. Historical revision `b4e8c1d6a2f9` adds the
 content-free Phase 1 TRIAG-RAG telemetry tables; the Phase 4 head adds
 temporary repository index metadata
 and includes the earlier additive message revision, per-user memory,
@@ -901,7 +901,7 @@ It does not modify wallet or payment balances. Recordings, transcripts, and
 generated audio are not stored in the database or Key Value service.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `e2b7c4d9a1f3`.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm the repository-derived head `7b4c9e1a2d6f`.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
 5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. Revision `e2b7c4d9a1f3` permits downgrade only before any Voice payment, usage, ledger entry, or non-zero Voice wallet exists; it refuses a lossy downgrade after Voice financial activity. In production, preserve additive tables and fix forward.

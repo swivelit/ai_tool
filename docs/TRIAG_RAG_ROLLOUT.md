@@ -54,7 +54,7 @@ version. A rollout mode never overrides a false global feature flag.
 1. Deploy the code with `WEB_TRIAG_ENABLED=false`.
 2. Run `python -m alembic -c backend/alembic.ini upgrade head` through the
    existing Render pre-deploy migration owner. The single head must be
-   `f2a7c9e4b1d6`.
+   `7b4c9e1a2d6f`.
 3. Verify `/api/web/health`, authentication, a deterministic zero-charge turn,
    a provider-backed turn, reservation/settlement, cache behavior, and SSE.
 4. Leave production disabled. Shadow observation, if later approved, requires
@@ -109,7 +109,7 @@ capability as disabled and retains the existing path.
 
 Do not enable persistent knowledge merely because the migration is deployed.
 
-1. Migrate to `f2a7c9e4b1d6` and verify one head.
+1. Migrate to `7b4c9e1a2d6f` and verify one head.
 2. Prove explicit approval and source-version invalidation.
    Exercise approval through `/api/web/knowledge`; verify the owner marker is
    checked before temporary content is fetched and API responses remain

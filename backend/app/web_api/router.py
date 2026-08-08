@@ -30,6 +30,7 @@ from ..auth import (
     is_internal_test_user,
     is_verified_admin_user,
 )
+from ..alembic_utils import repository_alembic_head
 from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
     UsageLimitReachedError,
@@ -185,7 +186,7 @@ _pending_generation_cancellations: dict[str, int] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
-ALEMBIC_HEAD = "f2a7c9e4b1d6"
+ALEMBIC_HEAD = repository_alembic_head()
 
 
 def _tickets() -> VoiceTicketStore:
