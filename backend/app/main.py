@@ -77,6 +77,12 @@ from .email_service import (
     validate_email_delivery_configuration,
 )
 from .job_queue import DBJobQueue
+from .web_api.swico_free_queue import (
+    SWICO_FREE_CHAT_JOB_TYPE,
+    build_swico_free_queue,
+    durable_queue_enabled,
+    queue_worker_enabled,
+)
 from .model_runtime import patch_openai_client
 from .models import AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
@@ -354,6 +360,7 @@ SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 
 client: Optional[openai.OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
+SWICO_FREE_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
 DEFAULT_CORS_ORIGINS = [
@@ -917,7 +924,7 @@ def _get_job_queue() -> DBJobQueue:
     global JOB_QUEUE
     if JOB_QUEUE is None:
         triag_settings = TriagSettings.from_environ()
-        excluded_job_types: tuple[str, ...] = ()
+        excluded_job_types: tuple[str, ...] = (SWICO_FREE_CHAT_JOB_TYPE,)
         if triag_settings.knowledge_worker_enabled:
             from .web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES
 
@@ -930,6 +937,13 @@ def _get_job_queue() -> DBJobQueue:
             excluded_job_types=excluded_job_types,
         )
     return JOB_QUEUE
+
+
+def _get_swico_free_queue() -> DBJobQueue:
+    global SWICO_FREE_QUEUE
+    if SWICO_FREE_QUEUE is None:
+        SWICO_FREE_QUEUE = build_swico_free_queue(engine)
+    return SWICO_FREE_QUEUE
 
 
 def _job_worker_enabled() -> bool:
@@ -1230,6 +1244,14 @@ def startup_runtime_services() -> None:
         else:
             detail = "worker disabled"
         _record_runtime_service("job_queue", ok=True, required=True, detail=detail)
+        if durable_queue_enabled():
+            if queue_worker_enabled():
+                _get_swico_free_queue().start()
+                _record_runtime_service("swico_free_queue", ok=True, required=True, detail="worker started")
+            else:
+                _record_runtime_service("swico_free_queue", ok=False, required=True, detail="worker disabled")
+        else:
+            _record_runtime_service("swico_free_queue", ok=True, required=False, detail="disabled")
     except Exception as exc:
         logger.exception("Job queue initialization failed")
         _record_runtime_service("job_queue", ok=False, required=True, detail=str(exc))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Callable, Collection, Dict, Optional
 
 from sqlalchemy import update as sql_update
@@ -15,7 +15,25 @@ from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
+
+def _comparable_datetime(value: datetime | None, reference: datetime) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None and reference.tzinfo is not None:
+        return value.replace(tzinfo=reference.tzinfo)
+    if value.tzinfo is not None and reference.tzinfo is None:
+        return value.replace(tzinfo=None)
+    return value
+
 JobHandler = Callable[[Session, Dict[str, Any]], Dict[str, Any]]
+
+
+class JobRetryLater(RuntimeError):
+    """Retry a job without allowing a younger strict-FIFO job to pass it."""
+
+    def __init__(self, message: str, *, delay_seconds: float = 2.0) -> None:
+        super().__init__(message)
+        self.delay_seconds = max(0.25, min(60.0, float(delay_seconds)))
 
 
 class DBJobQueue:
@@ -30,6 +48,9 @@ class DBJobQueue:
             [Session, dict[str, object]], Any
         ] | None = None,
         chain_knowledge_jobs: bool = False,
+        strict_fifo: bool = False,
+        stale_running_seconds: float | None = None,
+        stale_recovery_handler: Callable[[Session, Job], bool] | None = None,
     ) -> None:
         self.engine = engine
         self.poll_seconds = max(0.25, float(poll_seconds))
@@ -46,6 +67,12 @@ class DBJobQueue:
         ):
             raise ValueError("allowed and excluded job types must not overlap")
         self._chain_knowledge_jobs = bool(chain_knowledge_jobs)
+        self.strict_fifo = bool(strict_fifo)
+        self.stale_running_seconds = (
+            max(30.0, float(stale_running_seconds))
+            if stale_running_seconds is not None else None
+        )
+        self.stale_recovery_handler = stale_recovery_handler
         self._handlers: Dict[str, JobHandler] = {}
         self._session_factory = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
         self._thread: Optional[threading.Thread] = None
@@ -132,11 +159,21 @@ class DBJobQueue:
 
     def _claim_next_job(self, session: Session) -> Optional[Job]:
         now = utc_now()
+        if self.strict_fifo and self.stale_running_seconds is not None:
+            self._recover_stale_jobs(session, now)
+            # A dedicated FIFO worker must never let a second process claim a
+            # younger job while an older generation is still running.
+            running_statement = select(Job.id).where(Job.status == "running")
+            if self.allowed_job_types is not None:
+                running_statement = running_statement.where(Job.job_type.in_(self.allowed_job_types))
+            if self.excluded_job_types:
+                running_statement = running_statement.where(Job.job_type.notin_(self.excluded_job_types))
+            if session.exec(running_statement).first() is not None:
+                return None
         statement = (
             select(Job.id)
             .where(Job.status.in_(["queued", "retrying"]))
-            .where(Job.run_at <= now)
-            .order_by(Job.created_at.asc())
+            .order_by(Job.created_at.asc(), Job.id.asc())
         )
         if self.allowed_job_types is not None:
             statement = statement.where(
@@ -146,8 +183,13 @@ class DBJobQueue:
             statement = statement.where(
                 Job.job_type.notin_(self.excluded_job_types)
             )
+        # In strict FIFO mode, a delayed head blocks all younger work.
         candidate_id = session.exec(statement).first()
         if candidate_id is None:
+            return None
+        candidate = session.get(Job, candidate_id)
+        candidate_run_at = _comparable_datetime(candidate.run_at, now) if candidate else None
+        if candidate is None or (candidate_run_at is not None and candidate_run_at > now):
             return None
 
         claim_statement = (
@@ -165,7 +207,7 @@ class DBJobQueue:
                 Job.job_type.notin_(self.excluded_job_types)
             )
         claim_result = session.exec(
-            claim_statement.values(
+            claim_statement.execution_options(synchronize_session=False).values(
                 status="running",
                 started_at=now,
                 updated_at=now,
@@ -177,6 +219,27 @@ class DBJobQueue:
 
         session.commit()
         return session.get(Job, candidate_id)
+
+    def _recover_stale_jobs(self, session: Session, now) -> None:
+        if self.stale_recovery_handler is None:
+            return
+        cutoff = now - timedelta(seconds=self.stale_running_seconds or 120)
+        statement = select(Job).where(Job.status == "running", Job.started_at <= cutoff)
+        if self.allowed_job_types is not None:
+            statement = statement.where(Job.job_type.in_(self.allowed_job_types))
+        for job in session.exec(statement.order_by(Job.started_at.asc(), Job.id.asc())).all():
+            try:
+                completed = bool(self.stale_recovery_handler(session, job))
+            except Exception:
+                logger.exception("strict FIFO stale job recovery failed", extra={"job_id": job.id})
+                continue
+            if not completed:
+                job.status = "queued"
+                job.started_at = None
+                job.run_at = now
+                job.updated_at = now
+            session.add(job)
+            session.commit()
 
     def _process_one(self) -> bool:
         with self._session_factory() as session:
@@ -203,9 +266,18 @@ class DBJobQueue:
                     "web_hierarchy_build",
                 }:
                     payload["_job_id"] = job.id
+                if self.strict_fifo:
+                    payload["_job_id"] = job.id
+                    payload["_user_id"] = job.user_id
                 result = handler(session, payload)
                 session.refresh(job)
-                if job.status == "cancelled":
+                if job.status == "cancelled" or bool((result or {}).get("cancelled")):
+                    job.status = "cancelled"
+                    job.result_json = json.dumps(result or {}, ensure_ascii=False)
+                    job.finished_at = utc_now()
+                    job.updated_at = utc_now()
+                    session.add(job)
+                    session.commit()
                     return True
                 job.status = "completed"
                 job.result_json = json.dumps(result or {}, ensure_ascii=False)
@@ -235,6 +307,22 @@ class DBJobQueue:
                         batch_size=int((result or {}).get("batch_size") or 50),
                         after_id=int((result or {}).get("next_after_id") or 0),
                     )
+            except JobRetryLater as exc:
+                retry_payload = job.payload_json
+                session.rollback()
+                job = session.get(Job, job.id)
+                if job is None:
+                    return True
+                job.attempts = int(job.attempts or 0) + 1
+                job.status = "retrying"
+                job.error_message = str(exc)
+                if retry_payload:
+                    job.payload_json = retry_payload
+                job.run_at = utc_now() + timedelta(seconds=exc.delay_seconds)
+                job.updated_at = utc_now()
+                session.add(job)
+                session.commit()
+                logger.warning("job deferred", extra={"job_id": job.id, "job_type": job.job_type})
             except Exception as exc:
                 session.rollback()
                 job = session.get(Job, job.id)

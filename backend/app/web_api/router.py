@@ -85,6 +85,14 @@ from ..ai.swico_tiers import (
     tier_selection_enabled,
 )
 from .swico_free_access import swico_free_eligible
+from .swico_free_queue import (
+    cancel_queued_job,
+    durable_queue_enabled,
+    enqueue_swico_free_chat,
+    find_request_job,
+    queue_metrics,
+    queue_position,
+)
 from ..database import SessionLocal, get_session
 from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
@@ -444,16 +452,11 @@ def _enforce_swico_free_limits(user_id: int) -> None:
                 UsageCharge.status == "free",
                 UsageCharge.settled_at >= day_start,
             )).all())
-            pending_cutoff = now - timedelta(minutes=5)
-            pending = len(session.exec(select(UsageCharge.id).where(
-                UsageCharge.user_id == user_id,
-                UsageCharge.swico_tier == "free",
-                UsageCharge.usage_kind == "chat",
-                UsageCharge.status == "free_pending",
-                UsageCharge.created_at >= pending_cutoff,
-            )).all())
             daily_cap = max(1, daily_limit)
-            if (completed >= daily_cap and pending == 0) or completed + pending > daily_cap:
+            # Queue admission is controlled by the per-minute limiter.  A
+            # queued or transiently retrying request is not a successful
+            # daily message and therefore must not consume this allowance.
+            if completed >= daily_cap:
                 raise SwicoFreeLimitError(
                     "swico_free_daily_limit",
                     "Swico Free has reached its daily message limit. Please try again tomorrow.",
@@ -3831,6 +3834,76 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
+async def _stream_durable_swico_free(request: Request, *, prepared: Any, user_id: int):
+    """Poll only the authenticated request's durable FIFO job.
+
+    Closing this generator intentionally does not cancel or delete the job;
+    the worker continues and persists the answer for a later thread reload.
+    """
+    from .swico_free_queue import find_request_job, queue_position
+
+    yield _sse("thread", {"thread_id": prepared.thread_id})
+    last_phase = None
+    while True:
+        if await request.is_disconnected():
+            return
+        with SessionLocal() as session:
+            job = find_request_job(session, prepared.request_id, user_id=user_id)
+            if job is None:
+                yield _sse("error", {"code": "swico_free_unavailable", "message": "Swico Free is temporarily unavailable. Please try again shortly.", "retryable": True})
+                return
+            if job.status in {"queued", "retrying", "running"}:
+                placement = queue_position(session, job=job)
+                if job.status == "running":
+                    phase = "starting" if last_phase is None else "generating"
+                    data = {"phase": phase, "running": True}
+                else:
+                    phase = "queued"
+                    position = placement.get("queue_position")
+                    metrics = queue_metrics(session)
+                    service = float(metrics.get("average_service_seconds") or 6.0)
+                    eta = min(300, max(1, round(service * (max(0, int(position or 1) - 1) + int(metrics.get("running_count") or 0)))))
+                    data = {"phase": phase, "queue_position": position, "estimated_wait_seconds": eta}
+                if data != last_phase:
+                    yield _sse("status", data)
+                    last_phase = data
+            elif job.status == "completed":
+                assistant = session.exec(select(WebChatMessage).where(
+                    WebChatMessage.user_id == user_id,
+                    WebChatMessage.request_id == prepared.request_id,
+                    WebChatMessage.role == "assistant",
+                )).first()
+                if assistant is None:
+                    yield _sse("error", {"code": "swico_free_unavailable", "message": "Swico Free could not restore this answer.", "retryable": True})
+                    return
+                try:
+                    metadata = json.loads(assistant.metadata_json or "{}")
+                except (TypeError, ValueError):
+                    metadata = {}
+                yield _sse("delta", {"text": assistant.content})
+                yield _sse("usage", {"tier": "free", "tier_label": "Swico Free", "input_tokens": assistant.input_tokens, "output_tokens": assistant.output_tokens, "usage_source": assistant.usage_source or "actual", "charged_micros": 0})
+                yield _sse("done", {
+                    "message_id": assistant.id, "thread_id": assistant.thread_id,
+                    "finish_reason": metadata.get("finish_reason", "stop"),
+                    "truncated": bool(metadata.get("truncated")),
+                    "completion_status": metadata.get("completion_status", "complete"),
+                    "can_continue": bool(metadata.get("can_continue")),
+                    "input_mode": "text", "billing_credit_bucket": "chat",
+                })
+                return
+            elif job.status == "cancelled":
+                yield _sse("status", {"phase": "stopped"})
+                yield _sse("done", {"message_id": None, "thread_id": prepared.thread_id, "cancelled": True, "code": "generation_cancelled", "input_mode": "text"})
+                return
+            elif job.status == "failed":
+                code = str(job.error_message or "swico_free_unavailable")
+                if code not in {"swico_free_timeout", "swico_free_unavailable", "swico_free_busy"}:
+                    code = "swico_free_unavailable"
+                yield _sse("error", {"code": code, "message": "Swico Free is temporarily unavailable. Please try again shortly.", "retryable": True})
+                return
+        await asyncio.sleep(0.25)
+
+
 @router.post("/chat/stream")
 async def chat_stream(
     payload: WebChatRequest,
@@ -3863,6 +3936,16 @@ async def chat_stream(
         rollout_decision, request_triag_settings = _web_rollout(auth, user)
         _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
         rate_session.commit()
+    resume_accepted_queue = False
+    if durable_queue_enabled():
+        with SessionLocal() as queue_session:
+            existing_queue_job = find_request_job(
+                queue_session, str(payload.request_id), user_id=user_id,
+            )
+            resume_accepted_queue = bool(
+                existing_queue_job is not None
+                and existing_queue_job.status in {"queued", "retrying", "running"}
+            )
     try:
         prepared = await asyncio.to_thread(
             prepare_web_turn, user_id=user_id, message=payload.message,
@@ -3883,6 +3966,7 @@ async def chat_stream(
             ),
             billing_credit_bucket="chat",
             swico_free_eligible=free_eligible,
+            resume_accepted_queue=resume_accepted_queue,
             rollout_decision=rollout_decision,
             triag_settings=request_triag_settings,
         )
@@ -3924,7 +4008,7 @@ async def chat_stream(
             "message": "The selected Swico mode is temporarily unavailable. Please try again shortly.",
         }})
 
-    if prepared.route.provider == "swico_free":
+    if prepared.route.provider == "swico_free" and not resume_accepted_queue:
         try:
             _enforce_swico_free_limits(user_id)
         except SwicoFreeLimitError as exc:
@@ -3938,6 +4022,28 @@ async def chat_stream(
             return _temporary_error(
                 429, exc.code, str(exc), headers={"Retry-After": "60"},
             )
+    if prepared.route.provider == "swico_free" and durable_queue_enabled():
+        with SessionLocal() as queue_session:
+            enqueue_swico_free_chat(
+                queue_session,
+                user_id=user_id,
+                payload={
+                    "request_id": prepared.request_id,
+                    "thread_id": prepared.thread_id,
+                    "attachment_ids": [str(value) for value in payload.attachment_ids],
+                    "repository_id": str(payload.repository_id) if payload.repository_id else None,
+                    "continue_message_id": str(payload.continue_message_id) if payload.continue_message_id else None,
+                    "edit_message_id": str(payload.edit_message_id) if payload.edit_message_id else None,
+                    "regenerate_message_id": str(payload.regenerate_message_id) if payload.regenerate_message_id else None,
+                    "billing_exempt": billing_exempt,
+                },
+            )
+        record_web_turn_lifecycle(prepared, "queued")
+        return StreamingResponse(
+            _stream_durable_swico_free(request, prepared=prepared, user_id=user_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
@@ -4371,6 +4477,18 @@ async def cancel_chat_request(
         with _active_generations_lock:
             _pending_generation_cancellations[request_id] = int(user.id)
         return {"status": "cancelling", "request_id": request_id}
+    if durable_queue_enabled() and charge.provider == "swico_free":
+        durable_status = cancel_queued_job(
+            session, user_id=int(user.id), request_id=request_id,
+        )
+        if durable_status == "stopped":
+            return {"status": "stopped", "request_id": request_id}
+        if durable_status == "running":
+            return {"status": "cancelling", "request_id": request_id}
+        if durable_status is None and charge.status == "free_pending":
+            with _active_generations_lock:
+                _pending_generation_cancellations[request_id] = int(user.id)
+            return {"status": "cancelling", "request_id": request_id}
     queued = False
     with _active_generations_lock:
         active = _active_generations.get(request_id)
@@ -4421,6 +4539,44 @@ async def cancel_chat_request(
     }:
         return {"status": "already_complete", "request_id": request_id}
     return {"status": charge.status, "request_id": request_id}
+
+
+@router.get("/chat/requests/{request_id}/status")
+def chat_request_status(
+    request_id: str, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    """Return only the authenticated user's own durable Free queue state."""
+    user = get_owned_user(session, auth)
+    charge = session.exec(select(UsageCharge).where(
+        UsageCharge.request_id == request_id, UsageCharge.user_id == user.id,
+    )).first()
+    if charge is None:
+        raise HTTPException(404, "Request not found")
+    if not durable_queue_enabled() or charge.provider != "swico_free":
+        return {"request_id": request_id, "status": charge.status}
+    job = find_request_job(session, request_id, user_id=int(user.id))
+    if job is None:
+        return {"request_id": request_id, "status": charge.status}
+    placement = queue_position(session, job=job)
+    metrics = queue_metrics(session)
+    position = placement.get("queue_position")
+    eta = None
+    if position is not None:
+        eta = min(300, max(1, round(float(metrics.get("average_service_seconds") or 6) * (max(0, int(position) - 1) + int(metrics.get("running_count") or 0)))))
+    phase = (
+        "queued" if job.status in {"queued", "retrying"}
+        else "starting" if job.status == "running"
+        else "complete" if job.status == "completed"
+        else "stopped" if job.status == "cancelled"
+        else "error"
+    )
+    return {
+        "request_id": request_id, "status": job.status, "phase": phase,
+        "running": bool(placement.get("running")),
+        "queue_position": position,
+        "estimated_wait_seconds": eta,
+    }
 
 
 @router.get("/billing/wallet")

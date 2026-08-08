@@ -1156,6 +1156,7 @@ def prepare_web_turn(
     repository_id: str | None = None,
     billing_credit_bucket: Literal["chat", "voice"] = "chat",
     swico_free_eligible: bool = False,
+    resume_accepted_queue: bool = False,
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
 ) -> PreparedWebTurn:
@@ -1217,7 +1218,12 @@ def prepare_web_turn(
             WebChatMessage.request_id == request_id,
             WebChatMessage.role == "user",
         )).first()
-        if existing_user_message is not None and existing_charge is not None and existing_charge.status != "released":
+        if (
+            existing_user_message is not None
+            and existing_charge is not None
+            and existing_charge.status != "released"
+            and not resume_accepted_queue
+        ):
             raise DuplicateRequestInProgress("This request is already being processed.")
 
         newly_created_thread = not bool(thread_id)

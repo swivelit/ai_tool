@@ -3,6 +3,8 @@ import type { Message, ResponseQuality, SSEEvent, SourceSummary, SwicoTier, Wall
 export type StreamState = {
   assistant: Message | null
   phase: string
+  queuePosition: number | null
+  estimatedWaitSeconds: number | null
   wallet: Wallet | null
   error: {
     code: string
@@ -18,7 +20,7 @@ export type StreamAction =
   | { type: 'event'; event: SSEEvent }
   | { type: 'reset' }
 
-export const emptyStreamState: StreamState = { assistant: null, phase: '', wallet: null, error: null, done: false }
+export const emptyStreamState: StreamState = { assistant: null, phase: '', queuePosition: null, estimatedWaitSeconds: null, wallet: null, error: null, done: false }
 
 function record(data: unknown): Record<string, unknown> {
   return typeof data === 'object' && data !== null ? data as Record<string, unknown> : {}
@@ -90,7 +92,12 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         continuation_rewind_characters: Number(data.continuation_rewind_characters ?? 0),
       } : null }
     case 'status':
-      return { ...state, phase: String(data.phase ?? '') }
+      return {
+        ...state,
+        phase: String(data.phase ?? ''),
+        queuePosition: Number.isFinite(Number(data.queue_position)) ? Math.max(1, Number(data.queue_position)) : null,
+        estimatedWaitSeconds: Number.isFinite(Number(data.estimated_wait_seconds)) ? Math.max(0, Number(data.estimated_wait_seconds)) : null,
+      }
     case 'delta':
       return {
         ...state, phase: 'responding',

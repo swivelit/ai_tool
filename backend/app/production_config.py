@@ -264,6 +264,20 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_max_output = _integer(env, "SWICO_FREE_MAX_OUTPUT_TOKENS", "256")
     if free_max_output is None or not 64 <= free_max_output <= 512:
         errors.append("SWICO_FREE_MAX_OUTPUT_TOKENS must be between 64 and 512")
+    free_durable_queue = _bool(env, "SWICO_FREE_DURABLE_QUEUE_ENABLED", False)
+    free_queue_worker = _bool(env, "SWICO_FREE_QUEUE_WORKER_ENABLED", False)
+    if free_durable_queue is None:
+        errors.append("SWICO_FREE_DURABLE_QUEUE_ENABLED must be a boolean")
+    if free_queue_worker is None:
+        errors.append("SWICO_FREE_QUEUE_WORKER_ENABLED must be a boolean")
+    if free_queue_worker is True and free_durable_queue is not True:
+        errors.append("SWICO_FREE_QUEUE_WORKER_ENABLED requires SWICO_FREE_DURABLE_QUEUE_ENABLED")
+    free_queue_poll = _decimal(env, "SWICO_FREE_QUEUE_POLL_SECONDS", "0.25")
+    if free_queue_poll is None or free_queue_poll <= 0 or free_queue_poll > 10:
+        errors.append("SWICO_FREE_QUEUE_POLL_SECONDS must be between 0 and 10")
+    free_stale = _integer(env, "SWICO_FREE_QUEUE_STALE_RUNNING_SECONDS", "120")
+    if free_stale is None or not 30 <= free_stale <= 3600:
+        errors.append("SWICO_FREE_QUEUE_STALE_RUNNING_SECONDS must be between 30 and 3600")
     if default_tier == "free" and free_is_enabled is not True:
         errors.append("SWICO_DEFAULT_TIER cannot be free while SWICO_FREE_ENABLED is false")
     if free_is_enabled is True:

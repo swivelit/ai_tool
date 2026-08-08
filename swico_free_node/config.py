@@ -55,7 +55,7 @@ class NodeConfig:
             qwen_batch_size=_int("SWICO_FREE_QWEN_BATCH_SIZE", 128, 16, 256),
             e5_threads=_int("SWICO_FREE_E5_THREADS", 2, 1, 2),
             max_concurrent_generations=_int("SWICO_FREE_MAX_CONCURRENT_GENERATIONS", 1, 1, 1),
-            max_queue_size=_int("SWICO_FREE_MAX_QUEUE_SIZE", 10, 0, 10),
+            max_queue_size=_int("SWICO_FREE_MAX_QUEUE_SIZE", 3, 0, 10),
             max_queue_wait_seconds=_int("SWICO_FREE_MAX_QUEUE_WAIT_SECONDS", 15, 1, 60),
             max_total_request_seconds=_int("SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS", 45, 10, 90),
             max_output_tokens=_int("SWICO_FREE_MAX_OUTPUT_TOKENS", 256, 64, 512),

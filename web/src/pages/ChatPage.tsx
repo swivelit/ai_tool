@@ -287,6 +287,33 @@ export function ChatPage() {
     void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
   }, [user, active]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
+    if (!user || !active || streaming) return
+    const pending = [...messages].reverse().find(message => message.role === 'user' && message.status === 'pending' && message.request_id)
+    if (!pending?.request_id) return
+    let stopped = false
+    let timer: number | undefined
+    const poll = async () => {
+      try {
+        const status = await apiJson<{ phase?: string; queue_position?: number | null; estimated_wait_seconds?: number | null; status?: string }>(
+          user, `/api/web/chat/requests/${encodeURIComponent(pending.request_id!)}/status`,
+        )
+        if (stopped) return
+        if (status.phase === 'queued' || status.phase === 'starting' || status.phase === 'complete') {
+          dispatchStream({ type: 'event', event: { event: 'status', data: status } })
+        }
+        if (status.phase === 'complete') {
+          await loadMessages(active)
+          dispatchStream({ type: 'reset' })
+          return
+        }
+        if (status.phase === 'stopped' || status.phase === 'error') return
+      } catch { /* The normal thread reload remains the source of truth. */ }
+      if (!stopped) timer = window.setTimeout(() => void poll(), 1000)
+    }
+    void poll()
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer) }
+  }, [active, loadMessages, messages, streaming, user])
+  useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
     const timer = window.setInterval(() => {
       const now = Date.now()
@@ -828,7 +855,7 @@ export function ChatPage() {
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+      <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceReplyEnabled={Boolean(bootstrap.features.web_voice_reply && bootstrap.features.web_voice_billing)} voiceStates={voiceReply.states} generateVoice={(messageId, voiceTurnId) => void voiceReply.generate(messageId, voiceTurnId)} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}

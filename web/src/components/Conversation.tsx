@@ -11,8 +11,8 @@ import { ResponseQualityPanel } from './ResponseQualityPanel'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
-  messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
+export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
+  messages: Message[]; phase?: string; queuePosition?: number | null; estimatedWaitSeconds?: number | null; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
   continuingMessageId?: string | null;
   regenerateResponse?: (message: Message) => void;
@@ -163,6 +163,8 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
           voiceReplyEnabled={voiceReplyEnabled} voiceState={voiceStates[message.id]} generateVoice={generateVoice} playVoice={playVoice} pauseVoice={pauseVoice}
           retryVoice={retryVoice} addCredits={addCredits} feedbackEnabled={feedbackEnabled}
           submitFeedback={submitFeedback} highlighted={message.id === highlightMessageId} />)}
+        {phase === 'queued' && <div className="thinking" role="status"><span />Waiting for Swico Free{queuePosition ? ` · Position ${queuePosition}` : ''}{estimatedWaitSeconds !== null ? ` · Estimated wait ~${estimatedWaitSeconds} seconds` : ''}</div>}
+        {phase === 'starting' && <div className="thinking" role="status"><span />Starting…</div>}
         {phase && [
           'connecting', 'routing', 'reserved', 'understanding_request',
           'searching_context', 'searching_documents', 'searching_repository',

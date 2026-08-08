@@ -51,6 +51,12 @@ describe('chatStreamReducer', () => {
       retry_at:'2099-08-01T00:00:00+00:00',
     })
   })
+  it('renders only safe durable queue placement metadata', () => {
+    let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'queued', threadId:'t1', tier:'free', tierLabel:'Swico Free' })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'status', data:{ phase:'queued', queue_position:4, estimated_wait_seconds:18, user_id:'must-not-be-retained' } } })
+    expect(state).toMatchObject({ phase:'queued', queuePosition:4, estimatedWaitSeconds:18 })
+    expect(JSON.stringify(state)).not.toMatch(/must-not-be-retained|user_id/)
+  })
   it('preserves partial text and makes an interrupted stream retryable', () => {
     let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'r-partial', threadId:'t1', tier:'standard', tierLabel:'Swico' })
     state = chatStreamReducer(state, { type:'event', event:{ event:'delta', data:{ text:'Partial answer' } } })
