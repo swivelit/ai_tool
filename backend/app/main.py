@@ -1375,6 +1375,25 @@ def api_health():
     return JSONResponse(payload, status_code=_health_status_code(payload))
 
 
+@app.get("/internal/swico-free-queue-runtime")
+def swico_free_queue_runtime(request: Request):
+    """Expose only local process state for the Render-side operator probe."""
+    client_host = request.client.host if request.client is not None else ""
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        poll_seconds = float(os.getenv("SWICO_FREE_QUEUE_POLL_SECONDS", "0.25"))
+    except (TypeError, ValueError):
+        poll_seconds = 0.25
+    queue = _get_swico_free_queue()
+    return {
+        "queue_enabled": durable_queue_enabled(),
+        "worker_enabled": queue_worker_enabled(),
+        "worker_running": bool(queue.is_running()),
+        "poll_seconds": max(0.25, min(10.0, poll_seconds)),
+    }
+
+
 @app.get("/api/debug/health")
 def debug_health():
     if APP_ENV in {"prod", "production"}:

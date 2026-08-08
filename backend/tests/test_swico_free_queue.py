@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 import sys
+import pytest
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -160,3 +162,99 @@ def test_queue_report_is_runnable_as_a_standalone_backend_script():
     )
     assert result.returncode == 0
     assert "Show safe Swico Free queue metrics" in result.stdout
+
+
+def test_queue_report_live_runtime_status_handles_true_and_unavailable(monkeypatch):
+    from scripts import swico_free_queue_report as report
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, _limit):
+            return b'{"worker_running": true}'
+
+    monkeypatch.setenv("PORT", "10000")
+    monkeypatch.setattr(report, "urlopen", lambda *_args, **_kwargs: Response())
+    assert report.live_runtime_status() == {"worker_running": True}
+    monkeypatch.setattr(report, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
+    assert report.live_runtime_status() is None
+
+
+def test_live_runtime_endpoint_reports_actual_worker_state_and_rejects_external_client(monkeypatch):
+    import app.main as main
+
+    class Queue:
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(main, "_get_swico_free_queue", lambda: Queue())
+    monkeypatch.setenv("SWICO_FREE_DURABLE_QUEUE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_QUEUE_WORKER_ENABLED", "true")
+    response = main.swico_free_queue_runtime(SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+    ))
+    assert response["worker_running"] is True
+    assert set(response) == {"queue_enabled", "worker_enabled", "worker_running", "poll_seconds"}
+    with pytest.raises(Exception) as error:
+        main.swico_free_queue_runtime(SimpleNamespace(
+            client=SimpleNamespace(host="203.0.113.5"),
+        ))
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_fifo_observer_uses_only_jobs_after_its_baseline():
+    from scripts.swico_free_fifo_acceptance import _new_jobs
+
+    engine = db_engine()
+    with Session(engine) as session:
+        session.add(Job(user_id=1, job_type=SWICO_FREE_CHAT_JOB_TYPE, status="completed",
+                        payload_json="{}", run_at=utc_now(), created_at=utc_now(), updated_at=utc_now()))
+        session.commit()
+        baseline = int(session.exec(select(Job.id)).one())
+        session.add(Job(user_id=1, job_type=SWICO_FREE_CHAT_JOB_TYPE, status="queued",
+                        payload_json="{}", run_at=utc_now(), created_at=utc_now(), updated_at=utc_now()))
+        session.commit()
+        jobs = _new_jobs(session, baseline)
+        assert len(jobs) == 1
+        assert jobs[0].id > baseline
+
+
+def test_durable_queue_heartbeat_emits_without_position_change(monkeypatch):
+    from app.web_api import router
+    from app.web_api import swico_free_queue as queue_module
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    class SessionContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    job = SimpleNamespace(status="queued")
+    monkeypatch.setenv("WEB_SSE_HEARTBEAT_SECONDS", "0.01")
+    monkeypatch.setattr(router, "SessionLocal", lambda: SessionContext())
+    monkeypatch.setattr(queue_module, "find_request_job", lambda *_args, **_kwargs: job)
+    monkeypatch.setattr(queue_module, "queue_position", lambda *_args, **_kwargs: {"running": False, "queue_position": 2})
+    monkeypatch.setattr(router, "queue_metrics", lambda *_args, **_kwargs: {"average_service_seconds": 45, "running_count": 1})
+    prepared = SimpleNamespace(request_id="request", thread_id="thread")
+
+    async def collect():
+        events = []
+        stream = router._stream_durable_swico_free(Request(), prepared=prepared, user_id=1)
+        for _ in range(4):
+            events.append(await stream.__anext__())
+        await stream.aclose()
+        return events
+
+    events = asyncio.run(collect())
+    assert any(event == ": keep-alive\n\n" for event in events)

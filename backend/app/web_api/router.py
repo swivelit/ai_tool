@@ -3844,6 +3844,10 @@ async def _stream_durable_swico_free(request: Request, *, prepared: Any, user_id
 
     yield _sse("thread", {"thread_id": prepared.thread_id})
     last_phase = None
+    heartbeat_seconds = _bounded_float_env(
+        "WEB_SSE_HEARTBEAT_SECONDS", 10.0, 0.01, 300.0
+    )
+    last_emit_at = time.monotonic()
     while True:
         if await request.is_disconnected():
             return
@@ -3862,11 +3866,17 @@ async def _stream_durable_swico_free(request: Request, *, prepared: Any, user_id
                     position = placement.get("queue_position")
                     metrics = queue_metrics(session)
                     service = float(metrics.get("average_service_seconds") or 6.0)
-                    eta = min(300, max(1, round(service * (max(0, int(position or 1) - 1) + int(metrics.get("running_count") or 0)))))
-                    data = {"phase": phase, "queue_position": position, "estimated_wait_seconds": eta}
+                    eta = max(1, round(service * (max(0, int(position or 1) - 1) + int(metrics.get("running_count") or 0))))
+                    data = {"phase": phase, "queue_position": position, "estimated_wait_seconds": eta, "estimated_wait_is_approximate": True}
                 if data != last_phase:
                     yield _sse("status", data)
                     last_phase = data
+                    last_emit_at = time.monotonic()
+                elif time.monotonic() - last_emit_at >= heartbeat_seconds:
+                    # SSE comments are safe content-free heartbeats and are
+                    # ignored by the browser event reducer.
+                    yield ": keep-alive\n\n"
+                    last_emit_at = time.monotonic()
             elif job.status == "completed":
                 assistant = session.exec(select(WebChatMessage).where(
                     WebChatMessage.user_id == user_id,
@@ -3901,7 +3911,7 @@ async def _stream_durable_swico_free(request: Request, *, prepared: Any, user_id
                     code = "swico_free_unavailable"
                 yield _sse("error", {"code": code, "message": "Swico Free is temporarily unavailable. Please try again shortly.", "retryable": True})
                 return
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(min(0.25, heartbeat_seconds))
 
 
 @router.post("/chat/stream")
@@ -4563,7 +4573,7 @@ def chat_request_status(
     position = placement.get("queue_position")
     eta = None
     if position is not None:
-        eta = min(300, max(1, round(float(metrics.get("average_service_seconds") or 6) * (max(0, int(position) - 1) + int(metrics.get("running_count") or 0)))))
+        eta = max(1, round(float(metrics.get("average_service_seconds") or float(os.getenv("SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS", "45"))) * (max(0, int(position) - 1) + int(metrics.get("running_count") or 0))))
     phase = (
         "queued" if job.status in {"queued", "retrying"}
         else "starting" if job.status == "running"
@@ -4576,6 +4586,7 @@ def chat_request_status(
         "running": bool(placement.get("running")),
         "queue_position": position,
         "estimated_wait_seconds": eta,
+        "estimated_wait_is_approximate": True,
     }
 
 
