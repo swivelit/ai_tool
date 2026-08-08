@@ -2,7 +2,11 @@
 
 This folder is a separate CPU inference service for Swico Free. It is not imported by the Render backend and its dependencies must not be added to `backend/requirements.txt`.
 
-The service is sized for the 8 GB CPU-only laptop: one active generation, at most ten waiting requests, a 4096-token context, and a recommended 256-output-token ceiling. Run one worker so both models load once and remain resident.
+The service is sized for the 8 GB CPU-only laptop: one active generation, a
+small defensive local buffer of three waiting requests, a 4096-token context,
+and a recommended 256-output-token ceiling. Durable backend queueing handles
+accepted web-chat work ahead of this final local buffer. Run one worker so
+both models load once and remain resident.
 
 ## Workflow A: Windows PowerShell
 
@@ -191,6 +195,23 @@ The local Funnel smoke test uses the token from `.env` without printing it:
 ./scripts/funnel_smoke.sh
 ```
 
+## Final production readiness checklist
+
+Before keeping Swico Free enabled, confirm all of the following while the
+laptop is plugged into power:
+
+- Windows is configured not to sleep while plugged in.
+- Tailscale is running and `tailscale funnel status` shows the Funnel.
+- The node is listening only on `127.0.0.1:8765`.
+- `./scripts/doctor.sh` shows PASS for Python, `.venv`, models, node port,
+  Tailscale, and Funnel.
+- `./scripts/smoke.sh` passes locally.
+- `./scripts/funnel_smoke.sh` passes through the public HTTPS Funnel.
+
+The doctor performs filesystem and process checks only; it does not load a
+second copy of either model. Run it whenever the laptop is rebooted or the
+node is repaired.
+
 ## Keep the laptop awake and start after login
 
 When the laptop is plugged in, prevent sleep and hibernation so the Funnel remains available:
@@ -200,13 +221,27 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 ```
 
-Register the node to start for the current Windows user after login. Run PowerShell as the same user who owns the Tailscale session:
+Register the node to start for the current Windows user after login. The
+repository script is idempotent and keeps the secret in `.env`, not in the
+Task Scheduler command line. Run PowerShell as the same user who owns the
+Tailscale session:
 
 ```powershell
-$NodeRoot = (Resolve-Path .\swico_free_node).Path
-$Action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$NodeRoot\scripts\run.ps1`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-Register-ScheduledTask -TaskName 'Swico Free Node' -Action $Action -Trigger $Trigger -Description 'Start the local Swico Free inference node' -RunLevel Limited -Force
+Set-Location .\swico_free_node
+.\scripts\install_autostart.ps1
+```
+
+From Git Bash, use the same safe wrapper:
+
+```bash
+cd /d/swico/ai_tool/swico_free_node
+./scripts/install_autostart.sh
+```
+
+To remove the task later:
+
+```bash
+./scripts/remove_autostart.sh
 ```
 
 Start Tailscale Funnel after login unless Tailscale itself is already configured to start Funnel. Confirm both services before enabling Free in Render:

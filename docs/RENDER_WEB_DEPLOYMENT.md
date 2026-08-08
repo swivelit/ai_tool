@@ -49,6 +49,55 @@ cd backend
 python scripts/swico_free_queue_report.py --pretty
 ```
 
+## Released Swico Free operational values
+
+The released production API currently uses the following Swico Free values;
+the token is a Render secret and is never printed by operational scripts:
+
+```dotenv
+SWICO_FREE_ENABLED=true
+SWICO_FREE_ROLLOUT_PERCENT=100
+SWICO_FREE_DURABLE_QUEUE_ENABLED=true
+SWICO_FREE_QUEUE_WORKER_ENABLED=true
+SWICO_FREE_QUEUE_POLL_SECONDS=0.25
+SWICO_FREE_QUEUE_STALE_RUNNING_SECONDS=120
+SWICO_FREE_INFERENCE_TIMEOUT_SECONDS=90
+SWICO_FREE_MAX_QUEUE_WAIT_SECONDS=15
+SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS=45
+SWICO_FREE_MAX_OUTPUT_TOKENS=256
+SWICO_FREE_EMBEDDING_DIMENSIONS=384
+SWICO_FREE_RATE_LIMIT_PER_MINUTE=2
+SWICO_FREE_DAILY_MESSAGE_LIMIT=10
+SWICO_FREE_INFERENCE_BASE_URL=https://desktop-qtf7f78.tailbdb31e.ts.net
+SWICO_FREE_INFERENCE_TOKEN=<same-secret-as-the-Windows-node>
+SWICO_DEFAULT_TIER=lite
+```
+
+Run the final observer from Render Shell when verifying a release:
+
+```bash
+cd backend
+python scripts/swico_free_release_check.py --pretty
+```
+
+It is content-free and exits non-zero only for actual blockers. A normal
+durable backlog produces warnings and is not deleted or rejected by the
+check.
+
+## Swico Free emergency procedure
+
+If the laptop or inference node becomes unhealthy:
+
+1. Set `SWICO_FREE_ROLLOUT_PERCENT=0` in the existing Render API service.
+2. Save and deploy Render.
+3. Leave durably accepted queue work in PostgreSQL; do not delete queued jobs
+   as a normal recovery step.
+4. Repair or restart the Windows laptop, node, Tailscale, or Funnel.
+5. From Render Shell run `cd backend && python scripts/swico_free_probe.py --pretty`.
+6. Then run `cd backend && python scripts/swico_free_queue_report.py --pretty`.
+7. Restore rollout only after the inference probe and live queue worker are
+   healthy again.
+
 ## New isolated staging project — beginner setup
 
 `render.staging.yaml` is only for six new resources:
