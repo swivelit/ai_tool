@@ -20,8 +20,8 @@ SWICO_FREE_INFERENCE_TIMEOUT_SECONDS=90
 SWICO_FREE_EMBEDDING_DIMENSIONS=384
 SWICO_FREE_MAX_QUEUE_WAIT_SECONDS=15
 SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS=45
-SWICO_FREE_DURABLE_QUEUE_ENABLED=false
-SWICO_FREE_QUEUE_WORKER_ENABLED=false
+SWICO_FREE_DURABLE_QUEUE_ENABLED=true
+SWICO_FREE_QUEUE_WORKER_ENABLED=true
 SWICO_FREE_QUEUE_POLL_SECONDS=0.25
 SWICO_FREE_QUEUE_STALE_RUNNING_SECONDS=120
 ```
@@ -36,11 +36,18 @@ cd backend
 python scripts/swico_free_probe.py --pretty
 ```
 
-Only after the probe and laptop smoke/benchmark checks pass should an operator
-set `SWICO_FREE_ENABLED=true`, then increase
-`SWICO_FREE_ROLLOUT_PERCENT` deliberately (for example `5`, then `25`, then
-`100`) while monitoring the existing API and laptop capacity. Keep
-`SWICO_DEFAULT_TIER=lite`.
+Keep `SWICO_FREE_ROLLOUT_PERCENT=0` until FIFO production acceptance testing
+is complete. Only after the probe, laptop smoke/benchmark checks, and durable
+queue acceptance tests pass should an operator increase the rollout deliberately
+(for example `5`, then `25`, then `100`) while monitoring the existing API and
+laptop capacity. Keep `SWICO_DEFAULT_TIER=lite`.
+
+The content-free queue report is run from the repository backend directory:
+
+```bash
+cd backend
+python scripts/swico_free_queue_report.py --pretty
+```
 
 ## New isolated staging project — beginner setup
 

@@ -924,17 +924,17 @@ def _get_job_queue() -> DBJobQueue:
     global JOB_QUEUE
     if JOB_QUEUE is None:
         triag_settings = TriagSettings.from_environ()
-        excluded_job_types: tuple[str, ...] = (SWICO_FREE_CHAT_JOB_TYPE,)
+        excluded_job_types = {SWICO_FREE_CHAT_JOB_TYPE}
         if triag_settings.knowledge_worker_enabled:
             from .web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES
 
-            excluded_job_types = KNOWLEDGE_JOB_TYPES
+            excluded_job_types.update(KNOWLEDGE_JOB_TYPES)
         JOB_QUEUE = DBJobQueue(
             engine,
             poll_seconds=float(
                 os.getenv("JOB_QUEUE_POLL_SECONDS", "1.0") or 1.0
             ),
-            excluded_job_types=excluded_job_types,
+            excluded_job_types=tuple(sorted(excluded_job_types)),
         )
     return JOB_QUEUE
 

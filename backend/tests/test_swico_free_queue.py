@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
+import subprocess
+import sys
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -15,6 +19,7 @@ from app.web_api.swico_free_queue import (
     queue_metrics,
     queue_position,
 )
+from app.web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES
 
 
 def db_engine():
@@ -112,3 +117,46 @@ def test_generic_worker_cannot_claim_swico_free_jobs():
         session.commit()
         generic = DBJobQueue(engine, excluded_job_types=(SWICO_FREE_CHAT_JOB_TYPE,))
         assert generic._claim_next_job(session) is None
+        assert generic._process_one() is False
+        assert session.get(Job, 1).status == "queued"
+
+
+def test_main_generic_worker_excludes_free_with_or_without_knowledge_worker(monkeypatch):
+    import app.main as main
+
+    captured = []
+
+    class FakeQueue:
+        def __init__(self, *args, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(main, "DBJobQueue", FakeQueue)
+    monkeypatch.setattr(main, "JOB_QUEUE", None)
+    for knowledge_enabled in (False, True):
+        monkeypatch.setattr(
+            main.TriagSettings,
+            "from_environ",
+            classmethod(lambda cls, enabled=knowledge_enabled: SimpleNamespace(
+                knowledge_worker_enabled=enabled,
+            )),
+        )
+        monkeypatch.setattr(main, "JOB_QUEUE", None)
+        main._get_job_queue()
+        exclusions = set(captured[-1]["excluded_job_types"])
+        assert SWICO_FREE_CHAT_JOB_TYPE in exclusions
+        if knowledge_enabled:
+            assert set(KNOWLEDGE_JOB_TYPES).issubset(exclusions)
+
+
+def test_queue_report_is_runnable_as_a_standalone_backend_script():
+    root = Path(__file__).resolve().parents[2]
+    script = root / "backend" / "scripts" / "swico_free_queue_report.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Show safe Swico Free queue metrics" in result.stdout
