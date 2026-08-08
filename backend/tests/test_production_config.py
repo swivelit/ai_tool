@@ -139,6 +139,8 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
         ({"SWICO_FREE_ROLLOUT_PERCENT": "101"}, "between 0 and 100"),
         ({"SWICO_FREE_RATE_LIMIT_PER_MINUTE": "0"}, "SWICO_FREE_RATE_LIMIT_PER_MINUTE"),
         ({"SWICO_FREE_DAILY_MESSAGE_LIMIT": "0"}, "SWICO_FREE_DAILY_MESSAGE_LIMIT"),
+        ({"SWICO_FREE_MAX_OUTPUT_TOKENS": "63"}, "between 64 and 512"),
+        ({"SWICO_FREE_MAX_OUTPUT_TOKENS": "513"}, "between 64 and 512"),
         ({"SWICO_TIER_SELECTION_ENABLED": "sometimes"}, "SWICO_TIER_SELECTION_ENABLED"),
         ({"SWICO_PRO_ENABLED": "true", "SWICO_PRO_MODEL_PRIMARY": "custom"}, "SWICO_PRO_MODEL_PRIMARY"),
         ({"WEB_VOICE_REPLY_ENABLED": "true", "WEB_VOICE_BILLING_ENABLED": "false"}, "requires WEB_VOICE_BILLING_ENABLED"),

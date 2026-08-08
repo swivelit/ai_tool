@@ -56,6 +56,22 @@ class GenerationCapacity:
     def waiting_or_active(self) -> int:
         return self._active + self._waiting
 
+    @property
+    def active(self) -> int:
+        return self._active
+
+    @property
+    def waiting(self) -> int:
+        return self._waiting
+
+    @property
+    def active_capacity(self) -> int:
+        return self._active_limit
+
+    @property
+    def queue_capacity(self) -> int:
+        return max(0, self._limit - self._active_limit)
+
 
 config: NodeConfig | None = None
 qwen: QwenRuntime | None = None
@@ -63,6 +79,7 @@ e5: E5Runtime | None = None
 capacity: GenerationCapacity | None = None
 embedding_capacity: GenerationCapacity | None = None
 startup_metrics: dict[str, int] = {}
+process_started_at = time.monotonic()
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -120,6 +137,13 @@ async def health(_: None = Depends(require_auth)) -> dict[str, Any]:
     node, _qwen, _e5, limit, embeddings = _runtime()
     return {
         "status": "ok", "ready": True,
+        "uptime_seconds": round(max(0.0, time.monotonic() - process_started_at), 3),
+        "active_generations": limit.active,
+        "waiting_generations": limit.waiting,
+        "active_embeddings": embeddings.active,
+        "waiting_embeddings": embeddings.waiting,
+        "generation_capacity": limit.active_capacity,
+        "generation_queue_capacity": limit.queue_capacity,
         "active_or_queued_generations": limit.waiting_or_active,
         "max_queue_size": node.max_queue_size,
         "active_or_queued_embeddings": embeddings.waiting_or_active,
@@ -146,7 +170,12 @@ async def generate(payload: GenerateRequest, _: None = Depends(require_auth)) ->
     try:
         messages = [item.model_dump() for item in payload.messages]
         text, usage = await asyncio.to_thread(runtime.generate, messages, min(node.max_output_tokens, payload.max_output_tokens))
-        return {"text": text, "usage": usage, "finish_reason": "stop"}
+        finish_reason = str(usage.get("finish_reason") or "stop")
+        return {
+            "text": text, "usage": usage,
+            "finish_reason": finish_reason,
+            "truncated": bool(usage.get("truncated")) or finish_reason == "length",
+        }
     finally:
         await limit.release()
 
@@ -162,15 +191,21 @@ async def generate_stream(request: Request, payload: GenerateRequest, _: None = 
 
     def worker() -> None:
         try:
+            terminal_usage: dict[str, Any] = {}
             for delta, usage in runtime.stream(
                 messages,
                 min(node.max_output_tokens, payload.max_output_tokens),
                 cancellation,
             ):
+                if usage:
+                    terminal_usage.update(usage)
                 loop.call_soon_threadsafe(queue.put_nowait, ("usage" if usage else "delta", usage or delta))
-            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            if cancellation.is_set():
+                loop.call_soon_threadsafe(queue.put_nowait, ("cancelled", terminal_usage))
+            else:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", terminal_usage))
         except Exception:
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", None))
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", {"finish_reason": "error", "truncated": False}))
 
     task = asyncio.create_task(asyncio.to_thread(worker))
 
@@ -194,7 +229,12 @@ async def generate_stream(request: Request, payload: GenerateRequest, _: None = 
                 elif kind == "usage":
                     yield f"data: {json.dumps({'usage': value}, ensure_ascii=False)}\n\n"
                 elif kind == "error":
-                    yield "data: {\"error\": \"swico_free_unavailable\"}\n\n"
+                    yield f"data: {json.dumps({'error': 'swico_free_unavailable', **(value or {})})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
+                elif kind == "cancelled":
+                    yield f"data: {json.dumps({**(value or {}), 'finish_reason': 'cancelled', 'truncated': False})}\n\n"
+                    yield "data: [DONE]\n\n"
                     break
                 elif kind == "cancel":
                     break

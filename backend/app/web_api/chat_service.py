@@ -27,7 +27,7 @@ from ..ai.providers.base import (
     ProviderStreamInterrupted,
 )
 from ..ai.router import AIProviderRouter
-from ..ai.swico_tiers import SwicoTierUnavailableError
+from ..ai.swico_tiers import SwicoTierUnavailableError, free_output_token_ceiling
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
     PriceResult,
@@ -2577,6 +2577,15 @@ def prepare_web_turn(
                     execution_plan.max_output_tokens
                     if execution_plan is not None
                     else optimization.max_output_tokens
+                ),
+            )
+        if route.provider == "swico_free":
+            route = replace(
+                route,
+                max_output_tokens=min(
+                    max(0, int(route.max_output_tokens)),
+                    tier_policy_for("free").max_output_tokens,
+                    free_output_token_ceiling(),
                 ),
             )
         if route.provider == "openai":

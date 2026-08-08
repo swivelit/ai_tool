@@ -89,7 +89,7 @@ class QwenRuntime:
             n_gpu_layers=0, verbose=False,
         )
 
-    def generate(self, messages: list[dict[str, str]], max_output_tokens: int) -> tuple[str, dict[str, int]]:
+    def generate(self, messages: list[dict[str, str]], max_output_tokens: int) -> tuple[str, dict[str, Any]]:
         messages = self._non_thinking_messages(messages)
         if hasattr(self._llama, "create_chat_completion"):
             result = self._chat_completion(messages, max_output_tokens, stream=False)
@@ -99,14 +99,22 @@ class QwenRuntime:
         text = self._extract_text(result).strip()
         if not text:
             raise RuntimeError("generation returned empty text")
-        return text, self._usage(result, messages, text)
+        usage = self._usage(result, messages, text)
+        finish_reason = self._resolved_finish_reason(
+            result, int(usage.get("output_tokens") or 0), max_output_tokens,
+        )
+        usage.update({
+            "finish_reason": finish_reason,
+            "truncated": finish_reason == "length",
+        })
+        return text, usage
 
     def stream(
         self,
         messages: list[dict[str, str]],
         max_output_tokens: int,
         cancellation: Event | None = None,
-    ) -> Iterator[tuple[str, dict[str, int]]]:
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
         self._install_abort_callback(cancellation)
         messages = self._non_thinking_messages(messages)
         if hasattr(self._llama, "create_chat_completion"):
@@ -116,6 +124,8 @@ class QwenRuntime:
             stream = self._llama(prompt, max_tokens=max_output_tokens, temperature=0.2, stream=True)
         parts: list[str] = []
         visible_filter = VisibleTextFilter()
+        usage_payload: dict[str, Any] = {}
+        observed_finish_reason: str | None = None
         try:
             for item in stream:
                 if cancellation is not None and cancellation.is_set():
@@ -123,6 +133,12 @@ class QwenRuntime:
                     if callable(close):
                         close()
                     return
+                if isinstance(item, dict):
+                    if isinstance(item.get("usage"), dict):
+                        usage_payload.update(item["usage"])
+                    observed_finish_reason = (
+                        self._extract_finish_reason(item) or observed_finish_reason
+                    )
                 delta = visible_filter.feed(self._extract_delta(item))
                 if delta:
                     parts.append(delta)
@@ -132,7 +148,19 @@ class QwenRuntime:
                 parts.append(tail)
                 yield tail, {}
             if cancellation is None or not cancellation.is_set():
-                yield "", self._usage({}, messages, "".join(parts))
+                usage = self._usage(
+                    usage_payload, messages, "".join(parts),
+                )
+                finish_reason = self._resolved_finish_reason(
+                    {"choices": [{"finish_reason": observed_finish_reason}]}
+                    if observed_finish_reason else usage_payload,
+                    int(usage.get("output_tokens") or 0), max_output_tokens,
+                )
+                usage.update({
+                    "finish_reason": finish_reason,
+                    "truncated": finish_reason == "length",
+                })
+                yield "", usage
         finally:
             self._install_abort_callback(None)
 
@@ -157,16 +185,29 @@ class QwenRuntime:
             "messages": messages, "max_tokens": max_output_tokens,
             "temperature": 0.2, "stream": stream,
         }
-        try:
-            return self._llama.create_chat_completion(
-                **kwargs, chat_template_kwargs={"enable_thinking": False},
-            )
-        except TypeError as exc:
-            # Older llama-cpp-python releases may not expose this keyword; the
-            # explicit /no_think control remains in the user message.
-            if "chat_template_kwargs" not in str(exc):
-                raise
-            return self._llama.create_chat_completion(**kwargs)
+        if stream:
+            # Newer llama-cpp-python releases can include token usage in the
+            # terminal stream event. Older releases reject stream_options;
+            # the fallback below keeps those versions supported.
+            kwargs["stream_options"] = {"include_usage": True}
+        kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+        for _attempt in range(3):
+            try:
+                return self._llama.create_chat_completion(**kwargs)
+            except TypeError as exc:
+                # Older llama-cpp-python releases may not expose one or both
+                # optional keywords; the explicit /no_think control remains
+                # in the user message.
+                message = str(exc)
+                removed = False
+                for name in ("chat_template_kwargs", "stream_options"):
+                    if name in kwargs and name in message:
+                        kwargs.pop(name)
+                        removed = True
+                        break
+                if not removed:
+                    raise
+        raise RuntimeError("llama-cpp-python chat completion setup failed")
 
     @staticmethod
     def _extract_text(result: Any) -> str:
@@ -185,7 +226,30 @@ class QwenRuntime:
         return str(delta.get("content") or choice.get("text") or "")
 
     @staticmethod
-    def _usage(result: Any, messages: list[dict[str, str]], text: str) -> dict[str, int]:
+    def _extract_finish_reason(result: Any) -> str | None:
+        choices = result.get("choices", []) if isinstance(result, dict) else []
+        choice = choices[0] if choices else {}
+        if isinstance(choice, dict) and choice.get("finish_reason"):
+            return str(choice["finish_reason"]).strip().lower()
+        if isinstance(result, dict) and result.get("finish_reason"):
+            return str(result["finish_reason"]).strip().lower()
+        return None
+
+    @classmethod
+    def _resolved_finish_reason(
+        cls, result: Any, output_tokens: int, max_output_tokens: int,
+    ) -> str:
+        observed = cls._extract_finish_reason(result)
+        if observed == "stop" and max_output_tokens > 0 and output_tokens >= max_output_tokens:
+            return "length"
+        if observed in {"stop", "length", "cancelled", "error"}:
+            return observed
+        if max_output_tokens > 0 and output_tokens >= max_output_tokens:
+            return "length"
+        return "stop"
+
+    @staticmethod
+    def _usage(result: Any, messages: list[dict[str, str]], text: str) -> dict[str, Any]:
         usage = result.get("usage", {}) if isinstance(result, dict) else {}
         usage = {
             "input_tokens": int(usage.get("prompt_tokens") or max(1, sum(len(item["content"]) for item in messages) // 3)),

@@ -11,7 +11,7 @@ import re
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from uuid import UUID, uuid4
 from typing import Any
@@ -425,20 +425,49 @@ def _enforce_swico_free_limits(user_id: int) -> None:
                 "Swico Free is temporarily rate limited. Please try again shortly.",
             ) from exc
         try:
-            # This admission counter is reached only after preparation has
-            # classified the turn as a real swico_free provider generation;
-            # deterministic answers never consume the daily limit.
+            # Serialize the completed/pending usage check with the existing
+            # rate-limit row. The row is only a lock; the daily allowance is
+            # derived from zero-cost UsageCharge records below.
             enforce_rate_limit(
-                session, user_id=user_id, action="swico_free_generation_day",
-                limit=max(1, daily_limit), window_seconds=86_400,
+                session, user_id=user_id, action="swico_free_daily_usage_lock",
+                limit=2_147_483_647, window_seconds=86_400,
             )
+            now = utc_now()
+            epoch = int(now.timestamp())
+            day_start = datetime.fromtimestamp(
+                epoch - (epoch % 86_400), tz=timezone.utc,
+            )
+            completed = len(session.exec(select(UsageCharge.id).where(
+                UsageCharge.user_id == user_id,
+                UsageCharge.swico_tier == "free",
+                UsageCharge.usage_kind == "chat",
+                UsageCharge.status == "free",
+                UsageCharge.settled_at >= day_start,
+            )).all())
+            pending_cutoff = now - timedelta(minutes=5)
+            pending = len(session.exec(select(UsageCharge.id).where(
+                UsageCharge.user_id == user_id,
+                UsageCharge.swico_tier == "free",
+                UsageCharge.usage_kind == "chat",
+                UsageCharge.status == "free_pending",
+                UsageCharge.created_at >= pending_cutoff,
+            )).all())
+            daily_cap = max(1, daily_limit)
+            if (completed >= daily_cap and pending == 0) or completed + pending > daily_cap:
+                raise SwicoFreeLimitError(
+                    "swico_free_daily_limit",
+                    "Swico Free has reached its daily message limit. Please try again tomorrow.",
+                )
             session.commit()
         except RateLimitError as exc:
             session.rollback()
             raise SwicoFreeLimitError(
-                "swico_free_daily_limit",
-                "Swico Free has reached its daily message limit. Please try again tomorrow.",
+                "swico_free_rate_limited",
+                "Swico Free is temporarily rate limited. Please try again shortly.",
             ) from exc
+        except SwicoFreeLimitError:
+            session.rollback()
+            raise
 
 
 def _release_swico_free_request(request_id: str) -> None:

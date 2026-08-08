@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from ..openai_model_router import OpenAIModelRouter
-from .swico_tiers import SwicoTierUnavailableError, free_enabled
+from .swico_tiers import SwicoTierUnavailableError, free_enabled, free_output_token_ceiling
 from .intent import IntentDecision, classify_intent_with_metadata, normalize_voice_query_for_intent
 from .language import detect_language
 from .prompts import concise_max_output_tokens
@@ -115,7 +115,7 @@ class AIProviderRouter:
                     intent=intent.intent,
                     max_output_tokens=min(
                         max_output_tokens,
-                        int(request.metadata.get("swico_free_max_output_tokens") or 512),
+                        free_output_token_ceiling(),
                     ),
                     metadata={**intent_metadata, "swico_tier": "free"},
                 )

@@ -73,6 +73,15 @@ def free_enabled() -> bool:
     return _env_bool("SWICO_FREE_ENABLED", False)
 
 
+def free_output_token_ceiling() -> int:
+    """Return the server-side Free output ceiling, failing closed to 256."""
+    try:
+        value = int(os.getenv("SWICO_FREE_MAX_OUTPUT_TOKENS", "256"))
+    except (TypeError, ValueError):
+        return 256
+    return value if 64 <= value <= 512 else 256
+
+
 def normalize_swico_tier(value: object, *, enforce_availability: bool = True) -> SwicoTier:
     normalized = str(value or "").strip().lower()
     tier = cast(SwicoTier, normalized) if normalized in SWICO_TIER_IDS else "lite"

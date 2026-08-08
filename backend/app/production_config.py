@@ -255,6 +255,9 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_daily_limit = _integer(env, "SWICO_FREE_DAILY_MESSAGE_LIMIT", "10")
     if free_daily_limit is None or free_daily_limit < 1:
         errors.append("SWICO_FREE_DAILY_MESSAGE_LIMIT must be a positive integer")
+    free_max_output = _integer(env, "SWICO_FREE_MAX_OUTPUT_TOKENS", "256")
+    if free_max_output is None or not 64 <= free_max_output <= 512:
+        errors.append("SWICO_FREE_MAX_OUTPUT_TOKENS must be between 64 and 512")
     if default_tier == "free" and free_is_enabled is not True:
         errors.append("SWICO_DEFAULT_TIER cannot be free while SWICO_FREE_ENABLED is false")
     if free_is_enabled is True:

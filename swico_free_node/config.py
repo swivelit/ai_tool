@@ -54,7 +54,7 @@ class NodeConfig:
             e5_threads=_int("SWICO_FREE_E5_THREADS", 2, 1, 2),
             max_concurrent_generations=_int("SWICO_FREE_MAX_CONCURRENT_GENERATIONS", 1, 1, 1),
             max_queue_size=_int("SWICO_FREE_MAX_QUEUE_SIZE", 10, 0, 10),
-            max_output_tokens=_int("SWICO_FREE_MAX_OUTPUT_TOKENS", 512, 1, 512),
+            max_output_tokens=_int("SWICO_FREE_MAX_OUTPUT_TOKENS", 256, 64, 512),
             max_concurrent_embeddings=_int("SWICO_FREE_MAX_CONCURRENT_EMBEDDINGS", 1, 1, 1),
             max_embedding_queue_size=_int("SWICO_FREE_MAX_EMBEDDING_QUEUE_SIZE", 4, 0, 4),
         )

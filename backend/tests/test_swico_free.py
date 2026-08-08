@@ -97,6 +97,82 @@ def test_free_provider_authenticates_backend_to_backend_without_logging_secrets(
     assert "private prompt" not in caplog.text
 
 
+def test_free_provider_preserves_length_finish_and_truncation(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+
+    def fake_post(url, **_kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "text": "truncated answer", "finish_reason": "length", "truncated": True,
+                "usage": {"input_tokens": 4, "output_tokens": 32},
+            }, request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    response = SwicoFreeProvider().complete(
+        AIRequest(1, "prompt", "en", "text", "finish-length", {}, []),
+        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 512),
+    )
+    assert response.raw["finish_reason"] == "length"
+    assert response.raw["truncated"] is True
+
+
+def test_free_route_uses_server_output_ceiling_without_affecting_paid_route(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_MAX_OUTPUT_TOKENS", "256")
+    free_request = AIRequest(
+        1, "Write a detailed explanation", "en", "text", "ceiling-free", {
+            "client_surface": "web", "swico_tier": "free",
+            "swico_free_max_output_tokens": 512,
+        }, [],
+    )
+    free_route = AIProviderRouter().select_route(free_request)
+    assert free_route.max_output_tokens <= 256
+    paid_request = AIRequest(
+        1, "Write a detailed explanation", "en", "text", "ceiling-paid", {
+            "client_surface": "web", "swico_tier": "lite",
+        }, [],
+    )
+    paid_route = AIProviderRouter().select_route(paid_request)
+    assert paid_route.provider == "openai"
+
+
+def test_free_provider_stream_preserves_length_finish_and_truncation(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+
+    class Response:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_lines(self):
+            return iter([
+                'data: {"delta":"partial"}',
+                'data: {"usage":{"input_tokens":3,"output_tokens":32,"finish_reason":"length","truncated":true}}',
+                'data: [DONE]',
+            ])
+
+    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: Response())
+    response = SwicoFreeProvider().stream_complete(
+        AIRequest(1, "prompt", "en", "text", "stream-length", {
+            "cancellation_signal": None,
+        }, []),
+        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 512),
+        lambda _delta: None,
+    )
+    assert response.raw["finish_reason"] == "length"
+    assert response.raw["truncated"] is True
+
+
 def test_free_embedding_path_uses_remote_e5_and_not_openai(monkeypatch):
     calls: list[tuple[list[str], str]] = []
     monkeypatch.setattr(
@@ -253,12 +329,41 @@ def test_free_daily_limit_is_isolated_from_paid_chat_rate_limits(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "10")
     monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "1")
     _enforce_swico_free_limits(int(user.id))
+    with SessionLocal() as session:
+        create_swico_free_usage(
+            session, request_id="free-daily-completed", user_id=int(user.id),
+            thread_id=None, pricing_snapshot_json="{}",
+        )
+        settle_swico_free_usage(
+            session, request_id="free-daily-completed", input_tokens=2,
+            cached_input_tokens=0, output_tokens=3, usage_source="actual",
+            pricing_snapshot_json="{}",
+        )
+        session.commit()
     with pytest.raises(SwicoFreeLimitError) as error:
         _enforce_swico_free_limits(int(user.id))
     assert error.value.code == "swico_free_daily_limit"
     with SessionLocal() as session:
         _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
         _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+
+
+def test_failed_free_generation_does_not_consume_completed_daily_allowance(monkeypatch):
+    user = create_test_user("free-daily-failure", "free-daily-failure@example.com")
+    monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "10")
+    monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "1")
+    with SessionLocal() as session:
+        create_swico_free_usage(
+            session, request_id="free-daily-failed", user_id=int(user.id),
+            thread_id=None, pricing_snapshot_json="{}",
+        )
+        session.commit()
+    _enforce_swico_free_limits(int(user.id))
+    with SessionLocal() as session:
+        from app.billing.service import release_swico_free_usage
+        release_swico_free_usage(session, "free-daily-failed")
+        session.commit()
+    _enforce_swico_free_limits(int(user.id))
 
 
 def test_unavailable_provider_error_is_safe_and_never_logs_prompt(monkeypatch):
@@ -308,6 +413,48 @@ def test_node_cpu_defaults_are_conservative_and_configurable(monkeypatch, tmp_pa
     config = NodeConfig.from_environment()
     assert (config.qwen_threads, config.qwen_batch_size, config.e5_threads) == (4, 128, 2)
     assert (config.max_concurrent_embeddings, config.max_embedding_queue_size) == (1, 4)
+    assert config.max_output_tokens == 256
+
+
+def test_node_health_reports_safe_capacity_metrics(monkeypatch):
+    import swico_free_node.app as node_app
+
+    class Runtime:
+        def generate(self, _messages, _max_output_tokens):
+            return "partial", {"finish_reason": "length", "truncated": True}
+
+    monkeypatch.setattr(node_app, "config", SimpleNamespace(max_queue_size=10, max_embedding_queue_size=4))
+    monkeypatch.setattr(node_app, "qwen", Runtime())
+    monkeypatch.setattr(node_app, "e5", object())
+    monkeypatch.setattr(node_app, "capacity", node_app.GenerationCapacity(1, 10))
+    monkeypatch.setattr(node_app, "embedding_capacity", node_app.GenerationCapacity(1, 4))
+    health = asyncio.run(node_app.health())
+    assert health["generation_capacity"] == 1
+    assert health["generation_queue_capacity"] == 10
+    assert health["active_generations"] == 0
+    assert health["waiting_generations"] == 0
+    assert "model" not in " ".join(health.keys()).lower()
+
+
+def test_node_nonstream_generation_propagates_length_finish(monkeypatch):
+    import swico_free_node.app as node_app
+    from swico_free_node.schemas import GenerateRequest
+
+    class Runtime:
+        def generate(self, _messages, _max_output_tokens):
+            return "partial", {"finish_reason": "length", "truncated": True}
+
+    monkeypatch.setattr(node_app, "config", SimpleNamespace(max_output_tokens=256))
+    monkeypatch.setattr(node_app, "qwen", Runtime())
+    monkeypatch.setattr(node_app, "e5", object())
+    monkeypatch.setattr(node_app, "capacity", node_app.GenerationCapacity(1, 10))
+    monkeypatch.setattr(node_app, "embedding_capacity", node_app.GenerationCapacity(1, 4))
+    response = asyncio.run(node_app.generate(
+        GenerateRequest(messages=[{"role": "user", "content": "Answer"}], max_output_tokens=256),
+        None,
+    ))
+    assert response["finish_reason"] == "length"
+    assert response["truncated"] is True
 
 
 def _write_e5_transformer_artifacts(path: Path) -> None:
@@ -447,3 +594,28 @@ def test_qwen_stream_never_emits_thinking_or_reasoning_fields():
     ]
     assert "".join(chunks) == "Visible"
     assert all("think" not in text.lower() and "hidden" not in text for text in chunks)
+
+
+def test_qwen_runtime_preserves_length_finish_reason_for_generate_and_stream():
+    from swico_free_node.qwen_runtime import QwenRuntime
+
+    class FakeLlama:
+        def create_chat_completion(self, **kwargs):
+            if kwargs.get("stream"):
+                return iter([
+                    {"choices": [{"delta": {"content": "partial"}}]},
+                    {"choices": [{"finish_reason": "length"}]},
+                ])
+            return {
+                "choices": [{"message": {"content": "partial"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 8},
+            }
+
+    runtime = object.__new__(QwenRuntime)
+    runtime._llama = FakeLlama()
+    _text, usage = runtime.generate([{"role": "user", "content": "Answer"}], 8)
+    assert usage["finish_reason"] == "length"
+    assert usage["truncated"] is True
+    chunks = list(runtime.stream([{"role": "user", "content": "Answer"}], 8))
+    assert chunks[-1][1]["finish_reason"] == "length"
+    assert chunks[-1][1]["truncated"] is True

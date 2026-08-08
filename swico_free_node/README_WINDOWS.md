@@ -2,7 +2,7 @@
 
 This folder is a separate CPU inference service for Swico Free. It is not imported by the Render backend and its dependencies must not be added to `backend/requirements.txt`.
 
-The service is sized for the 8 GB CPU-only laptop: one active generation, at most ten waiting requests, a 4096-token context, and at most 512 output tokens. Run one worker so both models load once and remain resident.
+The service is sized for the 8 GB CPU-only laptop: one active generation, at most ten waiting requests, a 4096-token context, and a recommended 256-output-token ceiling. Run one worker so both models load once and remain resident.
 
 ## Workflow A: Windows PowerShell
 
@@ -39,7 +39,7 @@ SWICO_FREE_QWEN_BATCH_SIZE=128
 SWICO_FREE_E5_THREADS=2
 SWICO_FREE_MAX_CONCURRENT_GENERATIONS=1
 SWICO_FREE_MAX_QUEUE_SIZE=10
-SWICO_FREE_MAX_OUTPUT_TOKENS=512
+SWICO_FREE_MAX_OUTPUT_TOKENS=256
 SWICO_FREE_MAX_CONCURRENT_EMBEDDINGS=1
 SWICO_FREE_MAX_EMBEDDING_QUEUE_SIZE=4
 ```
@@ -96,6 +96,16 @@ Benchmark the already-running node. The output contains timings, generated-token
 .\scripts\benchmark.ps1
 ```
 
+The capacity benchmark warms the node, then measures approximately 64-token
+short, 128-token normal, and 256-token long workloads over multiple iterations.
+It reports p50/p95 latency, first-token latency, prompt-processing timing when
+llama.cpp provides it, E5 timing, and benchmark-derived single-worker
+statistics. Run the bounded queue test with:
+
+```powershell
+.\scripts\benchmark.ps1 --load
+```
+
 The lightweight doctor does not load either model. It checks Windows, Python,
 the virtual environment, dotenv values, local artifact paths, port 8765, and
 Tailscale status. It prints a safe `Next:` action for every failure.
@@ -126,6 +136,12 @@ cd /d/swico/ai_tool/swico_free_node
 ./scripts/smoke.sh
 ./scripts/funnel_smoke.sh
 ./scripts/benchmark.sh
+```
+
+For the capacity benchmark and bounded 1/2/5/10/11/12-request queue test:
+
+```bash
+./scripts/benchmark.sh --load
 ```
 
 On a first run, `doctor.sh` may report expected failures for `.venv`, `.env`,

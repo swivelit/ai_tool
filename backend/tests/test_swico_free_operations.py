@@ -105,6 +105,17 @@ def test_git_bash_wrappers_use_one_path_safe_powershell_bridge():
     assert "https" in funnel
 
 
+def test_capacity_benchmark_uses_meaningful_workloads_and_bounded_load():
+    root = Path(__file__).resolve().parents[2] / "swico_free_node" / "scripts"
+    benchmark = (root / "benchmark.py").read_text(encoding="utf-8")
+    assert "Reply exactly OK" not in benchmark
+    assert "approximately {target_tokens} output tokens" in benchmark
+    assert "((\"SHORT\", 64), (\"NORMAL\", 128), (\"LONG\", 256))" in benchmark
+    assert "(1, 2, 5, 10, 11, 12)" in benchmark
+    assert "normal_requests_per_minute_single_worker" in benchmark
+    assert "registered_user_capacity=not_estimated" in benchmark
+
+
 def test_render_probe_reports_transport_category_and_skips_expensive_checks(monkeypatch, capsys):
     token = "probe-secret-" + ("x" * 32)
     monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://desktop-qtf7f78.tailbdb31e.ts.net")

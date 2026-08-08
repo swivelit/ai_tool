@@ -151,6 +151,8 @@ class SwicoFreeProvider(AIProvider):
         if not text:
             raise SwicoFreeUnavailableError()
         input_tokens, output_tokens = _safe_usage(payload, text, prompt)
+        finish_reason = str(payload.get("finish_reason") or "stop").strip().lower()
+        truncated = bool(payload.get("truncated")) or finish_reason == "length"
         return AIProviderResponse(
             text=text, provider="swico_free", model=None, route=route.route,
             reason=route.reason, language=route.language, intent=route.intent,
@@ -159,7 +161,9 @@ class SwicoFreeProvider(AIProvider):
             estimated_cost_currency="INR",
             raw={"usage_actual": bool(payload.get("usage")), "provider_attempts": 1,
                  "provider_calls_with_usage": 1 if payload.get("usage") else 0,
-                 "fallback_attempted": False, "finish_reason": str(payload.get("finish_reason") or "stop")},
+                 "fallback_attempted": False, "finish_reason": finish_reason,
+                 "truncated": truncated,
+                 "completion_status": "incomplete" if truncated else "complete"},
         )
 
     def embed(self, values: list[str], *, mode: str = "passage") -> list[list[float]]:
@@ -232,6 +236,21 @@ class SwicoFreeProvider(AIProvider):
                         raise SwicoFreeUnavailableError()
                     if isinstance(event, dict) and isinstance(event.get("usage"), dict):
                         usage.update(event["usage"])
+                    if isinstance(event, dict) and event.get("error"):
+                        raise SwicoFreeUnavailableError()
+                    if isinstance(event, dict) and event.get("finish_reason"):
+                        usage["finish_reason"] = str(event["finish_reason"]).strip().lower()
+                        usage["truncated"] = bool(event.get("truncated"))
+                        if usage["finish_reason"] == "cancelled":
+                            partial = "".join(parts).strip()
+                            raise GenerationCancelled(
+                                AIProviderResponse(
+                                    text=partial, provider="swico_free", model=None,
+                                    route=route.route, reason=route.reason,
+                                    language=route.language, intent=route.intent,
+                                    characters=len(partial), raw={"cancelled": True},
+                                ) if partial else None
+                            )
                     delta = event.get("delta") if isinstance(event, dict) else None
                     if delta is None and isinstance(event, dict):
                         delta = event.get("text")
@@ -253,6 +272,8 @@ class SwicoFreeProvider(AIProvider):
         if not text:
             raise SwicoFreeUnavailableError()
         input_tokens, output_tokens = _safe_usage(usage, text, prompt)
+        finish_reason = str(usage.get("finish_reason") or "stop").strip().lower()
+        truncated = bool(usage.get("truncated")) or finish_reason == "length"
         return AIProviderResponse(
             text=text, provider="swico_free", model=None, route=route.route,
             reason=route.reason, language=route.language, intent=route.intent,
@@ -261,5 +282,7 @@ class SwicoFreeProvider(AIProvider):
             estimated_cost_currency="INR",
             raw={"usage_actual": bool(usage), "provider_attempts": 1,
                  "provider_calls_with_usage": 1 if usage else 0,
-                 "fallback_attempted": False, "finish_reason": "stop"},
+                 "fallback_attempted": False, "finish_reason": finish_reason,
+                 "truncated": truncated,
+                 "completion_status": "incomplete" if truncated else "complete"},
         )

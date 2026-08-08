@@ -14,7 +14,7 @@ class Message(BaseModel):
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: list[Message] = Field(min_length=1, max_length=24)
-    max_output_tokens: int = Field(default=512, ge=1, le=512)
+    max_output_tokens: int = Field(default=256, ge=1, le=512)
 
     @field_validator("messages")
     @classmethod
