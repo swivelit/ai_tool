@@ -69,7 +69,9 @@ In another PowerShell:
 ```powershell
 Set-Location .\swico_free_node
 .\scripts\health.ps1
-$token = (Get-Content .env | Where-Object { $_ -match '^SWICO_FREE_NODE_TOKEN=' }) -replace '^SWICO_FREE_NODE_TOKEN=', ''
+. .\scripts\dotenv.ps1
+Import-SwicoFreeDotEnv (Join-Path (Get-Location) '.env')
+$token = $env:SWICO_FREE_NODE_TOKEN
 $headers = @{ Authorization = "Bearer $token" }
 Invoke-RestMethod -Uri http://127.0.0.1:8765/v1/embed -Method Post -Headers $headers -ContentType 'application/json' -Body '{"texts":["query text","document text"],"modes":["query","passage"]}'
 Invoke-RestMethod -Uri http://127.0.0.1:8765/v1/generate -Method Post -Headers $headers -ContentType 'application/json' -Body '{"messages":[{"role":"user","content":"Say hello in one sentence."}],"max_output_tokens":32}'

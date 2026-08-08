@@ -2,6 +2,39 @@
 
 Do not create a Blueprint for the existing production resources. They were created manually; update them in the Render dashboard.
 
+## Swico Free staged rollout
+
+Swico Free remains disabled by default and must use the existing API service;
+do not create another Render service. Before enabling the master switch, add
+the following API variables:
+
+```dotenv
+SWICO_FREE_ENABLED=false
+SWICO_FREE_ROLLOUT_PERCENT=0
+SWICO_FREE_RATE_LIMIT_PER_MINUTE=2
+SWICO_FREE_DAILY_MESSAGE_LIMIT=10
+SWICO_FREE_INFERENCE_BASE_URL=https://desktop-qtf7f78.tailbdb31e.ts.net
+SWICO_FREE_INFERENCE_TOKEN=<shared-with-the-Windows-node-secret>
+SWICO_FREE_INFERENCE_TIMEOUT_SECONDS=90
+SWICO_FREE_EMBEDDING_DIMENSIONS=384
+```
+
+The backend admits verified `SWICO_INTERNAL_TEST_EMAILS` accounts regardless
+of rollout percentage. Ordinary users are assigned by a stable backend-only
+user identifier hash; rollout buckets are never returned by bootstrap,
+settings, diagnostics, or logs. Run the secret-safe probe from Render Shell:
+
+```bash
+cd backend
+python scripts/swico_free_probe.py --pretty
+```
+
+Only after the probe and laptop smoke/benchmark checks pass should an operator
+set `SWICO_FREE_ENABLED=true`, then increase
+`SWICO_FREE_ROLLOUT_PERCENT` deliberately (for example `5`, then `25`, then
+`100`) while monitoring the existing API and laptop capacity. Keep
+`SWICO_DEFAULT_TIER=lite`.
+
 ## New isolated staging project — beginner setup
 
 `render.staging.yaml` is only for six new resources:

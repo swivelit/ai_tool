@@ -12,6 +12,14 @@ from dotenv import load_dotenv
 NODE_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90"))
+    except ValueError:
+        value = 90.0
+    return min(120.0, max(1.0, value))
+
+
 def _request(url: str, token: str, payload: dict | None = None) -> tuple[float, dict]:
     request = urllib.request.Request(
         url,
@@ -20,7 +28,7 @@ def _request(url: str, token: str, payload: dict | None = None) -> tuple[float, 
         data=json.dumps(payload).encode() if payload is not None else None,
     )
     started = time.perf_counter()
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=_timeout_seconds()) as response:
         body = json.loads(response.read().decode())
     return (time.perf_counter() - started) * 1000, body
 

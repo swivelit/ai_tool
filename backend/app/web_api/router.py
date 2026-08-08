@@ -45,6 +45,7 @@ from ..billing.service import (
     enforce_rate_limit, expand_usage_reservation, get_wallet_summary, get_wallet_summaries, list_wallet_ledger,
     release_billing_exempt_usage, release_usage_reservation, reverse_credit_for_refund,
     settle_billing_exempt_usage, settle_usage_reservation,
+    release_swico_free_usage,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
 from ..billing.topups import (
@@ -83,6 +84,7 @@ from ..ai.swico_tiers import (
     public_tier_settings,
     tier_selection_enabled,
 )
+from .swico_free_access import swico_free_eligible
 from ..database import SessionLocal, get_session
 from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
@@ -337,11 +339,16 @@ def _voice_playback_selection(
     }
 
 
-def _temporary_error(status_code: int, code: str, message: str) -> JSONResponse:
+def _temporary_error(
+    status_code: int, code: str, message: str, *, headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    response_headers = {"Cache-Control": "no-store"}
+    if headers:
+        response_headers.update(headers)
     return JSONResponse(
         status_code=status_code,
         content={"error": {"code": code, "message": message}},
-        headers={"Cache-Control": "no-store"},
+        headers=response_headers,
     )
 
 
@@ -389,6 +396,57 @@ def _rate_limit(session: Session, *, user_id: int, action: str, limit: int) -> N
         enforce_rate_limit(session, user_id=user_id, action=action, limit=limit)
     except RateLimitError as exc:
         raise HTTPException(429, str(exc), headers={"Retry-After": "60"}) from exc
+
+
+class SwicoFreeLimitError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _enforce_swico_free_limits(user_id: int) -> None:
+    try:
+        minute_limit = int(os.getenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "2"))
+        daily_limit = int(os.getenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "10"))
+    except ValueError as exc:
+        raise SwicoFreeLimitError(
+            "swico_free_rate_limited", "Swico Free is temporarily rate limited."
+        ) from exc
+    with SessionLocal() as session:
+        try:
+            enforce_rate_limit(
+                session, user_id=user_id, action="swico_free_generation_minute",
+                limit=max(1, minute_limit), window_seconds=60,
+            )
+        except RateLimitError as exc:
+            session.rollback()
+            raise SwicoFreeLimitError(
+                "swico_free_rate_limited",
+                "Swico Free is temporarily rate limited. Please try again shortly.",
+            ) from exc
+        try:
+            # This admission counter is reached only after preparation has
+            # classified the turn as a real swico_free provider generation;
+            # deterministic answers never consume the daily limit.
+            enforce_rate_limit(
+                session, user_id=user_id, action="swico_free_generation_day",
+                limit=max(1, daily_limit), window_seconds=86_400,
+            )
+            session.commit()
+        except RateLimitError as exc:
+            session.rollback()
+            raise SwicoFreeLimitError(
+                "swico_free_daily_limit",
+                "Swico Free has reached its daily message limit. Please try again tomorrow.",
+            ) from exc
+
+
+def _release_swico_free_request(request_id: str) -> None:
+    with SessionLocal() as session:
+        release_swico_free_usage(
+            session, request_id, annotate_terminal=True,
+        )
+        session.commit()
 
 
 def _pagination(limit: int, offset: int) -> tuple[int, int]:
@@ -707,7 +765,12 @@ def bootstrap(
     response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
     billing_exempt = is_internal_test_user(auth, user)
+    free_available = swico_free_eligible(
+        int(user.id), internal_account=billing_exempt,
+    )
     swico_tier = selected_swico_tier(session, int(user.id))
+    if swico_tier == "free" and not free_available:
+        swico_tier = "lite"
     uploads = _uploads_public_config()
     rollout, triag_settings = _web_rollout(auth, user)
     validation_capability = "static_only"
@@ -728,7 +791,7 @@ def bootstrap(
         "wallets": get_wallet_summaries(session, int(user.id), swico_tier=swico_tier,
                                          billing_exempt=billing_exempt),
         "billing": public_billing_config(swico_tier),
-        "assistant": public_tier_settings(swico_tier),
+        "assistant": public_tier_settings(swico_tier, free_available=free_available),
         "features": {
             "web_chat": True,
             "prepaid_billing": True,
@@ -2111,7 +2174,14 @@ def get_assistant_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    return public_tier_settings(selected_swico_tier(session, int(user.id)))
+    internal_account = is_internal_test_user(auth, user)
+    free_available = swico_free_eligible(
+        int(user.id), internal_account=internal_account,
+    )
+    tier = selected_swico_tier(session, int(user.id))
+    if tier == "free" and not free_available:
+        tier = "lite"
+    return public_tier_settings(tier, free_available=free_available)
 
 
 @router.patch("/settings/assistant")
@@ -2120,15 +2190,18 @@ def patch_assistant_settings(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    internal_account = is_internal_test_user(auth, user)
     if not tier_selection_enabled():
         raise HTTPException(403, {
             "code": "tier_selection_disabled",
             "message": "Swico mode selection is temporarily unavailable.",
         })
-    if payload.tier == "free" and not free_enabled():
+    if payload.tier == "free" and not swico_free_eligible(
+        int(user.id), internal_account=internal_account,
+    ):
         raise HTTPException(422, {
             "code": "tier_unavailable",
-            "message": "Swico Free is not available yet.",
+            "message": "Swico Free is not available for this account yet.",
         })
     if payload.tier == "pro" and not pro_enabled():
         raise HTTPException(422, {
@@ -2149,7 +2222,12 @@ def patch_assistant_settings(
     # cannot observe the previous committed value from another DB session.
     session.commit()
     session.refresh(row)
-    return public_tier_settings(row.assistant_tier)
+    return public_tier_settings(
+        row.assistant_tier,
+        free_available=swico_free_eligible(
+            int(user.id), internal_account=internal_account,
+        ),
+    )
 
 
 def _memory_settings_payload(session: Session, user_id: int) -> dict[str, Any]:
@@ -3745,6 +3823,14 @@ async def chat_stream(
         user_id = int(user.id)
         resolved_reply_language = _resolved_reply_language(user)
         billing_exempt = is_internal_test_user(auth, user)
+        free_eligible = swico_free_eligible(
+            user_id, internal_account=billing_exempt,
+        )
+        if selected_swico_tier(rate_session, user_id) == "free" and not free_eligible:
+            return _temporary_error(
+                422, "tier_unavailable",
+                "Swico Free is not available for this account yet.",
+            )
         rollout_decision, request_triag_settings = _web_rollout(auth, user)
         _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
         rate_session.commit()
@@ -3767,6 +3853,7 @@ async def chat_stream(
                 if payload.regenerate_message_id else None
             ),
             billing_credit_bucket="chat",
+            swico_free_eligible=free_eligible,
             rollout_decision=rollout_decision,
             triag_settings=request_triag_settings,
         )
@@ -3807,6 +3894,21 @@ async def chat_stream(
             "code": "swico_tier_unavailable",
             "message": "The selected Swico mode is temporarily unavailable. Please try again shortly.",
         }})
+
+    if prepared.route.provider == "swico_free":
+        try:
+            _enforce_swico_free_limits(user_id)
+        except SwicoFreeLimitError as exc:
+            try:
+                _release_swico_free_request(prepared.request_id)
+            except Exception:
+                logger.exception(
+                    "swico_free_limit_release_failed",
+                    extra={"request_id": prepared.request_id},
+                )
+            return _temporary_error(
+                429, exc.code, str(exc), headers={"Retry-After": "60"},
+            )
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation

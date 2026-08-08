@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts import swico_free_probe
 
 
@@ -18,6 +20,12 @@ def test_render_probe_checks_all_endpoints_without_printing_secret(monkeypatch, 
         def json(self):
             return self.body
 
+        def iter_lines(self):
+            return iter([
+                'data: {"delta":"OK"}',
+                'data: [DONE]',
+            ])
+
     class Client:
         def __init__(self, **kwargs):
             captured.update(kwargs)
@@ -34,6 +42,19 @@ def test_render_probe_checks_all_endpoints_without_printing_secret(monkeypatch, 
             if path == "/v1/embed":
                 return Response({"dimensions": 384, "vectors": [[0.0] * 384]})
             return Response({"text": "OK"})
+
+        def stream(self, _method, _path, json=None):
+            return ResponseContext(Response(None))
+
+    class ResponseContext:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *_args):
+            return False
 
     monkeypatch.setattr(swico_free_probe.httpx, "Client", Client)
     assert swico_free_probe.main(["--pretty"]) == 0
@@ -52,3 +73,14 @@ def test_render_probe_fails_closed_without_valid_https_configuration(monkeypatch
     output = capsys.readouterr().out
     assert "FAIL" in output
     assert "127.0.0.1" not in output
+
+
+def test_windows_scripts_share_quote_safe_dotenv_loader():
+    root = Path(__file__).resolve().parents[2] / "swico_free_node" / "scripts"
+    helper = (root / "dotenv.ps1").read_text(encoding="utf-8")
+    assert "Substring(1, $value.Length - 2)" in helper
+    assert "SetEnvironmentVariable($name, $value, 'Process')" in helper
+    for name in ("run.ps1", "health.ps1", "smoke.ps1", "validate_models.ps1", "benchmark.ps1"):
+        contents = (root / name).read_text(encoding="utf-8")
+        assert "dotenv.ps1" in contents
+        assert "Import-SwicoFreeDotEnv" in contents

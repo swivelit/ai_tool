@@ -246,6 +246,15 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_dimensions = _integer(env, "SWICO_FREE_EMBEDDING_DIMENSIONS", "384")
     if free_dimensions != 384:
         errors.append("SWICO_FREE_EMBEDDING_DIMENSIONS must be 384")
+    free_rollout = _integer(env, "SWICO_FREE_ROLLOUT_PERCENT", "0")
+    if free_rollout is None or not 0 <= free_rollout <= 100:
+        errors.append("SWICO_FREE_ROLLOUT_PERCENT must be between 0 and 100")
+    free_rate_limit = _integer(env, "SWICO_FREE_RATE_LIMIT_PER_MINUTE", "2")
+    if free_rate_limit is None or free_rate_limit < 1:
+        errors.append("SWICO_FREE_RATE_LIMIT_PER_MINUTE must be a positive integer")
+    free_daily_limit = _integer(env, "SWICO_FREE_DAILY_MESSAGE_LIMIT", "10")
+    if free_daily_limit is None or free_daily_limit < 1:
+        errors.append("SWICO_FREE_DAILY_MESSAGE_LIMIT must be a positive integer")
     if default_tier == "free" and free_is_enabled is not True:
         errors.append("SWICO_DEFAULT_TIER cannot be free while SWICO_FREE_ENABLED is false")
     if free_is_enabled is True:

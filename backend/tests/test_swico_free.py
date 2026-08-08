@@ -22,6 +22,7 @@ from app.database import SessionLocal
 from app.models import UsageCharge, WalletLedger, WebUsagePreferences
 from app.web_ai.tier_policy import tier_policy_for, validated_tier_policies
 from app.web_api.chat_service import _phase2_embedding_vectors
+from app.web_api.router import _enforce_swico_free_limits, SwicoFreeLimitError
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -158,6 +159,108 @@ def test_free_feature_flag_keeps_existing_selection_behavior(monkeypatch, client
     assert response.json()["detail"]["code"] == "tier_unavailable"
 
 
+def test_free_rollout_zero_blocks_normal_users_in_bootstrap_and_settings(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "0")
+    create_test_user("rollout-normal", "rollout-normal@example.com")
+    headers = auth_headers("rollout-normal", "rollout-normal@example.com")
+    settings = client.get("/api/web/settings/assistant", headers=headers).json()
+    bootstrap = client.get("/api/web/bootstrap", headers=headers).json()
+    assert next(item for item in settings["tiers"] if item["id"] == "free")["available"] is False
+    assert next(item for item in bootstrap["assistant"]["tiers"] if item["id"] == "free")["available"] is False
+    response = client.patch(
+        "/api/web/settings/assistant", headers=headers, json={"tier": "free"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "tier_unavailable"
+
+
+def test_verified_internal_test_user_can_use_free_at_rollout_zero(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "0")
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", "internal-free@example.com")
+    create_test_user("internal-free", "internal-free@example.com")
+    headers = auth_headers("internal-free", "internal-free@example.com")
+    response = client.patch(
+        "/api/web/settings/assistant", headers=headers, json={"tier": "free"},
+    )
+    assert response.status_code == 200
+    assert response.json()["tier"] == "free"
+    assert next(item for item in response.json()["tiers"] if item["id"] == "free")["available"] is True
+
+
+def test_rollout_one_hundred_enables_ordinary_users(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "100")
+    create_test_user("rollout-all", "rollout-all@example.com")
+    response = client.patch(
+        "/api/web/settings/assistant",
+        headers=auth_headers("rollout-all", "rollout-all@example.com"),
+        json={"tier": "free"},
+    )
+    assert response.status_code == 200
+    assert response.json()["tier"] == "free"
+
+
+def test_master_switch_blocks_even_internal_users(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "false")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "100")
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", "disabled-free@example.com")
+    create_test_user("disabled-free", "disabled-free@example.com")
+    response = client.patch(
+        "/api/web/settings/assistant",
+        headers=auth_headers("disabled-free", "disabled-free@example.com"),
+        json={"tier": "free"},
+    )
+    assert response.status_code == 422
+
+
+def test_manual_database_free_selection_cannot_bypass_rollout(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "0")
+    user = create_test_user("manual-free", "manual-free@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    headers = auth_headers("manual-free", "manual-free@example.com")
+    settings = client.get("/api/web/settings/assistant", headers=headers).json()
+    assert settings["tier"] == "lite"
+    response = client.post(
+        "/api/web/chat/stream", headers=headers,
+        json={"request_id": "a1000000-0000-4000-8000-000000000099", "message": "Explain this."},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "tier_unavailable"
+
+
+def test_free_limits_are_isolated_from_paid_chat_rate_limits(monkeypatch):
+    user = create_test_user("free-limits", "free-limits@example.com")
+    from app.web_api.router import _rate_limit
+    monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "10")
+    _enforce_swico_free_limits(int(user.id))
+    with pytest.raises(SwicoFreeLimitError) as error:
+        _enforce_swico_free_limits(int(user.id))
+    assert error.value.code == "swico_free_rate_limited"
+    with SessionLocal() as session:
+        _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+        _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+
+
+def test_free_daily_limit_is_isolated_from_paid_chat_rate_limits(monkeypatch):
+    user = create_test_user("free-daily", "free-daily@example.com")
+    from app.web_api.router import _rate_limit
+    monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "10")
+    monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "1")
+    _enforce_swico_free_limits(int(user.id))
+    with pytest.raises(SwicoFreeLimitError) as error:
+        _enforce_swico_free_limits(int(user.id))
+    assert error.value.code == "swico_free_daily_limit"
+    with SessionLocal() as session:
+        _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+        _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+
+
 def test_unavailable_provider_error_is_safe_and_never_logs_prompt(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
     monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
@@ -262,3 +365,44 @@ def test_qwen_stream_signals_abort_and_closes_stream():
     assert runtime._llama.stream_instance.closed is True
     assert runtime._llama.callbacks[0] is not None
     assert runtime._llama.callbacks[-1] is None
+
+
+def test_qwen_non_thinking_generation_filters_hidden_reasoning():
+    from swico_free_node.qwen_runtime import QwenRuntime
+
+    class FakeLlama:
+        def __init__(self):
+            self.calls = []
+
+        def create_chat_completion(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"choices": [{"message": {"content": "<think>secret</think>Visible answer"}}]}
+
+    runtime = object.__new__(QwenRuntime)
+    runtime._llama = FakeLlama()
+    text, _usage = runtime.generate([{"role": "user", "content": "Answer"}], 8)
+    assert text == "Visible answer"
+    assert runtime._llama.calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert runtime._llama.calls[0]["messages"][-1]["content"].endswith("/no_think")
+
+
+def test_qwen_stream_never_emits_thinking_or_reasoning_fields():
+    from swico_free_node.qwen_runtime import QwenRuntime
+
+    class FakeLlama:
+        def create_chat_completion(self, **_kwargs):
+            return iter([
+                {"choices": [{"delta": {"reasoning_content": "secret"}}]},
+                {"choices": [{"delta": {"content": "<thi"}}]},
+                {"choices": [{"delta": {"content": "nk>hidden</think>Visible"}}]},
+            ])
+
+    runtime = object.__new__(QwenRuntime)
+    runtime._llama = FakeLlama()
+    chunks = [
+        text for text, _usage in runtime.stream(
+            [{"role": "user", "content": "Answer"}], 8,
+        ) if text
+    ]
+    assert "".join(chunks) == "Visible"
+    assert all("think" not in text.lower() and "hidden" not in text for text in chunks)

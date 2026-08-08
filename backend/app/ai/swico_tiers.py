@@ -110,8 +110,11 @@ def configured_model_ladder(tier: SwicoTier) -> list[str]:
     return candidates
 
 
-def public_tier_settings(tier: object) -> dict[str, object]:
+def public_tier_settings(tier: object, *, free_available: bool | None = None) -> dict[str, object]:
+    free_is_available = free_enabled() if free_available is None else bool(free_available)
     current = normalize_swico_tier(tier)
+    if current == "free" and not free_is_available:
+        current = "lite"
     return {
         "tier": current,
         "tier_label": SWICO_TIER_LABELS[current],
@@ -123,7 +126,7 @@ def public_tier_settings(tier: object) -> dict[str, object]:
                 "label": SWICO_TIER_LABELS[item],
                 "description": SWICO_TIER_DESCRIPTIONS[item],
                 "available": (
-                    free_enabled() if item == "free"
+                    free_is_available if item == "free"
                     else pro_enabled() if item == "pro"
                     else True
                 ),

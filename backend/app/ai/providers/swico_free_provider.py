@@ -30,6 +30,61 @@ class SwicoFreeBusyError(SwicoFreeProviderError):
         super().__init__("swico_free_busy", 429, "Swico Free is busy. Please try again shortly.")
 
 
+class _VisibleTextFilter:
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._thinking = False
+
+    def feed(self, value: str) -> str:
+        self._buffer += str(value or "")
+        visible: list[str] = []
+        while self._buffer:
+            lowered = self._buffer.lower()
+            tag = self._CLOSE if self._thinking else self._OPEN
+            index = lowered.find(tag)
+            if index >= 0:
+                if not self._thinking:
+                    visible.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(tag):]
+                self._thinking = not self._thinking
+                continue
+            prefixes = (self._CLOSE,) if self._thinking else (self._OPEN, self._CLOSE)
+            keep = max(
+                (size for prefix in prefixes for size in range(1, len(prefix))
+                 if lowered.endswith(prefix[:size])),
+                default=0,
+            )
+            if self._thinking:
+                self._buffer = self._buffer[-keep:] if keep else ""
+            elif keep:
+                visible.append(self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+            else:
+                visible.append(self._buffer)
+                self._buffer = ""
+            break
+        return "".join(visible)
+
+    def finish(self) -> str:
+        if self._thinking:
+            self._buffer = ""
+            return ""
+        value = self.feed("")
+        lowered = self._buffer.lower()
+        partial_tag = any(
+            lowered == tag[:len(lowered)]
+            for tag in (self._OPEN, self._CLOSE)
+            if lowered
+        )
+        if not partial_tag:
+            value += self._buffer
+        self._buffer = ""
+        return value
+
+
 def _settings() -> tuple[str, str, float]:
     if os.getenv("SWICO_FREE_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         raise SwicoFreeUnavailableError()
@@ -90,7 +145,9 @@ class SwicoFreeProvider(AIProvider):
             payload = response.json()
         except ValueError as exc:
             raise SwicoFreeUnavailableError() from exc
-        text = str(payload.get("text") or payload.get("output") or "").strip()
+        raw_text = str(payload.get("text") or payload.get("output") or "")
+        visible_filter = _VisibleTextFilter()
+        text = (visible_filter.feed(raw_text) + visible_filter.finish()).strip()
         if not text:
             raise SwicoFreeUnavailableError()
         input_tokens, output_tokens = _safe_usage(payload, text, prompt)
@@ -137,6 +194,7 @@ class SwicoFreeProvider(AIProvider):
             raise GenerationCancelled()
         parts: list[str] = []
         usage: dict[str, Any] = {}
+        visible_filter = _VisibleTextFilter()
         try:
             with httpx.stream(
                 "POST", f"{base_url}/v1/generate/stream",
@@ -178,14 +236,19 @@ class SwicoFreeProvider(AIProvider):
                     if delta is None and isinstance(event, dict):
                         delta = event.get("text")
                     if delta:
-                        chunk = str(delta)
-                        parts.append(chunk)
-                        on_delta(chunk)
+                        chunk = visible_filter.feed(str(delta))
+                        if chunk:
+                            parts.append(chunk)
+                            on_delta(chunk)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
             raise SwicoFreeUnavailableError() from exc
         finally:
             if isinstance(cancellation, GenerationCancellation):
                 cancellation.unbind_stream(locals().get("response"))
+        tail = visible_filter.finish()
+        if tail:
+            parts.append(tail)
+            on_delta(tail)
         text = "".join(parts).strip()
         if not text:
             raise SwicoFreeUnavailableError()

@@ -27,6 +27,7 @@ from ..ai.providers.base import (
     ProviderStreamInterrupted,
 )
 from ..ai.router import AIProviderRouter
+from ..ai.swico_tiers import SwicoTierUnavailableError
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
     PriceResult,
@@ -1154,6 +1155,7 @@ def prepare_web_turn(
     regenerate_message_id: str | None = None,
     repository_id: str | None = None,
     billing_credit_bucket: Literal["chat", "voice"] = "chat",
+    swico_free_eligible: bool = False,
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
 ) -> PreparedWebTurn:
@@ -1166,6 +1168,8 @@ def prepare_web_turn(
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
+        if swico_tier == "free" and not swico_free_eligible:
+            raise SwicoTierUnavailableError("Swico Free is not available for this account")
         existing_charge = session.exec(
             select(UsageCharge).where(UsageCharge.request_id == request_id)
         ).first()

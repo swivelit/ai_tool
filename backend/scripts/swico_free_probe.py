@@ -4,10 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from urllib.parse import urlsplit
 
 import httpx
+
+
+def _timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90"))
+    except ValueError:
+        value = 90.0
+    return min(120.0, max(1.0, value))
 
 
 def _base_url() -> tuple[str, str] | tuple[None, str]:
@@ -42,6 +51,44 @@ def _check(client: httpx.Client, name: str, method: str, path: str, payload: dic
         return name, False
 
 
+def _check_stream(client: httpx.Client) -> tuple[str, bool]:
+    try:
+        with client.stream(
+            "POST", "/v1/generate/stream",
+            json={
+                "messages": [{"role": "user", "content": "Reply with exactly OK."}],
+                "max_output_tokens": 8,
+            },
+        ) as response:
+            if response.status_code >= 400:
+                return "/v1/generate/stream", False
+            visible = False
+            completed = False
+            for line in response.iter_lines():
+                value = str(line or "")
+                if not value.startswith("data:"):
+                    continue
+                data = value[5:].strip()
+                if "<think>" in data.lower() or "</think>" in data.lower():
+                    return "/v1/generate/stream", False
+                if data == "[DONE]":
+                    completed = True
+                    continue
+                if data:
+                    try:
+                        event = json.loads(data)
+                    except ValueError:
+                        return "/v1/generate/stream", False
+                    if any(key in event for key in ("reasoning", "reasoning_content", "thinking")):
+                        return "/v1/generate/stream", False
+                    delta = event.get("delta")
+                    if isinstance(delta, str) and delta.strip():
+                        visible = True
+            return "/v1/generate/stream", visible and completed
+    except (httpx.HTTPError, ValueError, TypeError):
+        return "/v1/generate/stream", False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Probe the authenticated Swico Free inference node")
     parser.add_argument("--pretty", action="store_true", help="print PASS/FAIL lines")
@@ -51,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL {token_or_error}")
         return 2
     token = token_or_error
-    timeout = httpx.Timeout(15.0, connect=5.0)
+    timeout_seconds = _timeout_seconds()
+    timeout = httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
     checks: list[tuple[str, bool]] = []
     with httpx.Client(
         base_url=base_url,
@@ -67,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             client, "/v1/generate", "POST", "/v1/generate",
             {"messages": [{"role": "user", "content": "Reply with exactly OK."}], "max_output_tokens": 8},
         ))
+        checks.append(_check_stream(client))
     passed = all(ok for _name, ok in checks)
     if args.pretty:
         for name, ok in checks:
