@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,7 @@ import pytest
 from sqlmodel import select
 
 from app.ai.providers.swico_free_provider import (
-    SwicoFreeProvider, SwicoFreeUnavailableError,
+    SwicoFreeProvider, SwicoFreeTimeoutError, SwicoFreeUnavailableError,
 )
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest, AIRoute
@@ -381,6 +382,22 @@ def test_unavailable_provider_error_is_safe_and_never_logs_prompt(monkeypatch):
     assert "private prompt" not in str(error.value)
 
 
+def test_free_provider_maps_laptop_timeout_without_fallback(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    request = httpx.Request("POST", "https://free.example/v1/generate")
+    response = httpx.Response(504, json={"detail": {"code": "swico_free_timeout"}}, request=request)
+    monkeypatch.setattr(httpx, "post", lambda *_args, **_kwargs: response)
+    with pytest.raises(SwicoFreeTimeoutError) as error:
+        SwicoFreeProvider().complete(
+            AIRequest(1, "private prompt", "en", "text", "timeout", {}, []),
+            AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+        )
+    assert error.value.code == "swico_free_timeout"
+    assert error.value.status_code == 504
+
+
 def test_bounded_node_capacity_maps_queue_full_to_429():
     from swico_free_node.app import GenerationCapacity
 
@@ -398,6 +415,91 @@ def test_bounded_node_capacity_maps_queue_full_to_429():
         await capacity.release()
 
     asyncio.run(check())
+
+
+def test_generation_queue_wait_deadline_expires_without_starting_work():
+    from swico_free_node.app import CapacityWaitExpired, GenerationCapacity
+
+    async def check():
+        capacity = GenerationCapacity(1, 1)
+        await capacity.acquire()
+        started = False
+        with pytest.raises(CapacityWaitExpired):
+            await capacity.acquire(timeout_seconds=0.01)
+        assert capacity.waiting == 0
+        assert started is False
+        await capacity.release()
+
+    asyncio.run(check())
+
+
+def test_node_total_deadline_cancels_nonstream_generation(monkeypatch):
+    import swico_free_node.app as node_app
+    from swico_free_node.schemas import GenerateRequest
+
+    cancelled = threading.Event()
+
+    class Runtime:
+        def generate(self, _messages, _max_output_tokens, cancellation=None):
+            while cancellation is None or not cancellation.is_set():
+                time.sleep(0.005)
+            cancelled.set()
+            raise RuntimeError("cancelled by test")
+
+    monkeypatch.setattr(node_app, "config", SimpleNamespace(
+        max_output_tokens=256, max_queue_wait_seconds=1,
+        max_total_request_seconds=0.05,
+    ))
+    monkeypatch.setattr(node_app, "qwen", Runtime())
+    monkeypatch.setattr(node_app, "e5", object())
+    monkeypatch.setattr(node_app, "capacity", node_app.GenerationCapacity(1, 1))
+    monkeypatch.setattr(node_app, "embedding_capacity", node_app.GenerationCapacity(1, 1))
+    with pytest.raises(Exception) as error:
+        asyncio.run(node_app.generate(
+            GenerateRequest(messages=[{"role": "user", "content": "Answer"}], max_output_tokens=64),
+            None,
+        ))
+    assert getattr(error.value, "status_code", None) == 504
+    assert error.value.detail["code"] == "swico_free_timeout"
+    assert cancelled.is_set()
+
+
+def test_node_total_deadline_ends_stream_safely_after_visible_output(monkeypatch):
+    import swico_free_node.app as node_app
+    from swico_free_node.schemas import GenerateRequest
+
+    class Runtime:
+        def stream(self, _messages, _max_output_tokens, cancellation=None):
+            yield "visible answer", {}
+            while cancellation is None or not cancellation.is_set():
+                time.sleep(0.005)
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(node_app, "config", SimpleNamespace(
+        max_output_tokens=256, max_queue_wait_seconds=1,
+        max_total_request_seconds=0.05,
+    ))
+    monkeypatch.setattr(node_app, "qwen", Runtime())
+    monkeypatch.setattr(node_app, "e5", object())
+    monkeypatch.setattr(node_app, "capacity", node_app.GenerationCapacity(1, 1))
+    monkeypatch.setattr(node_app, "embedding_capacity", node_app.GenerationCapacity(1, 1))
+    async def consume():
+        response = await node_app.generate_stream(
+            Request(),
+            GenerateRequest(messages=[{"role": "user", "content": "Answer"}], max_output_tokens=64),
+            None,
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    body = "".join(asyncio.run(consume()))
+    assert "visible answer" in body
+    assert '"finish_reason": "timeout"' in body
+    assert '"truncated": true' in body
+    assert '"completion_status": "incomplete"' in body
+    assert "<think>" not in body
 
 
 def test_node_cpu_defaults_are_conservative_and_configurable(monkeypatch, tmp_path):
@@ -420,7 +522,7 @@ def test_node_health_reports_safe_capacity_metrics(monkeypatch):
     import swico_free_node.app as node_app
 
     class Runtime:
-        def generate(self, _messages, _max_output_tokens):
+        def generate(self, _messages, _max_output_tokens, _cancellation=None):
             return "partial", {"finish_reason": "length", "truncated": True}
 
     monkeypatch.setattr(node_app, "config", SimpleNamespace(max_queue_size=10, max_embedding_queue_size=4))
@@ -441,7 +543,7 @@ def test_node_nonstream_generation_propagates_length_finish(monkeypatch):
     from swico_free_node.schemas import GenerateRequest
 
     class Runtime:
-        def generate(self, _messages, _max_output_tokens):
+        def generate(self, _messages, _max_output_tokens, _cancellation=None):
             return "partial", {"finish_reason": "length", "truncated": True}
 
     monkeypatch.setattr(node_app, "config", SimpleNamespace(max_output_tokens=256))

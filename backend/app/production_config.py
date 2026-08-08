@@ -243,6 +243,12 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_timeout = _integer(env, "SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90")
     if free_timeout is None or free_timeout <= 0 or free_timeout > 120:
         errors.append("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS must be between 1 and 120")
+    free_queue_wait = _integer(env, "SWICO_FREE_MAX_QUEUE_WAIT_SECONDS", "15")
+    if free_queue_wait is None or not 1 <= free_queue_wait <= 60:
+        errors.append("SWICO_FREE_MAX_QUEUE_WAIT_SECONDS must be between 1 and 60")
+    free_total_request = _integer(env, "SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS", "45")
+    if free_total_request is None or not 10 <= free_total_request <= 90:
+        errors.append("SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS must be between 10 and 90")
     free_dimensions = _integer(env, "SWICO_FREE_EMBEDDING_DIMENSIONS", "384")
     if free_dimensions != 384:
         errors.append("SWICO_FREE_EMBEDDING_DIMENSIONS must be 384")

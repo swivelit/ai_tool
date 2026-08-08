@@ -4296,6 +4296,8 @@ async def chat_stream(
                 "message": (
                     "Swico Free is busy. Please try again shortly."
                     if exc.code == "swico_free_busy"
+                    else "Swico Free reached its response-time limit. Please try again."
+                    if exc.code == "swico_free_timeout"
                     else "Swico Free is temporarily unavailable. Please try again shortly."
                 ),
                 "retryable": True,

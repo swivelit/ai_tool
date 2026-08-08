@@ -30,6 +30,14 @@ class SwicoFreeBusyError(SwicoFreeProviderError):
         super().__init__("swico_free_busy", 429, "Swico Free is busy. Please try again shortly.")
 
 
+class SwicoFreeTimeoutError(SwicoFreeProviderError):
+    def __init__(self) -> None:
+        super().__init__(
+            "swico_free_timeout", 504,
+            "Swico Free could not finish within the response-time limit.",
+        )
+
+
 class _VisibleTextFilter:
     _OPEN = "<think>"
     _CLOSE = "</think>"
@@ -130,6 +138,8 @@ class SwicoFreeProvider(AIProvider):
             raise SwicoFreeUnavailableError() from exc
         if response.status_code == 429:
             raise SwicoFreeBusyError()
+        if response.status_code == 504:
+            raise SwicoFreeTimeoutError()
         if response.status_code >= 400:
             raise SwicoFreeUnavailableError()
         return response
@@ -210,6 +220,8 @@ class SwicoFreeProvider(AIProvider):
                     cancellation.bind_stream(response)
                 if response.status_code == 429:
                     raise SwicoFreeBusyError()
+                if response.status_code == 504:
+                    raise SwicoFreeTimeoutError()
                 if response.status_code >= 400:
                     raise SwicoFreeUnavailableError()
                 for line in response.iter_lines():
@@ -237,10 +249,12 @@ class SwicoFreeProvider(AIProvider):
                     if isinstance(event, dict) and isinstance(event.get("usage"), dict):
                         usage.update(event["usage"])
                     if isinstance(event, dict) and event.get("error"):
+                        if str(event.get("error")).strip().lower() == "swico_free_timeout":
+                            raise SwicoFreeTimeoutError()
                         raise SwicoFreeUnavailableError()
                     if isinstance(event, dict) and event.get("finish_reason"):
                         usage["finish_reason"] = str(event["finish_reason"]).strip().lower()
-                        usage["truncated"] = bool(event.get("truncated"))
+                        usage["truncated"] = bool(event.get("truncated")) or usage["finish_reason"] == "timeout"
                         if usage["finish_reason"] == "cancelled":
                             partial = "".join(parts).strip()
                             raise GenerationCancelled(
@@ -284,5 +298,5 @@ class SwicoFreeProvider(AIProvider):
                  "provider_calls_with_usage": 1 if usage else 0,
                  "fallback_attempted": False, "finish_reason": finish_reason,
                  "truncated": truncated,
-                 "completion_status": "incomplete" if truncated else "complete"},
+                 "completion_status": "incomplete" if truncated or finish_reason == "timeout" else "complete"},
         )

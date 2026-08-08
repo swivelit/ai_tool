@@ -93,7 +93,7 @@ def test_git_bash_wrappers_use_one_path_safe_powershell_bridge():
     bridge = (root / "_powershell.sh").read_text(encoding="utf-8")
     assert "powershell.exe -NoProfile -ExecutionPolicy Bypass" in bridge
     assert "cygpath -w" in bridge
-    for name in ("install", "validate_models", "run", "health", "smoke", "benchmark", "doctor", "funnel_smoke"):
+    for name in ("install", "validate_models", "run", "health", "smoke", "benchmark", "doctor", "funnel_smoke", "capacity_test"):
         wrapper = (root / f"{name}.sh").read_text(encoding="utf-8")
         assert "_powershell.sh" in wrapper
         assert f"{name}.ps1" in wrapper
@@ -114,6 +114,21 @@ def test_capacity_benchmark_uses_meaningful_workloads_and_bounded_load():
     assert "(1, 2, 5, 10, 11, 12)" in benchmark
     assert "normal_requests_per_minute_single_worker" in benchmark
     assert "registered_user_capacity=not_estimated" in benchmark
+
+
+def test_capacity_soak_is_bounded_and_report_is_safe():
+    root = Path(__file__).resolve().parents[2] / "swico_free_node" / "scripts"
+    capacity = (root / "capacity_test.py").read_text(encoding="utf-8")
+    assert "--soak-minutes" in capacity
+    assert "--json-out" in capacity
+    assert "STAGES = (1, 2, 5)" in capacity
+    assert "BURST_LEVELS = (10, 11, 12)" in capacity
+    assert "_workload_prompt(target)" in capacity
+    assert '"prompt"' not in capacity
+    assert "process_rss_mb" in capacity
+    assert "recommended_initial_rollout_percent" in capacity
+    for name in ("capacity_test.ps1", "capacity_test.sh"):
+        assert (root / name).exists()
 
 
 def test_render_probe_reports_transport_category_and_skips_expensive_checks(monkeypatch, capsys):

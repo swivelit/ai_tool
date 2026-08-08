@@ -211,8 +211,10 @@ def _load_level(token: str, concurrency: int, queue_capacity: int) -> dict[str, 
     poller = threading.Thread(target=poll_health, daemon=True)
     poller.start()
     started = time.perf_counter()
+    # Queue mechanics use the short workload so the test measures admission
+    # and rejection rather than naturally serializing 256-token generations.
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        rows = list(executor.map(lambda _item: _load_request(token, 256), range(concurrency)))
+        rows = list(executor.map(lambda _item: _load_request(token, 64), range(concurrency)))
     elapsed_ms = (time.perf_counter() - started) * 1000
     stop.set()
     poller.join(timeout=2)

@@ -89,25 +89,32 @@ class QwenRuntime:
             n_gpu_layers=0, verbose=False,
         )
 
-    def generate(self, messages: list[dict[str, str]], max_output_tokens: int) -> tuple[str, dict[str, Any]]:
+    def generate(
+        self, messages: list[dict[str, str]], max_output_tokens: int,
+        cancellation: Event | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        self._install_abort_callback(cancellation)
         messages = self._non_thinking_messages(messages)
-        if hasattr(self._llama, "create_chat_completion"):
-            result = self._chat_completion(messages, max_output_tokens, stream=False)
-        else:
-            prompt = "\n\n".join(f"{item['role']}: {item['content']}" for item in messages)
-            result = self._llama(prompt, max_tokens=max_output_tokens, temperature=0.2)
-        text = self._extract_text(result).strip()
-        if not text:
-            raise RuntimeError("generation returned empty text")
-        usage = self._usage(result, messages, text)
-        finish_reason = self._resolved_finish_reason(
-            result, int(usage.get("output_tokens") or 0), max_output_tokens,
-        )
-        usage.update({
-            "finish_reason": finish_reason,
-            "truncated": finish_reason == "length",
-        })
-        return text, usage
+        try:
+            if hasattr(self._llama, "create_chat_completion"):
+                result = self._chat_completion(messages, max_output_tokens, stream=False)
+            else:
+                prompt = "\n\n".join(f"{item['role']}: {item['content']}" for item in messages)
+                result = self._llama(prompt, max_tokens=max_output_tokens, temperature=0.2)
+            text = self._extract_text(result).strip()
+            if not text:
+                raise RuntimeError("generation returned empty text")
+            usage = self._usage(result, messages, text)
+            finish_reason = self._resolved_finish_reason(
+                result, int(usage.get("output_tokens") or 0), max_output_tokens,
+            )
+            usage.update({
+                "finish_reason": finish_reason,
+                "truncated": finish_reason == "length",
+            })
+            return text, usage
+        finally:
+            self._install_abort_callback(None)
 
     def stream(
         self,

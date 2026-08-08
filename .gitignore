@@ -11,6 +11,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.swico_free_node/capacity-report*.json
+swico_free_node/capacity-report*.json
 .mypy_cache/
 .ruff_cache/
 *.tsbuildinfo
