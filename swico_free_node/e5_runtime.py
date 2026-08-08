@@ -1,18 +1,50 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
 def resolve_e5_transformer_path(path: Path) -> Path:
     """Resolve a plain Transformers or SentenceTransformers local layout."""
-    if (path / "modules.json").is_file():
-        transformer = path / "0_Transformer"
-        if not transformer.is_dir():
-            raise RuntimeError(
-                "SWICO_FREE_E5_MODEL_PATH is a SentenceTransformers directory but 0_Transformer is missing"
-            )
-        return transformer
-    return path
+    modules_path = path / "modules.json"
+    if not modules_path.is_file():
+        return path
+    try:
+        modules = json.loads(modules_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("the local E5 modules.json is not valid JSON") from exc
+    if not isinstance(modules, list):
+        raise RuntimeError("the local E5 modules.json must contain a module list")
+
+    transformer_module: dict[str, object] | None = None
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        module_type = str(module.get("type") or "").strip()
+        if (
+            module_type == "sentence_transformers.models.Transformer"
+            or module_type.rsplit(".", 1)[-1].casefold() == "transformer"
+        ):
+            transformer_module = module
+            break
+    if transformer_module is None:
+        raise RuntimeError("the local E5 modules.json has no Transformer module")
+    if "path" not in transformer_module or not isinstance(transformer_module["path"], str):
+        raise RuntimeError("the local E5 Transformer module has an invalid path")
+
+    relative_path = Path(transformer_module["path"])
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise RuntimeError("the local E5 Transformer module path must stay inside the model directory")
+    root = path.resolve()
+    transformer = (path / relative_path).resolve()
+    try:
+        transformer.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("the local E5 Transformer module path must stay inside the model directory") from exc
+    if not transformer.is_dir():
+        display_path = transformer_module["path"] or "."
+        raise RuntimeError(f"the local E5 Transformer module path does not exist: {display_path}")
+    return transformer
 
 
 def validate_e5_artifacts(path: Path) -> Path:
@@ -21,10 +53,13 @@ def validate_e5_artifacts(path: Path) -> Path:
     transformer = resolve_e5_transformer_path(path)
     if not (transformer / "config.json").is_file():
         raise RuntimeError("the local E5 model is missing config.json")
-    tokenizer_files = ("tokenizer.json", "tokenizer.model", "spiece.model", "vocab.txt")
+    tokenizer_files = (
+        "tokenizer.json", "tokenizer.model", "sentencepiece.bpe.model",
+        "spiece.model", "vocab.txt",
+    )
     if not any((transformer / name).is_file() for name in tokenizer_files):
         raise RuntimeError(
-            "the local E5 model is missing tokenizer files; export tokenizer.json, tokenizer.model, spiece.model, or vocab.txt"
+            "the local E5 model is missing tokenizer files; export tokenizer.json, tokenizer.model, sentencepiece.bpe.model, spiece.model, or vocab.txt"
         )
     weight_files = (
         "model.safetensors", "pytorch_model.bin", "model.safetensors.index.json",

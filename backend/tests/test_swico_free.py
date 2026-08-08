@@ -310,17 +310,58 @@ def test_node_cpu_defaults_are_conservative_and_configurable(monkeypatch, tmp_pa
     assert (config.max_concurrent_embeddings, config.max_embedding_queue_size) == (1, 4)
 
 
-def test_sentence_transformers_e5_layout_is_resolved_without_network(tmp_path):
+def _write_e5_transformer_artifacts(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "config.json").write_text('{"hidden_size":384}', encoding="utf-8")
+    (path / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (path / "model.safetensors").write_bytes(b"local")
+
+
+def test_sentence_transformers_root_transformer_layout_is_resolved_without_network(tmp_path):
+    from swico_free_node.e5_runtime import validate_e5_artifacts
+
+    root = tmp_path / "multilingual-e5-small"
+    _write_e5_transformer_artifacts(root)
+    (root / "modules.json").write_text(
+        '[{"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},'
+        '{"idx":1,"name":"1","path":"1_Pooling","type":"sentence_transformers.models.Pooling"},'
+        '{"idx":2,"name":"2","path":"2_Normalize","type":"sentence_transformers.models.Normalize"}]',
+        encoding="utf-8",
+    )
+    assert validate_e5_artifacts(root) == root
+
+
+def test_sentence_transformers_nested_transformer_layout_is_resolved_without_network(tmp_path):
     from swico_free_node.e5_runtime import validate_e5_artifacts
 
     root = tmp_path / "sentence-transformer"
     transformer = root / "0_Transformer"
-    transformer.mkdir(parents=True)
-    (root / "modules.json").write_text("[]")
-    (transformer / "config.json").write_text("{}")
-    (transformer / "tokenizer.json").write_text("{}")
-    (transformer / "model.safetensors").write_bytes(b"local")
+    _write_e5_transformer_artifacts(transformer)
+    (root / "modules.json").write_text(
+        '[{"idx":0,"name":"0","path":"0_Transformer","type":"sentence_transformers.models.Transformer"},'
+        '{"idx":1,"name":"1","path":"1_Pooling","type":"sentence_transformers.models.Pooling"}]',
+        encoding="utf-8",
+    )
     assert validate_e5_artifacts(root) == transformer
+
+
+@pytest.mark.parametrize(
+    "modules, expected",
+    [
+        ("[]", "no Transformer module"),
+        ('[{"type":"sentence_transformers.models.Transformer"}]', "invalid path"),
+        ('[{"path":"missing","type":"sentence_transformers.models.Transformer"}]', "does not exist"),
+        ('[{"path":"../outside","type":"sentence_transformers.models.Transformer"}]', "stay inside"),
+    ],
+)
+def test_sentence_transformers_malformed_transformer_layout_fails_safely(tmp_path, modules, expected):
+    from swico_free_node.e5_runtime import resolve_e5_transformer_path
+
+    root = tmp_path / "sentence-transformer"
+    root.mkdir()
+    (root / "modules.json").write_text(modules, encoding="utf-8")
+    with pytest.raises(RuntimeError, match=expected):
+        resolve_e5_transformer_path(root)
 
 
 def test_qwen_stream_signals_abort_and_closes_stream():

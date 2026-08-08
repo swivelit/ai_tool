@@ -55,7 +55,13 @@ Set-Location .\swico_free_node
 .\scripts\validate_models.ps1
 ```
 
-For a SentenceTransformers export, `SWICO_FREE_E5_MODEL_PATH` may point to the saved directory containing `modules.json` and `0_Transformer`. The validator uses that transformer subdirectory and reports the missing local file category if the export is incomplete.
+For a SentenceTransformers export, the validator reads `modules.json` and uses
+the Transformer module's declared `path`. If that value is empty, as in the
+current `D:\\swico\\models\\multilingual-e5-small` export, the Transformer
+files are loaded from the SentenceTransformers root itself. If it is
+`0_Transformer`, that child directory is used. Pooling and parameter-free
+Normalize modules do not need to be present for this direct Transformers
+runtime.
 
 ## Start and test locally
 
