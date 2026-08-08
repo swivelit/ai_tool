@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+
 from scripts import swico_free_probe
 
 
@@ -84,3 +86,134 @@ def test_windows_scripts_share_quote_safe_dotenv_loader():
         contents = (root / name).read_text(encoding="utf-8")
         assert "dotenv.ps1" in contents
         assert "Import-SwicoFreeDotEnv" in contents
+
+
+def test_git_bash_wrappers_use_one_path_safe_powershell_bridge():
+    root = Path(__file__).resolve().parents[2] / "swico_free_node" / "scripts"
+    bridge = (root / "_powershell.sh").read_text(encoding="utf-8")
+    assert "powershell.exe -NoProfile -ExecutionPolicy Bypass" in bridge
+    assert "cygpath -w" in bridge
+    for name in ("install", "validate_models", "run", "health", "smoke", "benchmark", "doctor", "funnel_smoke"):
+        wrapper = (root / f"{name}.sh").read_text(encoding="utf-8")
+        assert "_powershell.sh" in wrapper
+        assert f"{name}.ps1" in wrapper
+    doctor = (root / "doctor.ps1").read_text(encoding="utf-8")
+    assert "Get-NetTCPConnection" in doctor
+    assert "QwenRuntime" not in doctor
+    funnel = (root / "funnel_smoke.ps1").read_text(encoding="utf-8")
+    assert "SWICO_FREE_NODE_TOKEN" in funnel
+    assert "https" in funnel
+
+
+def test_render_probe_reports_transport_category_and_skips_expensive_checks(monkeypatch, capsys):
+    token = "probe-secret-" + ("x" * 32)
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://desktop-qtf7f78.tailbdb31e.ts.net")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", token)
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, *_args, **_kwargs):
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(swico_free_probe.httpx, "Client", Client)
+    assert swico_free_probe.main(["--pretty"]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL /health connection_failed" in output
+    assert "SKIP /v1/embed health_prerequisite_failed" in output
+    assert "SKIP /v1/generate health_prerequisite_failed" in output
+    assert token not in output
+
+
+def test_render_probe_health_only_does_not_call_generation(monkeypatch, capsys):
+    token = "probe-secret-" + ("x" * 32)
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://desktop-qtf7f78.tailbdb31e.ts.net")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", token)
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"ready": True}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, _method, path, **_kwargs):
+            assert path == "/health"
+            return Response()
+
+    monkeypatch.setattr(swico_free_probe.httpx, "Client", Client)
+    assert swico_free_probe.main(["--pretty", "--health-only"]) == 0
+    output = capsys.readouterr().out
+    assert output.strip() == "PASS /health"
+    assert token not in output
+
+
+def test_render_probe_reports_thinking_content_without_printing_response(monkeypatch, capsys):
+    token = "probe-secret-" + ("x" * 32)
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://desktop-qtf7f78.tailbdb31e.ts.net")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", token)
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+        def iter_lines(self):
+            return iter([
+                'data: {"delta":"<think>private"}',
+                'data: [DONE]',
+            ])
+
+    class Context:
+        def __enter__(self):
+            return Response(None)
+
+        def __exit__(self, *_args):
+            return False
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def request(self, _method, path, **_kwargs):
+            if path == "/health":
+                return Response({"ready": True})
+            if path == "/v1/embed":
+                return Response({"dimensions": 384, "vectors": [[0.0] * 384]})
+            return Response({"text": "OK"})
+
+        def stream(self, *_args, **_kwargs):
+            return Context()
+
+    monkeypatch.setattr(swico_free_probe.httpx, "Client", Client)
+    assert swico_free_probe.main(["--pretty"]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL /v1/generate/stream thinking_content_detected" in output
+    assert "private" not in output
+    assert token not in output

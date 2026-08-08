@@ -4,7 +4,7 @@ This folder is a separate CPU inference service for Swico Free. It is not import
 
 The service is sized for the 8 GB CPU-only laptop: one active generation, at most ten waiting requests, a 4096-token context, and at most 512 output tokens. Run one worker so both models load once and remain resident.
 
-## Fresh PowerShell setup
+## Workflow A: Windows PowerShell
 
 From a fresh Windows 11 PowerShell, install the basic tools (or install the same tools from their official installers):
 
@@ -21,6 +21,7 @@ git clone <your-repository-url>
 Set-Location .\ai_tool\swico_free_node
 Copy-Item .env.example .env
 Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\doctor.ps1
 .\scripts\install.ps1
 ```
 
@@ -89,6 +90,48 @@ Benchmark the already-running node. The output contains timings, generated-token
 .\scripts\benchmark.ps1
 ```
 
+The lightweight doctor does not load either model. It checks Windows, Python,
+the virtual environment, dotenv values, local artifact paths, port 8765, and
+Tailscale status. It prints a safe `Next:` action for every failure.
+
+## Workflow B: Git Bash / MINGW64
+
+Use this workflow when the terminal prompt looks like:
+`SHAJAHAN@DESKTOP-QTF7F78 MINGW64 /d/swico/ai_tool/swico_free_node`.
+The `.sh` files are wrappers around the existing PowerShell scripts; they do
+not duplicate node or inference logic. They convert Git Bash paths such as
+`/d/swico/...` to Windows paths and invoke `powershell.exe` with
+`-NoProfile -ExecutionPolicy Bypass`.
+
+From Git Bash:
+
+```bash
+cd /d/swico/ai_tool/swico_free_node
+./scripts/doctor.sh
+./scripts/install.sh
+./scripts/validate_models.sh
+./scripts/run.sh
+```
+
+Run the last command in its own terminal. In a second Git Bash terminal:
+
+```bash
+cd /d/swico/ai_tool/swico_free_node
+./scripts/smoke.sh
+./scripts/funnel_smoke.sh
+./scripts/benchmark.sh
+```
+
+On a first run, `doctor.sh` may report expected failures for `.venv`, `.env`,
+the local model paths, port 8765, or Funnel before the later setup commands
+have been completed. Follow each printed `Next:` action and run it again.
+
+To test a Funnel URL without changing `.env`:
+
+```bash
+./scripts/funnel_smoke.sh -FunnelUrl https://desktop-qtf7f78.tailbdb31e.ts.net
+```
+
 ## Tailscale Funnel
 
 Keep the API bound to `127.0.0.1:8765`; browsers must never call it directly. After signing in to Tailscale on this laptop, run:
@@ -99,6 +142,12 @@ tailscale funnel status
 ```
 
 Copy the returned HTTPS URL into Render as `SWICO_FREE_INFERENCE_BASE_URL`. Keep the same token in the laptop `.env` as `SWICO_FREE_NODE_TOKEN` and in Render as `SWICO_FREE_INFERENCE_TOKEN`. Do not bind the model API to `0.0.0.0` and do not enable broad CORS.
+
+The local Funnel smoke test uses the token from `.env` without printing it:
+
+```bash
+./scripts/funnel_smoke.sh
+```
 
 ## Keep the laptop awake and start after login
 
