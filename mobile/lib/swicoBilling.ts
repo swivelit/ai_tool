@@ -1,4 +1,4 @@
-import type { BillingConfig, CreditBucket, PaymentHistory, TopupEstimateResponse } from "./swicoTypes";
+import type { BillingConfig, CreditBucket, PaymentHistory, PaymentStatus, TopupEstimateResponse } from "./swicoTypes";
 
 export type BillingSelection = "preset-1500" | "preset-29900" | "custom";
 
@@ -29,11 +29,11 @@ export function voiceEstimateLabel(estimate: NonNullable<TopupEstimateResponse["
     : "Estimate unavailable";
 }
 
-export function paymentStatusLabel(payment: Pick<PaymentHistory, "status" | "credit_applied" | "payment_received">) {
-  if (payment.credit_applied || payment.status === "credited") return "Credited";
+export function paymentStatusLabel(payment: Pick<PaymentHistory, "status" | "credit_applied" | "payment_received"> | Pick<PaymentStatus, "status">) {
+  if (("credit_applied" in payment && payment.credit_applied) || payment.status === "credited") return "Credited";
   if (payment.status === "failed") return "Failed — no credits added";
   if (payment.status === "refunded" || payment.status === "partially_refunded") return "Refunded";
-  if (payment.payment_received || payment.status === "pending") return "Pending confirmation";
+  if (("payment_received" in payment && payment.payment_received) || payment.status === "pending") return "Pending confirmation";
   return payment.status.replaceAll("_", " ");
 }
 
@@ -44,4 +44,3 @@ export function selectedBillingAmount(selection: BillingSelection, customInput: 
 }
 
 export function creditBucketLabel(bucket: CreditBucket) { return bucket === "voice" ? "Voice" : "Chat"; }
-

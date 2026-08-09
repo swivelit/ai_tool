@@ -346,3 +346,22 @@ export type PaymentHistory = {
   reversal_token_estimate?: TokenEstimate;
   voice_estimate?: VoiceCreditEstimate;
 };
+/**
+ * The status endpoint is intentionally separate from PaymentHistory.  The
+ * status endpoint is keyed by internal_order_id and does not return a history
+ * row id or the history-only credit flags.
+ */
+export type PaymentStatus = {
+  credit_bucket?: CreditBucket;
+  internal_order_id: string;
+  gross_amount_paise: number;
+  credited_amount_micros: number;
+  platform_share_paise: number;
+  refunded_amount_paise: number;
+  status: string;
+  provider_payment_id: string | null;
+  created_at: string;
+  paid_at: string | null;
+  refunded_at: string | null;
+  updated_at: string;
+};

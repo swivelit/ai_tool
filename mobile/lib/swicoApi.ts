@@ -6,7 +6,7 @@ import { SwicoSSEParser } from "./swicoStream";
 import type {
   AssistantSettings, Bootstrap, ChatRequestPayload, CreditBucket, InputMode, KnowledgeDocument,
   KnowledgeJobSummary, MemorySettings, Message, ProfileSettings, RealtimeVoiceSession, RepositorySnapshot,
-  PaymentHistory, SearchResult, SynthesisResponse, Thread, TopupEstimateResponse, TranscriptionResponse, UsagePreferences, UsageSummary, Wallet,
+  PaymentHistory, PaymentStatus, SearchResult, SynthesisResponse, Thread, TopupEstimateResponse, TranscriptionResponse, UsagePreferences, UsageSummary, Wallet,
 } from "./swicoTypes";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
@@ -15,9 +15,26 @@ export const SWICO_API_BASE = String(
 ).replace(/\/$/, "");
 
 export class SwicoApiError extends Error {
-  constructor(public status: number, public code: string, message: string, public retryable = false, public retryAt: string | null = null) {
+  public readonly retry_at: string | null;
+  public readonly credit_bucket: CreditBucket | null;
+  public readonly reset_at: string | null;
+  public readonly body: unknown;
+
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public retryable = false,
+    public retryAt: string | null = null,
+    metadata: { credit_bucket?: CreditBucket; reset_at?: string | null; retry_at?: string | null } = {},
+    body: unknown = null,
+  ) {
     super(message);
     this.name = "SwicoApiError";
+    this.retry_at = retryAt ?? metadata.retry_at ?? null;
+    this.credit_bucket = metadata.credit_bucket ?? null;
+    this.reset_at = metadata.reset_at ?? null;
+    this.body = body;
   }
 }
 
@@ -41,6 +58,36 @@ function codeOf(body: unknown) {
   const value = body as Record<string, unknown>;
   const error = value.error && typeof value.error === "object" ? value.error as Record<string, unknown> : null;
   return String(error?.code || value.code || "request_failed");
+}
+
+function errorSource(body: unknown) {
+  if (!body || typeof body !== "object") return {};
+  const value = body as Record<string, unknown>;
+  return value.error && typeof value.error === "object" ? value.error as Record<string, unknown> : value;
+}
+
+function metadataOf(body: unknown) {
+  const source = errorSource(body);
+  const bucket = source.credit_bucket;
+  const creditBucket: CreditBucket | undefined = bucket === "chat" || bucket === "voice" ? bucket : undefined;
+  return {
+    credit_bucket: creditBucket,
+    reset_at: typeof source.reset_at === "string" ? source.reset_at : null,
+    retry_at: typeof source.retry_at === "string" ? source.retry_at : null,
+  };
+}
+
+function apiError(status: number, body: unknown) {
+  const metadata = metadataOf(body);
+  return new SwicoApiError(
+    status,
+    codeOf(body),
+    detail(body),
+    typeof errorSource(body).retryable === "boolean" ? errorSource(body).retryable === true : false,
+    metadata.retry_at,
+    metadata,
+    body,
+  );
 }
 
 function requestId() {
@@ -74,7 +121,7 @@ export async function authorizedFetch(user: User, path: string, init: RequestIni
 export async function swicoJson<T>(user: User, path: string, init: RequestInit = {}) {
   const response = await authorizedFetch(user, path, init);
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new SwicoApiError(response.status, codeOf(body), detail(body));
+  if (!response.ok) throw apiError(response.status, body);
   return body as T;
 }
 
@@ -107,7 +154,7 @@ export const updateUsageSettings = (user: User, body: {
 export const getWallet = (user: User) => swicoJson<Wallet & { wallets?: Record<string, Wallet> }>(user, "/api/web/billing/wallet");
 export const getLedger = (user: User) => swicoJson<{ items: unknown[] }>(user, "/api/web/billing/ledger");
 export const getPayments = (user: User) => swicoJson<{ items: PaymentHistory[] }>(user, "/api/web/billing/payments");
-export const getPaymentStatus = (user: User, internalOrderId: string) => swicoJson<PaymentHistory>(user, `/api/web/billing/payments/${encodeURIComponent(internalOrderId)}`);
+export const getPaymentStatus = (user: User, internalOrderId: string) => swicoJson<PaymentStatus>(user, `/api/web/billing/payments/${encodeURIComponent(internalOrderId)}`);
 export const getBillingEstimate = (user: User, grossAmountPaise: number, creditBucket: CreditBucket) => swicoJson<TopupEstimateResponse>(user, `/api/web/billing/estimate?gross_amount_paise=${grossAmountPaise}&credit_bucket=${creditBucket}`);
 export type BillingOrder = {
   key_id: string;
@@ -140,7 +187,7 @@ async function uploadForm<T>(user: User, path: string, fields: Record<string, st
     });
     let result = await send(await token(user));
     if (result.status === 401) result = await send(await token(user, true));
-    if (result.status < 200 || result.status >= 300) throw new SwicoApiError(result.status, codeOf(result.body), detail(result.body));
+    if (result.status < 200 || result.status >= 300) throw apiError(result.status, result.body);
     onProgress(100); return result.body as T;
   }
   return swicoJson<T>(user, path, { method: "POST", body: form });
@@ -208,7 +255,7 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
       } else {
         let body: unknown = {};
         try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* safe generic error */ }
-        finish(new SwicoApiError(xhr.status, codeOf(body), detail(body)));
+        finish(apiError(xhr.status, body));
       }
     };
     xhr.onerror = () => finish(new SwicoApiError(0, "network_error", "We could not reach Swico.", true));

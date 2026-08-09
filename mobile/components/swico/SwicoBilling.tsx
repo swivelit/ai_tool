@@ -8,9 +8,9 @@ import { createBillingOrder, getBillingEstimate, getPaymentStatus, getPayments, 
 import { creditBucketLabel, customTopupAmount, formatRupeesFromPaise, paymentStatusLabel, tokenRangeLabel, voiceEstimateLabel } from "@/lib/swicoBilling";
 import { useAppTheme } from "@/hooks/use-app-theme";
 
-type Props = { visible: boolean; close: () => void; user: User; config: BillingConfig; initialBucket?: CreditBucket; refreshed: () => Promise<void> | void };
+type Props = { visible: boolean; close: () => void; user: User; config: BillingConfig; initialBucket?: CreditBucket; refreshed: () => Promise<void> | void; offline?: boolean };
 
-export function SwicoBilling({ visible, close, user, config, initialBucket = "chat", refreshed }: Props) {
+export function SwicoBilling({ visible, close, user, config, initialBucket = "chat", refreshed, offline = false }: Props) {
   const { palette: t } = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const [bucket, setBucket] = useState<CreditBucket>(initialBucket);
@@ -23,6 +23,7 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
   const pollingRef = useRef(true);
   const custom = customTopupAmount(customInput, config);
   const amount = selected === "custom" ? custom.paise : selected;
@@ -51,15 +52,23 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
     return () => { active = false; clearTimeout(timer); };
   }, [bucket, config.custom_topup_enabled, custom.error, custom.paise, selected, user, visible]);
 
+  const refreshAuthoritative = async () => {
+    await refreshed();
+    const result = await getPayments(user);
+    setHistory(result.items);
+  };
+
   const finishPending = async (orderId: string, bucketForOrder: CreditBucket) => {
+    setPendingOrderId(orderId);
     setStatus("Payment received. Waiting for secure confirmation…");
     const deadline = Date.now() + 30000;
     while (pollingRef.current && Date.now() < deadline) {
       const payment = await getPaymentStatus(user, orderId).catch(() => null);
       if (payment && ["credited", "failed", "refunded", "partially_refunded"].includes(payment.status)) {
-        setHistory(value => [payment, ...value.filter(item => item.id !== payment.id)]);
-        if (payment.status === "credited" || payment.credit_applied) { await refreshed(); setStatus(`${creditBucketLabel(bucketForOrder)} credits added.`); }
+        await refreshAuthoritative().catch(() => undefined);
+        if (payment.status === "credited") { setStatus(`${creditBucketLabel(bucketForOrder)} credits added.`); }
         else setStatus(paymentStatusLabel(payment));
+        setPendingOrderId(null);
         return;
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -68,11 +77,19 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
   };
 
   const checkout = async () => {
-    if (busy || !config.checkout_enabled || amount === null || !estimateReady) return;
+    if (busy || offline || !config.checkout_enabled || amount === null || !estimateReady) return;
     setBusy(true); setError(""); setStatus("Creating secure order…");
     const bucketForOrder = bucket;
+    let order: Awaited<ReturnType<typeof createBillingOrder>> | null = null;
     try {
-      const order = await createBillingOrder(user, { gross_amount_paise: amount, credit_bucket: bucketForOrder, idempotency_key: newSwicoRequestId() });
+      order = await createBillingOrder(user, { gross_amount_paise: amount, credit_bucket: bucketForOrder, idempotency_key: newSwicoRequestId() });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Secure order creation failed. No payment was taken.");
+      setStatus("");
+      setBusy(false);
+      return;
+    }
+    try {
       setStatus("Opening secure payment checkout…");
       const result = await RazorpayCheckout.open({
         key: order.key_id,
@@ -84,14 +101,21 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
         notes: { internal_order_id: order.internal_order_id, credit_bucket: bucketForOrder },
       });
       setStatus("Confirming payment…");
-      const verified = await verifyBillingPayment(user, { internal_order_id: order.internal_order_id, ...result });
-      if (verified.credited) { await refreshed(); setStatus(`${creditBucketLabel(bucketForOrder)} credits added.`); }
-      else await finishPending(order.internal_order_id, bucketForOrder);
+      try {
+        const verified = await verifyBillingPayment(user, { internal_order_id: order.internal_order_id, ...result });
+        if (verified.credited) { await refreshAuthoritative(); setStatus(`${creditBucketLabel(bucketForOrder)} credits added.`); }
+        else await finishPending(order.internal_order_id, bucketForOrder);
+      } catch {
+        // Checkout returned a provider payment. Verification can fail after the
+        // provider has accepted it, so always reconcile by internal order id.
+        await finishPending(order.internal_order_id, bucketForOrder);
+      }
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught || "");
-      const cancelled = /cancel|dismiss|back/i.test(message);
+      const failure = caught && typeof caught === "object" ? caught as Record<string, unknown> : {};
+      const message = caught instanceof Error ? caught.message : String(failure.description || failure.message || caught || "");
+      const cancelled = String(failure.code || "") === "2" || /cancelled by user|user cancelled|dismissed|back/i.test(message);
       if (cancelled) setStatus("Payment cancelled — no credits were added.");
-      else { setError(message || "Checkout could not be completed."); setStatus(""); }
+      else { setError(message || "The payment provider could not complete checkout."); setStatus("Payment provider reported a failure — no credits were added."); }
     } finally { setBusy(false); }
   };
 
@@ -106,7 +130,9 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
         {selected === "custom" ? <View><Text style={styles.sectionLabel}>Custom amount</Text><TextInput value={customInput} onChangeText={value => { setCustomInput(value); setCustomEstimate(null); }} keyboardType="number-pad" placeholder="₹ amount" placeholderTextColor={t.placeholder} style={styles.input} /><Text style={styles.muted}>Minimum {formatRupeesFromPaise(config.min_topup_paise)} · Maximum {formatRupeesFromPaise(config.max_topup_paise)}</Text>{custom.error ? <Text style={styles.error}>{custom.error}</Text> : null}{estimateLoading ? <Text style={styles.muted}>Calculating estimate…</Text> : null}</View> : null}
         {amount !== null && estimateReady ? <View style={styles.summary}><Text style={styles.packageTitle}>Pay {formatRupeesFromPaise(amount)} for {creditBucketLabel(bucket)} credits</Text><Text style={styles.muted}>{bucket === "chat" ? `Estimated token range: ${tokenRangeLabel(estimate?.token_estimate)}` : voiceEstimateLabel(estimate?.voice_estimate)}</Text></View> : null}
         {!config.checkout_enabled ? <Text style={styles.muted}>Checkout is currently disabled. Existing credits can still be used.</Text> : null}
-        <Pressable disabled={busy || amount === null || !estimateReady || !config.checkout_enabled} onPress={() => void checkout()} style={[styles.primary, (busy || amount === null || !estimateReady || !config.checkout_enabled) && styles.disabled]}>{busy ? <ActivityIndicator color={t.accentText} /> : <Text style={styles.primaryText}>{amount === null ? "Choose an amount" : `Pay ${formatRupeesFromPaise(amount)}`}</Text>}</Pressable>
+        {offline ? <Text style={styles.error}>You are offline. Reconnect before starting a secure payment.</Text> : null}
+        {pendingOrderId ? <Text style={styles.muted}>Confirmation reference: {pendingOrderId}</Text> : null}
+        <Pressable disabled={busy || offline || amount === null || !estimateReady || !config.checkout_enabled} onPress={() => void checkout()} accessibilityState={{ disabled: busy || offline || amount === null || !estimateReady || !config.checkout_enabled }} style={[styles.primary, (busy || offline || amount === null || !estimateReady || !config.checkout_enabled) && styles.disabled]}>{busy ? <ActivityIndicator color={t.accentText} /> : <Text style={styles.primaryText}>{amount === null ? "Choose an amount" : `Pay ${formatRupeesFromPaise(amount)}`}</Text>}</Pressable>
         {status ? <Text style={styles.status}>{status}</Text> : null}{error ? <Text style={styles.error}>{error}</Text> : null}
       </ScrollView>}
     </View></View>
@@ -116,4 +142,3 @@ export function SwicoBilling({ visible, close, user, config, initialBucket = "ch
 function createStyles(t: ReturnType<typeof useAppTheme>["palette"]) { return StyleSheet.create({
   scrim: { flex: 1, backgroundColor: t.overlay, justifyContent: "flex-end" }, modal: { maxHeight: "94%", backgroundColor: t.surface, borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 18 }, heading: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }, title: { color: t.text, fontSize: 24, fontWeight: "900" }, subtitle: { color: t.muted, marginTop: 3 }, tabs: { flexDirection: "row", gap: 5, backgroundColor: t.soft, padding: 4, borderRadius: 11, marginVertical: 18 }, tab: { flex: 1, padding: 9, alignItems: "center", borderRadius: 8 }, activeTab: { backgroundColor: t.surface }, tabText: { color: t.text, fontWeight: "700", fontSize: 12 }, content: { gap: 12, paddingBottom: 28 }, bucketTabs: { flexDirection: "row", gap: 8 }, bucket: { flex: 1, padding: 11, alignItems: "center", borderRadius: 11, backgroundColor: t.soft }, activeBucket: { backgroundColor: t.accent }, sectionLabel: { color: t.text, fontWeight: "800", marginTop: 5 }, packages: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, package: { width: "48%", minHeight: 74, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: t.line, backgroundColor: t.surface }, selectedPackage: { borderColor: t.accent, backgroundColor: t.accentSoft }, packageTitle: { color: t.text, fontWeight: "800" }, muted: { color: t.muted, fontSize: 12, lineHeight: 18 }, input: { color: t.text, backgroundColor: t.soft, borderRadius: 11, padding: 13, marginTop: 7 }, summary: { backgroundColor: t.accentSoft, padding: 13, borderRadius: 12, gap: 4 }, primary: { minHeight: 48, borderRadius: 12, backgroundColor: t.accent, alignItems: "center", justifyContent: "center", marginTop: 5 }, primaryText: { color: t.accentText, fontWeight: "900" }, disabled: { opacity: 0.4 }, status: { color: t.success, textAlign: "center", lineHeight: 19 }, error: { color: t.danger, lineHeight: 18 }, historyCard: { borderWidth: 1, borderColor: t.line, borderRadius: 12, padding: 12, gap: 5 }, row: { flexDirection: "row", justifyContent: "space-between", gap: 10 }, cardTitle: { color: t.text, fontWeight: "800", flex: 1 },
 }); }
-

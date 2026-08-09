@@ -49,6 +49,22 @@ describe("canonical Swico mobile API client", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ period: "monthly", hard_limit_estimated_tokens: null });
   });
 
+  it("preserves structured 402 metadata for usage limits and credit buckets", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "credits_exhausted", credit_bucket: "voice", reset_at: "2030-01-02T00:00:00Z", retry_at: "2030-01-01T00:00:00Z", retryable: true, message: "No voice credits" } }), { status: 402 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { SwicoApiError, swicoJson } = await import("../lib/swicoApi");
+    await expect(swicoJson(user, "/api/web/chat/stream")).rejects.toMatchObject({ status: 402, code: "credits_exhausted", credit_bucket: "voice", reset_at: "2030-01-02T00:00:00Z", retry_at: "2030-01-01T00:00:00Z", retryable: true });
+    expect(SwicoApiError).toBeDefined();
+  });
+
+  it("keeps payment-status responses on the internal-order endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ internal_order_id: "ord_1", status: "credited" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { getPaymentStatus } = await import("../lib/swicoApi");
+    await expect(getPaymentStatus(user, "ord_1")).resolves.toMatchObject({ internal_order_id: "ord_1", status: "credited" });
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/web/billing/payments/ord_1");
+  });
+
   it("does not expose a legacy /api/chat call in the production route", async () => {
     const fs = await import("node:fs/promises");
     const route = await fs.readFile(new URL("../app/(chat)/index.tsx", import.meta.url).pathname, "utf8");

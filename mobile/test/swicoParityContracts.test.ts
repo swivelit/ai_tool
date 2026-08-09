@@ -3,6 +3,10 @@ import { customTopupAmount, paymentStatusLabel, selectedBillingAmount, tokenRang
 import { repositoryDetachCode, repositoryExpired, repositoryUsable } from "../lib/swicoRepository";
 import type { BillingConfig } from "../lib/swicoTypes";
 import { emptySwicoStreamState, reduceSwicoStream } from "../lib/swicoChatReducer";
+import { assistantActionsEnabled, hasSendableContent, latestEditableUserId } from "../lib/swicoMessageEligibility";
+import { messageIndexForSearch } from "../lib/swicoNavigation";
+import { VoiceReplyCache, needsVoiceSynthesis } from "../lib/swicoVoiceReply";
+import type { Message } from "../lib/swicoTypes";
 
 const config: BillingConfig = {
   currency: "INR", credit_percent: "50", min_topup_paise: 1000, max_topup_paise: 50000,
@@ -37,5 +41,43 @@ describe("mobile parity contracts", () => {
     const state = reduceSwicoStream({ ...emptySwicoStreamState, assistant: { id: "a", thread_id: "t", role: "assistant", content: "", request_id: "r", tier: "standard", tier_label: "Swico", input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "streaming", created_at: "", input_mode: "text", voice_turn_id: null, reply_language: "en" } }, { event: "error", data: { code: "capacity", message: "Try later", retryable: true, retry_at: "2030-01-01T00:00:00Z" } });
     expect(state.assistant?.status).toBe("retryable");
     expect(state.error?.retry_at).toBe("2030-01-01T00:00:00Z");
+  });
+
+  it("keeps payment status separate from history rows", async () => {
+    const status: import("../lib/swicoTypes").PaymentStatus = { internal_order_id: "ord_1", gross_amount_paise: 1500, credited_amount_micros: 500000, platform_share_paise: 500, refunded_amount_paise: 0, status: "credited", provider_payment_id: "pay_1", created_at: "", paid_at: "", refunded_at: null, updated_at: "" };
+    expect(status.internal_order_id).toBe("ord_1");
+    expect("id" in status).toBe(false);
+  });
+
+  it("keeps sendability and latest-user edit rules aligned with web semantics", () => {
+    const message = (overrides: Partial<Message>): Message => ({ id: "m", thread_id: "t", role: "user", content: "hello", request_id: "r", tier: "standard", tier_label: "Swico", input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "complete", created_at: "", input_mode: "text", voice_turn_id: null, reply_language: "en", ...overrides });
+    const older = message({ id: "older" });
+    const latest = message({ id: "latest" });
+    expect(latestEditableUserId([older, latest], false)).toBe("latest");
+    expect(latestEditableUserId([older, latest], true)).toBeNull();
+    expect(hasSendableContent("", [{ id: "a", name: "a.txt", media_type: "text/plain", size_bytes: 1, created_at: "", expires_at: "2099-01-01", warnings: [], status: "ready" }], false)).toBe(true);
+    expect(hasSendableContent("", [], true)).toBe(true);
+  });
+
+  it("gates assistant actions and requires a real voice turn id", () => {
+    const base: Message = { id: "a", thread_id: "t", role: "assistant", content: "ok", request_id: "r", tier: "standard", tier_label: "Swico", input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "complete", created_at: "", input_mode: "voice", voice_turn_id: null, reply_language: "en" };
+    expect(assistantActionsEnabled({ ...base, status: "streaming" }, true, true).completed).toBe(false);
+    expect(assistantActionsEnabled({ ...base, voice_turn_id: "" }, true, true).voice).toBe(false);
+    expect(assistantActionsEnabled({ ...base, voice_turn_id: "turn_1" }, true, true).voice).toBe(true);
+    expect(assistantActionsEnabled(base, false, true).feedback).toBe(false);
+  });
+
+  it("replays cached voice without requesting synthesis again", () => {
+    const cache = new VoiceReplyCache<{ play: () => void }>(2);
+    expect(needsVoiceSynthesis("idle", Boolean(cache.get("message")))).toBe(true);
+    cache.set("message", { uri: "file://reply.m4a", sound: { play: () => undefined } });
+    expect(needsVoiceSynthesis("ended", Boolean(cache.get("message")))).toBe(false);
+    expect(cache.get("message")?.uri).toBe("file://reply.m4a");
+  });
+
+  it("finds a selected search result instead of defaulting to the list tail", () => {
+    const messages = [{ id: "one" }, { id: "target" }, { id: "three" }] as Message[];
+    expect(messageIndexForSearch(messages, "target")).toBe(1);
+    expect(messageIndexForSearch(messages, "missing")).toBe(-1);
   });
 });
