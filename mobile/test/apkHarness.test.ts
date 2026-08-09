@@ -70,7 +70,8 @@ describe("APK test harness", () => {
 
   it("verifies chat messages are submitted and remain visible", () => {
     const source = readRepo("test_apk.sh");
-    const chatSource = readMobile("app/(chat)/index.tsx");
+    const chatRoute = readMobile("app/(chat)/index.tsx");
+    const chatSource = readMobile("components/swico/SwicoChatScreen.tsx");
 
     expect(source).toContain('"hello" "what can you do" "tell me about solo leveling"');
     expect(source).toContain('text="tell me about solo');
@@ -100,16 +101,15 @@ describe("APK test harness", () => {
     expect(source).toContain("tap_chat_drawer_fallback");
     expect(source).toContain("dismiss_expo_warning");
     expect(source).toContain("Open debugger to view warnings");
-    expect(chatSource).toContain("activeChatSessionIdRef");
-    expect(chatSource).toContain('returnKeyType="send"');
-    expect(chatSource).toContain('submitBehavior="submit"');
+    expect(chatRoute).toContain("SwicoChatScreen");
+    expect(chatSource).toContain('testID="chat-input"');
+    expect(chatSource).toContain('testID="chat-send-button"');
+    expect(chatSource).toContain("streamChat");
     expect(chatSource).toContain("onSubmitEditing");
-    expect(chatSource).toContain("!activeChatSessionIdRef.current && !activeChatRequestIdRef.current");
-    expect(chatSource).not.toContain('from "@/lib/localAgents"');
-    expect(chatSource).toContain('from "@/lib/localTaskStore"');
-    expect(chatSource).toContain("getCachedDeviceCapabilitiesLazy");
-    expect(chatSource).toContain("import(");
-    expect(chatSource).toContain("@/lib/nativeOnDeviceModelBridge");
+    expect(chatSource).toContain("chatRequestStatus");
+    expect(chatSource).toContain("cancelChatRequest");
+    expect(chatSource).not.toContain("/api/chat");
+    expect(chatSource).not.toContain("localAgents");
   });
 
   it("registers the chat index route without triggering the Expo Router warning overlay", () => {
@@ -549,18 +549,16 @@ describe("APK test harness", () => {
   });
 
   it("chat screen exposes automation labels", () => {
-    const source = readMobile("app/(chat)/index.tsx");
+    const source = readMobile("components/swico/SwicoChatScreen.tsx");
 
     [
       "chat-input",
       "chat-send-button",
-      "chat-swipe-surface",
-      "voice-swipe-surface",
-      "chat-drawer-button",
-      "e2e-hands-free-trigger-button",
-      "e2e-hands-free-stop-button",
-      "chat-assistant-response",
-      "chat-thinking-indicator",
+      "Open chat drawer",
+      "Open settings",
+      "Attach file",
+      "Dictate",
+      "Continue generating",
     ].forEach((label) => {
       expect(source).toContain(label);
     });
@@ -572,7 +570,6 @@ describe("APK test harness", () => {
     const combined = [
       readMobile("app/auth/login.tsx"),
       readMobile("app/auth/signup.tsx"),
-      readMobile("app/model-setup.tsx"),
       readMobile("app/_layout.tsx"),
     ].join("\n");
 
@@ -589,12 +586,9 @@ describe("APK test harness", () => {
       "signup-resend-otp-button",
       "forgot-password-link",
       "boot-loading-screen",
-      "model-setup-status",
-      "model-setup-retry-button",
-      "model-setup-download-button",
-      "app-alert-button-",
     ].forEach((label) => {
       expect(combined).toContain(label);
     });
+    expect(combined).toContain('router.replace("/(chat)")');
   });
 });

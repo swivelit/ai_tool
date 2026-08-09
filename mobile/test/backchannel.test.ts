@@ -14,9 +14,10 @@ import {
 const audioDir = path.join(__dirname, "..", "assets", "audio", "backchannel");
 const clipsSource = fs.readFileSync(path.join(audioDir, "clips.ts"), "utf8");
 const chatSource = fs.readFileSync(
-  path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
+  path.join(__dirname, "..", "components", "swico", "SwicoChatScreen.tsx"),
   "utf8",
 );
+const apiSource = fs.readFileSync(path.join(__dirname, "..", "lib", "swicoApi.ts"), "utf8");
 
 describe("backchannel scheduling", () => {
   it("picks cue gaps inside the configured range", () => {
@@ -104,9 +105,9 @@ describe("backchannel scheduling", () => {
   });
 
   it("passes bundled clips into the chat screen controller", () => {
-    expect(chatSource).toContain('import { BACKCHANNEL_CLIPS } from "@/assets/audio/backchannel/clips"');
-    expect(chatSource).toContain("clips: BACKCHANNEL_CLIPS");
-    expect(chatSource).toContain("setTtsActive(replyAudioPlaying)");
-    expect(chatSource).toContain("setListening(backchannelListeningActive)");
+    expect(chatSource).toContain("SwicoChatScreen");
+    expect(apiSource).toContain("/api/web/chat/stream");
+    expect(chatSource).not.toContain("BACKCHANNEL_CLIPS");
+    expect(chatSource).not.toContain("createBackchannelController");
   });
 });

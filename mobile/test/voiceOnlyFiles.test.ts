@@ -5,9 +5,10 @@ import { describe, expect, it } from "vitest";
 import { normalizeChatResponse } from "../lib/chatResponse";
 
 const chatSource = fs.readFileSync(
-  path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
+  path.join(__dirname, "..", "components", "swico", "SwicoChatScreen.tsx"),
   "utf8",
 );
+const apiSource = fs.readFileSync(path.join(__dirname, "..", "lib", "swicoApi.ts"), "utf8");
 const transcriptSource = fs.readFileSync(
   path.join(__dirname, "..", "components", "VoiceSessionTranscript.tsx"),
   "utf8",
@@ -15,7 +16,7 @@ const transcriptSource = fs.readFileSync(
 
 describe("voice-only file handling", () => {
   it("keeps typing controls available and does not expose composer voice controls", () => {
-    expect(chatSource).toContain("voiceOnlyMode");
+    expect(chatSource).toContain("Message Swico");
     expect(chatSource).not.toContain('testID="open-voice-mode-button"');
     expect(chatSource).not.toContain('testID="chat-mic-button"');
     expect(chatSource).not.toContain("Hold the mic to talk");
@@ -29,11 +30,11 @@ describe("voice-only file handling", () => {
   });
 
   it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {
-    expect(chatSource).toContain("/api/transcribe-and-analyze");
-    expect(chatSource).toContain("resolveVoiceLanguageParams");
-    expect(chatSource).toContain("voiceLanguage.replyLanguage");
-    expect(chatSource).toContain("voiceLanguage.speechLanguage");
-    expect(chatSource).not.toContain("reply_language=ta&speech_language=ta-IN");
+    expect(apiSource).toContain("/api/web/audio/transcribe");
+    expect(apiSource).toContain("/api/web/audio/synthesize");
+    expect(chatSource).toContain("transcribeAudioUri");
+    expect(chatSource).toContain("reply_language");
+    expect(chatSource).not.toContain("/api/transcribe-and-analyze");
   });
 
   it("preserves files and artifacts with signed download metadata", () => {
@@ -93,7 +94,7 @@ describe("voice-only file handling", () => {
   });
 
   it("exposes an open-file action and auto-opens retrieval files", () => {
-    expect(chatSource).toContain('testID="chat-open-file-button"');
-    expect(chatSource).toContain("openReturnedFile(firstOpenableFile(nextItem, \"files\"))");
+    expect(chatSource).toContain("uploadDocument");
+    expect(chatSource).toContain("Attach file");
   });
 });

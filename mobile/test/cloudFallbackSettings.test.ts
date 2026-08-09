@@ -122,15 +122,14 @@ describe("cloud fallback settings", () => {
 
   it("does not expose backend fallback routing copy in the chat UI", () => {
     const source = readFileSync(
-      resolve(__dirname, "../app/(chat)/index.tsx"),
+      resolve(__dirname, "../components/swico/SwicoChatScreen.tsx"),
       "utf8",
     );
 
     expect(source).not.toContain("Switching to cloud");
     expect(source).not.toContain("I couldn’t finish that on this phone");
-    expect(source).toContain(
-      "Something went wrong while generating the answer. Please try again.",
-    );
-    expect(source).toContain("Still working...");
+    expect(source).toContain("Swico could not complete that response.");
+    expect(source).toContain("cancelChatRequest");
+    expect(source).not.toContain("runLocalAssistantTurn");
   });
 });

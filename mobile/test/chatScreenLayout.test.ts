@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { computeChatScreenLayout } from "../lib/chatScreenLayout";
 
 const chatSource = fs.readFileSync(
-  path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
+  path.join(__dirname, "..", "components", "swico", "SwicoChatScreen.tsx"),
   "utf8",
 );
 
@@ -119,12 +119,11 @@ describe("chat screen layout", () => {
     expect(layout.contentMaxWidth).toBe(560);
   });
 
-  it("morphs the assistant between the voice hero and floating chat anchor", () => {
-    expect(chatSource).toContain("const morphTranslateX = Math.min(contentMaxWidth");
-    expect(chatSource).toContain("const morphTranslateY = Math.min(height");
-    expect(chatSource).toContain("floatingAssistantProgress.interpolate");
-    expect(chatSource).toContain("const voiceHeroMorphStyle");
-    expect(chatSource).toContain("<Animated.View style={voiceHeroMorphStyle}>");
-    expect(chatSource).toContain("accessibilityHidden");
+  it("uses a native safe-area and keyboard-aware conversation layout", () => {
+    expect(chatSource).toContain("KeyboardAvoidingView");
+    expect(chatSource).toContain("useSafeAreaInsets");
+    expect(chatSource).toContain("FlatList");
+    expect(chatSource).toContain("Message Swico");
+    expect(chatSource).not.toContain("<Orb");
   });
 });

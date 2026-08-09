@@ -1,35 +1,33 @@
 # Swico mobile app
 
-This Expo/React Native app is configured so normal public chat and recorded
-voice enter the authenticated backend AI router first:
+This Expo/React Native app is a native client for the same authenticated
+website API used by `web/`. Normal signed-in production chat enters the
+canonical backend-first path:
 
 ```text
-apiPost("/api/chat")
-  -> Firebase bearer token
-  -> backend /api/chat
-  -> backend AI router
-  -> Sarvam for Indic/Tanglish or speech-language paths
-  -> OpenAI gpt-5-nano for cheap English/general
-  -> OpenAI gpt-5-mini for controlled coding/complex reasoning
-  -> reply
+Expo/React Native screen
+  -> Firebase ID token in Authorization: Bearer
+  -> /api/web/bootstrap, /api/web/threads and /api/web/chat/stream
+  -> existing backend TRIAG/RAG, tier, memory, knowledge and billing state
+  -> streaming response persisted to the shared web thread
 ```
 
-Phone-local models are optional fallback/development only:
+The mobile client does not run a local model or create a second AI pipeline.
+The server remains authoritative for tier availability, limits, usage,
+attachments, voice and model execution. `EXPO_PUBLIC_API_BASE` should point to
+the production Render API:
 
 ```text
-EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true
-  or EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true
-  -> local setup/llama.cpp/GGUF validation
-  -> local pipeline may intercept selected turns
-  -> backend remains the public primary path
-  -> reply
+EXPO_PUBLIC_API_BASE=https://ai-tool-rrau.onrender.com
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false
+EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false
+EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false
 ```
 
-Default release/public builds keep `EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false`,
-`EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false`, and
-`EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false`. Missing local model files,
-llama.cpp, GGUF CDN URLs, byte sizes, or SHA hashes must not block a backend-first
-release unless local fallback is explicitly enabled.
+The old local-model/orb modules remain only as isolated legacy code for existing
+development and historical tests; signed-in production navigation redirects all
+non-chat legacy routes to the Swico chat screen. They are not used by the
+production mobile chat request path.
 
 ## Firebase Android config
 
@@ -75,9 +73,11 @@ verification also requires the backend API base and complete Firebase public
 `EXPO_PUBLIC_FIREBASE_*` values. `mobile/google-services.json` is ignored by git
 and must not be committed.
 
-## Backend chat smoke test
+## Legacy backend smoke script
 
-`npm run smoke:chat` runs the seeded 10-question chat smoke test. With no `SMOKE_CHAT_BASE_URL`, it defaults to mock mode and does not require auth:
+`npm run smoke:chat` is a legacy diagnostic for the older `/api/chat` contract;
+it is not used by the production mobile screen. With no `SMOKE_CHAT_BASE_URL`, it
+defaults to mock mode and does not require auth:
 
 ```bash
 cd mobile

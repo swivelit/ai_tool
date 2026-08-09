@@ -304,81 +304,17 @@ describe("chat architecture smoke", () => {
     expect(harness.runLocalAssistantTurn.mock.calls.length).toBeGreaterThan(0);
   });
 
-  it("keeps Android hands-free command capture native-owned", () => {
-    const source = fs.readFileSync(path.join(__dirname, "..", "app", "(chat)", "index.tsx"), "utf8");
+  it("uses the canonical backend chat and voice contracts", () => {
+    const route = fs.readFileSync(path.join(__dirname, "..", "app", "(chat)", "index.tsx"), "utf8");
+    const source = fs.readFileSync(path.join(__dirname, "..", "components", "swico", "SwicoChatScreen.tsx"), "utf8");
 
-    expect(source).toContain("startHandsFreeSession");
-    expect(source).toContain("handleNativeHandsFreeCommandAudio");
-    expect(source).toContain("submitHandsFreeCommandAudio");
-    expect(source).toContain("nativeStateHandlerRef.current(event)");
-    expect(source).toContain("nativeCommandHandlerRef.current(event)");
-    expect(source).toContain("nativeCommandAudioHandlerRef.current(event)");
-    expect(source).toContain("getWakeWordStatus");
-    expect(source).toContain("subscribeHandsFreeSessionEvents");
-    expect(source).toContain("hasHandsFreeSessionListeners");
-    expect(source).toContain("createNativeHandsFreeEventHandlers");
-    expect(source).toContain("nativeHandsFreeStatus?.captureRestartScheduled");
-    expect(source).toContain("nativeHandsFreeSessionStartTokenRef");
-    expect(source).toContain('handsFreeMachineRef.current.state !== "wakeListening"');
-    expect(source).toContain('recordingPhaseRef.current !== "idle"');
-    expect(source).toContain("error.restartable === true || error.sessionActive === true");
-    expect(source).toContain('setHandsFreeStatus(error.restartable === true ? "Recovering mic..." : "Listening")');
-    const startNative = source.slice(
-      source.indexOf("const startNativeHandsFreeSession = useCallback"),
-      source.indexOf("const startHandsFreeCommandRecognizer = useCallback"),
-    );
-    expect(startNative.indexOf("getWakeWordStatus")).toBeLessThan(
-      startNative.indexOf("startHandsFreeSession"),
-    );
-    expect(startNative.indexOf("nativeHandsFreeStatus?.running === true")).toBeLessThan(
-      startNative.indexOf("startHandsFreeSession"),
-    );
-    expect(startNative.indexOf("nativeHandsFreeStatus?.captureRestartScheduled === true")).toBeLessThan(
-      startNative.indexOf("startHandsFreeSession"),
-    );
-    const alreadyRunningBranch = startNative.slice(
-      startNative.indexOf("nativeHandsFreeStatus?.running === true"),
-      startNative.indexOf("const permission = await Audio.requestPermissionsAsync()"),
-    );
-    expect(alreadyRunningBranch).toContain("!hasHandsFreeSessionListeners()");
-    expect(alreadyRunningBranch).toContain("subscribeHandsFreeSessionEvents(createNativeHandsFreeEventHandlers())");
-    const nativeErrorBlock = source.slice(
-      source.indexOf("function handleNativeHandsFreeError"),
-      source.indexOf("function createNativeHandsFreeEventHandlers"),
-    );
-    const restartableBranch = nativeErrorBlock.slice(
-      nativeErrorBlock.indexOf("error.restartable === true || error.sessionActive === true"),
-      nativeErrorBlock.indexOf("nativeHandsFreeSessionActiveRef.current = false"),
-    );
-    expect(restartableBranch).toContain("nativeHandsFreeSessionActiveRef.current = true");
-    expect(restartableBranch).toContain("return;");
-    expect(restartableBranch).not.toContain("dispatchHandsFree");
-    const nativeWakeHandler = source.slice(
-      source.indexOf("async function handleNativeWakeWordDetected"),
-      source.indexOf("nativeWakeHandlerRef.current = handleNativeWakeWordDetected"),
-    );
-    expect(nativeWakeHandler).toContain("openHandsFreeVoiceSheet()");
-    expect(nativeWakeHandler).toContain("resetCommandLocalePlan()");
-    expect(nativeWakeHandler).not.toContain('dispatchHandsFree({ type: "WAKE_DETECTED" })');
-    expect(nativeWakeHandler).not.toContain('dispatchHandsFree({ type: "COMMAND_STARTED" })');
-    expect(source).toContain("voiceSheetGenerationRef");
-    expect(source).toContain("closeGeneration !== voiceSheetGenerationRef.current");
-    expect(source).toContain('handsFreeRecognizer.getOwner() !== "handsfree-command"');
-    expect(source).toContain("audio/wav");
-    const nativeAudioHandler = source.slice(
-      source.indexOf("async function handleNativeHandsFreeCommandAudio"),
-      source.indexOf("nativeCommandHandlerRef.current = handleNativeHandsFreeCommand"),
-    );
-    expect(nativeAudioHandler).toContain("if (!uri)");
-    expect(nativeAudioHandler).toContain("await submitHandsFreeCommandAudio(event)");
-    const submitAudio = source.slice(
-      source.indexOf("async function submitHandsFreeCommandAudio"),
-      source.indexOf("async function stopAndAnalyze"),
-    );
-    expect(submitAudio).toContain("if (!uri)");
-    expect(submitAudio).toContain("await cancelHandsFreeCommand()");
-    expect(submitAudio).not.toContain("if (!uri || busy) return");
-    expect(source).not.toContain("stopWakeWordListening().then");
-    expect(source).not.toContain("startWakeWordListening");
+    expect(route).toContain("SwicoChatScreen");
+    expect(source).toContain("streamChat");
+    expect(source).toContain("cancelChatRequest");
+    expect(source).toContain("transcribeAudioUri");
+    expect(source).toContain("synthesizeAudio");
+    expect(source).not.toContain("/api/chat");
+    expect(source).not.toContain("runLocalAssistantTurn");
+    expect(source).not.toContain("startHandsFreeSession");
   });
 });
