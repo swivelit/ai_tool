@@ -14,12 +14,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GlassCard } from "@/components/Glass";
 import { AppText, Button, Screen } from "@/components/ui";
 import { useAuth } from "@/components/AuthProvider";
 import { Radius, Spacing, type Palette } from "@/constants/theme";
 import { useAppTheme } from "@/hooks/use-app-theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
+import { hasValidPasswordLength, MIN_PASSWORD_LENGTH } from "@/lib/authValidation";
 
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
@@ -48,7 +48,7 @@ export default function ForgotPasswordScreen() {
   const topPadding = insets.top + (isCompact ? Spacing.sm : Spacing.lg);
   const bottomPadding = Math.max(insets.bottom + Spacing.xxl, 30);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 540);
-  const inputHeight = isCompact ? 56 : 60;
+  const inputHeight = 48;
 
   const newPasswordVisibility = getPasswordVisibilityProps(showNewPassword);
   const confirmPasswordVisibility = getPasswordVisibilityProps(showConfirmPassword);
@@ -105,8 +105,8 @@ export default function ForgotPasswordScreen() {
       return;
     }
 
-    if (newPassword.length < 6) {
-      setErrorText("Use at least 6 characters.");
+    if (!hasValidPasswordLength(newPassword)) {
+      setErrorText(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
 
@@ -168,7 +168,7 @@ export default function ForgotPasswordScreen() {
               </AppText>
             </View>
 
-            <GlassCard style={styles.card}>
+            <View style={styles.card}>
               {errorText ? (
                 <View style={styles.errorCard}>
                   <Ionicons name="alert-circle-outline" size={16} color={t.danger} />
@@ -316,7 +316,7 @@ export default function ForgotPasswordScreen() {
                   />
                 </>
               )}
-            </GlassCard>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -366,7 +366,7 @@ function PasswordField({
           autoCorrect={false}
           autoComplete="new-password"
           textContentType="newPassword"
-          placeholder="Minimum 6 characters"
+          placeholder={`Minimum ${MIN_PASSWORD_LENGTH} characters`}
           placeholderTextColor={t.placeholder}
           style={styles.input}
           editable={editable}

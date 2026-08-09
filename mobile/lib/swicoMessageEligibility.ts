@@ -1,7 +1,7 @@
 import type { Attachment, Message } from "./swicoTypes";
 
-export function hasSendableContent(draft: string, attachments: Attachment[], repositoryReady: boolean) {
-  return Boolean(draft.trim() || attachments.some(attachment => attachment.status === "ready") || repositoryReady);
+export function hasSendableContent(draft: string, attachments: Attachment[], repositoryReady: boolean, repositoryChatEnabled = true) {
+  return Boolean(draft.trim() || attachments.some(attachment => attachment.status === "ready") || (repositoryChatEnabled && repositoryReady));
 }
 
 export function latestEditableUserId(messages: Message[], generationActive: boolean) {
@@ -16,4 +16,3 @@ export function assistantActionsEnabled(message: Message, feedbackEnabled: boole
     voice: message.role === "assistant" && message.status === "complete" && voiceEnabled && Boolean(message.voice_turn_id),
   };
 }
-

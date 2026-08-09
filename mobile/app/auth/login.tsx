@@ -14,7 +14,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GlassCard } from "@/components/Glass";
 import { AppText, Button, Screen } from "@/components/ui";
 import { useAuth } from "@/components/AuthProvider";
 import { Radius, Spacing, type Palette } from "@/constants/theme";
@@ -45,7 +44,7 @@ export default function LoginScreen() {
   const topPadding = insets.top + (isCompact ? Spacing.sm : Spacing.lg);
   const bottomPadding = Math.max(insets.bottom + Spacing.xxl, 30);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 540);
-  const inputHeight = isCompact ? 56 : 60;
+  const inputHeight = 48;
 
   const canSubmit = useMemo(
     () => email.trim().length > 0 && password.length > 0 && !busy,
@@ -109,7 +108,7 @@ export default function LoginScreen() {
               </AppText>
             </View>
 
-            <GlassCard style={styles.card}>
+            <View style={styles.card}>
               {errorText ? (
                 <View style={styles.errorCard}>
                   <Ionicons name="alert-circle-outline" size={16} color={t.danger} />
@@ -230,7 +229,7 @@ export default function LoginScreen() {
                   </AppText>
                 </Pressable>
               </View>
-            </GlassCard>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

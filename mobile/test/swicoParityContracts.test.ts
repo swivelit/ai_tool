@@ -6,6 +6,7 @@ import { emptySwicoStreamState, reduceSwicoStream } from "../lib/swicoChatReduce
 import { assistantActionsEnabled, hasSendableContent, latestEditableUserId } from "../lib/swicoMessageEligibility";
 import { messageIndexForSearch } from "../lib/swicoNavigation";
 import { VoiceReplyCache, needsVoiceSynthesis } from "../lib/swicoVoiceReply";
+import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, voiceAvailability } from "../lib/swicoCapabilities";
 import type { Message } from "../lib/swicoTypes";
 
 const config: BillingConfig = {
@@ -79,5 +80,29 @@ describe("mobile parity contracts", () => {
     const messages = [{ id: "one" }, { id: "target" }, { id: "three" }] as Message[];
     expect(messageIndexForSearch(messages, "target")).toBe(1);
     expect(messageIndexForSearch(messages, "missing")).toBe(-1);
+  });
+
+  it("honors website capability flags without coupling repository upload to chat", () => {
+    const features = {
+      web_attachments: false, web_repository_upload: true, web_repository_chat: false,
+      web_voice_recording: true, web_voice_billing: false, web_voice_reply: true,
+      web_realtime_voice: true, separate_voice_credits: true,
+    } as import("../lib/swicoTypes").FeatureFlags;
+    expect(canUseAttachments(features)).toBe(false);
+    expect(canUploadRepository(features)).toBe(true);
+    expect(canChatWithRepository(features)).toBe(false);
+    expect(canDictate(features)).toBe(false);
+    expect(canReplyWithVoice(features)).toBe(false);
+    expect(hasSendableContent("", [], true, false)).toBe(false);
+    expect(hasSendableContent("", [], true, true)).toBe(true);
+  });
+
+  it("matches the website realtime voice readiness reasons", () => {
+    const base = { features: { web_realtime_voice: true, separate_voice_credits: true } as import("../lib/swicoTypes").FeatureFlags, voice_protocol_version: 1, backend_release: "1" };
+    expect(voiceAvailability({ ...base, features: { ...base.features, web_realtime_voice: false } }).enabled).toBe(false);
+    expect(voiceAvailability({ ...base, features: { ...base.features, separate_voice_credits: false } }).reason).toContain("separate Voice credits");
+    expect(voiceAvailability({ ...base, voice_protocol_version: 2 }).reason).toContain("newer version");
+    expect(voiceAvailability(base, "2").releaseMismatch).toBe(true);
+    expect(voiceAvailability(base, "1").enabled).toBe(true);
   });
 });

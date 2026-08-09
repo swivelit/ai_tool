@@ -180,12 +180,23 @@ export type MemorySettings = { available: boolean; enabled: boolean; items: Memo
 export type UsageSummary = {
   request_count: number;
   input_tokens: number;
+  cached_input_tokens: number;
   output_tokens: number;
   total_tokens: number;
   debited_micros: number;
   debited_ai_credits: string;
-  by_tier: Record<SwicoTier, { label: string; request_count: number; debited_micros: number; debited_ai_credits: string }>;
-  voice: Record<string, unknown>;
+  chat_available_credits?: string;
+  voice_available_credits?: string;
+  estimated_tokens_remaining: TokenEstimate | null;
+  by_tier: Record<SwicoTier, {
+    label: string; request_count: number; debited_micros: number; debited_ai_credits: string;
+    debited_token_credits?: string; input_tokens?: number; cached_input_tokens?: number; output_tokens?: number; total_tokens?: number;
+    utilization_percentage?: number; monthly_limit_percentage?: number; period_debit_percentage?: number; utilization_basis?: string;
+  }>;
+  voice: Record<string, unknown> & {
+    label?: string; debited_voice_credits?: string; utilization_percentage?: number; monthly_limit_percentage?: number; period_debit_percentage?: number; utilization_basis?: string;
+    stt_request_count?: number; llm_request_count?: number; tts_request_count?: number; llm_input_tokens?: number; llm_cached_input_tokens?: number; llm_output_tokens?: number; llm_total_tokens?: number; total_audio_seconds?: number; total_tts_characters?: number;
+  };
   [key: string]: unknown;
 };
 export type UsagePreferences = {

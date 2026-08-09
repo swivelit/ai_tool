@@ -14,12 +14,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GlassCard } from "@/components/Glass";
 import { AppText, Button, Screen } from "@/components/ui";
 import { useAuth } from "@/components/AuthProvider";
 import { Radius, Spacing, type Palette } from "@/constants/theme";
 import { useAppTheme } from "@/hooks/use-app-theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
+import { hasValidPasswordLength, MIN_PASSWORD_LENGTH } from "@/lib/authValidation";
 
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
@@ -27,14 +27,14 @@ function emailLooksValid(value: string) {
 
 function passwordStrengthLabel(value: string) {
   if (!value) return "Add a password";
-  if (value.length < 6) return "Too short";
-  if (value.length < 9) return "Okay";
+  if (!hasValidPasswordLength(value)) return "Too short";
+  if (value.length < MIN_PASSWORD_LENGTH + 1) return "Okay";
   return "Strong";
 }
 
 function passwordStrengthTone(value: string, t: Palette) {
-  if (!value || value.length < 6) return t.danger;
-  if (value.length < 9) return t.caramel;
+  if (!value || !hasValidPasswordLength(value)) return t.danger;
+  if (value.length < MIN_PASSWORD_LENGTH + 1) return t.caramel;
   return t.success;
 }
 
@@ -64,7 +64,7 @@ export default function SignupScreen() {
   const topPadding = insets.top + (isCompact ? Spacing.sm : Spacing.lg);
   const bottomPadding = Math.max(insets.bottom + Spacing.xxl, 30);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 540);
-  const inputHeight = isCompact ? 56 : 60;
+  const inputHeight = 48;
 
   const canSendOtp = useMemo(() => {
     return (
@@ -109,8 +109,8 @@ export default function SignupScreen() {
       return;
     }
 
-    if (password.length < 6) {
-      setErrorText("Use at least 6 characters.");
+    if (!hasValidPasswordLength(password)) {
+      setErrorText(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
 
@@ -228,7 +228,7 @@ export default function SignupScreen() {
               </AppText>
             </View>
 
-            <GlassCard style={styles.card}>
+            <View style={styles.card}>
               {errorText ? (
                 <View style={styles.errorCard}>
                   <Ionicons name="alert-circle-outline" size={16} color={t.danger} />
@@ -326,7 +326,7 @@ export default function SignupScreen() {
                         autoCorrect={false}
                         autoComplete="new-password"
                         textContentType="newPassword"
-                        placeholder="Minimum 6 characters"
+                        placeholder={`Minimum ${MIN_PASSWORD_LENGTH} characters`}
                         placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
@@ -490,7 +490,7 @@ export default function SignupScreen() {
                   </AppText>
                 </Pressable>
               </View>
-            </GlassCard>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
