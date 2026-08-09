@@ -34,6 +34,21 @@ describe("canonical Swico mobile API client", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/web/bootstrap");
   });
 
+  it("uses the canonical billing and usage-settings contracts", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/billing/estimate")) return new Response(JSON.stringify({ gross_amount_paise: 1000, token_estimate: null }), { status: 200 });
+      if (url.endsWith("/settings/usage")) return new Response(JSON.stringify({ warning_threshold_percent: 80 }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { getBillingEstimate, updateUsageSettings } = await import("../lib/swicoApi");
+    await getBillingEstimate(user, 1000, "chat");
+    await updateUsageSettings(user, { period: "monthly", hard_limit_estimated_tokens: null, warning_threshold_percent: 80, notify_at_threshold: true });
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/web/billing/estimate?gross_amount_paise=1000&credit_bucket=chat");
+    expect(fetchMock.mock.calls[1][0]).toContain("/api/web/settings/usage");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ period: "monthly", hard_limit_estimated_tokens: null });
+  });
+
   it("does not expose a legacy /api/chat call in the production route", async () => {
     const fs = await import("node:fs/promises");
     const route = await fs.readFile(new URL("../app/(chat)/index.tsx", import.meta.url).pathname, "utf8");
@@ -91,6 +106,16 @@ describe("canonical Swico mobile API client", () => {
     const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");
     expect(source).toContain("uploadText(user, rawText, longInputMode)");
     expect(source).toContain("message: providerText");
+  });
+
+  it("keeps parity metadata and feature-gated actions in the production screen", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");
+    expect(source).toContain("input_mode");
+    expect(source).toContain("voice_turn_id");
+    expect(source).toContain("status === 402");
+    expect(source).toContain("web_answer_feedback");
+    expect(source).toContain("retry_at");
   });
 
   it("surfaces a terminal SSE error without treating it as a successful stream", async () => {

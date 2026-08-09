@@ -4,9 +4,9 @@ import Constants from "expo-constants";
 import { auth } from "./firebase";
 import { SwicoSSEParser } from "./swicoStream";
 import type {
-  AssistantSettings, Bootstrap, ChatRequestPayload, InputMode, KnowledgeDocument,
+  AssistantSettings, Bootstrap, ChatRequestPayload, CreditBucket, InputMode, KnowledgeDocument,
   KnowledgeJobSummary, MemorySettings, Message, ProfileSettings, RealtimeVoiceSession, RepositorySnapshot,
-  SearchResult, SynthesisResponse, Thread, TranscriptionResponse, UsageSummary, Wallet,
+  PaymentHistory, SearchResult, SynthesisResponse, Thread, TopupEstimateResponse, TranscriptionResponse, UsagePreferences, UsageSummary, Wallet,
 } from "./swicoTypes";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
@@ -97,10 +97,30 @@ export const getMemorySettings = (user: User) => swicoJson<MemorySettings>(user,
 export const updateMemorySettings = (user: User, enabled: boolean) => swicoJson<MemorySettings>(user, "/api/web/settings/memory", { method: "PATCH", body: JSON.stringify({ enabled }) });
 export const deleteMemory = (user: User, id?: string) => swicoJson<void>(user, id ? `/api/web/settings/memory/${encodeURIComponent(id)}` : "/api/web/settings/memory", { method: "DELETE" });
 export const getUsage = (user: User) => swicoJson<UsageSummary>(user, "/api/web/usage/summary?period=current_month");
-export const getUsageSettings = (user: User) => swicoJson<Record<string, unknown>>(user, "/api/web/settings/usage");
+export const getUsageSettings = (user: User) => swicoJson<UsagePreferences>(user, "/api/web/settings/usage");
+export const updateUsageSettings = (user: User, body: {
+  period: "monthly";
+  hard_limit_estimated_tokens: number | null;
+  warning_threshold_percent: number;
+  notify_at_threshold: boolean;
+}) => swicoJson<UsagePreferences>(user, "/api/web/settings/usage", { method: "PATCH", body: JSON.stringify(body) });
 export const getWallet = (user: User) => swicoJson<Wallet & { wallets?: Record<string, Wallet> }>(user, "/api/web/billing/wallet");
 export const getLedger = (user: User) => swicoJson<{ items: unknown[] }>(user, "/api/web/billing/ledger");
-export const getPayments = (user: User) => swicoJson<{ items: unknown[] }>(user, "/api/web/billing/payments");
+export const getPayments = (user: User) => swicoJson<{ items: PaymentHistory[] }>(user, "/api/web/billing/payments");
+export const getPaymentStatus = (user: User, internalOrderId: string) => swicoJson<PaymentHistory>(user, `/api/web/billing/payments/${encodeURIComponent(internalOrderId)}`);
+export const getBillingEstimate = (user: User, grossAmountPaise: number, creditBucket: CreditBucket) => swicoJson<TopupEstimateResponse>(user, `/api/web/billing/estimate?gross_amount_paise=${grossAmountPaise}&credit_bucket=${creditBucket}`);
+export type BillingOrder = {
+  key_id: string;
+  provider_order_id: string;
+  amount: number;
+  currency: string;
+  internal_order_id: string;
+  credited_amount_micros: number;
+  platform_share_paise: number;
+  credit_bucket: CreditBucket;
+};
+export const createBillingOrder = (user: User, body: { gross_amount_paise: number; credit_bucket: CreditBucket; idempotency_key: string }) => swicoJson<BillingOrder>(user, "/api/web/billing/orders", { method: "POST", body: JSON.stringify(body) });
+export const verifyBillingPayment = (user: User, body: { internal_order_id: string; razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) => swicoJson<{ status: string; credited: boolean }>(user, "/api/web/billing/verify", { method: "POST", body: JSON.stringify(body) });
 export const sendFeedback = (user: User, messageId: string, rating: "up" | "down") => swicoJson<void>(user, `/api/web/messages/${encodeURIComponent(messageId)}/feedback`, { method: "POST", body: JSON.stringify({ rating }) });
 export const cancelChatRequest = (user: User, id: string) => swicoJson<{ status: string }>(user, `/api/web/chat/requests/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 export const chatRequestStatus = (user: User, id: string) => swicoJson<Record<string, unknown>>(user, `/api/web/chat/requests/${encodeURIComponent(id)}/status`);

@@ -62,7 +62,7 @@ export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
   wallet: Wallet;
   wallets?: Wallets;
-  billing: Record<string, unknown>;
+  billing: BillingConfig;
   assistant: AssistantSettings;
   features: FeatureFlags;
   backend_release?: string;
@@ -188,6 +188,25 @@ export type UsageSummary = {
   voice: Record<string, unknown>;
   [key: string]: unknown;
 };
+export type UsagePreferences = {
+  period: "monthly";
+  hard_limit_micros: number | null;
+  hard_limit_ai_credits: string | null;
+  warning_threshold_percent: number;
+  notify_at_threshold: boolean;
+  current_usage_micros: number;
+  current_usage_ai_credits: string;
+  remaining_micros: number | null;
+  warning_reached: boolean;
+  hard_limit_token_estimate: TokenEstimate | null;
+  remaining_token_estimate: TokenEstimate | null;
+  next_reset_at: string;
+  timezone: string;
+  updated_at: string | null;
+  tier: SwicoTier;
+  tier_label: string;
+  billing_exempt?: boolean;
+};
 export type RepositorySnapshot = {
   id: string;
   display_name: string;
@@ -268,4 +287,62 @@ export type SynthesisResponse = {
   voice_credits: string;
   wallet: Wallet;
   wallets?: Wallets;
+};
+
+export type VoiceCreditEstimate = {
+  pricing_version?: string;
+  estimated_stt_seconds?: number;
+  estimated_stt_minutes: string;
+  estimated_tts_characters: number;
+  assumption: string;
+};
+export type BillingPackage = {
+  gross_amount_paise: number;
+  credited_amount_micros: number;
+  platform_share_paise: number;
+  token_estimate?: TokenEstimate;
+  voice_estimate?: VoiceCreditEstimate;
+};
+export type BillingConfig = {
+  currency: "INR";
+  credit_percent: string;
+  razorpay_key_id?: string;
+  min_topup_paise: number;
+  max_topup_paise: number;
+  razorpay_mode: "test" | "live";
+  checkout_enabled: boolean;
+  custom_topup_enabled: boolean;
+  packages: BillingPackage[];
+};
+export type TopupTokenEstimate = {
+  tier: SwicoTier;
+  tier_label: string;
+  estimated_blended_tokens: number | null;
+  range_min_tokens: number;
+  range_max_tokens: number;
+};
+export type TopupEstimateResponse = {
+  gross_amount_paise: number;
+  credit_bucket?: CreditBucket;
+  token_estimate: TopupTokenEstimate | null;
+  voice_estimate?: VoiceCreditEstimate | null;
+};
+export type PaymentHistory = {
+  credit_bucket?: CreditBucket;
+  id: string;
+  gross_amount_paise: number;
+  credited_amount_micros: number;
+  platform_share_paise: number;
+  refunded_amount_paise: number;
+  credit_reversal_micros: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  paid_at: string | null;
+  refunded_at: string | null;
+  payment_received: boolean;
+  credit_applied: boolean;
+  token_estimate?: TokenEstimate;
+  reversal_token_estimate?: TokenEstimate;
+  voice_estimate?: VoiceCreditEstimate;
 };
