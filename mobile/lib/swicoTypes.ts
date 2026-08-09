@@ -105,6 +105,8 @@ export type Attachment = {
   warnings: string[];
   warning_codes?: string[];
   status: "ready" | "expired" | "unavailable";
+  /** Local-only preview URI; never sent to or persisted by the backend. */
+  local_uri?: string;
 };
 export type Message = {
   id: string;

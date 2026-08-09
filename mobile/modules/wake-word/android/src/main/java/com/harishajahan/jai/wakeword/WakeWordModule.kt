@@ -3,11 +3,14 @@ package com.harishajahan.jai.wakeword
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 class WakeWordModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
+  private var realtimePcmSource: PcmAudioSource? = null
+  private var realtimePcmSequence = 0
   private val engine: OpenWakeWordEngine by lazy {
     OpenWakeWordEngine()
   }
@@ -40,7 +43,56 @@ class WakeWordModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("JaiWakeWord")
 
-    Events("onState", "onWake", "onWakeScore", "onCommand", "onCommandAudio", "onWakeError")
+    Events("onState", "onWake", "onWakeScore", "onCommand", "onCommandAudio", "onWakeError", "onRealtimePcmFrame", "onRealtimePcmError", "onRealtimePcmStopped")
+
+    AsyncFunction("startRealtimePcm") { config: Map<String, Any?> ->
+      realtimePcmSource?.stop()
+      val sampleRate = (config["sampleRate"] as? Number)?.toInt()?.takeIf { it > 0 } ?: 16000
+      val frameSamples = (config["frameSamples"] as? Number)?.toInt()?.takeIf { it > 0 } ?: 512
+      val frameMs = ((frameSamples * 1000.0) / sampleRate).toInt().coerceAtLeast(1)
+      realtimePcmSequence = 0
+      val source = PcmAudioSource(sampleRate = sampleRate, frameMs = frameMs, listener = object : PcmAudioSourceListener {
+        override fun onCaptureError(error: PcmCaptureError) {
+          val bundle = Bundle().apply { putString("code", error.code); putString("message", error.message); putBoolean("restartable", error.restartable) }
+          sendEventOnMain("onRealtimePcmError", bundle)
+        }
+        override fun onCaptureStopped() { sendEventOnMain("onRealtimePcmStopped", Bundle()) }
+      })
+      realtimePcmSource = source
+      try {
+        source.start { frame ->
+          val bytes = ByteArray(frame.size * 2)
+          frame.forEachIndexed { index, value ->
+            bytes[index * 2] = (value.toInt() and 0xff).toByte()
+            bytes[index * 2 + 1] = ((value.toInt() shr 8) and 0xff).toByte()
+          }
+          val bundle = Bundle().apply {
+            putString("encoding", "pcm_s16le")
+            putInt("sampleRate", sampleRate)
+            putInt("frameSamples", frame.size)
+            putInt("sequence", ++realtimePcmSequence)
+            putString("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
+          }
+          sendEventOnMain("onRealtimePcmFrame", bundle)
+        }
+      } catch (error: Throwable) {
+        realtimePcmSource = null
+        throw error
+      }
+      mapOf("ok" to true, "sampleRate" to sampleRate, "frameSamples" to frameSamples)
+    }
+
+    AsyncFunction("stopRealtimePcm") {
+      realtimePcmSource?.stop()
+      realtimePcmSource = null
+      mapOf("ok" to true)
+    }
+
+    AsyncFunction("getRealtimePcmStatus") {
+      realtimePcmSource?.status()?.let { status ->
+        mapOf("running" to status.captureThreadAlive, "sampleRate" to 16000, "frameSamples" to 512, "aec" to status.acousticEchoCancelerEnabled, "noiseSuppression" to status.noiseSuppressorEnabled, "agc" to status.automaticGainControlEnabled)
+      } ?: mapOf("running" to false, "sampleRate" to 16000, "frameSamples" to 512)
+    }
 
     Function("isAvailable") {
       engine.isAvailable()

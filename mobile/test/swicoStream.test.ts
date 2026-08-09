@@ -26,4 +26,16 @@ describe("Swico streaming transport", () => {
     expect(state.assistant?.can_continue).toBe(true);
     expect(state.done).toBe(true);
   });
+
+  it("normalizes CRLF frames split across chunks", () => {
+    const parser = new SwicoSSEParser();
+    expect(parser.push("event: delta\r\ndata: {\"text\":\"a\"}\r\n\r\n" )).toEqual([{ event: "delta", data: { text: "a" } }]);
+    expect(parser.push("event: done\r\ndata: {\"finish_reason\":\"stop\"}\r\n\r\n")).toEqual([{ event: "done", data: { finish_reason: "stop" } }]);
+  });
+
+  it("stitches continuation markdown without duplicating the boundary", async () => {
+    const { stitchContinuationMarkdown } = await import("../lib/continuationMarkdown");
+    expect(stitchContinuationMarkdown([{ content: "one" }, { content: "two", continuation_rewind_characters: 0 }])).toBe("one\ntwo");
+    expect(stitchContinuationMarkdown([{ content: "one two" }, { content: "three", continuation_rewind_characters: 3 }])).toBe("one three");
+  });
 });

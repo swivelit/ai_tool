@@ -29,6 +29,19 @@ development and historical tests; signed-in production navigation redirects all
 non-chat legacy routes to the Swico chat screen. They are not used by the
 production mobile chat request path.
 
+## Native realtime Voice
+
+Android realtime Voice uses the existing `JaiWakeWord` Expo module only as a
+PCM capture bridge: `AudioRecord` emits 16 kHz mono S16LE frames of 512 samples
+to the authenticated `/api/web/voice/sessions` WebSocket. The module enables
+AEC, noise suppression and AGC when the device exposes those effects. Voice
+audio is returned by the backend and played natively; no local model is used.
+
+The Android path is feature-gated by the server bootstrap capability and the
+native PCM bridge. iOS keeps realtime Voice disabled until its equivalent
+`AVAudioEngine` PCM bridge is implemented. Recorded dictation and reply
+synthesis remain available through the canonical `/api/web/audio/*` endpoints.
+
 ## Firebase Android config
 
 Expo Android prebuild only points to `mobile/google-services.json` when the file

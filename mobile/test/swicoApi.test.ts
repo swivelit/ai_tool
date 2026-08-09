@@ -45,4 +45,63 @@ describe("canonical Swico mobile API client", () => {
     expect(`${route}\n${screen}`).not.toContain("nativeOnDeviceModelBridge");
     expect(api).toContain("/api/web/chat/stream");
   });
+
+  it("rejects a successful stream that reaches EOF without done/error", async () => {
+    class FakeXHR {
+      static instances: FakeXHR[] = [];
+      readyState = 0; status = 0; responseText = ""; onreadystatechange?: () => void; onerror?: () => void; onabort?: () => void; onloadend?: () => void;
+      constructor() { FakeXHR.instances.push(this); }
+      open() { this.readyState = 1; }
+      setRequestHeader() {}
+      send() { this.status = 200; this.readyState = 2; this.onreadystatechange?.(); this.responseText = "event: delta\ndata: {\"text\":\"partial\"}\n\n"; this.readyState = 3; this.onreadystatechange?.(); this.readyState = 4; this.onreadystatechange?.(); this.onloadend?.(); }
+      abort() { this.onabort?.(); }
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const { streamChat, SwicoStreamError } = await import("../lib/swicoApi");
+    await expect(streamChat(user, { request_id: "r", message: "hello", input_mode: "text" }, { onEvent: vi.fn() }, new AbortController().signal)).rejects.toMatchObject({ code: "stream_interrupted" });
+    expect(SwicoStreamError).toBeDefined();
+  });
+
+  it("resolves only after a terminal done event", async () => {
+    class FakeXHR {
+      readyState = 0; status = 0; responseText = ""; onreadystatechange?: () => void; onerror?: () => void; onabort?: () => void; onloadend?: () => void;
+      open() { this.readyState = 1; } setRequestHeader() {}
+      send() { this.status = 200; this.readyState = 2; this.onreadystatechange?.(); this.responseText = "event: delta\ndata: {\"text\":\"ok\"}\n\nevent: done\ndata: {\"finish_reason\":\"stop\"}\n\n"; this.readyState = 3; this.onreadystatechange?.(); this.readyState = 4; this.onreadystatechange?.(); this.onloadend?.(); }
+      abort() { this.onabort?.(); }
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const { streamChat } = await import("../lib/swicoApi");
+    const events: { event: string; data: unknown }[] = [];
+    await expect(streamChat(user, { request_id: "r", message: "hello", input_mode: "text" }, { onEvent: event => events.push(event) }, new AbortController().signal)).resolves.toBeUndefined();
+    expect(events.at(-1)?.event).toBe("done");
+  });
+
+  it("keeps cancellation handshake in the production chat source", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");
+    expect(source).toContain("queuedStopRef");
+    expect(source).toContain('result.status === "stopped"');
+    expect(source).toContain('result.status === "cancelling"');
+    expect(source).toContain("targetController.abort()");
+    expect(source).toContain("cancellationSentRef.current");
+  });
+
+  it("keeps the provider-facing large-text action prompt separate from raw pasted input", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");
+    expect(source).toContain("uploadText(user, rawText, longInputMode)");
+    expect(source).toContain("message: providerText");
+  });
+
+  it("surfaces a terminal SSE error without treating it as a successful stream", async () => {
+    class FakeXHR {
+      readyState = 0; status = 0; responseText = ""; onreadystatechange?: () => void; onerror?: () => void; onabort?: () => void; onloadend?: () => void;
+      open() { this.readyState = 1; } setRequestHeader() {}
+      send() { this.status = 200; this.readyState = 2; this.onreadystatechange?.(); this.responseText = 'event: error\ndata: {"code":"swico_free_unavailable","message":"Unavailable","retryable":true}\n\n'; this.readyState = 3; this.onreadystatechange?.(); this.readyState = 4; this.onreadystatechange?.(); this.onloadend?.(); }
+      abort() { this.onabort?.(); }
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+    const { streamChat } = await import("../lib/swicoApi");
+    await expect(streamChat(user, { request_id: "r", message: "hello", input_mode: "text" }, { onEvent: vi.fn() }, new AbortController().signal)).rejects.toMatchObject({ code: "swico_free_unavailable", retryable: true });
+  });
 });

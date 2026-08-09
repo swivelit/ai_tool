@@ -7,17 +7,17 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GlassCard } from "@/components/Glass";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand } from "@/constants/theme";
+import { Radius, Spacing } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
 export default function LandingScreen() {
   const { user } = useAuth();
+  const { palette: t, isDark } = useAppTheme();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
@@ -29,8 +29,8 @@ export default function LandingScreen() {
   const primaryHeight = isCompact ? 54 : 58;
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
-      <StatusBar style="light" />
+    <View style={[styles.page, { backgroundColor: t.background }]}>
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <ScrollView
         style={styles.page}
@@ -50,12 +50,12 @@ export default function LandingScreen() {
             maxWidth: maxContentWidth,
           }}
         >
-          <GlassCard style={styles.card}>
-            <Text style={styles.title}>
+          <View style={[styles.card, { backgroundColor: t.surface, borderColor: t.line }]}>
+            <Text style={[styles.title, { color: t.text }]}>
               {user ? "Welcome back" : "Get started"}
             </Text>
 
-            <Text style={styles.subtitle}>
+            <Text style={[styles.subtitle, { color: t.muted }]}>
               {user
                 ? "Continue where you left off."
                 : "Login or create your account to continue."}
@@ -70,53 +70,34 @@ export default function LandingScreen() {
 
                 router.push("/auth/login");
               }}
-              style={({ pressed }) => [
-                styles.buttonShell,
-                pressed && styles.pressed,
-                { marginTop: 24 },
-              ]}
+              style={({ pressed }) => [styles.primaryButton, { backgroundColor: t.accent, marginTop: 24 }, pressed && styles.pressed]}
             >
-              <LinearGradient
-                colors={Brand.gradients.button}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={[styles.primaryButton, { minHeight: primaryHeight }]}
-              >
-                <Text style={styles.primaryButtonText}>
+                <Text style={[styles.primaryButtonText, { color: t.accentText }]}>
                   {user ? "Continue to app" : "Login"}
                 </Text>
-              </LinearGradient>
             </Pressable>
 
             {!user ? (
               <Pressable
                 onPress={() => router.push("/auth/signup")}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  pressed && styles.pressed,
-                  { minHeight: primaryHeight, marginTop: 12 },
-                ]}
+                style={({ pressed }) => [styles.secondaryButton, { minHeight: primaryHeight, marginTop: 12, borderColor: t.line }, pressed && styles.pressed]}
               >
-                <Text style={styles.secondaryButtonText}>Create account</Text>
+                <Text style={[styles.secondaryButtonText, { color: t.text }]}>Create account</Text>
               </Pressable>
             ) : (
               <Pressable
                 onPress={() => router.push("/setup")}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  pressed && styles.pressed,
-                  { minHeight: primaryHeight, marginTop: 12 },
-                ]}
+                style={({ pressed }) => [styles.secondaryButton, { minHeight: primaryHeight, marginTop: 12, borderColor: t.line }, pressed && styles.pressed]}
               >
-                <Text style={styles.secondaryButtonText}>
+                <Text style={[styles.secondaryButtonText, { color: t.text }]}>
                   Choose a new name
                 </Text>
               </Pressable>
             )}
-          </GlassCard>
+          </View>
         </View>
       </ScrollView>
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -126,11 +107,12 @@ const styles = StyleSheet.create({
   },
 
   card: {
-    borderRadius: 32,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    padding: Spacing.xl,
   },
 
   title: {
-    color: Brand.ink,
     fontSize: 30,
     lineHeight: 36,
     fontWeight: "900",
@@ -138,47 +120,37 @@ const styles = StyleSheet.create({
 
   subtitle: {
     marginTop: 10,
-    color: Brand.muted,
     fontSize: 15,
     lineHeight: 23,
   },
 
   buttonShell: {
-    borderRadius: 18,
-    overflow: "hidden",
+    borderRadius: Radius.md,
   },
 
   primaryButton: {
-    borderRadius: 18,
+    borderRadius: Radius.md,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 16,
-    shadowColor: "#57deff",
-    shadowOpacity: 0.24,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
   },
 
   primaryButtonText: {
-    color: Brand.ink,
     fontSize: 15,
     fontWeight: "900",
   },
 
   secondaryButton: {
-    borderRadius: 18,
+    borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 16,
   },
 
   secondaryButtonText: {
-    color: Brand.cocoa,
     fontSize: 14,
     fontWeight: "900",
   },

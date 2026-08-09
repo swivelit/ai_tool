@@ -1,44 +1,41 @@
 import { Platform } from "react-native";
 import type { TextStyle, ViewStyle } from "react-native";
 
-const tintColorLight = "#8be9ff";
-const tintColorDark = "#d9f8ff";
+const tintColorLight = "#111111";
+const tintColorDark = "#ffffff";
 
 /**
- * Dark polished-glass palette for the assistant UI.
- *
- * Backgrounds stay near black, surfaces are dark translucent glass, borders are
- * low-alpha white hairlines, and accents use cool electric cyan/blue so the UI
- * no longer reads as the older warm visual treatment.
+ * Compatibility names used by older screens. New production parity screens
+ * should use the semantic palettes below, which mirror the website tokens.
  */
 export const Brand = {
-  cream: "#f7fbff",
-  warmWhite: "#e9eef7",
-  soft: "rgba(255, 255, 255, 0.08)",
-  peach: "#8be9ff",
-  sand: "#b8c6ff",
-  caramel: "#57deff",
-  bronze: "#2857d7",
-  cocoa: "#c5d1e2",
-  ink: "#f2f6fb",
-  muted: "#96a2b3",
-  text: "#f2f6fb",
-  textMuted: "#96a2b3",
-  line: "rgba(255, 255, 255, 0.10)",
-  lineStrong: "rgba(255, 255, 255, 0.22)",
-  glass: "rgba(9, 11, 15, 0.72)",
-  glassStrong: "rgba(16, 19, 26, 0.88)",
+  cream: "#ececec",
+  warmWhite: "#ececec",
+  soft: "#3a3a3a",
+  peach: "#ffffff",
+  sand: "#b4b4b4",
+  caramel: "#ffffff",
+  bronze: "#ffffff",
+  cocoa: "#b4b4b4",
+  ink: "#ececec",
+  muted: "#b4b4b4",
+  text: "#ececec",
+  textMuted: "#b4b4b4",
+  line: "#424242",
+  lineStrong: "#5a5a5a",
+  glass: "#2f2f2f",
+  glassStrong: "#171717",
   overlay: "rgba(0, 0, 0, 0.58)",
-  danger: "#ff8a8a",
+  danger: "#ff8585",
   success: "#7de2ad",
-  night: "#030405",
-  charcoal: "#080a0d",
-  raised: "#10141b",
+  night: "#212121",
+  charcoal: "#2f2f2f",
+  raised: "#2f2f2f",
   gradients: {
-    page: ["#030405", "#07090d", "#10141b"] as const,
-    hero: ["#050607", "#0b0f14", "#141923"] as const,
-    button: ["#2f73ff", "#17c8d8", "#6e5bff"] as const,
-    softCard: ["rgba(19, 23, 32, 0.90)", "rgba(7, 9, 13, 0.88)"] as const,
+    page: ["#212121", "#212121", "#212121"] as const,
+    hero: ["#2f2f2f", "#2f2f2f", "#2f2f2f"] as const,
+    button: ["#ffffff", "#ffffff", "#ffffff"] as const,
+    softCard: ["#2f2f2f", "#2f2f2f"] as const,
   },
 } as const;
 
@@ -62,6 +59,8 @@ export type Palette = {
   // surfaces / glass
   surface: string;
   surfaceStrong: string;
+  sidebar: string;
+  composer: string;
   soft: string;
   glass: string;
   glassStrong: string;
@@ -82,6 +81,7 @@ export type Palette = {
   accent: string;
   accentStrong: string;
   accentSoft: string;
+  accentText: string;
   online: string;
   // status
   danger: string;
@@ -110,8 +110,10 @@ export const darkPalette: Palette = {
   night: Brand.night,
   charcoal: Brand.charcoal,
   raised: Brand.raised,
-  surface: "rgba(255, 255, 255, 0.07)",
-  surfaceStrong: "rgba(255, 255, 255, 0.10)",
+  surface: "#2f2f2f",
+  surfaceStrong: "#2f2f2f",
+  sidebar: "#171717",
+  composer: "#303030",
   soft: Brand.soft,
   glass: Brand.glass,
   glassStrong: Brand.glassStrong,
@@ -123,21 +125,22 @@ export const darkPalette: Palette = {
   muted: Brand.muted,
   textMuted: Brand.textMuted,
   cream: Brand.cream,
-  placeholder: "rgba(226, 238, 255, 0.46)",
+  placeholder: "#8f8f8f",
   caramel: Brand.caramel,
   bronze: Brand.bronze,
-  accent: Brand.caramel,
-  accentStrong: "#2f73ff",
-  accentSoft: "rgba(87, 222, 255, 0.13)",
+  accent: "#ffffff",
+  accentStrong: "#ffffff",
+  accentSoft: "#3a3a3a",
+  accentText: "#171717",
   online: "#5ce6a8",
   danger: Brand.danger,
   dangerSoft: "rgba(255, 138, 138, 0.16)",
   success: Brand.success,
   overlay: Brand.overlay,
   scrim: "rgba(0, 0, 0, 0.55)",
-  glowTop: "rgba(40, 87, 215, 0.16)",
-  glowSide: "rgba(87, 222, 255, 0.08)",
-  glowBottom: "rgba(110, 91, 255, 0.10)",
+  glowTop: "transparent",
+  glowSide: "transparent",
+  glowBottom: "transparent",
   gradients: {
     page: Brand.gradients.page,
     hero: Brand.gradients.hero,
@@ -149,43 +152,46 @@ export const darkPalette: Palette = {
 /** Light palette — airy off-white surfaces with the same electric accents. */
 export const lightPalette: Palette = {
   isDark: false,
-  background: "#eef2f8",
-  night: "#eef2f8",
-  charcoal: "#e3e9f2",
+  background: "#ffffff",
+  night: "#ffffff",
+  charcoal: "#f7f7f8",
   raised: "#ffffff",
-  surface: "rgba(15, 23, 42, 0.04)",
-  surfaceStrong: "#ffffff",
-  soft: "rgba(15, 23, 42, 0.05)",
-  glass: "rgba(255, 255, 255, 0.78)",
-  glassStrong: "rgba(255, 255, 255, 0.92)",
-  line: "rgba(15, 23, 42, 0.10)",
-  lineStrong: "rgba(15, 23, 42, 0.16)",
-  ink: "#0e1726",
-  text: "#0e1726",
-  cocoa: "#3c4858",
-  muted: "#5d6877",
-  textMuted: "#5d6877",
+  surface: "#f7f7f8",
+  surfaceStrong: "#f7f7f8",
+  sidebar: "#f9f9f9",
+  composer: "#f4f4f4",
+  soft: "#ececec",
+  glass: "#f9f9f9",
+  glassStrong: "#f9f9f9",
+  line: "#dedede",
+  lineStrong: "#c8c8c8",
+  ink: "#171717",
+  text: "#171717",
+  cocoa: "#6b6b6b",
+  muted: "#6b6b6b",
+  textMuted: "#6b6b6b",
   cream: "#ffffff",
-  placeholder: "rgba(15, 23, 42, 0.40)",
-  caramel: "#0aa7c2",
-  bronze: "#2563eb",
-  accent: "#0aa7c2",
-  accentStrong: "#2563eb",
-  accentSoft: "rgba(37, 99, 235, 0.10)",
+  placeholder: "#8a8a8a",
+  caramel: "#111111",
+  bronze: "#111111",
+  accent: "#111111",
+  accentStrong: "#111111",
+  accentSoft: "#e8e8e8",
+  accentText: "#ffffff",
   online: "#16a34a",
   danger: "#dc2626",
-  dangerSoft: "rgba(220, 38, 38, 0.10)",
+  dangerSoft: "#fff0f0",
   success: "#16a34a",
-  overlay: "rgba(15, 23, 42, 0.32)",
-  scrim: "rgba(15, 23, 42, 0.32)",
-  glowTop: "rgba(37, 99, 235, 0.10)",
-  glowSide: "rgba(10, 167, 194, 0.08)",
-  glowBottom: "rgba(110, 91, 255, 0.06)",
+  overlay: "rgba(0, 0, 0, 0.32)",
+  scrim: "rgba(0, 0, 0, 0.32)",
+  glowTop: "transparent",
+  glowSide: "transparent",
+  glowBottom: "transparent",
   gradients: {
-    page: ["#f7f9fc", "#eef2f8", "#e5ebf5"],
-    hero: ["#ffffff", "#f2f6fb", "#e8eef7"],
-    button: ["#2f73ff", "#17c8d8", "#6e5bff"],
-    softCard: ["rgba(255, 255, 255, 0.94)", "rgba(244, 247, 251, 0.90)"],
+    page: ["#ffffff", "#ffffff", "#ffffff"],
+    hero: ["#f7f7f8", "#f7f7f8", "#f7f7f8"],
+    button: ["#111111", "#111111", "#111111"],
+    softCard: ["#f7f7f8", "#f7f7f8"],
   },
 };
 

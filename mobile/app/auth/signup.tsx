@@ -532,13 +532,13 @@ function createStyles(t: Palette) {
     borderRadius: 12,
     paddingHorizontal: Spacing.md,
     paddingVertical: 10,
-    backgroundColor: "rgba(255, 138, 138, 0.12)",
+    backgroundColor: t.dangerSoft,
     borderWidth: 1,
-    borderColor: "rgba(255, 138, 138, 0.32)",
+    borderColor: t.danger,
   },
   errorText: {
     flex: 1,
-    color: "#ffb9b9",
+    color: t.danger,
   },
   labelRow: {
     flexDirection: "row",

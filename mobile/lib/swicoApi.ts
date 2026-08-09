@@ -15,9 +15,16 @@ export const SWICO_API_BASE = String(
 ).replace(/\/$/, "");
 
 export class SwicoApiError extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(public status: number, public code: string, message: string, public retryable = false, public retryAt: string | null = null) {
     super(message);
     this.name = "SwicoApiError";
+  }
+}
+
+export class SwicoStreamError extends SwicoApiError {
+  constructor(code: string, message: string, retryable = true, retryAt: string | null = null) {
+    super(0, code, message, retryable, retryAt);
+    this.name = "SwicoStreamError";
   }
 }
 
@@ -73,8 +80,8 @@ export async function swicoJson<T>(user: User, path: string, init: RequestInit =
 
 export function newSwicoRequestId() { return requestId(); }
 export const getBootstrap = (user: User) => swicoJson<Bootstrap>(user, "/api/web/bootstrap");
-export const getThreads = (user: User, archived = false, q = "") => {
-  const query = new URLSearchParams({ archived: String(archived), limit: "50", offset: "0" });
+export const getThreads = (user: User, archived = false, q = "", offset = 0) => {
+  const query = new URLSearchParams({ archived: String(archived), limit: "50", offset: String(Math.max(0, offset)) });
   if (q.trim()) query.set("q", q.trim());
   return swicoJson<{ items: Thread[]; has_more: boolean }>(user, `/api/web/threads?${query}`);
 };
@@ -98,16 +105,30 @@ export const sendFeedback = (user: User, messageId: string, rating: "up" | "down
 export const cancelChatRequest = (user: User, id: string) => swicoJson<{ status: string }>(user, `/api/web/chat/requests/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 export const chatRequestStatus = (user: User, id: string) => swicoJson<Record<string, unknown>>(user, `/api/web/chat/requests/${encodeURIComponent(id)}/status`);
 
-async function uploadForm<T>(user: User, path: string, fields: Record<string, string>, file?: { uri: string; name: string; type: string }) {
+async function uploadForm<T>(user: User, path: string, fields: Record<string, string>, file?: { uri: string; name: string; type: string }, onProgress?: (progress: number) => void) {
   const form = new FormData();
   Object.entries(fields).forEach(([key, value]) => form.append(key, value));
   if (file) form.append("file", { uri: file.uri, name: file.name, type: file.type } as unknown as Blob);
+  if (onProgress) {
+    const send = (idToken: string) => new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest(); xhr.open("POST", `${SWICO_API_BASE}${path}`); xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
+      xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100))); };
+      xhr.onerror = () => reject(new SwicoApiError(0, "network_error", "Upload could not reach Swico.", true));
+      xhr.onabort = () => reject(new SwicoApiError(0, "upload_aborted", "Upload was cancelled."));
+      xhr.onload = () => { let body: unknown = {}; try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* safe generic error */ } resolve({ status: xhr.status, body }); };
+      onProgress(0); xhr.send(form);
+    });
+    let result = await send(await token(user));
+    if (result.status === 401) result = await send(await token(user, true));
+    if (result.status < 200 || result.status >= 300) throw new SwicoApiError(result.status, codeOf(result.body), detail(result.body));
+    onProgress(100); return result.body as T;
+  }
   return swicoJson<T>(user, path, { method: "POST", body: form });
 }
-export const uploadDocument = (user: User, file: { uri: string; name: string; type: string }) => uploadForm<unknown>(user, "/api/web/uploads", {}, file);
+export const uploadDocument = (user: User, file: { uri: string; name: string; type: string }, onProgress?: (progress: number) => void) => uploadForm<unknown>(user, "/api/web/uploads", {}, file, onProgress);
 export const deleteUpload = (user: User, id: string) => swicoJson<void>(user, `/api/web/uploads/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const uploadText = (user: User, text: string, operation: string) => swicoJson<unknown>(user, "/api/web/uploads/text", { method: "POST", body: JSON.stringify({ upload_id: requestId(), text, operation }) });
-export const uploadRepository = (user: User, file: { uri: string; name: string; type: string }, repositoryId: string) => uploadForm<RepositorySnapshot>(user, "/api/web/repositories", { repository_id: repositoryId }, file);
+export const uploadRepository = (user: User, file: { uri: string; name: string; type: string }, repositoryId: string, onProgress?: (progress: number) => void) => uploadForm<RepositorySnapshot>(user, "/api/web/repositories", { repository_id: repositoryId }, file, onProgress);
 export const deleteRepository = (user: User, id: string) => swicoJson<void>(user, `/api/web/repositories/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const listKnowledge = (user: User) => swicoJson<{ items: KnowledgeDocument[] }>(user, "/api/web/knowledge");
 export const approveKnowledge = (user: User, uploadId: string) => swicoJson<unknown>(user, "/api/web/knowledge", { method: "POST", body: JSON.stringify({ upload_id: uploadId, confirm_persistence: true }) });
@@ -129,12 +150,25 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
     let offset = 0;
     let accepted = false;
     let settled = false;
+    let terminalEventReceived = false;
+    let terminalError: SwicoStreamError | null = null;
+    const emit = (event: { event: string; data: unknown }) => {
+      if (event.event === "done" || event.event === "error") terminalEventReceived = true;
+      if (event.event === "error") {
+        const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
+        terminalError = new SwicoStreamError(
+          String(data.code || "generation_failed"), String(data.message || "Generation failed."),
+          data.retryable === true, typeof data.retry_at === "string" ? data.retry_at : null,
+        );
+      }
+      handlers.onEvent(event);
+    };
     const finish = (error?: unknown) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
     const consume = () => {
       const text = xhr.responseText || "";
       if (text.length <= offset) return;
       const chunk = text.slice(offset); offset = text.length;
-      parser.push(chunk).forEach(handlers.onEvent);
+      parser.push(chunk).forEach(emit);
     };
     xhr.open("POST", `${SWICO_API_BASE}/api/web/chat/stream`);
     xhr.setRequestHeader("Authorization", `Bearer ${idToken}`);
@@ -146,15 +180,18 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
       if (xhr.readyState !== 4) return;
       consume();
       if (xhr.status >= 200 && xhr.status < 300) {
-        parser.finish().forEach(handlers.onEvent);
-        finish();
+        parser.finish().forEach(emit);
+        finish(terminalError || (terminalEventReceived ? undefined : new SwicoStreamError(
+          "stream_interrupted",
+          "The connection ended before Swico finished. Retry.",
+        )));
       } else {
         let body: unknown = {};
         try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* safe generic error */ }
         finish(new SwicoApiError(xhr.status, codeOf(body), detail(body)));
       }
     };
-    xhr.onerror = () => finish(new SwicoApiError(0, "network_error", "We could not reach Swico."));
+    xhr.onerror = () => finish(new SwicoApiError(0, "network_error", "We could not reach Swico.", true));
     xhr.onabort = () => finish(new DOMException("Aborted", "AbortError"));
     const abort = () => xhr.abort();
     signal.addEventListener("abort", abort, { once: true });

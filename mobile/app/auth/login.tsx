@@ -269,14 +269,14 @@ function createStyles(t: Palette) {
     borderRadius: Radius.sm,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.md,
-    backgroundColor: "rgba(255, 138, 138, 0.12)",
+    backgroundColor: t.dangerSoft,
     borderWidth: 1,
-    borderColor: "rgba(255, 138, 138, 0.32)",
+    borderColor: t.danger,
   },
 
   errorText: {
     flex: 1,
-    color: "#ffb9b9",
+    color: t.danger,
   },
 
   label: {

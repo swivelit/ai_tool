@@ -1,12 +1,11 @@
 import React from "react";
 import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView, type Edge } from "react-native-safe-area-context";
 
 import type { Palette } from "@/constants/theme";
 import { useAppTheme } from "@/hooks/use-app-theme";
 
-/** Calm, full-bleed page background: themed gradient + restrained ambient glow. */
+/** Website-aligned full-bleed page background. */
 function AmbientGlow({ palette }: { palette: Palette }) {
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -18,8 +17,7 @@ function AmbientGlow({ palette }: { palette: Palette }) {
 }
 
 /**
- * Page shell every screen sits on: the shared themed gradient, an optional
- * ambient glow, and a safe-area container. Pass `safeArea={false}` when a
+ * Page shell every screen sits on: the shared semantic background. Pass `safeArea={false}` when a
  * screen manages its own insets (e.g. keyboard-aware composers).
  */
 export function Screen({
@@ -44,9 +42,8 @@ export function Screen({
   const { palette } = useAppTheme();
 
   return (
-    <LinearGradient
-      colors={palette.gradients.page}
-      style={[styles.fill, style]}
+    <View
+      style={[styles.fill, { backgroundColor: palette.background }, style]}
       testID={testID}
       accessibilityLabel={accessibilityLabel}
     >
@@ -58,7 +55,7 @@ export function Screen({
       ) : (
         <View style={[styles.fill, contentStyle]}>{children}</View>
       )}
-    </LinearGradient>
+    </View>
   );
 }
 

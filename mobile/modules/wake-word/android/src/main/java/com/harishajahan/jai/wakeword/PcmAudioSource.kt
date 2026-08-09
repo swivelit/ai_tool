@@ -132,10 +132,11 @@ class PcmAudioSource(
     running.set(true)
     worker = thread(name = "JaiWakeWordAudio", isDaemon = true) {
       val buffer = ShortArray(frameSamples)
+      var filledSamples = 0
       var zeroReadCount = 0
       while (running.get()) {
         val read = try {
-          nextRecorder.read(buffer, 0, buffer.size)
+          nextRecorder.read(buffer, filledSamples, buffer.size - filledSamples)
         } catch (error: Throwable) {
           reportCaptureError(
             PcmCaptureError(
@@ -149,7 +150,11 @@ class PcmAudioSource(
         }
         if (read > 0) {
           zeroReadCount = 0
-          frameQueue.offer(buffer.copyOf(read))
+          filledSamples += read
+          if (filledSamples >= frameSamples) {
+            frameQueue.offer(buffer.copyOf(frameSamples))
+            filledSamples = 0
+          }
         } else if (read == 0) {
           zeroReadCount += 1
           if (zeroReadCount >= MAX_ZERO_READS) {

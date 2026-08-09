@@ -50,6 +50,11 @@ describe("JaiWakeWord native module", () => {
     expect(module).toContain("sendEventOnMain");
     expect(module).toContain("validateFixturePipeline");
     expect(module).toContain("validateModelBundle");
+    expect(module).toContain('AsyncFunction("startRealtimePcm")');
+    expect(module).toContain('AsyncFunction("stopRealtimePcm")');
+    expect(module).toContain('frameSamples');
+    expect(module).toContain('pcm_s16le');
+    expect(module).toContain('onRealtimePcmFrame');
     expect(engine).not.toContain("fun isAvailable(): Boolean = false");
     expect(engine).toContain("OrtEnvironment");
     expect(engine).toContain("OrtSession");
@@ -221,6 +226,7 @@ describe("JaiWakeWord native module", () => {
     expect(inferenceWorker).toContain("isFatalInferenceError");
     expect(inferenceWorker).toContain("permanent = true");
     expect(audio).toContain("PcmAudioSourceListener");
+    expect(audio).toContain("filledSamples");
     expect(audio).toContain("AcousticEchoCanceler.create");
     expect(audio).toContain("NoiseSuppressor.create");
     expect(audio).toContain("AutomaticGainControl.create");

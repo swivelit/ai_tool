@@ -2,26 +2,28 @@ import React, { useEffect } from "react";
 import { ActivityIndicator, LogBox, StyleSheet, Text, View } from "react-native";
 import { Stack, router, usePathname, useRootNavigationState, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
 
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import { isAnyE2eEnvEnabled } from "@/lib/e2eMode";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
 if (isAnyE2eEnvEnabled()) {
   LogBox.ignoreAllLogs(true);
 }
 
 function BootScreen() {
-  return <LinearGradient testID="boot-loading-screen" colors={Brand.gradients.page} style={styles.boot}>
-    <ActivityIndicator color={Brand.caramel} />
-    <Text style={styles.bootTitle}>Loading Swico...</Text>
-    <Text style={styles.bootText}>Restoring your account.</Text>
-  </LinearGradient>;
+  const { palette } = useAppTheme();
+  return <View testID="boot-loading-screen" style={[styles.boot, { backgroundColor: palette.background }]}>
+    <ActivityIndicator color={palette.accent} />
+    <Text style={[styles.bootTitle, { color: palette.text }]}>Loading Swico...</Text>
+    <Text style={[styles.bootText, { color: palette.muted }]}>Restoring your account.</Text>
+  </View>;
 }
 
 function AppShell() {
   const { user, loading } = useAuth();
+  const { isDark } = useAppTheme();
   const pathname = usePathname();
   const segments = useSegments();
   const navigation = useRootNavigationState();
@@ -39,7 +41,7 @@ function AppShell() {
   }, [inChat, isPublicPath, loading, navigation?.key, pathname, user]);
 
   return <View style={styles.root}>
-    <StatusBar style="light" />
+    <StatusBar style={isDark ? "light" : "dark"} />
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="auth/login" />
