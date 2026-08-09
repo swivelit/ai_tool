@@ -11,8 +11,8 @@ const routeSource = fs.readFileSync(path.join(__dirname, "..", "app", "(chat)", 
 
 describe("production mobile voice and chat source contract", () => {
   it("keeps the normal composer text-first and backend controlled", () => {
-    expect(screenSource).toContain('testID="chat-input"');
-    expect(screenSource).toContain('testID="chat-send-button"');
+    expect(screenSource).toContain('testID="swico-chat-input"');
+    expect(screenSource).toContain('testID="swico-send-button"');
     expect(screenSource).toContain("streamChat");
     expect(screenSource).toContain("cancelChatRequest");
     expect(screenSource).not.toContain('testID="chat-mic-button"');

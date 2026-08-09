@@ -28,6 +28,7 @@ function isDevOrTestRuntime() {
 export function isAnyE2eEnvEnabled() {
   return (
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_AUTH")) ||
+    isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_API")) ||
     isTruthy(publicEnv("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO")) ||
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP")) ||
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN")) ||
@@ -47,7 +48,7 @@ export function isAnyE2eEnvEnabled() {
 export function assertE2eModeAllowed() {
   if (isAnyE2eEnvEnabled() && !isDevOrTestRuntime()) {
     throw new Error(
-      "E2E mock auth/model setup/voice/life-context flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, EXPO_PUBLIC_E2E_MOCK_VOICE_TURN, EXPO_PUBLIC_E2E_MOCK_HANDS_FREE, EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO, EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT, EXPO_PUBLIC_E2E_REPLY_LANGUAGE, EXPO_PUBLIC_E2E_TAMIL_STYLE, EXPO_PUBLIC_E2E_VOICE_QUERY, EXPO_PUBLIC_E2E_VOICE_SURFACE, EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT, EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE, and EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND for release/production builds.",
+      "E2E mock auth/API/model setup/voice/life-context flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_MOCK_API, EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, EXPO_PUBLIC_E2E_MOCK_VOICE_TURN, EXPO_PUBLIC_E2E_MOCK_HANDS_FREE, EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO, EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT, EXPO_PUBLIC_E2E_REPLY_LANGUAGE, EXPO_PUBLIC_E2E_TAMIL_STYLE, EXPO_PUBLIC_E2E_VOICE_QUERY, EXPO_PUBLIC_E2E_VOICE_SURFACE, EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT, EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE, and EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND for release/production builds.",
     );
   }
 }
@@ -55,6 +56,11 @@ export function assertE2eModeAllowed() {
 export function isE2eMockAuthEnabled() {
   assertE2eModeAllowed();
   return isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_AUTH"));
+}
+
+export function isE2eApiFixtureEnabled() {
+  assertE2eModeAllowed();
+  return isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_API"));
 }
 
 export function isPlayFgsMicrophoneDemoEnabled() {

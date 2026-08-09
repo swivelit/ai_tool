@@ -144,6 +144,7 @@ start_metro() {
 
   nohup env EXPO_NO_TELEMETRY=1 \
     EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-}" \
+    EXPO_PUBLIC_E2E_MOCK_API="${EXPO_PUBLIC_E2E_MOCK_API:-}" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}" \
     EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}" \
@@ -160,6 +161,9 @@ start_metro() {
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}" \
+    # Android's Expo dev client resolves the local host to the emulator gateway
+    # (10.0.2.2). Bind Metro on the LAN interface so that address is reachable;
+    # adb reverse remains configured for tools and physical-device workflows.
     npx expo start --dev-client --host lan --port "$METRO_PORT" --clear \
     > "$METRO_LOG" 2>&1 &
 
@@ -305,6 +309,7 @@ EOF
 print_debug_env() {
   info "Debug APK environment"
   printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "${EXPO_PUBLIC_E2E_MOCK_AUTH:-}"
+  printf "EXPO_PUBLIC_E2E_MOCK_API=%s\n" "${EXPO_PUBLIC_E2E_MOCK_API:-}"
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}"
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}"
   printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=%s\n" "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"
@@ -417,27 +422,10 @@ fi
 
 if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
+  export EXPO_PUBLIC_E2E_MOCK_API="${EXPO_PUBLIC_E2E_MOCK_API:-1}"
   export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
-  export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
-  export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"
-  export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"
-  export EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT="${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"
   export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
-  export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
-  export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
-  export EXPO_PUBLIC_E2E_VOICE_SURFACE="${EXPO_PUBLIC_E2E_VOICE_SURFACE:-live}"
-  export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"
-  export EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE="${EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE:-Hey Elli}"
-  export EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND="${EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND:-tell me about Spitzola}"
-  export EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="${EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT:-1}"
-  export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
-  export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
-  # APK E2E mock validates mobile voice UI, mic gesture, cached playback, and telemetry.
-  # Backend tests validate real Sarvam TTS speaker/model compatibility; do not rely
-  # on this APK mock as the only regression coverage for provider configuration.
-  # Run once with EXPO_PUBLIC_E2E_REPLY_LANGUAGE=en and once with =ta to validate
-  # both English Settings and Chennai Tamil Settings scenarios.
-  info "APK test mode: E2E mock auth/model setup/voice turn/hands-free command audio enabled; chat composer audio disabled; unverified native inference disabled"
+  info "APK test mode: debug-only Firebase identity plus canonical /api/web contract fixture enabled; production routing remains unchanged"
 fi
 
 info "Checking Firebase Android config for debug APK"

@@ -20,8 +20,8 @@ describe("voice-only file handling", () => {
     expect(chatSource).not.toContain('testID="open-voice-mode-button"');
     expect(chatSource).not.toContain('testID="chat-mic-button"');
     expect(chatSource).not.toContain("Hold the mic to talk");
-    expect(chatSource).toContain('testID="chat-input"');
-    expect(chatSource).toContain('testID="chat-send-button"');
+    expect(chatSource).toContain('testID="swico-chat-input"');
+    expect(chatSource).toContain('testID="swico-send-button"');
     expect(chatSource).not.toContain("!voiceOnlyMode ? (");
     expect(chatSource).not.toContain("voiceOnlyInitialOpenRef");
     expect(chatSource).not.toContain("voiceOnlyMode &&");

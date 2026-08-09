@@ -2,6 +2,8 @@ import type { User } from "firebase/auth";
 import Constants from "expo-constants";
 
 import { auth } from "./firebase";
+import { isE2eApiFixtureEnabled } from "./e2eMode";
+import { fixtureJson, fixtureStreamChat } from "./swicoE2eFixture";
 import { SwicoSSEParser } from "./swicoStream";
 import type {
   AssistantSettings, Bootstrap, ChatRequestPayload, CreditBucket, InputMode, KnowledgeDocument,
@@ -119,6 +121,7 @@ export async function authorizedFetch(user: User, path: string, init: RequestIni
 }
 
 export async function swicoJson<T>(user: User, path: string, init: RequestInit = {}) {
+  if (isE2eApiFixtureEnabled()) return fixtureJson<T>(user, path, init);
   const response = await authorizedFetch(user, path, init);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw apiError(response.status, body);
@@ -173,6 +176,10 @@ export const cancelChatRequest = (user: User, id: string) => swicoJson<{ status:
 export const chatRequestStatus = (user: User, id: string) => swicoJson<Record<string, unknown>>(user, `/api/web/chat/requests/${encodeURIComponent(id)}/status`);
 
 async function uploadForm<T>(user: User, path: string, fields: Record<string, string>, file?: { uri: string; name: string; type: string }, onProgress?: (progress: number) => void) {
+  if (isE2eApiFixtureEnabled()) {
+    onProgress?.(100);
+    return fixtureJson<T>(user, path, { method: "POST", body: JSON.stringify(fields) });
+  }
   const form = new FormData();
   Object.entries(fields).forEach(([key, value]) => form.append(key, value));
   if (file) form.append("file", { uri: file.uri, name: file.name, type: file.type } as unknown as Blob);
@@ -267,6 +274,10 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
   });
 }
 export async function streamChat(user: User, payload: ChatRequestPayload, handlers: StreamHandlers, signal: AbortSignal) {
+  if (isE2eApiFixtureEnabled()) {
+    await fixtureStreamChat(user, payload, handlers, signal);
+    return;
+  }
   try {
     await streamAttempt(user, payload, handlers, signal);
   } catch (error) {

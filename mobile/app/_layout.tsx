@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { ActivityIndicator, LogBox, StyleSheet, Text, View } from "react-native";
 import { Stack, router, usePathname, useRootNavigationState, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -24,6 +24,7 @@ function BootScreen() {
 function AppShell() {
   const { user, loading } = useAuth();
   const { isDark } = useAppTheme();
+  const [rootMounted, setRootMounted] = useState(false);
   const pathname = usePathname();
   const segments = useSegments();
   const navigation = useRootNavigationState();
@@ -32,13 +33,21 @@ function AppShell() {
   const isPublicPath = (pathname === "/" && !inChat) || isAuthPath;
 
   useEffect(() => {
-    if (loading || !navigation?.key) return;
+    // Expo Router must mount the Stack before an auth redirect can run.
+    // This also makes the instant debug E2E identity follow the same lifecycle
+    // as a restored Firebase session instead of navigating during first render.
+    const frame = requestAnimationFrame(() => setRootMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!rootMounted || loading || !navigation?.key) return;
     if (user && !inChat) {
       router.replace("/(chat)");
     } else if (!user && !isPublicPath) {
       router.replace("/");
     }
-  }, [inChat, isPublicPath, loading, navigation?.key, pathname, user]);
+  }, [inChat, isPublicPath, loading, navigation?.key, pathname, rootMounted, user]);
 
   return <View style={styles.root}>
     <StatusBar style={isDark ? "light" : "dark"} />
