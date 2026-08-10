@@ -61,6 +61,26 @@ describe("current native Swico APK E2E contract", () => {
     expect(config).toContain("Release/production builds cannot enable debug E2E flags");
   });
 
+  it("keeps every recognized E2E-only flag blocked in release configuration", () => {
+    const config = readMobile("app.config.ts");
+    const releaseScript = readRepo("scripts/build-android_release-apk.sh");
+    const mode = readMobile("lib/e2eMode.ts");
+    expect(mode).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
+    expect(config).toContain("E2E_PLAY_FGS_MICROPHONE_DEMO");
+    expect(config).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO:");
+    expect(releaseScript).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
+  });
+
+  it("uses a device-compatible ABI and captures standalone release diagnostics", () => {
+    const launcher = readRepo("launch-release_apk.sh");
+    expect(launcher).toContain("jai_android_read_device_abilist");
+    expect(launcher).toContain('JAI_ANDROID_ABIS="$QA_ABI" BUILD_TYPE=release');
+    expect(launcher).toContain("adb shell am start -W -n");
+    expect(launcher).toContain("release-smoke-");
+    expect(launcher).toContain("logcat-crash.log");
+    expect(launcher).not.toContain("adb shell monkey");
+  });
+
   it("keeps the production entry backend-first", () => {
     const route = readMobile("app/(chat)/index.tsx");
     const chat = readMobile("components/swico/SwicoChatScreen.tsx");
