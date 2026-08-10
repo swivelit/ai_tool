@@ -113,6 +113,8 @@ describe("mobile parity contracts", () => {
     const features = { web_cross_thread_memory: true, web_repository_validation: true, web_response_provenance: true, web_answer_guard: true, web_knowledge_library: true } as import("../lib/swicoTypes").FeatureFlags;
     expect(crossChatMemoryAvailable(features, true)).toBe(true);
     expect(crossChatMemoryAvailable(features, false)).toBe(false);
+    expect(crossChatMemoryAvailable({ ...features, web_cross_thread_memory: false }, true)).toBe(false);
+    expect(usageLimitControlsAvailable(false)).toBe(true);
     expect(usageLimitControlsAvailable(true)).toBe(false);
     expect(repositoryValidationVisible(features)).toBe(true);
     expect(responseProvenanceVisible(features)).toBe(true);

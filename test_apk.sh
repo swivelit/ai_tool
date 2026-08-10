@@ -35,11 +35,29 @@ restore_network() {
 }
 trap restore_network EXIT
 
+run_bounded() {
+  local seconds="$1"
+  shift
+  "$@" &
+  local command_pid=$!
+  local elapsed=0
+  while kill -0 "$command_pid" >/dev/null 2>&1; do
+    if (( elapsed >= seconds )); then
+      kill "$command_pid" >/dev/null 2>&1 || true
+      wait "$command_pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$command_pid"
+}
+
 dump_ui() {
   local label="$1"
   local output="$ARTIFACT_DIR/ui-$label.xml"
-  if adb shell uiautomator dump /sdcard/swico-window.xml > "$ARTIFACT_DIR/uiautomator-$label.log" 2>&1 &&
-    adb exec-out cat /sdcard/swico-window.xml > "$output" 2>/dev/null && [[ -s "$output" ]]; then
+  if run_bounded 3 adb shell uiautomator dump /sdcard/swico-window.xml > "$ARTIFACT_DIR/uiautomator-$label.log" 2>&1 &&
+    run_bounded 3 adb exec-out cat /sdcard/swico-window.xml > "$output" 2>/dev/null && [[ -s "$output" ]]; then
     printf '%s\n' "$output"
     return 0
   fi
@@ -147,7 +165,7 @@ else
     assert_target "swico-new-chat" "new-chat-visible"
     assert_target "swico-search-input" "search-visible"
     assert_target "swico-archived-tab" "archived-tab-visible"
-    assert_target "Token credits" "token-credit-card-visible"
+    assert_target "swico-token-credits" "token-credit-card-visible"
     assert_target "E2E Tester" "account-row-visible"
     if tap_target "Open account menu" account-menu; then
       assert_target "Toggle theme" "account-theme-action-visible"
@@ -169,7 +187,7 @@ else
     tap_target "swico-settings-section-general" settings-general || true
     assert_target "Mode changes apply to your next message." "settings-tier-copy-visible"
     tap_target "swico-settings-section-profile" settings-profile || true
-    assert_target "Email: e2e@local.test" "settings-email-readonly-copy-visible"
+    assert_target "swico-profile-email-readonly" "settings-email-readonly-copy-visible"
     close_modal
   else
     fail_check "settings-open"
@@ -187,8 +205,8 @@ else
   if tap_target "swico-drawer-button" billing-drawer && tap_target "swico-token-credits" billing-open; then
     pass "billing-opens-without-payment"
     assert_target "swico-billing-modal" "billing-modal-visible"
-    assert_target "Chat credits" "billing-chat-tab-visible"
-    assert_target "Voice credits" "billing-voice-tab-visible"
+    assert_target "swico-billing-chat" "billing-chat-tab-visible"
+    assert_target "swico-billing-voice" "billing-voice-tab-visible"
     tap_target "swico-billing-close" billing-close || close_modal
   else
     fail_check "billing-open"
@@ -238,24 +256,21 @@ else
     fail_check "search-flow"
   fi
 
-  if has_target "swico-realtime-voice-button" voice-button; then
+    if has_target "swico-realtime-voice-button" voice-button; then
     pass "realtime-voice-control-visible"
-    if has_target "Realtime voice" voice-ready && tap_target "Realtime voice" voice-open; then
-      if wait_target "Voice Mode" 12 voice-mode; then
+    if tap_target "swico-realtime-voice-button" voice-open && wait_target "swico-voice-mode" 12 voice-mode; then
         pass "voice-mode-opens"
-        assert_target "Mute" "voice-mute-control-visible"
-        assert_target "End voice" "voice-end-control-visible"
-        tap_target "End voice" voice-end || close_modal
+        assert_target "swico-voice-status" "voice-status-visible"
+        assert_target "swico-voice-mute" "voice-mute-control-visible"
+        assert_target "swico-voice-end" "voice-end-control-visible"
+        tap_target "swico-voice-end" voice-end || close_modal
       else
         skip_check "voice-mode-native-transport-not-ready-in-emulator"
         close_modal
       fi
     else
-      skip_check "voice-mode-disabled-by-current-readiness-reason"
+      skip_check "realtime-voice-feature-unavailable"
     fi
-  else
-    skip_check "realtime-voice-feature-unavailable"
-  fi
 
   adb shell svc wifi disable >/dev/null 2>&1 || true
   adb shell svc data disable >/dev/null 2>&1 || true

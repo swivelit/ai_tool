@@ -257,12 +257,11 @@ run_apk_harness_scenario() {
       if grep -E "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$latest_artifact"/logcat-full.log "$latest_artifact"/memory-pressure-package.log >/dev/null 2>&1; then
         app_lowmemory=1
       fi
-      if grep -E "external-system-ui-anr|external-system-app-anr|external-emulator-disconnected|no-android-device" "$latest_artifact"/skipped.log "$latest_artifact"/summary.txt >/dev/null 2>&1 ||
+      if grep -E "external-system-ui-anr|external-system-app-anr|external-emulator-disconnected|no-android-device|Cannot connect to Metro|Couldn't connect to .*8081|connection abort" "$latest_artifact"/skipped.log "$latest_artifact"/summary.txt "$latest_artifact"/logcat-full.log >/dev/null 2>&1 ||
         [[ -s "$latest_artifact/memory-pressure-system.log" ]]; then
         external_instability=1
       fi
-      if [[ -f "$latest_artifact/ui-chat-ready.xml" ||
-        -f "$latest_artifact/app-pid-during-voice-test.log" ||
+      if [[ -f "$latest_artifact/app-pid-during-voice-test.log" ||
         -f "$latest_artifact/voice-markers.log" ||
         -f "$latest_artifact/hands-free-markers.log" ||
         -f "$latest_artifact/screen-hands-free-before.png" ]]; then

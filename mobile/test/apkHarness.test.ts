@@ -13,10 +13,14 @@ describe("current native Swico APK E2E contract", () => {
     const billing = readMobile("components/swico/SwicoBilling.tsx");
     const legal = readMobile("components/swico/SwicoLegalScreen.tsx");
     for (const selector of [
-      "swico-chat-input", "swico-send-button", "swico-drawer-button", "swico-settings-button",
-      "swico-new-chat", "swico-search-input", "swico-tier-button", "swico-attachment-button",
-      "swico-repository-button", "swico-dictation-button", "swico-realtime-voice-button",
-      "swico-settings-modal", "swico-billing-modal", "Voice Mode", "swico-legal-screen",
+      "swico-chat-input", "swico-send-button", "swico-drawer-button", "swico-drawer-close", "swico-settings-button",
+      "swico-new-chat", "swico-search-input", "swico-archived-tab", "swico-tier-button", "swico-attachment-button",
+      "swico-repository-button", "swico-dictation-button", "swico-realtime-voice-button", "swico-user-message", "swico-assistant-message",
+      "swico-settings-modal", "swico-settings-close", "swico-settings-section-${id}", "swico-tier-modal", "swico-tier-option-${option.id}",
+      "swico-token-credits", "swico-billing-modal", "swico-billing-close", "swico-billing-chat", "swico-billing-voice",
+      "swico-legal-screen", "swico-legal-close", "swico-voice-mode", "swico-voice-status", "swico-voice-mute",
+      "swico-voice-end", "swico-voice-retry", "swico-profile-email-readonly", "swico-cross-chat-memory-toggle",
+      "swico-cross-chat-memory-unavailable", "swico-usage-limit-controls", "swico-usage-unlimited",
     ]) {
       expect([chat, settings, billing, legal].join("\n")).toContain(selector);
     }
@@ -31,6 +35,8 @@ describe("current native Swico APK E2E contract", () => {
     expect(harness).not.toContain("e2e-hands-free-trigger-button");
     expect(harness).not.toContain("history-voice-kind-label-missing");
     expect(harness).not.toContain("agent_local_greeting");
+    expect(harness).not.toContain('assert_target "Email: e2e@local.test"');
+    expect(harness).not.toContain('assert_target "End voice"');
   });
 
   it("retains Android safety checks while targeting current flows", () => {
