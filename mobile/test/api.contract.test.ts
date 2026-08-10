@@ -1539,13 +1539,14 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe("Backend should not be called.");
   });
 
-  it("answers simple chat through the local quick-reply fast path", async () => {
+  it("answers simple chat through the supported backend-first route", async () => {
+    mockCachedProfile(null);
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
-            USE_LOCAL_CHAT_PIPELINE: true,
+            USE_LOCAL_CHAT_PIPELINE: false,
           },
         },
       },
@@ -1565,11 +1566,11 @@ describe("API client contracts", () => {
     vi.doMock("../lib/localAgents", () => ({ runLocalAssistantTurn }));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     const fetchMock = vi.fn(async () =>
-      jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
+      jsonResponse({ ok: true, assistant: { text: "Backend answer." }, meta: { source: "backend" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
+    const { apiPost } = await import("../lib/api");
     const payload = await apiPost<any>("/api/chat", {
       user_id: 7,
       message: "What are you up to ?",
@@ -1577,13 +1578,10 @@ describe("API client contracts", () => {
     });
 
     expect(payload.ok).toBe(true);
-    expect(payload.meta.source).toBe("local_quick_reply");
-    expect(payload.meta.fastPath).toBe(true);
-    expect(payload.pipeline.route_taken).toBe("small_talk");
-    expect(payload.pipeline.direct_answer_source).toBe("local_rules");
-    expect(payload.assistant.text).toBe("I'm here and ready whenever you need me.");
+    expect(payload.meta.source).toBe("backend");
+    expect(payload.assistant.text).toBe("Backend answer.");
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
-    expect(backendChatCalls(fetchMock)).toHaveLength(0);
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
   });
 
   it("emits startup telemetry with API base and routing mode", async () => {

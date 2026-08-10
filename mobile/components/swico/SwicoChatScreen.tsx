@@ -27,17 +27,17 @@ import {
 } from "@/lib/swicoApi";
 import { emptySwicoStreamState, reduceSwicoStream, type SwicoStreamState } from "@/lib/swicoChatReducer";
 import type { Attachment, Bootstrap, InputMode, Message, RepositorySnapshot, SearchResult, Thread } from "@/lib/swicoTypes";
-import { SwicoRealtimeVoiceTransport, realtimePcmAvailable } from "@/lib/swicoRealtimeVoice";
+import { SwicoRealtimeVoiceTransport, realtimePcmAvailable, realtimePcmPlaybackAvailable, startRealtimePcmPlayback, stopRealtimePcmPlayback, validateRealtimeAudioStart, writeRealtimePcmPlayback } from "@/lib/swicoRealtimeVoice";
 import { useConnectivity } from "@/hooks/use-connectivity";
 import { repositoryDetachCode, repositoryExpired, repositoryUsable } from "@/lib/swicoRepository";
 import { SwicoBilling } from "./SwicoBilling";
 import { SwicoLegalScreen } from "./SwicoLegalScreen";
 import { SwicoSettings } from "./SwicoSettings";
-import { tokenRangeLabel } from "@/lib/swicoBilling";
-import { assistantActionsEnabled, hasSendableContent, latestEditableUserId } from "@/lib/swicoMessageEligibility";
+import { applyAuthoritativeVoiceWallet, tokenRangeLabel } from "@/lib/swicoBilling";
+import { assistantActionsEnabled, hasSendableContent, latestEditableUserId, retryAvailability } from "@/lib/swicoMessageEligibility";
 import { fallbackMessageOffset, messageIndexForSearch } from "@/lib/swicoNavigation";
 import { VoiceReplyCache, type VoiceReplyState } from "@/lib/swicoVoiceReply";
-import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, voiceAvailability } from "@/lib/swicoCapabilities";
+import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, responseProvenanceVisible, voiceAvailability } from "@/lib/swicoCapabilities";
 
 function nowIso() { return new Date().toISOString(); }
 function makeUserMessage(text: string, requestId: string, threadId: string) : Message {
@@ -100,6 +100,7 @@ export default function SwicoChatScreen() {
   const stopConfirmedRef = useRef(false);
   const voiceCacheRef = useRef(new VoiceReplyCache<Audio.Sound>(8));
   const activeVoiceMessageRef = useRef<string | null>(null);
+  const dictationRecordingRef = useRef<Audio.Recording | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
   const pinnedToBottomRef = useRef(true);
   const offline = useConnectivity();
@@ -429,6 +430,7 @@ export default function SwicoChatScreen() {
         message_id: message.id,
         voice_turn_id: message.voice_turn_id,
       });
+      setBootstrap(value => value ? applyAuthoritativeVoiceWallet(value, audio.wallet) : value);
       const uri = `${FileSystem.cacheDirectory || ""}swico-reply-${Date.now()}.m4a`;
       await FileSystem.writeAsStringAsync(uri, audio.audio_base64, { encoding: FileSystem.EncodingType.Base64 });
       const loaded = await Audio.Sound.createAsync({ uri }, { shouldPlay: false });
@@ -573,15 +575,21 @@ export default function SwicoChatScreen() {
     try {
       await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await recording.startAsync();
-      Alert.alert("Dictation", "Speak now, then press Stop.", [{ text: "Stop", onPress: async () => {
-        await recording.stopAndUnloadAsync();
+      dictationRecordingRef.current = recording;
+      const finish = async (cancelled: boolean) => {
+        if (dictationRecordingRef.current !== recording) return;
+        dictationRecordingRef.current = null;
+        await recording.stopAndUnloadAsync().catch(() => undefined);
         const uri = recording.getURI();
         if (!uri) return;
-        const result = await transcribeAudioUri(user, { uri, name: "recording.m4a", type: "audio/mp4" }, newSwicoRequestId(), newSwicoRequestId(), bootstrap.user.reply_language);
-        setDraft(value => `${value}${value ? " " : ""}${result.transcript}`);
-        setDraftVoiceTurnId(result.voice_turn_id);
+        if (!cancelled) {
+          const result = await transcribeAudioUri(user, { uri, name: "recording.m4a", type: "audio/mp4" }, newSwicoRequestId(), newSwicoRequestId(), bootstrap.user.reply_language);
+          setDraft(value => `${value}${value ? " " : ""}${result.transcript}`);
+          setDraftVoiceTurnId(result.voice_turn_id);
+        }
         void FileSystem.deleteAsync(uri, { idempotent: true });
-      }}]);
+      };
+      Alert.alert("Dictation", "Speak now, then press Stop.", [{ text: "Cancel", style: "cancel", onPress: () => void finish(true) }, { text: "Stop", onPress: () => void finish(false) }]);
     } catch { setError("The microphone could not start."); }
   }, [bootstrap, offline, user]);
 
@@ -633,7 +641,15 @@ export default function SwicoChatScreen() {
       return [{ ...last, content: stitchContinuationMarkdown([item, ...children]), sources: last.sources?.length ? last.sources : item.sources, quality: last.quality || item.quality }];
     });
   }, [messages]);
-  const displayMessages = useMemo(() => logicalMessages.map(message => ({ ...message, content: editedResponses[message.id] ?? message.content })), [editedResponses, logicalMessages]);
+  const displayMessages = useMemo(() => logicalMessages.map(message => {
+    if (message.role !== "assistant") return { ...message, content: editedResponses[message.id] ?? message.content };
+    const provenanceEnabled = bootstrap ? responseProvenanceVisible(bootstrap.features) : false;
+    const repositoryValidationEnabled = bootstrap?.features.web_repository_validation === true;
+    const quality = provenanceEnabled && message.quality
+      ? repositoryValidationEnabled ? message.quality : { ...message.quality, repository_validation_mode: null, checks: message.quality.checks.filter(check => !check.type.startsWith("repository_")) }
+      : undefined;
+    return { ...message, content: editedResponses[message.id] ?? message.content, sources: message.sources, provenance: provenanceEnabled ? message.provenance : undefined, quality };
+  }), [bootstrap, editedResponses, logicalMessages]);
   const latestEditableId = useMemo(() => bootstrap && bootstrap.features.web_message_edit === true ? latestEditableUserId(messages, streaming) : null, [bootstrap, messages, streaming]);
   const sendable = hasSendableContent(draft, attachments, Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user?.uid || "", activeThread)), Boolean(bootstrap?.features.web_repository_chat));
   const attachmentsEnabled = Boolean(bootstrap && canUseAttachments(bootstrap.features));
@@ -676,7 +692,7 @@ export default function SwicoChatScreen() {
           <View style={styles.composerTools}>{attachmentsEnabled ? <Pressable testID="swico-attachment-button" onPress={pickDocument} accessibilityLabel="Attach file"><Ionicons name="add-circle-outline" size={25} color={t.accent} /></Pressable> : null}{repositoryUploadEnabled ? <Pressable testID="swico-repository-button" onPress={pickRepository} accessibilityLabel="Attach repository"><Ionicons name="logo-github" size={21} color={t.accent} /></Pressable> : null}{dictationEnabled ? <Pressable testID="swico-dictation-button" onPress={() => void startDictation()} accessibilityLabel="Dictate"><Ionicons name="mic-outline" size={23} color={t.accent} /></Pressable> : null}<Pressable testID="swico-realtime-voice-button" disabled={!realtimeNativeAvailable} onPress={openRealtimeVoice} accessibilityLabel={realtimeNativeAvailable ? "Realtime voice" : realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."} style={!realtimeNativeAvailable ? styles.sendDisabled : undefined}><Ionicons name="radio-outline" size={21} color={realtimeNativeAvailable ? t.accent : t.muted} /></Pressable><Pressable testID="swico-tier-button" onPress={() => setTierModal(true)} style={styles.tierPill}><Text style={styles.tierPillText}>{bootstrap.assistant.tier_label}</Text><Ionicons name="chevron-down" size={14} color={t.accent} /></Pressable></View>
           {!realtimeNativeAvailable ? <Text style={styles.attachmentMeta}>{realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."}</Text> : null}
           {bootstrap.uploads.long_input_enabled && draft.length > (bootstrap.uploads.long_input_inline_threshold_chars || 16000) ? <View style={styles.longInputRow}><Text style={styles.attachmentMeta}>Large text action</Text>{(["summarize", "analyze", "ask_questions", "rewrite", "translate"] as const).map(mode => <Pressable key={mode} onPress={() => setLongInputMode(mode)} style={[styles.modePill, longInputMode === mode && styles.modePillSelected]}><Text style={styles.modeText}>{mode.replace("_", " ")}</Text></Pressable>)}</View> : null}
-          <TextInput testID="swico-chat-input" accessibilityLabel="Swico chat input" value={draft} onChangeText={setDraft} placeholder="Message Swico" placeholderTextColor={t.muted} multiline maxLength={bootstrap.uploads.long_input_enabled ? (bootstrap.uploads.long_input_max_chars || 64000) : 16000} style={styles.input} editable={!streaming && !uploading} onSubmitEditing={() => void send()} blurOnSubmit={false} />
+          <TextInput testID="swico-chat-input" accessibilityLabel="Swico chat input" value={draft} onChangeText={setDraft} placeholder={offline ? "Reconnect to send a message" : "Message Swico"} placeholderTextColor={t.muted} multiline maxLength={bootstrap.uploads.long_input_enabled ? (bootstrap.uploads.long_input_max_chars || 64000) : 16000} style={styles.input} editable={!offline && !streaming && !uploading} onSubmitEditing={() => void send()} blurOnSubmit={false} />
           <Pressable testID="swico-send-button" accessibilityLabel={streaming ? "Stop generation" : "Send message"} onPress={() => streaming ? void stop() : void send()} disabled={offline || uploading || (!streaming && !sendable)} accessibilityState={{ disabled: offline || uploading || (!streaming && !sendable) }} style={[styles.sendButton, (offline || uploading || (!streaming && !sendable)) && styles.sendDisabled]}><Ionicons name={streaming ? "stop" : "arrow-up"} size={20} color={t.accentText} /></Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -684,7 +700,7 @@ export default function SwicoChatScreen() {
       <TierModal visible={tierModal} onClose={() => setTierModal(false)} bootstrap={bootstrap} onChoose={async tier => { try { const assistant = await updateAssistant(user, tier); setBootstrap(value => value ? { ...value, assistant } : value); setTierModal(false); } catch (caught) { setError((caught as Error).message); } }} />
       <SwicoSettings visible={settingsModal} onClose={() => setSettingsModal(false)} user={user} bootstrap={bootstrap} onBootstrap={setBootstrap} offline={offline} onBilling={() => { if (!offline) { setBillingBucket("chat"); setBilling(true); } }} onLegal={setLegalPage} onArchived={() => { setSettingsModal(false); setArchived(true); setDrawer(true); void reloadThreads(true); }} />
       <SwicoBilling visible={billing} close={() => setBilling(false)} user={user} config={bootstrap.billing} initialBucket={billingBucket} offline={offline} refreshed={async () => { setBootstrap(await getBootstrap(user)); }} />
-      <RealtimeVoiceModal visible={realtimeVoice} onClose={() => setRealtimeVoice(false)} user={user} threadId={activeThread} onRefresh={() => { if (activeThread) void reloadMessages(activeThread); void reloadThreads(false); }} />
+      <RealtimeVoiceModal visible={realtimeVoice} onClose={() => setRealtimeVoice(false)} user={user} threadId={activeThread} onRefresh={() => { if (activeThread) void reloadMessages(activeThread); void reloadThreads(false); }} onAddCredits={() => { setRealtimeVoice(false); setBillingBucket("voice"); setBilling(true); }} />
       <ResponseEditorModal message={editorMessage} originalContent={editorMessage ? messages.find(item => item.id === editorMessage.id)?.content ?? editorMessage.content : undefined} initialContent={editorMessage ? editedResponses[editorMessage.id] : undefined} onClose={() => setEditorMessage(null)} onApply={(content) => { if (!editorMessage) return; setEditedResponses(value => ({ ...value, [editorMessage.id]: content })); }} />
       <Modal visible={Boolean(renameTarget)} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}><View style={styles.modalScrim}><View style={styles.renameCard}><Text style={styles.sheetTitle}>Rename chat</Text><TextInput autoFocus value={renameTitle} onChangeText={setRenameTitle} style={styles.settingsInput} placeholder="Chat name" placeholderTextColor={t.muted} /><View style={styles.renameActions}><Pressable onPress={() => setRenameTarget(null)}><Text style={styles.tab}>Cancel</Text></Pressable><Pressable onPress={() => void saveRename()} style={styles.saveButton}><Text style={styles.saveText}>Save</Text></Pressable></View></View></View></Modal>
     </Screen>
@@ -695,10 +711,17 @@ function MessageRow({ message, highlighted, retryTick: _retryTick, editable = fa
   const { palette: t } = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const assistant = message.role === "assistant";
+  const retryState = retryAvailability(message);
   const retryAt = message.retry_at ? Date.parse(message.retry_at) : NaN;
-  const retryBlocked = message.status === "retryable" && Number.isFinite(retryAt) && retryAt > Date.now();
+  const retryBlocked = retryState.blocked;
   const voiceIcon = voiceState === "generating" ? "hourglass-outline" : voiceState === "playing" ? "pause-outline" : "volume-medium-outline";
-  return <View style={[styles.messageRow, assistant ? styles.assistantRow : styles.userRow]}><View style={[styles.messageCard, assistant ? styles.assistantCard : styles.userCard, highlighted && { borderColor: t.accent, borderWidth: 2 }]}>{assistant ? <MarkdownText value={message.content || "…"} /> : <Text style={styles.userText}>{message.content}</Text>}{message.status === "retryable" ? <Pressable disabled={retryBlocked} onPress={onRetry} style={[styles.retryButton, retryBlocked && styles.sendDisabled]}><Ionicons name="refresh-outline" size={15} color={t.caramel} /><Text style={styles.retryText}>{retryBlocked ? `Retry in ${Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))}s` : "Retry"}</Text></Pressable> : null}{assistant && message.sources?.length ? <SourcesPanel sources={message.sources} /> : null}{assistant && message.quality ? <QualityPanel quality={message.quality} /> : null}{assistant && assistantActions.completed && message.truncated && message.can_continue ? <Pressable onPress={onContinue} style={styles.continueButton}><Text style={styles.continueText}>Continue generating</Text></Pressable> : null}{assistant && assistantActions.completed ? <View style={styles.messageActions}><Pressable onPress={onCopy} accessibilityLabel="Copy message"><Ionicons name="copy-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onEditResponse} accessibilityLabel="Edit response"><Ionicons name="pencil-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onDownload} accessibilityLabel="Download response"><Ionicons name="download-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onOpenEditor} accessibilityLabel="Open response editor"><Ionicons name="reader-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onShare} accessibilityLabel="Share response"><Ionicons name="share-outline" size={16} color={t.muted} /></Pressable>{assistantActions.voice ? <Pressable onPress={onVoice} accessibilityLabel={voiceState === "generating" ? "Generating voice reply" : voiceState === "playing" ? "Pause voice reply" : voiceState === "ended" ? "Replay voice reply" : "Play voice reply"}><Ionicons name={voiceIcon} size={16} color={voiceState === "error" ? t.danger : t.muted} /></Pressable> : null}<Pressable onPress={onRegenerate} accessibilityLabel="Regenerate response"><Ionicons name="refresh-outline" size={16} color={t.muted} /></Pressable>{assistantActions.feedback ? <><Pressable onPress={() => onFeedback("up")} accessibilityLabel="Good response"><Ionicons name="thumbs-up-outline" size={16} color={message.feedback_rating === "up" ? t.accent : t.muted} /></Pressable><Pressable onPress={() => onFeedback("down")} accessibilityLabel="Poor response"><Ionicons name="thumbs-down-outline" size={16} color={message.feedback_rating === "down" ? t.accent : t.muted} /></Pressable></> : null}</View> : !assistant && editable ? <View style={styles.messageActions}><Pressable onPress={onEdit} accessibilityLabel="Edit message"><Ionicons name="create-outline" size={16} color={t.muted} /></Pressable></View> : null}</View></View>;
+  return <View style={[styles.messageRow, assistant ? styles.assistantRow : styles.userRow]}><View style={[styles.messageCard, assistant ? styles.assistantCard : styles.userCard, highlighted && { borderColor: t.accent, borderWidth: 2 }]}>{assistant ? <MarkdownText value={message.content || "…"} /> : <Text style={styles.userText}>{message.content}</Text>}{assistant && message.provenance?.length ? <ProvenancePanel values={message.provenance} /> : null}{message.status === "retryable" ? <Pressable disabled={retryBlocked} onPress={onRetry} style={[styles.retryButton, retryBlocked && styles.sendDisabled]}><Ionicons name="refresh-outline" size={15} color={t.caramel} /><Text style={styles.retryText}>{retryBlocked ? `Retry in ${Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))}s` : "Retry"}</Text></Pressable> : null}{assistant && message.sources?.length ? <SourcesPanel sources={message.sources} /> : null}{assistant && message.quality ? <QualityPanel quality={message.quality} /> : null}{assistant && assistantActions.completed && message.truncated && message.can_continue ? <Pressable onPress={onContinue} style={styles.continueButton}><Text style={styles.continueText}>Continue generating</Text></Pressable> : null}{assistant && assistantActions.completed ? <View style={styles.messageActions}><Pressable onPress={onCopy} accessibilityLabel="Copy message"><Ionicons name="copy-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onEditResponse} accessibilityLabel="Edit response"><Ionicons name="pencil-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onDownload} accessibilityLabel="Download response"><Ionicons name="download-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onOpenEditor} accessibilityLabel="Open response editor"><Ionicons name="reader-outline" size={16} color={t.muted} /></Pressable><Pressable onPress={onShare} accessibilityLabel="Share response"><Ionicons name="share-outline" size={16} color={t.muted} /></Pressable>{assistantActions.voice ? <Pressable onPress={onVoice} accessibilityLabel={voiceState === "generating" ? "Generating voice reply" : voiceState === "playing" ? "Pause voice reply" : voiceState === "ended" ? "Replay voice reply" : "Play voice reply"}><Ionicons name={voiceIcon} size={16} color={voiceState === "error" ? t.danger : t.muted} /></Pressable> : null}<Pressable onPress={onRegenerate} accessibilityLabel="Regenerate response"><Ionicons name="refresh-outline" size={16} color={t.muted} /></Pressable>{assistantActions.feedback ? <><Pressable onPress={() => onFeedback("up")} accessibilityLabel="Good response"><Ionicons name="thumbs-up-outline" size={16} color={message.feedback_rating === "up" ? t.accent : t.muted} /></Pressable><Pressable onPress={() => onFeedback("down")} accessibilityLabel="Poor response"><Ionicons name="thumbs-down-outline" size={16} color={message.feedback_rating === "down" ? t.accent : t.muted} /></Pressable></> : null}</View> : !assistant && editable ? <View style={styles.messageActions}><Pressable onPress={onEdit} accessibilityLabel="Edit message"><Ionicons name="create-outline" size={16} color={t.muted} /></Pressable></View> : null}</View></View>;
+}
+
+function ProvenancePanel({ values }: { values: NonNullable<Message["provenance"]> }) {
+  const { palette: t } = useAppTheme();
+  const labels: Record<string, string> = { memory: "Used memory", document: "Used document", repository: "Repository context used", cached_answer: "Cached answer", semantic_cache: "Semantic cache", backend_tool: "Backend tool", web_search: "Web search" };
+  return <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 9 }}>{values.map(value => <View key={value} style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, borderWidth: 1, borderColor: t.line }}><Text style={{ color: t.muted, fontSize: 11 }}>{labels[value] || value.replace(/_/g, " ")}</Text></View>)}</View>;
 }
 
 function SourcesPanel({ sources }: { sources: NonNullable<Message["sources"]> }) {
@@ -722,11 +745,12 @@ function ResponseEditorModal({ message, originalContent, initialContent, onClose
 
 const stylesEditor = StyleSheet.create({ tab: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 }, apply: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 9 } });
 
-function RealtimeVoiceModal({ visible, onClose, user, threadId, onRefresh }: { visible: boolean; onClose: () => void; user: NonNullable<ReturnType<typeof useAuth>["user"]>; threadId: string | null; onRefresh: () => void }) {
+function RealtimeVoiceModal({ visible, onClose, user, threadId, onRefresh, onAddCredits }: { visible: boolean; onClose: () => void; user: NonNullable<ReturnType<typeof useAuth>["user"]>; threadId: string | null; onRefresh: () => void; onAddCredits: (bucket: "voice") => void }) {
   const { palette: t } = useAppTheme();
   const [phase, setPhase] = useState("connecting");
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [userTranscript, setUserTranscript] = useState("");
   const [swicoTranscript, setSwicoTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
@@ -735,43 +759,92 @@ function RealtimeVoiceModal({ visible, onClose, user, threadId, onRefresh }: { v
   const transportRef = useRef<SwicoRealtimeVoiceTransport | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
   const audioUriRef = useRef<string | null>(null);
-  const audioChunksRef = useRef<Uint8Array[]>([]);
-  const audioCodecRef = useRef("mp3");
+  const audioChunksRef = useRef(new Map<number, Uint8Array>());
+  const audioCodecRef = useRef<"mp3" | "linear16">("mp3");
+  const audioRateRef = useRef(0);
+  const audioPlayingRef = useRef(false);
+  const turnDonePendingRef = useRef(false);
+  const playbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pcmReadyRef = useRef<Promise<void>>(Promise.resolve());
+  const finishPlayback = useCallback(() => {
+    audioPlayingRef.current = false;
+    void stopRealtimePcmPlayback().catch(() => undefined);
+    if (turnDonePendingRef.current) { turnDonePendingRef.current = false; setPhase("listening"); }
+  }, []);
   const playAudio = useCallback(async () => {
-    if (audioCodecRef.current !== "mp3" || !audioChunksRef.current.length) return;
-    const bytes = new Uint8Array(audioChunksRef.current.reduce((total, chunk) => total + chunk.byteLength, 0));
-    let offset = 0; audioChunksRef.current.forEach(chunk => { bytes.set(chunk, offset); offset += chunk.byteLength; });
-    let binary = ""; bytes.forEach(value => { binary += String.fromCharCode(value); });
+    if (audioCodecRef.current !== "mp3" || !audioChunksRef.current.size) return;
+    const chunks = Array.from(audioChunksRef.current.entries()).sort(([a], [b]) => a - b).map(([, chunk]) => chunk);
+    const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+    let offset = 0; chunks.forEach(chunk => { bytes.set(chunk, offset); offset += chunk.byteLength; });
+    let binary = ""; for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
     const uri = `${FileSystem.cacheDirectory || ""}swico-voice-${Date.now()}.mp3`;
     await FileSystem.writeAsStringAsync(uri, globalThis.btoa(binary), { encoding: FileSystem.EncodingType.Base64 });
     audioUriRef.current = uri;
     await soundRef.current?.unloadAsync().catch(() => undefined);
     const loaded = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
     soundRef.current = loaded.sound;
-  }, []);
+    audioPlayingRef.current = true;
+    loaded.sound.setOnPlaybackStatusUpdate(status => { if (status.isLoaded && status.didJustFinish) finishPlayback(); });
+  }, [finishPlayback]);
   useEffect(() => {
     if (!visible) return;
     let alive = true;
-    setPhase("connecting"); setError(""); setUserTranscript(""); setSwicoTranscript(""); setAudioLevel(0);
+    setPhase("connecting"); setError(""); setWarning(""); setUserTranscript(""); setSwicoTranscript(""); setAudioLevel(0);
+    turnDonePendingRef.current = false;
     void createVoiceSession(user, { browser_capabilities: { web_audio: false, media_source: false, media_source_mp3: false } }).then(async session => {
       if (!alive) return;
       const transport = new SwicoRealtimeVoiceTransport(session, { onJson: message => {
         if (!alive) return;
-        if (message.type === "state.changed") setPhase(String(message.state || "listening"));
-        if (message.type === "session.ready") setPhase("listening");
-        if (message.type === "transcript.partial" || message.type === "user.transcript.partial") setUserTranscript(String(message.text || message.transcript || ""));
-        if (message.type === "response.delta" || message.type === "assistant.transcript.partial") setSwicoTranscript(value => `${value}${String(message.text || message.delta || "")}`);
-        if (message.type === "audio.level" && typeof message.level === "number") setAudioLevel(Math.max(0, Math.min(1, message.level)));
-        if (message.type === "audio.start") { audioChunksRef.current = []; audioCodecRef.current = String(message.codec || "mp3"); setPhase("speaking"); }
-        if (message.type === "audio.end") { void playAudio().catch(caught => setError((caught as Error).message || "Voice audio could not be played.")); }
-        if (message.type === "turn.done") { setPhase("listening"); setSwicoTranscript(""); onRefresh(); }
-        if (message.type === "error") setError(String(message.message || "Realtime Voice stopped safely."));
-      }, onAudio: packet => { if (packet.byteLength > 4) audioChunksRef.current.push(new Uint8Array(packet.slice(4))); }, onError: message => alive && setError(message), onClose: () => alive && setPhase("closed") });
+        const type = String(message.type || "");
+        if (type === "state.changed") {
+          const next = String(message.state || "");
+          if (["connecting", "listening", "endpoint_pending", "thinking", "speaking", "interrupted", "closing", "error", "closed"].includes(next)) setPhase(next);
+        } else if (type === "session.ready") setPhase("connecting");
+        else if (type === "stt.partial") setUserTranscript(String(message.transcript ?? ""));
+        else if (type === "stt.final") { setUserTranscript(String(message.transcript ?? "")); setPhase("thinking"); }
+        else if (type === "assistant.start") { setSwicoTranscript(""); setPhase("thinking"); }
+        else if (type === "assistant.delta") setSwicoTranscript(value => `${value}${String(message.delta ?? "")}`);
+        else if (type === "audio.level" && typeof message.level === "number") setAudioLevel(Math.max(0, Math.min(1, message.level)));
+        else if (type === "audio.start") {
+          const validated = validateRealtimeAudioStart(message);
+          if (!validated.ok) { setError(validated.reason); setPhase("error"); return; }
+          audioChunksRef.current = new Map(); audioCodecRef.current = validated.value.codec; audioRateRef.current = validated.value.sample_rate || 0; audioPlayingRef.current = true; setError(""); setPhase("speaking");
+          if (validated.value.codec === "linear16") {
+            if (!realtimePcmPlaybackAvailable()) { setError("This Android build cannot play the negotiated PCM voice format."); setPhase("error"); return; }
+            pcmReadyRef.current = startRealtimePcmPlayback(validated.value.sample_rate!).catch(caught => { if (alive) { setError((caught as Error).message || "Voice PCM playback could not start."); setPhase("error"); } });
+          }
+        } else if (type === "audio.end") {
+          if (audioCodecRef.current === "mp3") void playAudio().catch(caught => { if (alive) { setError((caught as Error).message || "Voice audio could not be played."); setPhase("error"); } });
+          else {
+            const durationMs = audioRateRef.current ? Math.round(Array.from(audioChunksRef.current.values()).reduce((total, chunk) => total + chunk.byteLength, 0) / (audioRateRef.current * 2) * 1000) : 0;
+            playbackTimerRef.current = setTimeout(finishPlayback, Math.max(100, durationMs + 100));
+          }
+        } else if (type === "warning" && message.code === "assistant_interrupted") { void soundRef.current?.stopAsync().catch(() => undefined); void stopRealtimePcmPlayback().catch(() => undefined); setWarning("Swico interrupted the spoken reply. You can continue listening."); setPhase("interrupted"); audioPlayingRef.current = false; }
+        else if (type === "warning" && (message.credit_bucket === "voice" || message.code === "insufficient_voice_credit")) { setError(String(message.message || "Add Voice credits to continue Voice Mode.")); setPhase("error"); onAddCredits("voice"); }
+        else if (type === "error") {
+          const code = String(message.code || "voice_error");
+          if (code === "insufficient_voice_credit" || message.credit_bucket === "voice") { setError(String(message.message || "Add Voice credits to continue Voice Mode.")); onAddCredits("voice"); }
+          else if (code === "insufficient_chat_credit") setError("Voice Mode needs a current server session. Refresh Swico and try again.");
+          else setError(String(message.message || "Realtime Voice stopped safely."));
+          setPhase("error");
+        } else if (type === "turn.done" && message.completion_status === "complete") {
+          turnDonePendingRef.current = audioPlayingRef.current;
+          setSwicoTranscript(""); onRefresh();
+          if (!audioPlayingRef.current) setPhase("listening");
+        } else if (type === "session.closed") { setPhase("closed"); audioPlayingRef.current = false; }
+      }, onAudio: packet => {
+        if (!alive || packet.byteLength <= 4) return;
+        const sequence = new DataView(packet).getUint32(0);
+        if (audioChunksRef.current.has(sequence)) return;
+        const payload = packet.slice(4);
+        audioChunksRef.current.set(sequence, new Uint8Array(payload));
+        if (audioCodecRef.current === "linear16") void pcmReadyRef.current.then(() => writeRealtimePcmPlayback(payload)).catch(caught => { if (alive) { setError((caught as Error).message || "Voice PCM playback failed."); setPhase("error"); } });
+      }, onError: message => alive && (setError(message), setPhase("error")), onClose: () => alive && setPhase("closed") });
       transportRef.current = transport;
       try { await transport.connect(threadId || undefined); } catch (caught) { if (alive) setError((caught as Error).message || "Realtime Voice could not start."); }
     }).catch(caught => alive && setError((caught as Error).message || "Realtime Voice could not start."));
-    return () => { alive = false; void transportRef.current?.close(); transportRef.current = null; void soundRef.current?.unloadAsync().catch(() => undefined); if (audioUriRef.current) void FileSystem.deleteAsync(audioUriRef.current, { idempotent: true }); void endVoiceSession(user).catch(() => undefined); };
-  }, [onRefresh, playAudio, retryNonce, threadId, user, visible]);
+    return () => { alive = false; if (playbackTimerRef.current) clearTimeout(playbackTimerRef.current); void transportRef.current?.close(); transportRef.current = null; void soundRef.current?.unloadAsync().catch(() => undefined); void stopRealtimePcmPlayback().catch(() => undefined); if (audioUriRef.current) void FileSystem.deleteAsync(audioUriRef.current, { idempotent: true }); void endVoiceSession(user).catch(() => undefined); };
+  }, [finishPlayback, onAddCredits, onRefresh, playAudio, retryNonce, threadId, user, visible]);
   useEffect(() => {
     if (!visible) return;
     const animation = Animated.loop(Animated.sequence([
@@ -782,7 +855,7 @@ function RealtimeVoiceModal({ visible, onClose, user, threadId, onRefresh }: { v
     return () => animation.stop();
   }, [pulse, visible]);
   const displayPhase = error ? "error" : phase.replace(/\./g, " ").replace(/_/g, " ");
-  return <Modal visible={visible} animationType="slide" onRequestClose={onClose}><View style={{ flex: 1, backgroundColor: t.background, paddingTop: 58, paddingHorizontal: 22, paddingBottom: 28 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={{ color: t.ink, fontSize: 25, fontWeight: "900" }}>Voice Mode</Text><Pressable onPress={onClose} accessibilityLabel="End Voice"><Ionicons name="close" size={25} color={t.text} /></Pressable></View><View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 22 }}><Animated.View style={{ width: 190, height: 190, borderRadius: 100, backgroundColor: t.accentSoft, alignItems: "center", justifyContent: "center", transform: [{ scale: Animated.multiply(pulse, 1 + audioLevel * 0.2) }] }}><View style={{ width: 126, height: 126, borderRadius: 70, backgroundColor: t.accent, alignItems: "center", justifyContent: "center" }}><Ionicons name={muted ? "mic-off" : phase === "speaking" ? "volume-high" : "mic"} size={48} color={t.accentText} /></View></Animated.View><Text style={{ color: error ? t.danger : t.caramel, fontWeight: "900", textTransform: "capitalize" }}>{displayPhase}</Text>{phase === "endpoint_pending" ? <Text style={{ color: t.muted, textAlign: "center" }}>Take your time. I’m listening.</Text> : null}{error ? <Text style={{ color: t.danger, textAlign: "center" }}>{error}</Text> : null}{userTranscript ? <View style={{ width: "100%", backgroundColor: t.soft, borderRadius: 14, padding: 14 }}><Text style={{ color: t.muted, fontSize: 11 }}>You</Text><Text style={{ color: t.text, marginTop: 5 }}>{userTranscript}</Text></View> : null}{swicoTranscript ? <View style={{ width: "100%", backgroundColor: t.accentSoft, borderRadius: 14, padding: 14 }}><Text style={{ color: t.caramel, fontSize: 11 }}>Swico</Text><Text style={{ color: t.text, marginTop: 5 }}>{swicoTranscript}</Text></View> : null}</View><View style={{ flexDirection: "row", justifyContent: "center", gap: 12 }}><Pressable onPress={() => { const next = !muted; setMuted(next); transportRef.current?.mute(next); }} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.soft, alignItems: "center" }}><Ionicons name={muted ? "mic" : "mic-off"} size={19} color={t.text} /><Text style={{ color: t.text, marginTop: 5 }}>{muted ? "Unmute" : "Mute"}</Text></Pressable>{error ? <Pressable onPress={() => setRetryNonce(value => value + 1)} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.accent, alignItems: "center" }}><Ionicons name="refresh" size={19} color={t.accentText} /><Text style={{ color: t.accentText, marginTop: 5, fontWeight: "800" }}>Retry</Text></Pressable> : <Pressable onPress={onClose} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.danger, alignItems: "center" }}><Ionicons name="stop" size={19} color={t.accentText} /><Text style={{ color: t.accentText, marginTop: 5, fontWeight: "800" }}>End voice</Text></Pressable>}</View></View></Modal>;
+  return <Modal visible={visible} animationType="slide" onRequestClose={onClose}><View style={{ flex: 1, backgroundColor: t.background, paddingTop: 58, paddingHorizontal: 22, paddingBottom: 28 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={{ color: t.ink, fontSize: 25, fontWeight: "900" }}>Voice Mode</Text><Pressable onPress={onClose} accessibilityLabel="End Voice"><Ionicons name="close" size={25} color={t.text} /></Pressable></View><View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 22 }}><Animated.View style={{ width: 190, height: 190, borderRadius: 100, backgroundColor: t.accentSoft, alignItems: "center", justifyContent: "center", transform: [{ scale: Animated.multiply(pulse, 1 + audioLevel * 0.2) }] }}><View style={{ width: 126, height: 126, borderRadius: 70, backgroundColor: t.accent, alignItems: "center", justifyContent: "center" }}><Ionicons name={muted ? "mic-off" : phase === "speaking" ? "volume-high" : "mic"} size={48} color={t.accentText} /></View></Animated.View><Text style={{ color: error ? t.danger : t.caramel, fontWeight: "900", textTransform: "capitalize" }}>{displayPhase}</Text>{phase === "endpoint_pending" ? <Text style={{ color: t.muted, textAlign: "center" }}>Take your time. I’m listening.</Text> : null}{warning ? <Text style={{ color: t.caramel, textAlign: "center" }}>{warning}</Text> : null}{error ? <Text style={{ color: t.danger, textAlign: "center" }}>{error}</Text> : null}{userTranscript ? <View style={{ width: "100%", backgroundColor: t.soft, borderRadius: 14, padding: 14 }}><Text style={{ color: t.muted, fontSize: 11 }}>You</Text><Text style={{ color: t.text, marginTop: 5 }}>{userTranscript}</Text></View> : null}{swicoTranscript ? <View style={{ width: "100%", backgroundColor: t.accentSoft, borderRadius: 14, padding: 14 }}><Text style={{ color: t.caramel, fontSize: 11 }}>Swico</Text><Text style={{ color: t.text, marginTop: 5 }}>{swicoTranscript}</Text></View> : null}</View><View style={{ flexDirection: "row", justifyContent: "center", gap: 12 }}><Pressable onPress={() => { const next = !muted; setMuted(next); transportRef.current?.mute(next); }} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.soft, alignItems: "center" }}><Ionicons name={muted ? "mic" : "mic-off"} size={19} color={t.text} /><Text style={{ color: t.text, marginTop: 5 }}>{muted ? "Unmute" : "Mute"}</Text></Pressable>{error ? <Pressable onPress={() => { setError(""); setWarning(""); setRetryNonce(value => value + 1); }} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.accent, alignItems: "center" }}><Ionicons name="refresh" size={19} color={t.accentText} /><Text style={{ color: t.accentText, marginTop: 5, fontWeight: "800" }}>Retry</Text></Pressable> : <Pressable onPress={onClose} style={{ minWidth: 112, padding: 14, borderRadius: 14, backgroundColor: t.danger, alignItems: "center" }}><Ionicons name="stop" size={19} color={t.accentText} /><Text style={{ color: t.accentText, fontWeight: "800" }}>End Voice</Text></Pressable>}</View></View></Modal>;
 }
 
 function Drawer({ visible, onClose, userName, userEmail, threads, hasMore, onLoadMore, active, onSelect, onSelectSearch, onNew, onActions, archived, setArchived, search, setSearch, results, wallet, offline, onBilling, onSettings, onTheme, onLegal, onSignOut }: { visible: boolean; onClose: () => void; userName: string; userEmail: string | null; threads: Thread[]; hasMore: boolean; onLoadMore: () => void; active: string | null; onSelect: (id: string) => void; onSelectSearch: (id: string, messageId: string | null) => void; onNew: () => void; onActions: (thread: Thread) => void; archived: boolean; setArchived: (value: boolean) => void; search: string; setSearch: (value: string) => void; results: SearchResult[]; wallet: Bootstrap["wallet"]; offline: boolean; onBilling: () => void; onSettings: () => void; onTheme: () => void; onLegal: (page: string) => void; onSignOut: () => void }) {

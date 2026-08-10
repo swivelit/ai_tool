@@ -1,5 +1,8 @@
 package com.harishajahan.jai.wakeword
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,6 +13,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class WakeWordModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
   private var realtimePcmSource: PcmAudioSource? = null
+  private var realtimePcmPlayback: AudioTrack? = null
   private var realtimePcmSequence = 0
   private val engine: OpenWakeWordEngine by lazy {
     OpenWakeWordEngine()
@@ -92,6 +96,51 @@ class WakeWordModule : Module() {
       realtimePcmSource?.status()?.let { status ->
         mapOf("running" to status.captureThreadAlive, "sampleRate" to 16000, "frameSamples" to 512, "aec" to status.acousticEchoCancelerEnabled, "noiseSuppression" to status.noiseSuppressorEnabled, "agc" to status.automaticGainControlEnabled)
       } ?: mapOf("running" to false, "sampleRate" to 16000, "frameSamples" to 512)
+    }
+
+    AsyncFunction("startRealtimePcmPlayback") { config: Map<String, Any?> ->
+      stopRealtimePcmPlayback()
+      val sampleRate = (config["sampleRate"] as? Number)?.toInt()?.takeIf { it in setOf(8000, 16000, 22050, 24000) }
+        ?: throw IllegalArgumentException("Unsupported realtime PCM sample rate")
+      val format = AudioFormat.Builder()
+        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+        .setSampleRate(sampleRate)
+        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+        .build()
+      val minimum = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+      if (minimum <= 0) throw IllegalStateException("Realtime PCM playback is unavailable")
+      val track = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        AudioTrack.Builder()
+          .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+          .setAudioFormat(format)
+          .setBufferSizeInBytes((minimum * 2).coerceAtLeast(8192))
+          .setTransferMode(AudioTrack.MODE_STREAM)
+          .build()
+      } else {
+        @Suppress("DEPRECATION")
+        AudioTrack(AudioTrack.MODE_STREAM, sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, (minimum * 2).coerceAtLeast(8192), AudioTrack.MODE_STREAM)
+      }
+      if (track.state != AudioTrack.STATE_INITIALIZED) {
+        track.release()
+        throw IllegalStateException("Realtime PCM playback could not be initialized")
+      }
+      track.play()
+      realtimePcmPlayback = track
+      mapOf("ok" to true, "sampleRate" to sampleRate)
+    }
+
+    AsyncFunction("writeRealtimePcmPlayback") { base64: String ->
+      val track = realtimePcmPlayback ?: throw IllegalStateException("Realtime PCM playback is not started")
+      val bytes = Base64.decode(base64, Base64.DEFAULT)
+      if (bytes.isEmpty() || bytes.size % 2 != 0) throw IllegalArgumentException("Invalid realtime PCM audio")
+      val written = track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING)
+      if (written < 0) throw IllegalStateException("Realtime PCM playback write failed")
+      mapOf("ok" to true, "bytes" to written)
+    }
+
+    AsyncFunction("stopRealtimePcmPlayback") {
+      stopRealtimePcmPlayback()
+      mapOf("ok" to true)
     }
 
     Function("isAvailable") {
@@ -217,6 +266,15 @@ class WakeWordModule : Module() {
         throw error
       }
     }
+  }
+
+  private fun stopRealtimePcmPlayback() {
+    val track = realtimePcmPlayback ?: return
+    realtimePcmPlayback = null
+    try { track.pause() } catch (_: Throwable) { }
+    try { track.flush() } catch (_: Throwable) { }
+    try { track.stop() } catch (_: Throwable) { }
+    try { track.release() } catch (_: Throwable) { }
   }
 
   private fun sendError(

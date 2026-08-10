@@ -20,6 +20,7 @@ export class SwicoApiError extends Error {
   public readonly retry_at: string | null;
   public readonly credit_bucket: CreditBucket | null;
   public readonly reset_at: string | null;
+  public readonly retry_after_seconds: number | null;
   public readonly body: unknown;
 
   constructor(
@@ -28,7 +29,7 @@ export class SwicoApiError extends Error {
     message: string,
     public retryable = false,
     public retryAt: string | null = null,
-    metadata: { credit_bucket?: CreditBucket; reset_at?: string | null; retry_at?: string | null } = {},
+    metadata: { credit_bucket?: CreditBucket; reset_at?: string | null; retry_at?: string | null; retry_after_seconds?: number | null } = {},
     body: unknown = null,
   ) {
     super(message);
@@ -36,15 +37,20 @@ export class SwicoApiError extends Error {
     this.retry_at = retryAt ?? metadata.retry_at ?? null;
     this.credit_bucket = metadata.credit_bucket ?? null;
     this.reset_at = metadata.reset_at ?? null;
+    this.retry_after_seconds = metadata.retry_after_seconds ?? null;
     this.body = body;
   }
 }
 
 export class SwicoStreamError extends SwicoApiError {
-  constructor(code: string, message: string, retryable = true, retryAt: string | null = null) {
-    super(0, code, message, retryable, retryAt);
+  constructor(code: string, message: string, retryable = true, retryAt: string | null = null, metadata: { credit_bucket?: CreditBucket; reset_at?: string | null; retry_after_seconds?: number | null } = {}) {
+    super(0, code, message, retryable, retryAt, metadata);
     this.name = "SwicoStreamError";
   }
+}
+
+function textValue(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim() ? value : fallback;
 }
 
 function detail(body: unknown) {
@@ -52,7 +58,7 @@ function detail(body: unknown) {
   const value = body as Record<string, unknown>;
   const error = value.error && typeof value.error === "object" ? value.error as Record<string, unknown> : null;
   const source = error || value;
-  return String(source.message || source.detail || "Request failed.");
+  return textValue(source.message, textValue(source.detail, "Request failed."));
 }
 
 function codeOf(body: unknown) {
@@ -76,6 +82,8 @@ function metadataOf(body: unknown) {
     credit_bucket: creditBucket,
     reset_at: typeof source.reset_at === "string" ? source.reset_at : null,
     retry_at: typeof source.retry_at === "string" ? source.retry_at : null,
+    retry_after_seconds: typeof source.retry_after_seconds === "number" && Number.isFinite(source.retry_after_seconds)
+      ? Math.max(0, Math.floor(source.retry_after_seconds)) : null,
   };
 }
 
@@ -233,6 +241,11 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
         terminalError = new SwicoStreamError(
           String(data.code || "generation_failed"), String(data.message || "Generation failed."),
           data.retryable === true, typeof data.retry_at === "string" ? data.retry_at : null,
+          {
+            ...(data.credit_bucket === "chat" || data.credit_bucket === "voice" ? { credit_bucket: data.credit_bucket } : {}),
+            ...(typeof data.reset_at === "string" ? { reset_at: data.reset_at } : {}),
+            ...(typeof data.retry_after_seconds === "number" ? { retry_after_seconds: Math.max(0, data.retry_after_seconds) } : {}),
+          },
         );
       }
       handlers.onEvent(event);
@@ -255,10 +268,14 @@ async function streamAttempt(user: User, payload: ChatRequestPayload, handlers: 
       consume();
       if (xhr.status >= 200 && xhr.status < 300) {
         parser.finish().forEach(emit);
-        finish(terminalError || (terminalEventReceived ? undefined : new SwicoStreamError(
-          "stream_interrupted",
-          "The connection ended before Swico finished. Retry.",
-        )));
+        if (!terminalEventReceived) {
+          const interrupted = {
+            code: "stream_interrupted",
+            message: "The connection ended before Swico finished. Retry.",
+          };
+          emit({ event: "error", data: interrupted });
+          finish(terminalError || new SwicoStreamError(interrupted.code, interrupted.message));
+        } else finish(terminalError || undefined);
       } else {
         let body: unknown = {};
         try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* safe generic error */ }

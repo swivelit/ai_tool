@@ -5,9 +5,10 @@ import type { User } from "firebase/auth";
 import { useAppTheme } from "@/hooks/use-app-theme";
 import {
   cancelKnowledgeJob, deleteKnowledge, deleteMemory, getMemorySettings, getPayments, getProfileSettings, getUsage, getUsageSettings,
-  getKnowledgeJobStatus, listKnowledge, reindexKnowledge, updateAssistant, updateMemorySettings, updateProfileSettings, updateUsageSettings,
+  getKnowledgeJobStatus, listKnowledge, reindexKnowledge, updateAssistant, updateMemorySettings as apiUpdateMemorySettings, updateProfileSettings, updateUsageSettings,
 } from "@/lib/swicoApi";
 import { creditBucketLabel, formatRupeesFromPaise, paymentStatusLabel, tokenRangeLabel, voiceEstimateLabel } from "@/lib/swicoBilling";
+import { crossChatMemoryAvailable, usageLimitControlsAvailable } from "@/lib/swicoCapabilities";
 import type { Bootstrap, KnowledgeDocument, MemoryFact, PaymentHistory, ProfileSettings, UsagePreferences, UsageSummary } from "@/lib/swicoTypes";
 
 type Section = "general" | "profile" | "credits" | "knowledge" | "data";
@@ -25,7 +26,8 @@ export function SwicoSettings({ visible, onClose, user, bootstrap, onBootstrap, 
   const [preferences, setPreferences] = useState<UsagePreferences | null>(null);
   const [payments, setPayments] = useState<PaymentHistory[]>([]);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
-  const [memoryItems, setMemoryItems] = useState<MemoryFact[]>([]);
+  const [memoryBackendAvailable, setMemoryBackendAvailable] = useState(false);
+  const [memoryFacts, setMemoryFacts] = useState<MemoryFact[]>([]);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [jobs, setJobs] = useState<Record<string, string>>({});
   const [unlimited, setUnlimited] = useState(false);
@@ -40,15 +42,15 @@ export function SwicoSettings({ visible, onClose, user, bootstrap, onBootstrap, 
     setError("");
     try {
       const [nextProfile, nextUsage, nextPreferences, nextPayments, nextMemory] = await Promise.all([
-        getProfileSettings(user), getUsage(user), getUsageSettings(user), getPayments(user), getMemorySettings(user),
+        getProfileSettings(user), getUsage(user), getUsageSettings(user), getPayments(user), bootstrap.features.web_cross_thread_memory === true ? getMemorySettings(user) : Promise.resolve({ available: false, enabled: false, items: [] }),
       ]);
-      setProfile(nextProfile); setUsage(nextUsage); setPreferences(nextPreferences); setPayments(nextPayments.items); setMemoryEnabled(nextMemory.enabled); setMemoryItems(nextMemory.items || []);
+      setProfile(nextProfile); setUsage(nextUsage); setPreferences(nextPreferences); setPayments(nextPayments.items); setMemoryBackendAvailable(nextMemory.available === true); setMemoryEnabled(nextMemory.available === true && nextMemory.enabled); setMemoryFacts(nextMemory.available === true ? nextMemory.items || [] : []);
       setUnlimited(nextPreferences.hard_limit_micros === null);
       setMonthlyTokens(nextPreferences.hard_limit_token_estimate?.estimated_blended_tokens?.toString() ?? "");
       setWarning(String(nextPreferences.warning_threshold_percent)); setNotify(nextPreferences.notify_at_threshold);
       if (bootstrap.features.web_knowledge_library) setDocuments((await listKnowledge(user)).items);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Settings could not be loaded."); }
-  }, [bootstrap.features.web_knowledge_library, offline, user]);
+  }, [bootstrap.features.web_cross_thread_memory, bootstrap.features.web_knowledge_library, offline, user]);
 
   useEffect(() => { if (visible) void load(); }, [load, visible]);
 
@@ -61,7 +63,7 @@ export function SwicoSettings({ visible, onClose, user, bootstrap, onBootstrap, 
   };
 
   const saveUsage = async () => {
-    if (offline) return;
+    if (offline || !usageControlsAvailable) return;
     const limit = unlimited ? null : Number(monthlyTokens); const threshold = Number(warning);
     if (limit !== null && (!Number.isSafeInteger(limit) || limit <= 0)) { setError("Enter a positive whole-number estimated token limit."); return; }
     if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) { setError("Warning threshold must be from 1 to 100%."); return; }
@@ -87,6 +89,15 @@ export function SwicoSettings({ visible, onClose, user, bootstrap, onBootstrap, 
   const cancelReindex = async (id: string) => { if (offline) return; try { const result = await cancelKnowledgeJob(user, id); setJobs(value => ({ ...value, [id]: result.job.status })); } catch (caught) { setError(caught instanceof Error ? caught.message : "Reindex could not be cancelled."); } };
 
   const voice = usage?.voice || {};
+  const memoryAvailable = crossChatMemoryAvailable(bootstrap.features, memoryBackendAvailable);
+  const billingExempt = bootstrap.wallet.billing_exempt === true || preferences?.billing_exempt === true;
+  const usageControlsAvailable = usageLimitControlsAvailable(billingExempt);
+  const memoryItems = memoryAvailable ? memoryFacts : [];
+  const setMemoryItems = setMemoryFacts;
+  const updateMemorySettings = async (account: User, enabled: boolean) => {
+    if (!memoryAvailable) throw new Error("Cross-chat memory is unavailable.");
+    return apiUpdateMemorySettings(account, enabled);
+  };
   const tierItems = usage ? Object.entries(usage.by_tier) : [];
   const renderBar = (label: string, percent: number, detail: string) => <View key={label} style={styles.usageCard} accessibilityRole="progressbar" accessibilityLabel={`${label} utilization`} accessibilityValue={{ min: 0, max: 100, now: Math.min(100, Math.max(0, percent)) }}><View style={styles.usageRow}><Text style={styles.label}>{label}</Text><Text style={styles.meta}>{Math.round(percent)}%</Text></View><View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, Math.max(0, percent))}%` }]} /></View><Text style={styles.meta}>{detail}</Text></View>;
 

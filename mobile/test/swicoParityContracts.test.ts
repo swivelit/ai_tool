@@ -3,10 +3,11 @@ import { customTopupAmount, paymentStatusLabel, selectedBillingAmount, tokenRang
 import { repositoryDetachCode, repositoryExpired, repositoryUsable } from "../lib/swicoRepository";
 import type { BillingConfig } from "../lib/swicoTypes";
 import { emptySwicoStreamState, reduceSwicoStream } from "../lib/swicoChatReducer";
-import { assistantActionsEnabled, hasSendableContent, latestEditableUserId } from "../lib/swicoMessageEligibility";
+import { assistantActionsEnabled, hasSendableContent, latestEditableUserId, retryAvailability } from "../lib/swicoMessageEligibility";
 import { messageIndexForSearch } from "../lib/swicoNavigation";
 import { VoiceReplyCache, needsVoiceSynthesis } from "../lib/swicoVoiceReply";
-import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, voiceAvailability } from "../lib/swicoCapabilities";
+import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, crossChatMemoryAvailable, knowledgeLibraryVisible, repositoryValidationVisible, responseProvenanceVisible, usageLimitControlsAvailable, voiceAvailability } from "../lib/swicoCapabilities";
+import { applyAuthoritativeVoiceWallet } from "../lib/swicoBilling";
 import type { Message } from "../lib/swicoTypes";
 
 const config: BillingConfig = {
@@ -42,6 +43,8 @@ describe("mobile parity contracts", () => {
     const state = reduceSwicoStream({ ...emptySwicoStreamState, assistant: { id: "a", thread_id: "t", role: "assistant", content: "", request_id: "r", tier: "standard", tier_label: "Swico", input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "streaming", created_at: "", input_mode: "text", voice_turn_id: null, reply_language: "en" } }, { event: "error", data: { code: "capacity", message: "Try later", retryable: true, retry_at: "2030-01-01T00:00:00Z" } });
     expect(state.assistant?.status).toBe("retryable");
     expect(state.error?.retry_at).toBe("2030-01-01T00:00:00Z");
+    expect(retryAvailability(state.assistant!, Date.parse("2029-12-31T23:59:59Z"))).toMatchObject({ eligible: false, blocked: true, remainingSeconds: 1 });
+    expect(retryAvailability(state.assistant!, Date.parse("2030-01-01T00:00:01Z")).eligible).toBe(true);
   });
 
   it("keeps payment status separate from history rows", async () => {
@@ -104,5 +107,23 @@ describe("mobile parity contracts", () => {
     expect(voiceAvailability({ ...base, voice_protocol_version: 2 }).reason).toContain("newer version");
     expect(voiceAvailability(base, "2").releaseMismatch).toBe(true);
     expect(voiceAvailability(base, "1").enabled).toBe(true);
+  });
+
+  it("honors feature combinations and backend availability", () => {
+    const features = { web_cross_thread_memory: true, web_repository_validation: true, web_response_provenance: true, web_answer_guard: true, web_knowledge_library: true } as import("../lib/swicoTypes").FeatureFlags;
+    expect(crossChatMemoryAvailable(features, true)).toBe(true);
+    expect(crossChatMemoryAvailable(features, false)).toBe(false);
+    expect(usageLimitControlsAvailable(true)).toBe(false);
+    expect(repositoryValidationVisible(features)).toBe(true);
+    expect(responseProvenanceVisible(features)).toBe(true);
+    expect(responseProvenanceVisible({ ...features, web_answer_guard: false })).toBe(true);
+    expect(knowledgeLibraryVisible(features)).toBe(true);
+  });
+
+  it("projects the authoritative TTS Voice wallet immediately", () => {
+    const bootstrap = { wallet: { balance_micros: 100, reserved_micros: 0, available_micros: 100, version: 1 }, wallets: { chat: { balance_micros: 100, reserved_micros: 0, available_micros: 100, version: 1 }, voice: { balance_micros: 50, reserved_micros: 0, available_micros: 50, version: 1 } } } as any;
+    const next = applyAuthoritativeVoiceWallet(bootstrap, { credit_bucket: "voice", balance_micros: 20, reserved_micros: 0, available_micros: 20, version: 2 });
+    expect(next.wallets!.voice.available_micros).toBe(20);
+    expect(next.wallet.available_micros).toBe(100);
   });
 });

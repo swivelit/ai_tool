@@ -337,8 +337,8 @@ export default function RoutineScreen() {
       return;
     }
 
-    if (password.trim().length < 6) {
-      showNotice("Invalid password", "Password should be at least 6 characters.");
+    if (password.trim().length < 8) {
+      showNotice("Invalid password", "Password should be at least 8 characters.");
       return;
     }
 
@@ -615,7 +615,7 @@ export default function RoutineScreen() {
                   label="New password"
                   value={password}
                   onChangeText={setPassword}
-                  placeholder="Minimum 6 characters"
+                  placeholder="Minimum 8 characters"
                   secureTextEntry
                   icon="shield-checkmark-outline"
                 />

@@ -89,7 +89,9 @@ describe("canonical Swico mobile API client", () => {
     }
     vi.stubGlobal("XMLHttpRequest", FakeXHR);
     const { streamChat, SwicoStreamError } = await import("../lib/swicoApi");
-    await expect(streamChat(user, { request_id: "r", message: "hello", input_mode: "text" }, { onEvent: vi.fn() }, new AbortController().signal)).rejects.toMatchObject({ code: "stream_interrupted" });
+    const events: { event: string; data: unknown }[] = [];
+    await expect(streamChat(user, { request_id: "r", message: "hello", input_mode: "text" }, { onEvent: event => events.push(event) }, new AbortController().signal)).rejects.toMatchObject({ code: "stream_interrupted" });
+    expect(events).toEqual([{ event: "delta", data: { text: "partial" } }, { event: "error", data: { code: "stream_interrupted", message: "The connection ended before Swico finished. Retry." } }]);
     expect(SwicoStreamError).toBeDefined();
   });
 

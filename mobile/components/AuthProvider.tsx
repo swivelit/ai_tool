@@ -42,6 +42,7 @@ import {
 } from "@/lib/profileSync";
 import { clearAssistantStorage } from "@/lib/storage";
 import { clearLocalAgentDataForUser } from "@/lib/localAgents";
+import { hasValidPasswordLength, MIN_PASSWORD_LENGTH } from "@/lib/authValidation";
 
 function normalizeEmail(email?: string | null) {
   const value = (email || "").trim().toLowerCase();
@@ -73,7 +74,7 @@ function mapFirebaseError(error: any) {
       return "These credentials are already linked to another account.";
 
     case "auth/weak-password":
-      return "Password should be at least 6 characters.";
+      return `Password should be at least ${MIN_PASSWORD_LENGTH} characters.`;
 
     case "auth/operation-not-allowed":
       return "This sign-in method is not enabled in Firebase Authentication yet.";
@@ -343,8 +344,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("This account does not have an email address to link with a password.");
     }
 
-    if ((password || "").trim().length < 6) {
-      throw new Error("Password should be at least 6 characters.");
+    if (!hasValidPasswordLength((password || "").trim())) {
+      throw new Error(`Password should be at least ${MIN_PASSWORD_LENGTH} characters.`);
     }
 
     if (hasProvider(currentUser, "password")) {

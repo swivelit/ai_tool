@@ -7,9 +7,14 @@ type NativeRealtimeModule = {
   startRealtimePcm: (config: { sampleRate: number; frameSamples: number }) => Promise<Record<string, unknown>>;
   stopRealtimePcm: () => Promise<Record<string, unknown>>;
   getRealtimePcmStatus: () => Promise<Record<string, unknown>>;
+  startRealtimePcmPlayback: (config: { sampleRate: number }) => Promise<Record<string, unknown>>;
+  writeRealtimePcmPlayback: (base64: string) => Promise<Record<string, unknown>>;
+  stopRealtimePcmPlayback: () => Promise<Record<string, unknown>>;
 };
 export type PcmFrame = { encoding: "pcm_s16le"; sampleRate: number; frameSamples: number; sequence: number; data: ArrayBuffer };
 export type RealtimeVoiceCallbacks = { onJson?: (message: Record<string, unknown>) => void; onAudio?: (packet: ArrayBuffer) => void; onError?: (message: string) => void; onClose?: () => void };
+export type RealtimeAudioCodec = "mp3" | "linear16";
+export type RealtimeAudioStart = { playback_mode: "buffered_mp3" | "pcm_stream" | "auto"; codec: RealtimeAudioCodec; content_type: string; sample_rate: number | null; channels: number; sample_format: string | null; turn_number: number };
 
 let native: NativeRealtimeModule | null = null;
 if (Platform.OS === "android") {
@@ -28,6 +33,49 @@ function base64ToBuffer(value: string) {
 }
 
 export function realtimePcmAvailable() { return Platform.OS === "android" && Boolean(native); }
+export function realtimePcmPlaybackAvailable() { return Platform.OS === "android" && Boolean(native); }
+
+export function validateRealtimeAudioStart(message: Record<string, unknown>): { ok: true; value: RealtimeAudioStart } | { ok: false; reason: string } {
+  const mode = message.playback_mode;
+  const codec = message.codec;
+  const mime = String(message.content_type ?? "");
+  const sampleRate = message.sample_rate === null ? null : Number(message.sample_rate);
+  const turnNumber = Number(message.turn_number);
+  const baseValid = ["buffered_mp3", "pcm_stream", "auto"].includes(String(mode))
+    && ["mp3", "linear16"].includes(String(codec))
+    && message.channels === 1 && Number.isInteger(turnNumber) && turnNumber > 0;
+  const mp3Valid = codec === "mp3" && mime === "audio/mpeg" && sampleRate === null && message.sample_format === null && mode !== "pcm_stream";
+  const pcmValid = codec === "linear16" && mime === "audio/L16" && [8000, 16000, 22050, 24000].includes(sampleRate ?? 0)
+    && message.sample_format === "pcm_s16le" && mode === "pcm_stream";
+  if (!baseValid || (!mp3Valid && !pcmValid)) return { ok: false, reason: "The voice server returned an unsupported or malformed audio format." };
+  return { ok: true, value: { playback_mode: mode as RealtimeAudioStart["playback_mode"], codec: codec as RealtimeAudioCodec, content_type: mime, sample_rate: sampleRate, channels: 1, sample_format: typeof message.sample_format === "string" ? message.sample_format : null, turn_number: turnNumber } };
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.subarray(index, Math.min(bytes.length, index + chunkSize)));
+  const encode = globalThis.btoa || ((globalThis as unknown as { Buffer?: { from: (input: string, encoding: string) => { toString: (encoding: string) => string } } }).Buffer ? (input: string) => (globalThis as unknown as { Buffer: { from: (value: string, encoding: string) => { toString: (encoding: string) => string } } }).Buffer.from(input, "binary").toString("base64") : null);
+  if (!encode) throw new Error("Realtime audio encoding is unavailable on this device.");
+  return encode(binary);
+}
+
+export async function startRealtimePcmPlayback(sampleRate: number) {
+  if (!native) throw new Error("Realtime PCM playback is unavailable on this device.");
+  await native.startRealtimePcmPlayback({ sampleRate });
+}
+
+let playbackWriteTail = Promise.resolve();
+export function writeRealtimePcmPlayback(data: ArrayBuffer) {
+  if (!native) return Promise.reject(new Error("Realtime PCM playback is unavailable on this device."));
+  playbackWriteTail = playbackWriteTail.then(() => native!.writeRealtimePcmPlayback(bytesToBase64(new Uint8Array(data))).then(() => undefined));
+  return playbackWriteTail;
+}
+
+export async function stopRealtimePcmPlayback() {
+  playbackWriteTail = Promise.resolve();
+  await native?.stopRealtimePcmPlayback();
+}
 
 export async function startRealtimePcm(onFrame: (frame: PcmFrame) => void, onError?: (message: string) => void): Promise<() => void> {
   if (!native || !emitter) throw new Error("Realtime voice is currently available on Android only.");

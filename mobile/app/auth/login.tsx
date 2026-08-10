@@ -19,6 +19,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { Radius, Spacing, type Palette } from "@/constants/theme";
 import { useAppTheme } from "@/hooks/use-app-theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
+import { hasValidPasswordLength, MIN_PASSWORD_LENGTH } from "@/lib/authValidation";
 
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
@@ -47,7 +48,7 @@ export default function LoginScreen() {
   const inputHeight = 48;
 
   const canSubmit = useMemo(
-    () => email.trim().length > 0 && password.length > 0 && !busy,
+    () => email.trim().length > 0 && hasValidPasswordLength(password) && !busy,
     [busy, email, password]
   );
   const passwordVisibility = getPasswordVisibilityProps(showPassword);
@@ -62,6 +63,11 @@ export default function LoginScreen() {
 
     if (!emailLooksValid(nextEmail)) {
       setErrorText("That email doesn’t look right.");
+      return;
+    }
+
+    if (!hasValidPasswordLength(password)) {
+      setErrorText(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
 

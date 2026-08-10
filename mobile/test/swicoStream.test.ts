@@ -27,6 +27,35 @@ describe("Swico streaming transport", () => {
     expect(state.done).toBe(true);
   });
 
+  it("preserves canonical terminal metadata without replacing omitted values", () => {
+    let state: SwicoStreamState = {
+      ...emptySwicoStreamState,
+      assistant: {
+        id: "a", thread_id: "t", role: "assistant", content: "partial", request_id: "r", tier: "standard", tier_label: "Swico",
+        input_tokens: 1, output_tokens: 2, usage_source: "actual", charge_micros: 3, status: "streaming", created_at: "",
+        input_mode: "voice", voice_turn_id: "voice-1", reply_language: "ta", provenance: ["memory"],
+        sources: [{ id: "s", label: "Guide", locator: "p1", confidence: 0.8, source_kind: "document" }],
+        quality: { status: "grounded", retrieval_status: "sufficient", repository_validation_mode: null, checks: [{ type: "citation", status: "passed" }] },
+      },
+    };
+    state = reduceSwicoStream(state, { event: "done", data: {
+      message_id: "m1", finish_reason: "stop", truncated: false, can_continue: false, completion_status: "complete",
+      input_mode: "realtime_voice", voice_turn_id: "voice-2", reply_language: "en", provenance: ["repository", "backend_tool"],
+      sources: [{ id: "s2", label: "Repo", locator: "src/app.ts", confidence: 0.9, source_kind: "repository" }],
+      quality: { status: "verified", retrieval_status: "sufficient", repository_validation_mode: "executable", checks: [{ type: "repository_validation", status: "passed" }] },
+    } });
+    expect(state.assistant).toMatchObject({ id: "m1", content: "partial", status: "complete", input_mode: "realtime_voice", voice_turn_id: "voice-2", reply_language: "en", provenance: ["repository", "backend_tool"], sources: [{ id: "s2" }], quality: { status: "verified", repository_validation_mode: "executable" } });
+    state = reduceSwicoStream(state, { event: "done", data: { message_id: "m2" } });
+    expect(state.assistant).toMatchObject({ input_mode: "realtime_voice", voice_turn_id: "voice-2", reply_language: "en", provenance: ["repository", "backend_tool"] });
+  });
+
+  it("projects retryable server errors onto the same partial assistant", () => {
+    let state: SwicoStreamState = { ...emptySwicoStreamState, assistant: { id: "a", thread_id: "t", role: "assistant", content: "partial answer", request_id: "r", tier: "standard", tier_label: "Swico", input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "streaming", created_at: "", input_mode: "text", voice_turn_id: null, reply_language: "en" } };
+    state = reduceSwicoStream(state, { event: "error", data: { code: "service_budget_reached", message: "Retry later", retryable: true, retry_at: "2099-01-01T00:00:00Z", reset_at: "2099-01-02T00:00:00Z", retry_after_seconds: 20, credit_bucket: "chat" } });
+    expect(state.assistant).toMatchObject({ content: "partial answer", status: "retryable", failure_code: "service_budget_reached", retry_at: "2099-01-01T00:00:00Z" });
+    expect(state.error).toMatchObject({ retryable: true, retry_at: "2099-01-01T00:00:00Z", reset_at: "2099-01-02T00:00:00Z", retry_after_seconds: 20, credit_bucket: "chat" });
+  });
+
   it("normalizes CRLF frames split across chunks", () => {
     const parser = new SwicoSSEParser();
     expect(parser.push("event: delta\r\ndata: {\"text\":\"a\"}\r\n\r\n" )).toEqual([{ event: "delta", data: { text: "a" } }]);

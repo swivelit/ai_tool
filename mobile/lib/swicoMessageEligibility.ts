@@ -16,3 +16,9 @@ export function assistantActionsEnabled(message: Message, feedbackEnabled: boole
     voice: message.role === "assistant" && message.status === "complete" && voiceEnabled && Boolean(message.voice_turn_id),
   };
 }
+
+export function retryAvailability(message: Pick<Message, "status" | "retry_at">, now = Date.now()) {
+  const retryAt = message.retry_at ? Date.parse(message.retry_at) : NaN;
+  const remainingSeconds = Number.isFinite(retryAt) && retryAt > now ? Math.max(1, Math.ceil((retryAt - now) / 1000)) : 0;
+  return { eligible: message.status === "retryable" && remainingSeconds === 0, blocked: message.status === "retryable" && remainingSeconds > 0, remainingSeconds };
+}

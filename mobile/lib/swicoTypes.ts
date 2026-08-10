@@ -53,6 +53,8 @@ export type FeatureFlags = {
   web_answer_feedback?: boolean;
   web_content_search?: boolean;
   web_response_provenance?: boolean;
+  web_triag_hybrid?: boolean;
+  web_answer_guard?: boolean;
   web_repository_upload?: boolean;
   web_repository_chat?: boolean;
   web_repository_validation?: boolean;
@@ -257,8 +259,8 @@ export type RealtimeVoiceSession = {
   tier_label: string;
   language: "en" | "ta";
   wallets: Wallets;
-  playback_mode: string;
-  selected_codec: string;
+  playback_mode: "buffered_mp3" | "pcm_stream" | "auto";
+  selected_codec: "mp3" | "linear16";
   provider_sample_rate: number | null;
   media_source_allowed: boolean;
   approved_websocket_hosts?: string[];
