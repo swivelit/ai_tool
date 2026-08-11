@@ -16,6 +16,8 @@ const envExampleFile = path.join(mobileRoot, '.env.example');
 const modelsConfigFile = path.join(mobileRoot, 'data', 'config', 'models.json');
 const agentRegistryFile = path.join(mobileRoot, 'data', 'config', 'agent_registry.json');
 const googleServicesFile = path.join(mobileRoot, 'google-services.json');
+const ANDROID_PACKAGE_NAME = 'com.swico.swivel';
+const OBSOLETE_ANDROID_PACKAGE_NAMES = ['com.swico.tamilai', 'com.harishajahan.tamilai'];
 
 const FIREBASE_ENV_NAMES = [
   'EXPO_PUBLIC_FIREBASE_API_KEY',
@@ -86,6 +88,66 @@ function readJson(file) {
   } catch (error) {
     fail(`Could not parse ${rel(file)}`, String(error && error.message ? error.message : error));
   }
+}
+
+function androidPackageNamesFromGoogleServicesConfig(config) {
+  const names = new Set();
+  const clients = Array.isArray(config?.client) ? config.client : [];
+  for (const client of clients) {
+    const packageName = client?.client_info?.android_client_info?.package_name;
+    if (typeof packageName === 'string' && packageName.trim()) names.add(packageName.trim());
+  }
+  return [...names];
+}
+
+function verifyFirebaseAndroidConfigSource() {
+  let config;
+  let source;
+  if (fs.existsSync(googleServicesFile)) {
+    source = googleServicesFile;
+    config = readJson(googleServicesFile);
+  } else {
+    const envSources = [
+      ['GOOGLE_SERVICES_JSON_BASE64', process.env.GOOGLE_SERVICES_JSON_BASE64, true],
+      ['GOOGLE_SERVICES_JSON', process.env.GOOGLE_SERVICES_JSON, false],
+      ['FIREBASE_GOOGLE_SERVICES_JSON', process.env.FIREBASE_GOOGLE_SERVICES_JSON, false],
+    ];
+    const selected = envSources.find(([, value]) => String(value || '').trim());
+    if (!selected) {
+      fail(
+        'Release builds are missing Firebase Android google-services config',
+        [
+          `Register ${ANDROID_PACKAGE_NAME} as a new Android app in the existing Firebase project and provide the matching google-services.json or approved secure build source.`,
+          'EXPO_PUBLIC_FIREBASE_* values alone cannot prove Android app registration and are not accepted as a substitute.',
+          'Do not commit mobile/google-services.json; it is intentionally gitignored.',
+        ].join('\n'),
+      );
+    }
+    source = selected[0];
+    try {
+      const raw = selected[2]
+        ? Buffer.from(String(selected[1]), 'base64').toString('utf8')
+        : String(selected[1]);
+      config = JSON.parse(raw);
+    } catch (error) {
+      fail(`Could not parse Firebase Android config from ${source}`, 'JSON content is intentionally not printed.');
+    }
+  }
+
+  const packageNames = androidPackageNamesFromGoogleServicesConfig(config);
+  const obsolete = packageNames.filter((name) => OBSOLETE_ANDROID_PACKAGE_NAMES.includes(name));
+  if (!packageNames.includes(ANDROID_PACKAGE_NAME)) {
+    fail(
+      `Firebase Android config from ${source} does not contain ${ANDROID_PACKAGE_NAME}`,
+      [
+        obsolete.length
+          ? `Obsolete Android package(s) found: ${obsolete.join(', ')}.`
+          : `Found package(s): ${packageNames.length ? packageNames.join(', ') : '<none>'}.`,
+        `Register ${ANDROID_PACKAGE_NAME} as a new Android app in the existing Firebase project and provide the matching google-services.json or approved secure build source.`,
+      ].join('\n'),
+    );
+  }
+  pass(`release env has Firebase Android config for ${ANDROID_PACKAGE_NAME}`);
 }
 
 function requireContains(file, content, needle, description) {
@@ -217,26 +279,7 @@ function verifyReleaseEnvironment() {
   }
   pass('release env has Firebase public config required by Firebase Auth');
 
-  const hasGoogleServicesSource =
-    fs.existsSync(googleServicesFile) ||
-    String(process.env.GOOGLE_SERVICES_JSON_BASE64 || '').trim() ||
-    String(process.env.GOOGLE_SERVICES_JSON || '').trim() ||
-    String(process.env.FIREBASE_GOOGLE_SERVICES_JSON || '').trim();
-  if (!hasGoogleServicesSource && missingFirebaseEnvNames.length) {
-    fail(
-      'Release builds are missing Firebase Android google-services config',
-      [
-        'Provide mobile/google-services.json locally, set GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON, or set all EXPO_PUBLIC_FIREBASE_* values so the preflight can synthesize the ignored local file.',
-        `Missing Firebase public variable name(s): ${missingFirebaseEnvNames.join(', ')}`,
-        'Do not commit mobile/google-services.json; it is intentionally gitignored.',
-      ].join('\n'),
-    );
-  }
-  pass(
-    hasGoogleServicesSource
-      ? 'release env has Firebase Android google-services config source'
-      : 'release env can synthesize Firebase Android google-services config from public Firebase env',
-  );
+  verifyFirebaseAndroidConfigSource();
   verifyExplicitLocalFallbackReleaseEnvironment();
 }
 

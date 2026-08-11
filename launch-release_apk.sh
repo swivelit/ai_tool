@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-PACKAGE_NAME="com.swico.tamilai"
+PACKAGE_NAME="com.swico.swivel"
 MAIN_ACTIVITY="$PACKAGE_NAME/.MainActivity"
 APK_PATH="$DIST_DIR/tamil-ai-release.apk"
 SMOKE_DIR="$DIST_DIR/release-smoke-$(date +%Y%m%d-%H%M%S)"

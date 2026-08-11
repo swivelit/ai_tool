@@ -49,6 +49,23 @@ describe("current native Swico APK E2E contract", () => {
     ]) expect(harness).toContain(marker);
   });
 
+  it("targets the migrated Android application ID while preserving the legacy deep-link scheme", () => {
+    const androidHarnesses = [
+      readRepo("launch-debug_apk.sh"),
+      readRepo("launch-release_apk.sh"),
+      readRepo("test_apk.sh"),
+      readRepo("scripts/build-android-apk.sh"),
+      readRepo("scripts/build-android_release-apk.sh"),
+      readRepo("scripts/record-play-fgs-microphone-demo.sh"),
+    ].join("\n");
+    const appLinks = readRepo("scripts/test-android-app-links.sh");
+
+    expect(androidHarnesses).toContain("com.swico.swivel");
+    expect(androidHarnesses).not.toContain("com.swico.tamilai");
+    expect(appLinks).toContain('DEEP_LINK_URL="${DEEP_LINK_URL:-com.swico.tamilai://}"');
+    expect(appLinks).toContain("existing deep-link compatibility");
+  });
+
   it("configures Metro to watch the authoritative website legal source", () => {
     const metro = readMobile("metro.config.js");
     const legal = readMobile("components/swico/SwicoLegalScreen.tsx");

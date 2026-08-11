@@ -44,6 +44,11 @@ synthesis remain available through the canonical `/api/web/audio/*` endpoints.
 
 ## Firebase Android config
 
+The Android application ID is `com.swico.swivel`. The existing custom deep-link
+scheme remains `com.swico.tamilai://` intentionally so previously issued links
+continue to resolve; the scheme is independent of the Android application ID.
+The iOS bundle identifier remains `com.swico.tamilai`.
+
 Expo Android prebuild only points to `mobile/google-services.json` when the file
 exists. The file is gitignored and must not be committed.
 
@@ -69,9 +74,9 @@ mobile/google-services.json
 GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
 # or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
 
-# C. Provide all six public Firebase env values below; the preflight script
-#    synthesizes mobile/google-services.json locally with package
-#    com.swico.tamilai.
+# C. These public Firebase values are still required by the JS Firebase Auth
+#    configuration. They do not replace the authoritative Android config for
+#    com.swico.swivel and are not used to synthesize google-services.json.
 EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>

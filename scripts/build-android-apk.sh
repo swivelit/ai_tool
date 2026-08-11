@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACKAGE_NAME="com.swico.tamilai"
+PACKAGE_NAME="com.swico.swivel"
 APK_PATH="$ROOT_DIR/dist/tamil-ai-debug.apk"
 
 cat <<'BANNER'

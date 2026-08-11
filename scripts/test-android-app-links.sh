@@ -2,8 +2,12 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACKAGE_NAME="com.swico.tamilai"
+# The Android application ID changed; the legacy custom scheme remains for
+# existing deep-link compatibility and is intentionally independent of it.
+PACKAGE_NAME="com.swico.swivel"
 APK_PATH="${APK_PATH:-$ROOT_DIR/dist/tamil-ai-debug.apk}"
+# Preserve the existing external/deep-link contract independently of the
+# Android application ID migration.
 DEEP_LINK_URL="${DEEP_LINK_URL:-com.swico.tamilai://}"
 
 info() {

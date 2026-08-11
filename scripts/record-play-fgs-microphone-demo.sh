@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/dist/play-console-fgs-microphone-demo"
-PACKAGE_NAME="${PACKAGE_NAME:-com.swico.tamilai}"
+PACKAGE_NAME="${PACKAGE_NAME:-com.swico.swivel}"
 DEVICE_VIDEO="/sdcard/swico-fgs-microphone-demo.mp4"
 VIDEO_PATH="$OUT_DIR/swico-fgs-microphone-demo.mp4"
 README_PATH="$OUT_DIR/README_SUBMISSION.txt"

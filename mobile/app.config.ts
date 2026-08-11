@@ -559,7 +559,7 @@ export default {
     },
 
     android: {
-      package: "com.swico.tamilai",
+      package: "com.swico.swivel",
       versionCode: 1,
       ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
       permissions: [

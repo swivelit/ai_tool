@@ -43,8 +43,9 @@ const setupAndroidSigningScriptPath = path.join(
   "scripts",
   "setup-android-release-signing.sh",
 );
-const androidPackageName = "com.swico.tamilai";
-const oldAndroidPackageName = ["com", "harishajahan", "tamilai"].join(".");
+const androidPackageName = "com.swico.swivel";
+const previousSwicoAndroidPackageName = "com.swico.tamilai";
+const oldAndroidPackageName = "com.harishajahan.tamilai";
 const oldMarketplacePackageName = ["com", "goodone", "marketplace"].join(".");
 const swicoSigningEnvNames = [
   "SWICO_UPLOAD_STORE_FILE",
@@ -257,6 +258,20 @@ function runEnsureGoogleServicesJson(env: Record<string, string | undefined>) {
     env: mergedEnv,
     encoding: "utf8",
   });
+}
+
+function runEnsureWithGoogleServicesConfig(config: unknown) {
+  const googleServicesPath = path.join(mobileRoot, "google-services.json");
+  const backup = fs.existsSync(googleServicesPath)
+    ? fs.readFileSync(googleServicesPath, "utf8")
+    : null;
+  fs.writeFileSync(googleServicesPath, `${JSON.stringify(config)}\n`);
+  try {
+    return runEnsureGoogleServicesJson({ BUILD_TYPE: "release" });
+  } finally {
+    fs.rmSync(googleServicesPath, { force: true });
+    if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+  }
 }
 
 function runReleaseAndroidScriptWithoutSigning() {
@@ -592,7 +607,7 @@ export const runtime = {
     );
   });
 
-  it("declares Swico public app identity and release versions", async () => {
+  it("declares the authoritative Android package separately from iOS and the legacy scheme", async () => {
     const appConfig = await importAppConfigWithEnv({
       BUILD_TYPE: "debug",
     });
@@ -600,11 +615,18 @@ export const runtime = {
     expect(appConfig.expo.name).toBe("Swico");
     expect(appConfig.expo.slug).toBe("tamil-ai");
     expect(appConfig.expo.version).toBe("1.0.0");
-    expect(appConfig.expo.scheme).toBe(androidPackageName);
+    expect(appConfig.expo.scheme).toBe(previousSwicoAndroidPackageName);
     expect(appConfig.expo.android.package).toBe(androidPackageName);
     expect(appConfig.expo.android.versionCode).toBe(1);
-    expect(appConfig.expo.ios.bundleIdentifier).toBe(androidPackageName);
+    expect(appConfig.expo.ios.bundleIdentifier).toBe(previousSwicoAndroidPackageName);
     expect(appConfig.expo.ios.buildNumber).toBe("1");
+  });
+
+  it("regression-checks the authoritative Android application ID", async () => {
+    const appConfig = await importAppConfigWithEnv({ BUILD_TYPE: "debug" });
+
+    expect(appConfig.expo.android.package).toBe("com.swico.swivel");
+    expect(appConfig.expo.android.package).not.toBe(previousSwicoAndroidPackageName);
   });
 
   it("uses the Swico Android package in launch/build scripts while preserving tamil-ai artifacts", () => {
@@ -779,7 +801,7 @@ export const runtime = {
     }
   });
 
-  it("ensure-google-services-json synthesizes Android config from public Firebase env", () => {
+  it("ensure-google-services-json refuses to synthesize an unverified Android config from public Firebase env", () => {
     const googleServicesPath = path.join(mobileRoot, "google-services.json");
     const backup = fs.existsSync(googleServicesPath)
       ? fs.readFileSync(googleServicesPath, "utf8")
@@ -793,42 +815,11 @@ export const runtime = {
         EXPO_PUBLIC_FIREBASE_API_KEY: secretApiKey,
       });
 
-      expect(result.status).toBe(0);
-      expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_*");
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain("authoritative google-services.json");
       expect(result.stdout + result.stderr).toContain(androidPackageName);
       expect(result.stdout + result.stderr).not.toContain(secretApiKey);
-      expect(fs.statSync(googleServicesPath).mode & 0o777).toBe(0o600);
-
-      const parsed = JSON.parse(fs.readFileSync(googleServicesPath, "utf8"));
-      expect(parsed).toEqual({
-        project_info: {
-          project_number: "1234567890",
-          project_id: "firebase-project",
-          storage_bucket: "firebase-project.appspot.com",
-        },
-        client: [
-          {
-            client_info: {
-              mobilesdk_app_id: "1:1234567890:android:abcdef",
-              android_client_info: {
-                package_name: androidPackageName,
-              },
-            },
-            oauth_client: [],
-            api_key: [
-              {
-                current_key: secretApiKey,
-              },
-            ],
-            services: {
-              appinvite_service: {
-                other_platform_oauth_client: [],
-              },
-            },
-          },
-        ],
-        configuration_version: "1",
-      });
+      expect(fs.existsSync(googleServicesPath)).toBe(false);
     } finally {
       fs.rmSync(googleServicesPath, { force: true });
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
@@ -862,12 +853,45 @@ export const runtime = {
 
       expect(result.status).not.toBe(0);
       expect(result.stdout + result.stderr).toContain(
-        `google-services.json is for ${oldAndroidPackageName}, but this build now requires ${androidPackageName}. Create a new Firebase Android app or update Firebase config, then download a new google-services.json.`,
+        `google-services.json contains obsolete Android package(s) ${oldAndroidPackageName}, but this build requires ${androidPackageName}. Register ${androidPackageName} as a new Firebase Android app and download a matching google-services.json.`,
       );
     } finally {
       fs.rmSync(googleServicesPath, { force: true });
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
     }
+  });
+
+  it("ensure-google-services-json rejects the previous Swico Android Firebase package", () => {
+    const result = runEnsureWithGoogleServicesConfig({
+      project_info: { project_id: "firebase-project" },
+      client: [{ client_info: { android_client_info: { package_name: previousSwicoAndroidPackageName } } }],
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain(previousSwicoAndroidPackageName);
+    expect(result.stdout + result.stderr).toContain(androidPackageName);
+  });
+
+  it("ensure-google-services-json rejects an unrelated Android Firebase package", () => {
+    const result = runEnsureWithGoogleServicesConfig({
+      project_info: { project_id: "firebase-project" },
+      client: [{ client_info: { android_client_info: { package_name: "com.example.unrelated" } } }],
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain("com.example.unrelated");
+    expect(result.stdout + result.stderr).toContain(androidPackageName);
+  });
+
+  it("ensure-google-services-json rejects a Firebase config with no Android package", () => {
+    const result = runEnsureWithGoogleServicesConfig({
+      project_info: { project_id: "firebase-project" },
+      client: [{ client_info: {} }],
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain("does not contain an Android package_name");
+    expect(result.stdout + result.stderr).toContain(androidPackageName);
   });
 
   it("ensure-google-services-json release mode fails without JSON source or complete Firebase env", () => {
@@ -1205,7 +1229,7 @@ export const runtime = {
     expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
   });
 
-  it("release verifier accepts public Firebase env as google-services synthesis source", () => {
+  it("release verifier rejects public Firebase env as an Android config substitute", () => {
     const {
       GOOGLE_SERVICES_JSON_BASE64: _missingGoogleServices,
       ...firebaseWithoutGoogleServices
@@ -1225,9 +1249,9 @@ export const runtime = {
         ...firebaseWithoutGoogleServices,
       });
 
-      expect(result.status).toBe(0);
+      expect(result.status).not.toBe(0);
       expect(result.stdout + result.stderr).toContain(
-        "release env can synthesize Firebase Android google-services config from public Firebase env",
+        "EXPO_PUBLIC_FIREBASE_* values alone cannot prove Android app registration",
       );
     } finally {
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);

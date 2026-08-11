@@ -283,7 +283,7 @@ Outputs:
 - `dist/ios/Swico.xcarchive`
 
 Play/App Store release branding uses the app name `Swico`, Android package
-`com.swico.tamilai`, and iOS bundle identifier `com.swico.tamilai`. The Expo
+`com.swico.swivel`, and iOS bundle identifier `com.swico.tamilai`. The Expo
 slug and artifact filenames remain `tamil-ai`.
 
 Release builds must not use E2E/mock/debug flags such as `EXPO_PUBLIC_E2E_*` or `JAI_DEBUG_LITE`. Release chat and voice default to backend routing; `JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1` is the explicit release override for experimental local voice builds. Do not commit signing secrets, keystores, provisioning profiles, `key.properties`, or passwords. Upload the AAB to Google Play; the APK is for local QA.

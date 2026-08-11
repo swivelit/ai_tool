@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APK_PATH="$ROOT_DIR/dist/tamil-ai-debug.apk"
-PACKAGE_NAME="com.swico.tamilai"
+PACKAGE_NAME="com.swico.swivel"
 ARTIFACT_DIR="$ROOT_DIR/dist/apk-test-$(date +%Y%m%d-%H%M%S)"
 LOGCAT_FILE="$ARTIFACT_DIR/logcat-full.log"
 SUMMARY_FILE="$ARTIFACT_DIR/summary.txt"

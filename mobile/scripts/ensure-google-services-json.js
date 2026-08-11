@@ -4,8 +4,11 @@ const path = require("node:path");
 
 const mobileRoot = path.resolve(__dirname, "..");
 const googleServicesFile = path.join(mobileRoot, "google-services.json");
-const ANDROID_PACKAGE_NAME = "com.swico.tamilai";
-const OLD_ANDROID_PACKAGE_NAME = ["com", "harishajahan", "tamilai"].join(".");
+const ANDROID_PACKAGE_NAME = "com.swico.swivel";
+const OBSOLETE_ANDROID_PACKAGE_NAMES = [
+  "com.swico.tamilai",
+  "com.harishajahan.tamilai",
+];
 
 const FIREBASE_PUBLIC_ENV_NAMES = [
   "EXPO_PUBLIC_FIREBASE_API_KEY",
@@ -60,9 +63,12 @@ function packageNamesFromGoogleServicesConfig(config) {
 
 function validateGoogleServicesConfig(config) {
   const packageNames = packageNamesFromGoogleServicesConfig(config);
-  if (packageNames.includes(OLD_ANDROID_PACKAGE_NAME)) {
+  const obsoletePackageNames = packageNames.filter((packageName) =>
+    OBSOLETE_ANDROID_PACKAGE_NAMES.includes(packageName),
+  );
+  if (obsoletePackageNames.length && !packageNames.includes(ANDROID_PACKAGE_NAME)) {
     fail(
-      `google-services.json is for ${OLD_ANDROID_PACKAGE_NAME}, but this build now requires ${ANDROID_PACKAGE_NAME}. Create a new Firebase Android app or update Firebase config, then download a new google-services.json.`,
+      `google-services.json contains obsolete Android package(s) ${obsoletePackageNames.join(", ")}, but this build requires ${ANDROID_PACKAGE_NAME}. Register ${ANDROID_PACKAGE_NAME} as a new Firebase Android app and download a matching google-services.json.`,
     );
   }
 
@@ -97,50 +103,6 @@ function writeJsonFromEnv(name, value, { base64 = false } = {}) {
   console.log(`[ensure-google-services-json] Wrote mobile/google-services.json from ${name}. JSON content was not printed.`);
 }
 
-function synthesizeGoogleServicesJsonFromPublicEnv() {
-  const missing = missingFirebasePublicEnvNames();
-  if (missing.length) {
-    return missing;
-  }
-
-  const content = {
-    project_info: {
-      project_number: String(process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "").trim(),
-      project_id: String(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "").trim(),
-      storage_bucket: String(process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "").trim(),
-    },
-    client: [
-      {
-        client_info: {
-          mobilesdk_app_id: String(process.env.EXPO_PUBLIC_FIREBASE_APP_ID || "").trim(),
-          android_client_info: {
-            package_name: ANDROID_PACKAGE_NAME,
-          },
-        },
-        oauth_client: [],
-        api_key: [
-          {
-            current_key: String(process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "").trim(),
-          },
-        ],
-        services: {
-          appinvite_service: {
-            other_platform_oauth_client: [],
-          },
-        },
-      },
-    ],
-    configuration_version: "1",
-  };
-
-  validateGoogleServicesConfig(content);
-  fs.writeFileSync(googleServicesFile, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
-  console.log(
-    `[ensure-google-services-json] Wrote mobile/google-services.json from complete EXPO_PUBLIC_FIREBASE_* environment for ${ANDROID_PACKAGE_NAME}. JSON content was not printed.`,
-  );
-  return [];
-}
-
 const mode = modeFromArgs();
 
 if (fs.existsSync(googleServicesFile)) {
@@ -168,10 +130,7 @@ if (process.env.FIREBASE_GOOGLE_SERVICES_JSON) {
   process.exit(0);
 }
 
-const missingPublicFirebaseEnv = synthesizeGoogleServicesJsonFromPublicEnv();
-if (missingPublicFirebaseEnv.length === 0) {
-  process.exit(0);
-}
+const missingPublicFirebaseEnv = missingFirebasePublicEnvNames();
 
 if (!isReleaseLike(mode) && (isTruthy(process.env.EXPO_PUBLIC_E2E_MOCK_AUTH) || isTruthy(process.env.JAI_DEBUG_LITE))) {
   console.log(
@@ -183,13 +142,17 @@ if (!isReleaseLike(mode) && (isTruthy(process.env.EXPO_PUBLIC_E2E_MOCK_AUTH) || 
 if (isReleaseLike(mode)) {
   fail(
     [
-      "Release/production builds require mobile/google-services.json, one of GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON, or complete EXPO_PUBLIC_FIREBASE_* values that can synthesize the Android config.",
-      `Missing Firebase public variable name(s): ${missingPublicFirebaseEnv.join(", ")}`,
+      `Release/production builds require an authoritative google-services.json for Android package ${ANDROID_PACKAGE_NAME}.`,
+      "EXPO_PUBLIC_FIREBASE_* values alone cannot prove that the Firebase Android app registration matches this package and will not be used to synthesize the file.",
+      "Provide mobile/google-services.json or one of GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON containing the new Android app.",
+      missingPublicFirebaseEnv.length
+        ? `Missing Firebase public variable name(s): ${missingPublicFirebaseEnv.join(", ")}`
+        : "Firebase public variables are present, but they do not replace the authoritative Android config.",
       "Do not commit mobile/google-services.json.",
     ].join("\n"),
   );
 }
 
 fail(
-  "Missing mobile/google-services.json. For local debug, provide GOOGLE_SERVICES_JSON_BASE64 or enable EXPO_PUBLIC_E2E_MOCK_AUTH=1/JAI_DEBUG_LITE=1. For release, configure a real Firebase google services secret.",
+  `Missing authoritative mobile/google-services.json for Android package ${ANDROID_PACKAGE_NAME}. For local debug, provide GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON or enable EXPO_PUBLIC_E2E_MOCK_AUTH=1/JAI_DEBUG_LITE=1. For release, configure a real Firebase google services secret for the new Android app.`,
 );
