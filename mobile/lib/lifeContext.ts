@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
 
 import NativeLifeContext, {
   DailyLifeContext,
@@ -491,6 +492,17 @@ export async function getTodayLifeContextForAi(
     };
   }
   if (forBackend && !settings.shareLifeContextWithBackend) {
+    return {
+      enabled: false,
+      date,
+      ...(ageGroup ? { ageGroup } : {}),
+    };
+  }
+
+  // Android production no longer exposes movement or device-usage collection.
+  // Keep the historical service shape for iOS and debug E2E fixtures, but do
+  // not let persisted Android settings reach native collection or old caches.
+  if (Platform.OS === "android" && !isE2eMockLifeContextEnabled()) {
     return {
       enabled: false,
       date,

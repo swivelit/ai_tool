@@ -1,11 +1,8 @@
 package com.harishajahan.jai.lifecontext
 
-import android.Manifest
-import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -15,11 +12,7 @@ import android.hardware.SensorManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.Process
 import android.os.SystemClock
-import android.provider.Settings
-import expo.modules.interfaces.permissions.PermissionsResponse
-import expo.modules.interfaces.permissions.PermissionsStatus
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -46,15 +39,7 @@ class LifeContextModule : Module() {
       requestActivityRecognitionPermission(promise)
     }
 
-    AsyncFunction("openUsageAccessSettings") {
-      val context = applicationContextOrNull()
-      if (context != null) {
-        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(intent)
-      }
-    }
+    AsyncFunction("openUsageAccessSettings") { }
 
     AsyncFunction("getDailyLifeContext") { input: Map<String, Any?>? ->
       buildDailyLifeContext(input ?: emptyMap())
@@ -88,76 +73,17 @@ class LifeContextModule : Module() {
   }
 
   private fun activityRecognitionState(): String {
-    val context = applicationContextOrNull() ?: return "unavailable"
-    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-      ?: return "unavailable"
-    val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-      ?: return "unavailable"
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      return "granted"
-    }
-    return if (
-      context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) ==
-        PackageManager.PERMISSION_GRANTED
-    ) {
-      "granted"
-    } else {
-      "denied"
-    }
+    return "unavailable"
   }
 
   private fun requestActivityRecognitionPermission(promise: Promise) {
-    val context = applicationContextOrNull()
-    if (context == null) {
-      promise.resolve("unavailable")
-      return
-    }
-    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-    if (sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) == null) {
-      promise.resolve("unavailable")
-      return
-    }
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      promise.resolve("granted")
-      return
-    }
-    val permissions = appContext.permissions
-    if (permissions == null) {
-      promise.resolve(activityRecognitionState())
-      return
-    }
-    permissions.askForPermissions(
-      { result: Map<String, PermissionsResponse> ->
-        val response = result[Manifest.permission.ACTIVITY_RECOGNITION]
-        promise.resolve(if (response?.status == PermissionsStatus.GRANTED) "granted" else activityRecognitionState())
-      },
-      Manifest.permission.ACTIVITY_RECOGNITION,
-    )
+    // Kept for ABI compatibility with historical JS callers. This feature is
+    // not part of the production Swico Android app and must never request it.
+    promise.resolve("unavailable")
   }
 
   private fun usageAccessState(): String {
-    val context = applicationContextOrNull() ?: return "unavailable"
-    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
-      ?: return "unavailable"
-    val mode = try {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        appOps.unsafeCheckOpNoThrow(
-          AppOpsManager.OPSTR_GET_USAGE_STATS,
-          Process.myUid(),
-          context.packageName,
-        )
-      } else {
-        @Suppress("DEPRECATION")
-        appOps.checkOpNoThrow(
-          AppOpsManager.OPSTR_GET_USAGE_STATS,
-          Process.myUid(),
-          context.packageName,
-        )
-      }
-    } catch (_: Throwable) {
-      return "unavailable"
-    }
-    return if (mode == AppOpsManager.MODE_ALLOWED) "granted" else "denied"
+    return "unavailable"
   }
 
   private fun buildDailyLifeContext(input: Map<String, Any?>): Map<String, Any?> {

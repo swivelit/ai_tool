@@ -77,6 +77,30 @@ describe("life context service", () => {
     expect(native.getDailyLifeContext).not.toHaveBeenCalled();
   });
 
+  it("disables historical Life Context collection on Android production", async () => {
+    mockConstants();
+    const native = mockNativeLifeContext();
+    const { Platform } = await import("react-native");
+    const previousPlatform = Platform.OS;
+    Platform.OS = "android";
+    try {
+      const { getTodayLifeContextForAi } = await import("../lib/lifeContext");
+      const summary = await getTodayLifeContextForAi({
+        settings: {
+          lifeContextEnabled: true,
+          shareLifeContextWithBackend: true,
+          shareAppNamesWithAi: true,
+        },
+        forBackend: true,
+      });
+
+      expect(summary.enabled).toBe(false);
+      expect(native.getDailyLifeContext).not.toHaveBeenCalled();
+    } finally {
+      Platform.OS = previousPlatform;
+    }
+  });
+
   it("returns deterministic E2E mock life context", async () => {
     mockConstants({ EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT: "1" });
     mockNativeLifeContext();

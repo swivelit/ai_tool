@@ -8024,8 +8024,8 @@ function buildLifeContextAnswer(
 
   if (!lifeContext?.enabled) {
     return english
-      ? "Life Intelligence is off or not available yet. Enable it in Settings > Life Intelligence, then grant Activity Recognition for steps and Usage Access for phone/app-time estimates."
-      : "Life Intelligence off-aa irukku or innum available illa. Settings > Life Intelligence-la enable pannitu, steps-ku Activity Recognition and phone/app-time-ku Usage Access grant pannunga.";
+      ? "I don't have access to movement, screen-time, or app-usage data."
+      : "Movement, screen-time, illa app-usage data enakku available illa.";
   }
 
   const parts: string[] = [];

@@ -562,10 +562,6 @@ export default {
       package: "com.swico.swivel",
       versionCode: 1,
       ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
-      permissions: [
-        "android.permission.ACTIVITY_RECOGNITION",
-        "android.permission.PACKAGE_USAGE_STATS",
-      ],
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "resize",
       predictiveBackGestureEnabled: false,

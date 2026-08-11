@@ -46,6 +46,30 @@ const setupAndroidSigningScriptPath = path.join(
 const androidPackageName = "com.swico.swivel";
 const previousSwicoAndroidPackageName = "com.swico.tamilai";
 const oldAndroidPackageName = "com.harishajahan.tamilai";
+const lifeContextAndroidManifestPath = path.join(
+  mobileRoot,
+  "modules",
+  "life-context",
+  "android",
+  "src",
+  "main",
+  "AndroidManifest.xml",
+);
+const lifeContextModuleSourcePath = path.join(
+  mobileRoot,
+  "modules",
+  "life-context",
+  "android",
+  "src",
+  "main",
+  "java",
+  "com",
+  "harishajahan",
+  "jai",
+  "lifecontext",
+  "LifeContextModule.kt",
+);
+const customiseScreenPath = path.join(mobileRoot, "app", "customise.tsx");
 const oldMarketplacePackageName = ["com", "goodone", "marketplace"].join(".");
 const swicoSigningEnvNames = [
   "SWICO_UPLOAD_STORE_FILE",
@@ -594,17 +618,24 @@ export const runtime = {
     }
   });
 
-  it("declares Android permissions for opt-in life context collection", async () => {
+  it("keeps health and sensitive Life Context permissions out of production Android inputs", async () => {
     const appConfig = await importAppConfigWithEnv({
       BUILD_TYPE: "debug",
     });
+    const androidPermissions = appConfig.expo.android.permissions ?? [];
+    const lifeContextManifest = fs.readFileSync(lifeContextAndroidManifestPath, "utf8");
+    const lifeContextModuleSource = fs.readFileSync(lifeContextModuleSourcePath, "utf8");
+    const customiseSource = fs.readFileSync(customiseScreenPath, "utf8");
 
-    expect(appConfig.expo.android.permissions).toEqual(
-      expect.arrayContaining([
-        "android.permission.ACTIVITY_RECOGNITION",
-        "android.permission.PACKAGE_USAGE_STATS",
-      ]),
-    );
+    expect(androidPermissions).toEqual([]);
+    expect(androidPermissions).not.toContain("android.permission.ACTIVITY_RECOGNITION");
+    expect(androidPermissions).not.toContain("android.permission.PACKAGE_USAGE_STATS");
+    expect(lifeContextManifest).not.toContain("android.permission.ACTIVITY_RECOGNITION");
+    expect(lifeContextManifest).not.toContain("android.permission.PACKAGE_USAGE_STATS");
+    expect(lifeContextModuleSource).not.toContain("Manifest.permission.ACTIVITY_RECOGNITION");
+    expect(lifeContextModuleSource).not.toContain("Manifest.permission.PACKAGE_USAGE_STATS");
+    expect(customiseSource).not.toContain("life-context-activity-permission-button");
+    expect(customiseSource).not.toContain("life-context-usage-settings-button");
   });
 
   it("declares the authoritative Android package separately from iOS and the legacy scheme", async () => {

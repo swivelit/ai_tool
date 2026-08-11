@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  AppState,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -23,14 +22,6 @@ import { GlassCard } from "@/components/Glass";
 import { Screen } from "@/components/ui";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand, Elevation, Radius, Spacing, Type } from "@/constants/theme";
-import {
-  getLifeContextPermissionState,
-  getTodayLifeContextForAi,
-  openLifeContextUsageSettings,
-  requestLifeContextPermissions,
-  type LifeContextAiSummary,
-  type LifeContextPermissionSummary,
-} from "@/lib/lifeContext";
 
 type Tone = "pro" | "friendly";
 type LanguageMode = "en" | "ta";
@@ -53,38 +44,17 @@ function getWakeStatusLabel(status?: string) {
   return "Needs model";
 }
 
-const unavailableLifePermissions: LifeContextPermissionSummary = {
-  activityRecognition: "unavailable",
-  usageAccess: "unavailable",
-};
-
-function permissionLabel(value?: string) {
-  if (value === "granted") return "Granted";
-  if (value === "denied") return "Not granted";
-  return "Unavailable";
-}
-
 export default function CustomiseScreen() {
   const insets = useSafeAreaInsets();
-  const { name, settings, profile, refresh, updateName, updateSettings } = useAssistant();
+  const { name, settings, refresh, updateName, updateSettings } = useAssistant();
 
   const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
   const [tone, setTone] = useState<Tone>(settings.tone);
   const [languageMode, setLanguageMode] = useState<LanguageMode>(settings.languageMode);
   const [allowCloudFallback, setAllowCloudFallback] = useState(settings.allowCloudFallback);
-  const [lifeContextEnabled, setLifeContextEnabled] = useState(settings.lifeContextEnabled);
-  const [shareLifeContextWithBackend, setShareLifeContextWithBackend] = useState(
-    settings.shareLifeContextWithBackend,
-  );
-  const [shareAppNamesWithAi, setShareAppNamesWithAi] = useState(settings.shareAppNamesWithAi);
-  const [lifePermissionState, setLifePermissionState] =
-    useState<LifeContextPermissionSummary>(unavailableLifePermissions);
-  const [lifeSummary, setLifeSummary] = useState<LifeContextAiSummary | null>(null);
-  const [lifeLoading, setLifeLoading] = useState(false);
   const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
   const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [saving, setSaving] = useState(false);
-  const refreshLifeContextOnActiveRef = useRef(false);
 
   useEffect(() => {
     setAssistantNameInput(name || "Elli");
@@ -94,9 +64,6 @@ export default function CustomiseScreen() {
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
     setAllowCloudFallback(settings.allowCloudFallback);
-    setLifeContextEnabled(settings.lifeContextEnabled);
-    setShareLifeContextWithBackend(settings.shareLifeContextWithBackend);
-    setShareAppNamesWithAi(settings.shareAppNamesWithAi);
     setHandsFreeEnabled(
       settings.handsFreeEnabled &&
         (settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock"),
@@ -117,106 +84,13 @@ export default function CustomiseScreen() {
   const wakeStatusLabel = getWakeStatusLabel(settings.wakeModel?.status);
   const wakeModelReady =
     settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock";
-  const previewLifeSettings = useMemo(
-    () => ({
-      lifeContextEnabled,
-      shareLifeContextWithBackend,
-      shareAppNamesWithAi,
-    }),
-    [lifeContextEnabled, shareAppNamesWithAi, shareLifeContextWithBackend],
-  );
-
-  useEffect(() => {
-    let alive = true;
-    setLifeLoading(true);
-    void Promise.all([
-      getLifeContextPermissionState(),
-      getTodayLifeContextForAi({
-        settings: previewLifeSettings,
-        profile,
-      }),
-    ])
-      .then(([permissions, summary]) => {
-        if (!alive) return;
-        setLifePermissionState(permissions);
-        setLifeSummary(summary);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setLifePermissionState(unavailableLifePermissions);
-        setLifeSummary(null);
-      })
-      .finally(() => {
-        if (alive) {
-          setLifeLoading(false);
-        }
-      });
-    return () => {
-      alive = false;
-    };
-  }, [previewLifeSettings, profile]);
-
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
     tone !== settings.tone ||
     languageMode !== settings.languageMode ||
     allowCloudFallback !== settings.allowCloudFallback ||
-    lifeContextEnabled !== settings.lifeContextEnabled ||
-    shareLifeContextWithBackend !== settings.shareLifeContextWithBackend ||
-    shareAppNamesWithAi !== settings.shareAppNamesWithAi ||
     handsFreeEnabled !== settings.handsFreeEnabled ||
     wakePrompt !== savedWakePrompt;
-
-  const refreshLifeContextPreview = useCallback(async (forceRefresh = false) => {
-    try {
-      setLifeLoading(true);
-      const [permissions, summary] = await Promise.all([
-        getLifeContextPermissionState(),
-        getTodayLifeContextForAi({
-          settings: previewLifeSettings,
-          profile,
-          forceRefresh,
-        }),
-      ]);
-      setLifePermissionState(permissions);
-      setLifeSummary(summary);
-    } finally {
-      setLifeLoading(false);
-    }
-  }, [previewLifeSettings, profile]);
-
-  async function handleRequestActivityPermission() {
-    try {
-      setLifeLoading(true);
-      const permissions = await requestLifeContextPermissions();
-      setLifePermissionState(permissions);
-      const summary = await getTodayLifeContextForAi({
-        settings: previewLifeSettings,
-        profile,
-        forceRefresh: true,
-      });
-      setLifeSummary(summary);
-    } finally {
-      setLifeLoading(false);
-    }
-  }
-
-  async function handleOpenUsageAccessSettings() {
-    refreshLifeContextOnActiveRef.current = true;
-    await openLifeContextUsageSettings();
-  }
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && refreshLifeContextOnActiveRef.current) {
-        refreshLifeContextOnActiveRef.current = false;
-        void refreshLifeContextPreview(true);
-      }
-    });
-    return () => {
-      subscription.remove();
-    };
-  }, [refreshLifeContextPreview]);
 
   async function handleSave() {
     const trimmedName = assistantNameInput.trim();
@@ -242,9 +116,10 @@ export default function CustomiseScreen() {
           ...(cloudFallbackChanged
             ? { allowCloudFallback, cloudFallbackUserChoice: true }
             : {}),
-          lifeContextEnabled,
-          shareLifeContextWithBackend: lifeContextEnabled && shareLifeContextWithBackend,
-          shareAppNamesWithAi: lifeContextEnabled && shareAppNamesWithAi,
+          // Clear any pre-cleanup opt-in stored by a historical Life Context build.
+          lifeContextEnabled: false,
+          shareLifeContextWithBackend: false,
+          shareAppNamesWithAi: false,
           handsFreeEnabled: wakePhraseChanged ? false : handsFreeEnabled && wakeModelReady,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: compactWakeSamples(settings.wakeTrainingSamples || []),
@@ -340,127 +215,6 @@ export default function CustomiseScreen() {
                 title="English"
                 active={languageMode === "en"}
                 onPress={() => setLanguageMode("en")}
-              />
-            </View>
-          </GlassCard>
-
-          <GlassCard
-            style={styles.card}
-            testID="life-context-card"
-            accessibilityLabel="life-context-card"
-          >
-            <Text style={styles.sectionTitle}>Life Intelligence</Text>
-            <Text style={styles.helperText}>
-              Opt-in. Uses your step counter and app-usage time — no camera, gaze tracking, or
-              hidden monitoring. App names stay private unless you share them.
-            </Text>
-
-            <View style={styles.switchCard}>
-              <View style={styles.switchTextBlock}>
-                <Text style={styles.inputLabel}>
-                  {lifeContextEnabled ? "Life Intelligence enabled" : "Enable Life Intelligence"}
-                </Text>
-                <Text style={styles.switchHint}>
-                  Adapts replies to your steps, screen time, and routine.
-                </Text>
-              </View>
-              <Switch
-                value={lifeContextEnabled}
-                onValueChange={(enabled) => {
-                  setLifeContextEnabled(enabled);
-                  if (!enabled) {
-                    setShareLifeContextWithBackend(false);
-                    setShareAppNamesWithAi(false);
-                  }
-                }}
-                testID="life-context-enable-toggle"
-                accessibilityLabel="life-context-enable-toggle"
-                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#eaf4ff"
-              />
-            </View>
-
-            <View
-              style={styles.lifeSummaryBox}
-              testID="life-context-daily-summary"
-              accessibilityLabel="life-context-daily-summary"
-            >
-              {lifeLoading ? (
-                <ActivityIndicator color={Brand.cocoa} />
-              ) : (
-                <>
-                  <Text style={styles.lifeSummaryText}>
-                    Activity permission: {permissionLabel(lifePermissionState.activityRecognition)}
-                  </Text>
-                  <Text style={styles.lifeSummaryText}>
-                    Usage access: {permissionLabel(lifePermissionState.usageAccess)}
-                  </Text>
-                  <Text style={styles.lifeSummaryText}>
-                    Today: {lifeSummary?.movementSummary || "Steps not available"}
-                  </Text>
-                  <Text style={styles.lifeSummaryText}>
-                    Phone: {lifeSummary?.screenSummary || "Screen/app time not available"}
-                  </Text>
-                </>
-              )}
-            </View>
-
-            <View style={styles.lifeButtonRow}>
-              <Pressable
-                onPress={handleRequestActivityPermission}
-                testID="life-context-activity-permission-button"
-                accessibilityLabel="life-context-activity-permission-button"
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.secondaryBtn, styles.lifeButton, pressed && styles.pressed]}
-              >
-                <Ionicons name="walk-outline" size={16} color={Brand.ink} />
-                <Text style={styles.secondaryBtnText}>Request activity permission</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleOpenUsageAccessSettings}
-                testID="life-context-usage-settings-button"
-                accessibilityLabel="life-context-usage-settings-button"
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.secondaryBtn, styles.lifeButton, pressed && styles.pressed]}
-              >
-                <Ionicons name="phone-portrait-outline" size={16} color={Brand.ink} />
-                <Text style={styles.secondaryBtnText}>Usage access settings</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.switchCard}>
-              <View style={styles.switchTextBlock}>
-                <Text style={styles.inputLabel}>Share life context with AI</Text>
-                <Text style={styles.switchHint}>
-                  Shares steps, screen time, and app categories.
-                </Text>
-              </View>
-              <Switch
-                value={lifeContextEnabled && shareLifeContextWithBackend}
-                onValueChange={setShareLifeContextWithBackend}
-                disabled={!lifeContextEnabled}
-                testID="life-context-share-backend-toggle"
-                accessibilityLabel="life-context-share-backend-toggle"
-                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#eaf4ff"
-              />
-            </View>
-
-            <View style={styles.switchCard}>
-              <View style={styles.switchTextBlock}>
-                <Text style={styles.inputLabel}>Share app names with AI</Text>
-                <Text style={styles.switchHint}>
-                  Off by default — only app categories are shared.
-                </Text>
-              </View>
-              <Switch
-                value={lifeContextEnabled && shareAppNamesWithAi}
-                onValueChange={setShareAppNamesWithAi}
-                disabled={!lifeContextEnabled}
-                testID="life-context-share-app-names-toggle"
-                accessibilityLabel="life-context-share-app-names-toggle"
-                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#eaf4ff"
               />
             </View>
           </GlassCard>
@@ -690,18 +444,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: Brand.muted,
   },
-  lifeSummaryBox: {
-    marginTop: Spacing.lg,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-    gap: Spacing.xs,
-  },
-  lifeSummaryText: { ...Type.caption, fontWeight: "700", color: Brand.ink, lineHeight: 18 },
-  lifeButtonRow: { marginTop: Spacing.md, gap: Spacing.sm },
-  lifeButton: { justifyContent: "flex-start" },
   optionRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm, marginTop: Spacing.lg },
   optionCard: {
     flex: 1,
