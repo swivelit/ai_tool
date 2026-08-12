@@ -29,11 +29,11 @@ describe("JaiWakeWord native module", () => {
     expect(config).toContain("WakeWordModule");
     expect(gradle).toContain("onnxruntime-android:1.25.1");
     expect(manifest).toContain("android.permission.RECORD_AUDIO");
-    expect(manifest).toContain("android.permission.FOREGROUND_SERVICE");
-    expect(manifest).toContain("android.permission.FOREGROUND_SERVICE_MICROPHONE");
-    expect(manifest).toContain("android.permission.POST_NOTIFICATIONS");
-    expect(manifest).toContain("HandsFreeForegroundService");
-    expect(manifest).toContain('android:foregroundServiceType="microphone"');
+    expect(manifest).not.toContain("android.permission.FOREGROUND_SERVICE");
+    expect(manifest).not.toContain("android.permission.FOREGROUND_SERVICE_MICROPHONE");
+    expect(manifest).not.toContain("android.permission.POST_NOTIFICATIONS");
+    expect(manifest).not.toContain("HandsFreeForegroundService");
+    expect(manifest).not.toContain('android:foregroundServiceType="microphone"');
     expect(module).toContain('Name("JaiWakeWord")');
     expect(module).toContain("onCommandAudio");
     expect(module).toContain("onWakeError");
@@ -42,6 +42,8 @@ describe("JaiWakeWord native module", () => {
     expect(module).toContain('bundle.putBoolean("sessionActive"');
     expect(module).toContain('bundle.putString("source"');
     expect(module).toContain("startSession");
+    expect(module).toContain("JAI_HANDS_FREE_UNAVAILABLE");
+    expect(module).not.toContain("HandsFreeForegroundService");
     expect(module).toContain("stopSession");
     expect(module).toContain("notifyTtsStarted");
     expect(module).toContain("notifyTtsCompleted");
@@ -89,9 +91,6 @@ describe("JaiWakeWord native module", () => {
     const controller = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/HandsFreeController.kt",
     );
-    const service = read(
-      "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/HandsFreeForegroundService.kt",
-    );
     expect(controller).toContain("PreRollBuffer");
     expect(controller).toContain("EnergyVoiceActivityDetector");
     expect(controller).toContain("writeCommandWav");
@@ -102,7 +101,7 @@ describe("JaiWakeWord native module", () => {
     expect(controller).toContain("HandsFreeWakeErrorEvent");
     expect(controller).toContain("fun stopAfterFatalError");
     expect(controller).toContain("releaseSessionResources");
-    expect(controller).toContain("stopServiceAfterFatalError");
+    expect(controller).not.toContain("stopServiceAfterFatalError");
     expect(controller).toContain("lastCaptureError");
     expect(controller).toContain("inferenceThreadAlive");
     expect(controller).toContain("lastInferenceError");
@@ -187,7 +186,7 @@ describe("JaiWakeWord native module", () => {
       fatalCleanup.indexOf("transitionIdleIfNeeded(reason)"),
     );
     expect(fatalCleanup).toContain("sessionActive = false");
-    expect(fatalCleanup).toContain("HandsFreeControllerRegistry.stopServiceAfterFatalError(event)");
+    expect(fatalCleanup).not.toContain("stopServiceAfterFatalError");
     const inferenceErrorPath = controller.slice(
       controller.indexOf("onError = { error ->"),
       controller.indexOf("onStopped = { reason ->"),
@@ -201,20 +200,12 @@ describe("JaiWakeWord native module", () => {
     expect(captureErrorPath).toContain("scheduleCaptureRestart(parsed, queue)");
     expect(captureErrorPath).toContain("stopAfterFatalError");
     expect(captureErrorPath).not.toContain("transition(HandsFreeNativeState.IDLE");
-    expect(service).toContain("FOREGROUND_SERVICE_TYPE_MICROPHONE");
-    expect(service).toContain("startForeground");
-    expect(service).toContain("setServiceStopper");
-    expect(service).toContain("stopForegroundCompat()");
-    expect(service).toContain("stopSelf()");
-    expect(service).toContain("stopServiceIfRunning");
-    expect(service).toContain("context.stopService");
     const stopSessionModule = module.slice(
       module.indexOf('AsyncFunction("stopSession")'),
       module.indexOf('AsyncFunction("cancelCommand")'),
     );
-    expect(stopSessionModule).toContain("HandsFreeForegroundService.stopSession(context)");
     expect(stopSessionModule).toContain("HandsFreeControllerRegistry.stopSession()");
-    expect(stopSessionModule).toContain("HandsFreeForegroundService.stopServiceIfRunning(context)");
+    expect(stopSessionModule).not.toContain("HandsFreeForegroundService");
     const inferenceWorker = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/WakeInferenceWorker.kt",
     );

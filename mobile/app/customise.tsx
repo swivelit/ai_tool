@@ -26,24 +26,6 @@ import { Brand, Elevation, Radius, Spacing, Type } from "@/constants/theme";
 type Tone = "pro" | "friendly";
 type LanguageMode = "en" | "ta";
 
-function compactWakeSamples(values: string[]) {
-  return Array.from(
-    new Set(
-      values
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-        .slice(0, 5),
-    ),
-  );
-}
-
-function getWakeStatusLabel(status?: string) {
-  if (status === "ready" || status === "e2e_mock") return "Ready";
-  if (status === "pending" || status === "missing" || status === "unsupported") return "Needs model";
-  if (status === "error") return "Try again";
-  return "Needs model";
-}
-
 export default function CustomiseScreen() {
   const insets = useSafeAreaInsets();
   const { name, settings, refresh, updateName, updateSettings } = useAssistant();
@@ -52,8 +34,6 @@ export default function CustomiseScreen() {
   const [tone, setTone] = useState<Tone>(settings.tone);
   const [languageMode, setLanguageMode] = useState<LanguageMode>(settings.languageMode);
   const [allowCloudFallback, setAllowCloudFallback] = useState(settings.allowCloudFallback);
-  const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
-  const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -64,33 +44,15 @@ export default function CustomiseScreen() {
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
     setAllowCloudFallback(settings.allowCloudFallback);
-    setHandsFreeEnabled(
-      settings.handsFreeEnabled &&
-        (settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock"),
-    );
-    setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
   }, [name, settings]);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim() || "Elli", [name]);
-  const displayName = useMemo(
-    () => assistantNameInput.trim() || assistantLabel,
-    [assistantLabel, assistantNameInput],
-  );
-  const wakePrompt = useMemo(
-    () => wakePhrase.trim() || `Hey ${displayName}`,
-    [displayName, wakePhrase],
-  );
-  const savedWakePrompt = (settings.wakePhrase || `Hey ${name || "Elli"}`).trim();
-  const wakeStatusLabel = getWakeStatusLabel(settings.wakeModel?.status);
-  const wakeModelReady =
-    settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock";
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
     tone !== settings.tone ||
     languageMode !== settings.languageMode ||
     allowCloudFallback !== settings.allowCloudFallback ||
-    handsFreeEnabled !== settings.handsFreeEnabled ||
-    wakePrompt !== savedWakePrompt;
+    settings.handsFreeEnabled !== false;
 
   async function handleSave() {
     const trimmedName = assistantNameInput.trim();
@@ -109,7 +71,6 @@ export default function CustomiseScreen() {
       }
 
       if (isDirty) {
-        const wakePhraseChanged = wakePrompt !== savedWakePrompt;
         await updateSettings({
           tone,
           languageMode,
@@ -120,19 +81,9 @@ export default function CustomiseScreen() {
           lifeContextEnabled: false,
           shareLifeContextWithBackend: false,
           shareAppNamesWithAi: false,
-          handsFreeEnabled: wakePhraseChanged ? false : handsFreeEnabled && wakeModelReady,
-          wakePhrase: wakePrompt,
-          wakeTrainingSamples: compactWakeSamples(settings.wakeTrainingSamples || []),
-          ...(wakePhraseChanged
-            ? {
-                wakeModel: {
-                  status: "pending",
-                  wakePhrase: wakePrompt,
-                  updatedAt: new Date().toISOString(),
-                  detail: "Needs model",
-                },
-              }
-            : {}),
+          // Clear any historical hands-free opt-in; background capture is not
+          // part of the current production Swico Android experience.
+          handsFreeEnabled: false,
         });
       }
 
@@ -220,55 +171,6 @@ export default function CustomiseScreen() {
           </GlassCard>
 
           <GlassCard style={styles.card}>
-            <Text style={styles.sectionTitle}>Hands-free</Text>
-
-            <View style={styles.switchCard}>
-              <Text style={styles.inputLabel}>Hands-free</Text>
-              <Switch
-                value={handsFreeEnabled && wakeModelReady}
-                onValueChange={(enabled) => {
-                  if (enabled && !wakeModelReady) {
-                    setHandsFreeEnabled(false);
-                    Alert.alert("Wake model needed", "Train your wake phrase to turn this on.");
-                    return;
-                  }
-                  setHandsFreeEnabled(enabled);
-                  if (enabled && !wakePhrase.trim()) {
-                    setWakePhrase(`Hey ${displayName}`);
-                  }
-                }}
-                testID="customise-hands-free-switch"
-                accessibilityLabel="customise-hands-free-switch"
-                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#eaf4ff"
-              />
-            </View>
-
-            <LabeledInput
-              label="Wake phrase"
-              icon="mic-outline"
-              value={wakePhrase}
-              onChangeText={setWakePhrase}
-              placeholder={`Hey ${displayName}`}
-              testID="customise-wake-phrase-input"
-              accessibilityLabel="customise-wake-phrase-input"
-            />
-
-            <View style={styles.statusRow}>
-              <View style={styles.statusChip}>
-                <Text style={styles.statusChipText}>{wakeStatusLabel}</Text>
-              </View>
-              <Pressable
-                onPress={() => router.push("/setup")}
-                testID="customise-wake-trainer-button"
-                accessibilityLabel="customise-wake-trainer-button"
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.secondaryBtnText}>Train wake phrase</Text>
-              </Pressable>
-            </View>
-
             <View style={styles.switchCard}>
               <Text style={styles.inputLabel}>Cloud fallback</Text>
               <Switch

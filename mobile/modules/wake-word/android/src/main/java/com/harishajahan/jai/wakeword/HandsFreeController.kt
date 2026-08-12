@@ -640,7 +640,6 @@ class HandsFreeController(
       sessionActive = false,
     )
     transitionIdleIfNeeded(reason)
-    HandsFreeControllerRegistry.stopServiceAfterFatalError(event)
   }
 
   private fun createAudioSource(parsed: WakeWordConfig, queue: AudioFrameQueue): PcmAudioSource {
@@ -767,8 +766,6 @@ object HandsFreeControllerRegistry {
   private var controller: HandsFreeController? = null
   private var callbacks: HandsFreeControllerCallbacks? = null
   private var configuredConfig: Map<String, Any?>? = null
-  private var pendingStartConfig: Map<String, Any?>? = null
-  private var serviceStopper: ((HandsFreeWakeErrorEvent) -> Unit)? = null
 
   fun setCallbacks(nextCallbacks: HandsFreeControllerCallbacks?) {
     synchronized(lock) {
@@ -776,40 +773,10 @@ object HandsFreeControllerRegistry {
     }
   }
 
-  fun setServiceStopper(nextStopper: ((HandsFreeWakeErrorEvent) -> Unit)?) {
-    synchronized(lock) {
-      serviceStopper = nextStopper
-    }
-  }
-
-  fun stopServiceAfterFatalError(event: HandsFreeWakeErrorEvent) {
-    synchronized(lock) {
-      serviceStopper
-    }?.invoke(event)
-  }
-
   fun configure(config: Map<String, Any?>) {
     synchronized(lock) {
       configuredConfig = deepCopyMap(config)
     }
-  }
-
-  fun enqueueStartConfig(config: Map<String, Any?>) {
-    synchronized(lock) {
-      pendingStartConfig = deepCopyMap(config)
-    }
-  }
-
-  fun startPendingSession(context: Context) {
-    val config = synchronized(lock) {
-      val next = pendingStartConfig ?: configuredConfig
-      pendingStartConfig = null
-      next
-    } ?: throw WakeWordException(
-      "JAI_HANDS_FREE_CONFIG_REQUIRED",
-      "startSession(config) requires a wake-word model configuration.",
-    )
-    controller(context).startSession(config)
   }
 
   fun stopSession() {

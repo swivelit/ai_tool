@@ -645,10 +645,10 @@ export const runtime = {
 
     expect(appConfig.expo.name).toBe("Swico");
     expect(appConfig.expo.slug).toBe("tamil-ai");
-    expect(appConfig.expo.version).toBe("1.0.0");
+    expect(appConfig.expo.version).toBe("1.0.1");
     expect(appConfig.expo.scheme).toBe(previousSwicoAndroidPackageName);
     expect(appConfig.expo.android.package).toBe(androidPackageName);
-    expect(appConfig.expo.android.versionCode).toBe(1);
+    expect(appConfig.expo.android.versionCode).toBe(2);
     expect(appConfig.expo.ios.bundleIdentifier).toBe(previousSwicoAndroidPackageName);
     expect(appConfig.expo.ios.buildNumber).toBe("1");
   });

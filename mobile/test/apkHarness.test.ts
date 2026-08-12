@@ -88,10 +88,18 @@ describe("current native Swico APK E2E contract", () => {
     const config = readMobile("app.config.ts");
     const releaseScript = readRepo("scripts/build-android_release-apk.sh");
     const mode = readMobile("lib/e2eMode.ts");
-    expect(mode).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
-    expect(config).toContain("E2E_PLAY_FGS_MICROPHONE_DEMO");
-    expect(config).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO:");
-    expect(releaseScript).toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
+    expect(mode).not.toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
+    expect(config).not.toContain("E2E_PLAY_FGS_MICROPHONE_DEMO");
+    expect(config).not.toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO:");
+    expect(releaseScript).not.toContain("EXPO_PUBLIC_PLAY_FGS_MICROPHONE_DEMO");
+  });
+
+  it("uses permission-absence verification instead of obsolete foreground-microphone evidence tooling", () => {
+    const verifier = readRepo("scripts/record-play-fgs-microphone-demo.sh");
+    expect(verifier).toContain("FOREGROUND_SERVICE_MICROPHONE=absent");
+    expect(verifier).toContain("android.permission.RECORD_AUDIO");
+    expect(verifier).not.toContain("Background audio input");
+    expect(verifier).not.toContain("startForegroundService");
   });
 
   it("uses a device-compatible ABI and captures standalone release diagnostics", () => {

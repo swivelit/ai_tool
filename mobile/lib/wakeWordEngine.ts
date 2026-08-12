@@ -6,7 +6,6 @@ import {
   getE2eHandsFreeCommand,
   isE2eMockHandsFreeAudioEnabled,
   isE2eMockHandsFreeEnabled,
-  isPlayFgsMicrophoneDemoEnabled,
 } from "./e2eMode";
 import type { AssistantSettings, WakeModelSettings, WakeModelStatus } from "./storage";
 
@@ -15,7 +14,6 @@ type NativeWakeWordModule = {
   getStatus?: () => Promise<WakeWordNativeStatus>;
   configure?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
   startSession?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
-  startDemoSession?: () => Promise<{ ok: true }>;
   stopSession?: () => Promise<{ ok: true }>;
   cancelCommand?: () => Promise<{ ok: true }>;
   notifyTtsStarted?: () => Promise<{ ok: true }>;
@@ -544,7 +542,7 @@ function normalizeSha(value: unknown) {
 }
 
 export async function ensureWakeModel(settings: AssistantSettings): Promise<WakeModelState> {
-  if (isE2eMockHandsFreeEnabled() || isPlayFgsMicrophoneDemoEnabled()) {
+  if (isE2eMockHandsFreeEnabled()) {
     return toWakeModelState({
       status: "e2e_mock",
       phraseKey: "e2e-mock",
@@ -945,9 +943,6 @@ export async function startHandsFreeSession(
   sessionSubscriptions = attachHandsFreeNativeListeners(handlers);
 
   try {
-    if (isPlayFgsMicrophoneDemoEnabled() && nativeModule.startDemoSession) {
-      return await nativeModule.startDemoSession();
-    }
     return await nativeModule.startSession(startConfig);
   } catch (error) {
     sessionSubscriptions.forEach((subscription) => subscription.remove());

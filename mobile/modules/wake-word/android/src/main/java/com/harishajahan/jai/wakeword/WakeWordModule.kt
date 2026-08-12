@@ -163,57 +163,17 @@ class WakeWordModule : Module() {
       mapOf("ok" to true)
     }
 
-    AsyncFunction("startSession") { config: Map<String, Any?> ->
-      try {
-        val context = appContext.reactContext
-          ?: throw WakeWordException(
-            "JAI_HANDS_FREE_CONTEXT_UNAVAILABLE",
-            "React context is unavailable for hands-free wake-word service.",
-          )
-        HandsFreeControllerRegistry.setCallbacks(handsFreeCallbacks)
-        HandsFreeForegroundService.startSession(context, config)
-        mapOf("ok" to true)
-      } catch (error: WakeWordException) {
-        sendError(error.code, error.detail, permanent = true, restartable = false, source = "session")
-        throw error
-      }
-    }
-
-    AsyncFunction("startDemoSession") {
-      try {
-        val context = appContext.reactContext
-          ?: throw WakeWordException(
-            "JAI_HANDS_FREE_CONTEXT_UNAVAILABLE",
-            "React context is unavailable for hands-free wake-word service.",
-          )
-        val config = mapOf(
-          "phraseKey" to "e2e-mock",
-          "wakePhrase" to "Hey Elli",
-          "modelPaths" to mapOf("wakeModel" to "play-demo-fixture.onnx"),
-          "threshold" to 0.5,
-          "sampleRate" to 16000,
-          "frameMs" to 80,
-          "minWakeIntervalMs" to 1800,
-        )
-        HandsFreeControllerRegistry.setCallbacks(handsFreeCallbacks)
-        HandsFreeForegroundService.startSession(context, config)
-        mapOf("ok" to true)
-      } catch (error: WakeWordException) {
-        sendError(error.code, error.detail, permanent = true, restartable = false, source = "session")
-        throw error
-      }
+    AsyncFunction("startSession") {
+      val error = WakeWordException(
+        "JAI_HANDS_FREE_UNAVAILABLE",
+        "Background hands-free wake-word sessions are not available in the production Android app.",
+      )
+      sendError(error.code, error.detail, permanent = true, restartable = false, source = "session")
+      throw error
     }
 
     AsyncFunction("stopSession") {
-      appContext.reactContext?.let { context ->
-        try {
-          HandsFreeForegroundService.stopSession(context)
-        } catch (_: Throwable) {
-          HandsFreeControllerRegistry.stopSession()
-        }
-        HandsFreeControllerRegistry.stopSession()
-        HandsFreeForegroundService.stopServiceIfRunning(context)
-      } ?: HandsFreeControllerRegistry.stopSession()
+      HandsFreeControllerRegistry.stopSession()
       mapOf("ok" to true)
     }
 
