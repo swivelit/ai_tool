@@ -138,16 +138,19 @@ export type BillingConfig = {
 export type SubscriptionPlan = { code: '1m' | '6m' | '1y'; label: string; price_paise: number; duration_months: number }
 export type SubscriptionConfig = {
   enabled: boolean; plans: SubscriptionPlan[]; weekly_allowance_micros: number;
+  weekly_token_estimate?: TokenEstimate;
   weekly_allowance_rupees: number; no_rollover: boolean; prorate_final_partial_week: boolean;
   prepaid_non_renewing: boolean; referral_reward_mapping: Record<string, { weeks: number; months: number }>
 }
-export type SubscriptionEstimate = { remaining_micros: number; note: string }
+export type SubscriptionEstimate = { remaining_micros: number; remaining_token_estimate: TokenEstimate; note: string }
 export type SubscriptionBucketSummary = {
   active: boolean; source: 'purchase' | 'referral_reward' | null; plan: string | null;
   starts_at: string | null; expires_at: string | null; current_window_start: string | null;
   next_reset_at: string | null; allowance_micros: number; consumed_micros: number;
   reserved_micros: number; remaining_micros: number; progress_percent: number;
-  token_estimate?: TokenEstimate | null; voice_estimate?: SubscriptionEstimate;
+  allowance_token_estimate: TokenEstimate; consumed_token_estimate: TokenEstimate;
+  reserved_token_estimate: TokenEstimate; remaining_token_estimate: TokenEstimate;
+  token_estimate?: TokenEstimate | null; voice_estimate?: SubscriptionEstimate | null;
   queued_entitlements: Array<{ source: string; plan: string; starts_at: string; expires_at: string }>;
   payg_fallback_enabled: boolean;
 }
@@ -242,7 +245,7 @@ export type UsageBreakdown = {
   debited_micros: number; debited_ai_credits: string;
 }
 export type TierUsageBreakdown = UsageBreakdown & {
-  label: string; debited_token_credits: string;
+  label: string; debited_token_credits: string; token_estimate?: TokenEstimate;
   period_debit_percentage: number; monthly_limit_percentage: number;
   utilization_percentage?: number; utilization_basis?: 'monthly_hard_limit' | 'available_plus_period_debit';
 }
@@ -252,18 +255,23 @@ export type VoiceUsageBreakdown = {
   llm_output_tokens: number; llm_total_tokens: number;
   total_audio_seconds: number; total_tts_characters: number; request_count: number;
   debited_micros: number; debited_voice_credits: string;
+  token_estimate?: TokenEstimate;
   period_debit_percentage: number; monthly_limit_percentage: number;
   utilization_percentage?: number; utilization_basis?: 'monthly_hard_limit' | 'available_plus_period_debit';
 }
 export type TokenEstimate = {
   tier: SwicoTier; tier_label: string; pricing_as_of: string;
+  selected_tier?: SwicoTier; display_tier?: Exclude<SwicoTier, 'free'>; display_tier_label?: string;
   estimated_blended_tokens: number | null;
-  blended_assumption?: string; range_min_tokens: number; range_max_tokens: number;
+  blended_assumption?: string; range_min_tokens: number | null; range_max_tokens: number | null;
+  estimate_available?: boolean; availability?: 'available' | 'unavailable';
   explanation: string;
 }
 export type TopupTokenEstimate = {
   tier: SwicoTier; tier_label: string; estimated_blended_tokens: number | null;
-  range_min_tokens: number; range_max_tokens: number;
+  selected_tier?: SwicoTier; display_tier?: Exclude<SwicoTier, 'free'>; display_tier_label?: string;
+  range_min_tokens: number | null; range_max_tokens: number | null;
+  estimate_available?: boolean; availability?: 'available' | 'unavailable'; explanation?: string;
 }
 export type TopupEstimateResponse = {
   gross_amount_paise: number; credit_bucket?: CreditBucket;
@@ -278,7 +286,9 @@ export type UsageSummary = {
   estimated_usage_count: number; debited_micros: number; debited_ai_credits: string;
   available_micros: number; available_ai_credits: string;
   chat_available_micros?: number; chat_available_credits?: string;
-  voice_available_micros?: number; voice_available_credits?: string; wallets?: Wallets;
+  chat_available_token_estimate?: TokenEstimate | null;
+  voice_available_micros?: number; voice_available_credits?: string;
+  voice_available_token_estimate?: TokenEstimate | null; wallets?: Wallets;
   daily: Array<{ date: string } & UsageBreakdown>;
   estimated_tokens_remaining: TokenEstimate | null;
   monthly_hard_limit_micros: number | null;

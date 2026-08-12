@@ -6,6 +6,7 @@ from typing import Any
 from ..ai.swico_tiers import (
     SWICO_TIER_LABELS,
     configured_model_ladder,
+    default_swico_tier,
     normalize_swico_tier,
 )
 from ..time_utils import ensure_utc, utc_now
@@ -27,10 +28,37 @@ def _reference_prices(tier: str) -> tuple[Any, Any]:
     )
 
 
+def _pricing_is_valid(tier: str) -> bool:
+    try:
+        input_price, output_price = _reference_prices(tier)
+    except Exception:
+        return False
+    return int(input_price.micros) > 0 and int(output_price.micros) > 0
+
+
+def paid_display_tier(tier: str = "lite") -> str:
+    """Resolve the provider-neutral paid tier used to display token equivalents."""
+    selected = normalize_swico_tier(tier, enforce_availability=False)
+    if selected != "free":
+        return selected
+
+    configured_default = normalize_swico_tier(default_swico_tier())
+    candidates = [configured_default, "lite"]
+    for candidate in candidates:
+        if candidate != "free" and _pricing_is_valid(candidate):
+            return candidate
+    # Keep the display basis deterministic even when pricing is unavailable;
+    # token_estimate will mark the result unavailable rather than fabricating 0.
+    return "lite"
+
+
 def micros_for_blended_tokens(tokens: int, *, tier: str = "lite") -> int:
     """Return a tier-relative 70/30 estimate, rounded up to a micro-INR."""
     requested = max(0, int(tokens))
-    input_price, output_price = _reference_prices(tier)
+    selected = normalize_swico_tier(tier, enforce_availability=False)
+    input_price, output_price = _reference_prices(
+        paid_display_tier(selected) if selected == "free" else selected
+    )
     numerator = requested * (
         int(input_price.micros) * BLENDED_INPUT_PARTS
         + int(output_price.micros) * BLENDED_OUTPUT_PARTS
@@ -45,45 +73,43 @@ def token_estimate(
     balance_micros: int, *, tier: str = "lite", now: datetime | None = None
 ) -> dict[str, Any]:
     """Return provider-neutral presentation metadata for internal micro-INR value."""
-    selected = normalize_swico_tier(tier)
-    label = SWICO_TIER_LABELS[selected]
+    selected = normalize_swico_tier(tier, enforce_availability=False)
+    display_tier = paid_display_tier(selected)
+    label = SWICO_TIER_LABELS[display_tier]
     pricing_as_of = ensure_utc(now or utc_now())
     available = max(0, int(balance_micros))
     base = {
         "tier": selected,
-        "tier_label": label,
+        "tier_label": SWICO_TIER_LABELS[selected],
+        "selected_tier": selected,
+        "display_tier": display_tier,
+        "display_tier_label": label,
         "pricing_as_of": pricing_as_of,
         "blended_assumption": "70% input tokens and 30% output tokens; cached input excluded.",
+        "estimate_available": False,
+        "availability": "unavailable",
     }
-    if selected == "free":
-        return {
-            **base,
-            "estimated_blended_tokens": 0,
-            "range_min_tokens": 0,
-            "range_max_tokens": 0,
-            "explanation": "Swico Free uses zero chat credits.",
-        }
     notice = (
-        f"Estimated for {label}. Actual usage depends on message size, "
+        f"Estimated using {label} token-equivalent pricing. Actual usage depends on message size, "
         "response length, and task complexity."
     )
     try:
-        input_price, output_price = _reference_prices(selected)
+        input_price, output_price = _reference_prices(display_tier)
     except Exception:
         return {
             **base,
             "estimated_blended_tokens": None,
-            "range_min_tokens": 0,
-            "range_max_tokens": 0,
-            "explanation": f"{notice} An estimate is temporarily unavailable.",
+            "range_min_tokens": None,
+            "range_max_tokens": None,
+            "explanation": "Estimate temporarily unavailable.",
         }
     if input_price.micros <= 0 or output_price.micros <= 0:
         return {
             **base,
             "estimated_blended_tokens": None,
-            "range_min_tokens": 0,
-            "range_max_tokens": 0,
-            "explanation": f"{notice} An estimate is temporarily unavailable.",
+            "range_min_tokens": None,
+            "range_max_tokens": None,
+            "explanation": "Estimate temporarily unavailable.",
         }
 
     input_tokens = available * TOKENS_PER_PRICING_UNIT // int(input_price.micros)
@@ -101,5 +127,9 @@ def token_estimate(
         "estimated_blended_tokens": blended,
         "range_min_tokens": min(input_tokens, output_tokens),
         "range_max_tokens": max(input_tokens, output_tokens),
-        "explanation": notice,
+        "estimate_available": True,
+        "availability": "available",
+        "explanation": notice if selected != "free" else (
+            f"Estimated token equivalent using {label} pricing; Swico Free has no paid allowance."
+        ),
     }

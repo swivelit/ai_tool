@@ -165,9 +165,10 @@ def usage_summary(
     period_debit = int(totals["debited_micros"])
     chat_period_debit = sum(int(values["debited_micros"]) for values in by_tier.values())
     chat_basis = monthly_limit if monthly_limit is not None else int(chat_wallet["available_micros"]) + chat_period_debit
-    for values in by_tier.values():
+    for tier_id, values in by_tier.items():
         debit = int(values["debited_micros"])
         values["debited_token_credits"] = ai_credits(debit)
+        values["token_estimate"] = token_estimate(debit, tier=tier_id)
         values["period_debit_percentage"] = percent(debit, period_debit)
         values["monthly_limit_percentage"] = percent(debit, monthly_limit)
         values["utilization_percentage"] = 0.0 if billing_exempt else percent(debit, chat_basis)
@@ -177,11 +178,18 @@ def usage_summary(
         Decimal(int(voice.pop("total_audio_milliseconds"))) / Decimal("1000")
     )
     voice["debited_voice_credits"] = ai_credits(voice_debit)
+    voice["token_estimate"] = token_estimate(voice_debit, tier=swico_tier)
     voice["period_debit_percentage"] = percent(voice_debit, period_debit)
     voice["monthly_limit_percentage"] = percent(voice_debit, monthly_limit)
     voice_basis = monthly_limit if monthly_limit is not None else int(voice_wallet["available_micros"]) + voice_debit
     voice["utilization_percentage"] = 0.0 if billing_exempt else percent(voice_debit, voice_basis)
     voice["utilization_basis"] = "monthly_hard_limit" if monthly_limit is not None else "available_plus_period_debit"
+    chat_available_token_estimate = token_estimate(
+        int(chat_wallet["available_micros"]), tier=swico_tier,
+    )
+    voice_available_token_estimate = token_estimate(
+        int(voice_wallet["available_micros"]), tier=swico_tier,
+    )
     return {
         "period": period,
         "tier": swico_tier,
@@ -196,8 +204,10 @@ def usage_summary(
         "available_ai_credits": ai_credits(int(chat_wallet["available_micros"])),
         "chat_available_micros": int(chat_wallet["available_micros"]),
         "chat_available_credits": ai_credits(int(chat_wallet["available_micros"])),
+        "chat_available_token_estimate": chat_available_token_estimate,
         "voice_available_micros": int(voice_wallet["available_micros"]),
         "voice_available_credits": ai_credits(int(voice_wallet["available_micros"])),
+        "voice_available_token_estimate": voice_available_token_estimate,
         "wallets": wallets,
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
         "by_tier": by_tier,

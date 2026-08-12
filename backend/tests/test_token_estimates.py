@@ -9,6 +9,7 @@ def test_zero_and_negative_token_estimates_are_safe(monkeypatch):
         estimate = token_estimate(value, now=now)
         assert estimate["estimated_blended_tokens"] == 0
         assert estimate["range_min_tokens"] == 0
+        assert estimate["estimate_available"] is True
         assert estimate["pricing_as_of"] == now
         assert estimate["tier"] == "lite"
         assert "reference_model" not in estimate
@@ -43,4 +44,17 @@ def test_unconfigured_reference_returns_unavailable_without_raising(monkeypatch)
     monkeypatch.setenv("SWICO_LITE_MODEL_PRIMARY", "not-a-real-model")
     estimate = token_estimate(5_000_000)
     assert estimate["estimated_blended_tokens"] is None
+    assert estimate["estimate_available"] is False
+    assert estimate["availability"] == "unavailable"
+    assert estimate["range_min_tokens"] is None
+    assert estimate["range_max_tokens"] is None
     assert "pricing_snapshot" not in estimate
+
+
+def test_free_selected_tier_uses_paid_display_basis(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    estimate = token_estimate(7_500_000, tier="free")
+    assert estimate["selected_tier"] == "free"
+    assert estimate["display_tier"] != "free"
+    assert estimate["estimate_available"] is True
+    assert estimate["estimated_blended_tokens"] > 0

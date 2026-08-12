@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ShieldCheck, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { apiJson } from '../api/client'
-import { formatRupeesFromPaise, tokenRangeLabel } from '../credits'
+import { formatRupeesFromPaise, tokenEstimateAvailable, tokenEstimateLabel } from '../credits'
 import type { BillingConfig, BillingPackage, CreditBucket, PaymentHistory, ReferralSummary, SubscriptionPlan, SubscriptionSummary, TopupEstimateResponse, TopupTokenEstimate, VoiceCreditEstimate } from '../types'
 import { loadRazorpay } from './razorpay'
 import { pollPaymentStatus } from './paymentPolling'
@@ -18,17 +18,26 @@ function packageRupees(paise: number) {
 }
 
 function estimateRange(estimate: BillingPackage['token_estimate'] | TopupTokenEstimate | null) {
-  return estimate ? tokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable'
+  return tokenEstimateLabel(estimate)
 }
 
 function packageAccessibleName(item: BillingPackage) {
   const amount = packageRupees(item.gross_amount_paise)
   const estimate = estimateRange(item.token_estimate)
-  return estimate === 'Estimate unavailable' ? `Pay ${amount}, estimate unavailable` : `Pay ${amount}, estimated ${estimate.replace('–', ' to ')}`
+  return estimate === 'Estimate temporarily unavailable' ? `Pay ${amount}, estimate temporarily unavailable` : `Pay ${amount}, estimated ${estimate.replace('–', ' to ')}`
 }
 
 function voiceEstimateLabel(estimate: VoiceCreditEstimate | null | undefined) {
-  return estimate ? `About ${estimate.estimated_stt_minutes} STT-only min or ${estimate.estimated_tts_characters.toLocaleString()} TTS-only characters` : 'Estimate unavailable'
+  return estimate ? `About ${estimate.estimated_stt_minutes} STT-only min or ${estimate.estimated_tts_characters.toLocaleString()} TTS-only characters` : 'Estimate temporarily unavailable'
+}
+
+function subscriptionPlanLabel(code: string | null | undefined, plans: SubscriptionPlan[] = []) {
+  return plans.find(plan => plan.code === code)?.label ?? ({ '1m': '1 month', '6m': '6 months', '1y': '1 year' }[code ?? ''] ?? 'Subscription')
+}
+
+function referralRewardLabel(code: string, value: { weeks: number; months: number }, plans: SubscriptionPlan[]) {
+  const duration = value.months ? `${value.months} calendar month${value.months === 1 ? '' : 's'}` : `${value.weeks} week${value.weeks === 1 ? '' : 's'}`
+  return `${subscriptionPlanLabel(code, plans)} subscription → ${duration} free`
 }
 
 function customAmount(value: string, config: BillingConfig): { paise: number | null; error: string | null } {
@@ -74,7 +83,7 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
   const selectedAmountPaise = selected === 'custom' ? custom.paise : selectedPresetAmount
   const selectedTokenEstimate = selected === 'custom' ? customEstimate?.token_estimate : selectedPreset?.token_estimate ?? null
   const selectedVoiceEstimate = selected === 'custom' ? customEstimate?.voice_estimate : selectedPreset?.voice_estimate ?? null
-  const selectedEstimateReady = bucket === 'chat' ? selectedTokenEstimate !== null : selectedVoiceEstimate !== null
+  const selectedEstimateReady = bucket === 'chat' ? tokenEstimateAvailable(selectedTokenEstimate) : Boolean(selectedVoiceEstimate && tokenEstimateAvailable(selectedTokenEstimate))
   const customReady = selected !== 'custom' || (custom.paise !== null && estimateState === 'ready' && customEstimate !== null)
   const checkoutReady = selectedAmountPaise !== null && selectedEstimateReady && customReady
   useEffect(() => {
@@ -192,20 +201,20 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
   const payButtonLabel = busy ? 'Please wait…'
     : selected === 'custom' && custom.paise === null ? 'Enter a valid amount'
     : selected === 'custom' && estimateState === 'loading' ? 'Calculating estimate…'
-    : selected === 'custom' && estimateState === 'error' ? 'Estimate unavailable'
-    : tab === 'subscriptions' && subscriptionPlan ? `Subscribe for ${packageRupees(subscriptionPlan.price_paise)}`
+    : selected === 'custom' && estimateState === 'error' ? 'Estimate temporarily unavailable'
+    : tab === 'subscriptions' ? (subscriptionPlan ? `Subscribe for ${packageRupees(subscriptionPlan.price_paise)}` : 'Choose a subscription plan')
     : selectedAmountPaise !== null ? `Pay ${packageRupees(selectedAmountPaise)} for ${bucket === 'chat' ? 'Chat' : 'Voice'} credits`
     : 'Choose an amount'
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
-    <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-label="Top up">
-      <button ref={closeRef} className="modal-close icon-button" aria-label="Close top-up" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
+    <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
+      <button ref={closeRef} className="modal-close icon-button" aria-label="Close billing" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
       <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><h2 id="billing-title">Billing</h2>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
-      <div className="billing-tabs" role="tablist" aria-label="Billing"><button role="tab" aria-label="Top up" aria-selected={tab === 'payg'} className={tab === 'payg' ? 'active' : ''} onClick={() => setTab('payg')}>Pay as you go</button><button role="tab" aria-selected={tab === 'subscriptions'} disabled={!config.subscriptions?.enabled} className={tab === 'subscriptions' ? 'active' : ''} onClick={() => setTab('subscriptions')}>Subscriptions</button><button role="tab" aria-selected={tab === 'referral'} disabled={!config.referrals?.enabled} className={tab === 'referral' ? 'active' : ''} onClick={() => setTab('referral')}>Referral rewards</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Payment history</button></div>
+      <div className="billing-tabs" role="tablist" aria-label="Billing"><button role="tab" aria-selected={tab === 'payg'} className={tab === 'payg' ? 'active' : ''} onClick={() => { setTab('payg'); setStatus('') }}>Pay as you go</button><button role="tab" aria-selected={tab === 'subscriptions'} disabled={!config.subscriptions?.enabled} className={tab === 'subscriptions' ? 'active' : ''} onClick={() => { setTab('subscriptions'); setStatus('') }}>Subscriptions</button><button role="tab" aria-selected={tab === 'referral'} disabled={!config.referrals?.enabled} className={tab === 'referral' ? 'active' : ''} onClick={() => { setTab('referral'); setStatus('') }}>Referral rewards</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => { setTab('history'); setStatus('') }}>Payment history</button></div>
       {tab === 'history' ? <div className="billing-history" aria-live="polite">
         {historyState === 'loading' && <p>Loading payment history…</p>}
         {historyState === 'error' && <p role="alert">Payment history could not be loaded.</p>}
         {historyState === 'ready' && !history.length && <p>No payments or refunds yet.</p>}
-        {history.map(item => { const presentation = paymentPresentation(item); const itemBucket = item.credit_bucket ?? 'chat'; const subscription = item.purchase_type === 'subscription'; return <article key={item.id}><header><strong>{presentation.heading}</strong><span className="credit-bucket-label">{itemBucket === 'voice' ? 'Voice' : 'Chat'} {subscription ? 'subscription' : 'credits'}</span>{subscription && item.subscription_plan_code && <span>{item.subscription_plan_code} · prepaid, no automatic renewal</span>}{presentation.detail && <span>{presentation.detail}</span>}</header><dl>
+        {history.map(item => { const presentation = paymentPresentation(item); const itemBucket = item.credit_bucket ?? 'chat'; const subscription = item.purchase_type === 'subscription'; return <article key={item.id}><header><strong>{presentation.heading}</strong><span className="credit-bucket-label">{itemBucket === 'voice' ? 'Voice' : 'Chat'} {subscription ? 'subscription' : 'credits'}</span>{subscription && item.subscription_plan_code && <span>{subscriptionPlanLabel(item.subscription_plan_code, config.subscriptions?.plans)} · prepaid, no automatic renewal</span>}{presentation.detail && <span>{presentation.detail}</span>}</header><dl>
           {presentation.amountLabel && <div><dt>{presentation.amountLabel}</dt><dd>{formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>}
           {presentation.showTokensAdded && itemBucket === 'chat' && <div><dt>{subscription ? 'Subscription status' : 'Estimated tokens added'}</dt><dd>{subscription ? 'Allowance available after fulfillment' : estimateRange(item.token_estimate)}</dd></div>}
           {presentation.showTokensAdded && itemBucket === 'voice' && <div><dt>Voice component estimates</dt><dd>{voiceEstimateLabel(item.voice_estimate)}. Realtime Voice also uses Voice credits for AI response generation.</dd></div>}
@@ -214,24 +223,24 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
         </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : tab === 'subscriptions' ? <>
         <div className="credit-bucket-tabs" role="group" aria-label="Subscription type"><button type="button" aria-pressed={bucket === 'chat'} className={bucket === 'chat' ? 'active' : ''} onClick={() => setBucket('chat')}>Chat</button><button type="button" aria-pressed={bucket === 'voice'} className={bucket === 'voice' ? 'active' : ''} onClick={() => setBucket('voice')}>Voice</button></div>
-        <div className="subscription-cards">{(config.subscriptions?.plans ?? []).map(plan => <button key={plan.code} className={subscriptionPlan?.code === plan.code ? 'selected' : ''} aria-pressed={subscriptionPlan?.code === plan.code} onClick={() => setSubscriptionPlan(plan)}><strong>{plan.label}</strong><span>{packageRupees(plan.price_paise)}</span><small>₹125 per complete week · expires after {plan.duration_months} calendar month{plan.duration_months === 1 ? '' : 's'}</small></button>)}</div>
+        <div className="subscription-cards">{(config.subscriptions?.plans ?? []).map(plan => <button key={plan.code} className={subscriptionPlan?.code === plan.code ? 'selected' : ''} aria-pressed={subscriptionPlan?.code === plan.code} onClick={() => setSubscriptionPlan(plan)}><strong>{plan.label}</strong><span>{packageRupees(plan.price_paise)}</span><small>~{estimateRange(config.subscriptions?.weekly_token_estimate)} per complete week · expires after {plan.duration_months} calendar month{plan.duration_months === 1 ? '' : 's'}</small></button>)}</div>
         <p className="subscription-note">Prepaid and non-renewing. Allowance starts at fulfillment, resets in seven-day windows from that start time, never rolls over, and the final partial week is prorated at expiry. Chat and Voice subscriptions are separate.</p>
         {subscriptionPlan && <div className="package-summary"><strong>{bucket === 'chat' ? 'Chat' : 'Voice'} · {subscriptionPlan.label} · {packageRupees(subscriptionPlan.price_paise)}</strong><span>Checkout amount is confirmed by the server.</span></div>}
         <button className="primary wide" disabled={busy || !subscriptionPlan || !config.checkout_enabled} onClick={() => void checkout()}>{payButtonLabel}</button>
         {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}
       </> : tab === 'referral' ? <div className="referral-panel">
         {!referralState && <p role="status">Loading referral rewards…</p>}
-        {referralState && <><h3>Your referral code</h3><div className="referral-code"><code>{referralState.code ?? 'Unavailable'}</code>{referralState.code && <button type="button" onClick={() => void navigator.clipboard?.writeText(referralState.code ?? '')}>Copy code</button>}</div>{referralState.code && <button type="button" className="secondary-button" onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}?ref=${encodeURIComponent(referralState.code ?? '')}`)}>Copy referral link</button>}<p>Rewards are earned by the referrer after a referred user's first successful subscription. Rewards are non-cash, non-transferable, and use the purchased Chat or Voice bucket.</p>{referralState.eligible_to_claim && <form onSubmit={event => { event.preventDefault(); void apiJson(user, '/api/web/billing/referral/claim', { method:'POST', body:JSON.stringify({ code: referralInput }) }).then(() => { setReferralInput(''); setStatus('Referral code claimed.'); return apiJson<ReferralSummary>(user, '/api/web/billing/referral').then(setReferralState) }).catch(error => setStatus(error instanceof Error ? error.message : 'Referral code could not be claimed.')) }}><label htmlFor="referral-code-input">Have a referral code?</label><input id="referral-code-input" value={referralInput} onChange={event => setReferralInput(event.target.value)} autoComplete="off" /><button className="primary" type="submit" disabled={!referralInput.trim()}>Claim code</button></form>}<h3>Reward mapping</h3><ul>{Object.entries(referralState.reward_mapping).map(([code, value]) => <li key={code}>{code}: {value.months ? `${value.months} calendar months` : `${value.weeks} week${value.weeks === 1 ? '' : 's'}`}</li>)}</ul>{referralState.rewards.map(reward => <article key={reward.id}>{reward.status} · {reward.plan_code} · {reward.credit_bucket}</article>)}</>}
+        {referralState && <><h3>Your referral code</h3><div className="referral-code"><code>{referralState.code ?? 'Unavailable'}</code>{referralState.code && <button type="button" onClick={() => void navigator.clipboard?.writeText(referralState.code ?? '')}>Copy code</button>}</div>{referralState.code && <button type="button" className="secondary-button" onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}?ref=${encodeURIComponent(referralState.code ?? '')}`)}>Copy referral link</button>}<p>Rewards are earned by the referrer after a referred user's first successful subscription. Rewards are non-cash, non-transferable, and use the purchased Chat or Voice bucket.</p>{referralState.eligible_to_claim && <form onSubmit={event => { event.preventDefault(); void apiJson(user, '/api/web/billing/referral/claim', { method:'POST', body:JSON.stringify({ code: referralInput }) }).then(() => { setReferralInput(''); setStatus('Referral code claimed.'); return apiJson<ReferralSummary>(user, '/api/web/billing/referral').then(setReferralState) }).catch(error => setStatus(error instanceof Error ? error.message : 'Referral code could not be claimed.')) }}><label htmlFor="referral-code-input">Have a referral code?</label><input id="referral-code-input" value={referralInput} onChange={event => setReferralInput(event.target.value)} autoComplete="off" /><button className="primary" type="submit" disabled={!referralInput.trim()}>Claim code</button></form>}<h3>Reward mapping</h3><ul>{Object.entries(referralState.reward_mapping).map(([code, value]) => <li key={code}>{referralRewardLabel(code, value, config.subscriptions?.plans ?? [])}</li>)}</ul>{referralState.rewards.map(reward => <article key={reward.id}>{reward.status} · {subscriptionPlanLabel(reward.plan_code, config.subscriptions?.plans)} · {reward.credit_bucket}</article>)}</>}
       </div> : <>
       <div className="credit-bucket-tabs" role="group" aria-label="Credit type"><button type="button" aria-pressed={bucket === 'chat'} className={bucket === 'chat' ? 'active' : ''} onClick={() => { setBucket('chat'); setCustomEstimate(null) }}>Chat credits</button><button type="button" aria-pressed={bucket === 'voice'} className={bucket === 'voice' ? 'active' : ''} onClick={() => { setBucket('voice'); setCustomEstimate(null) }}>Voice credits</button></div>
       <div className="packages">{PRESETS.map(amount => {
         const item = config.packages.find(candidate => candidate.gross_amount_paise === amount)
         const key = `preset-${amount}` as SelectionKey
-        const label = bucket === 'chat' ? estimateRange(item?.token_estimate ?? null) : voiceEstimateLabel(item?.voice_estimate)
+        const label = estimateRange(item?.token_estimate ?? null)
         return <button key={key} className={selected === key ? 'selected' : ''} aria-label={item && bucket === 'chat' ? packageAccessibleName(item) : `Pay ${packageRupees(amount)}, ${label}`} aria-pressed={selected === key} onClick={() => setSelected(key)}><strong>Pay {packageRupees(amount)}</strong><span>{label}</span></button>
       })}<button className={selected === 'custom' ? 'selected' : ''} aria-label="Enter a custom payment amount" aria-pressed={selected === 'custom'} aria-expanded={selected === 'custom'} aria-controls="custom-amount-fields" disabled={!config.custom_topup_enabled} onClick={() => setSelected('custom')}><strong>Custom amount</strong><span>{config.custom_topup_enabled ? 'Enter whole rupees' : 'Unavailable'}</span></button></div>
       {selected === 'custom' && <div id="custom-amount-fields" className="custom-amount-fields"><label htmlFor="custom-topup-rupees">Custom amount</label><div className="inr-input"><span aria-hidden="true">₹</span><input id="custom-topup-rupees" type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={customInput} onChange={event => changeCustomInput(event.target.value)} aria-describedby={`custom-amount-help${custom.error ? ' custom-amount-error' : ''}`} aria-invalid={custom.paise === null} /></div><small id="custom-amount-help">Minimum {packageRupees(config.min_topup_paise)} · Maximum {packageRupees(config.max_topup_paise)}</small>{custom.error && <p id="custom-amount-error" className="custom-amount-error" role="alert">{custom.error}</p>}{custom.paise !== null && estimateState === 'loading' && <p className="custom-estimate-state" role="status">Calculating estimate…</p>}{estimateState === 'error' && <p className="custom-amount-error" role="alert">Token estimate is unavailable. Try again.</p>}</div>}
-      {selectedAmountPaise !== null && selectedEstimateReady && <div className="package-summary"><strong>Pay {packageRupees(selectedAmountPaise)} for {bucket === 'chat' ? 'Chat' : 'Voice'} credits</strong>{bucket === 'chat' ? <span>Estimated token range <strong>{estimateRange(selectedTokenEstimate)}</strong></span> : <><span>STT-only component estimate <strong>{selectedVoiceEstimate?.estimated_stt_minutes} minutes</strong></span><span>TTS-only component estimate <strong>{selectedVoiceEstimate?.estimated_tts_characters.toLocaleString()} characters</strong></span><small>Realtime Voice also uses Voice credits for AI response generation. These component-only estimates do not guarantee complete conversations. {selectedVoiceEstimate?.assumption}</small></>}</div>}
+      {selectedAmountPaise !== null && selectedEstimateReady && <div className="package-summary"><strong>Pay {packageRupees(selectedAmountPaise)} for {bucket === 'chat' ? 'Chat' : 'Voice'} credits</strong>{bucket === 'chat' ? <span>Estimated token range <strong>{estimateRange(selectedTokenEstimate)}</strong></span> : <><span>Estimated token equivalent <strong>{tokenEstimateLabel(selectedTokenEstimate, 'token equivalent')}</strong></span><span>STT-only component estimate <strong>{selectedVoiceEstimate?.estimated_stt_minutes} minutes</strong></span><span>TTS-only component estimate <strong>{selectedVoiceEstimate?.estimated_tts_characters.toLocaleString()} characters</strong></span><small>Voice usage can include speech processing and AI response generation. Realtime Voice also uses Voice credits for AI response generation. These component-only estimates do not guarantee complete conversations. {selectedVoiceEstimate?.assumption}</small></>}</div>}
       {!config.checkout_enabled && <p className="checkout-disabled" role="status">Checkout is currently disabled. Existing Chat and Voice credits can still be used.</p>}
       <button className="primary wide" disabled={busy || !checkoutReady || !config.checkout_enabled} onClick={() => void checkout()}>{payButtonLabel}</button>
       {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}</>}

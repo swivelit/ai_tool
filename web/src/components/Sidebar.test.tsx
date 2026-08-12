@@ -52,7 +52,7 @@ it('shows loading, zero, and unavailable estimate states', () => {
   rerender(<Sidebar {...props} wallet={{ ...props.wallet, token_estimate:{ ...props.wallet.token_estimate, estimated_blended_tokens:0 } }} />)
   expect(screen.getByText('0 tokens')).toBeInTheDocument()
   rerender(<Sidebar {...props} wallet={{ ...props.wallet, token_estimate:{ ...props.wallet.token_estimate, estimated_blended_tokens:null } }} />)
-  expect(screen.getByText('Estimate unavailable')).toBeInTheDocument()
+  expect(screen.getByText('Estimate temporarily unavailable')).toBeInTheDocument()
 })
 
 it('shows Unlimited and disables top-up for a billing-exempt account', () => {

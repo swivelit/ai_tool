@@ -74,10 +74,11 @@ def test_topup_estimate_accepts_presets_and_custom_without_charging(client, gros
     assert response.status_code == 200
     body = response.json()
     assert body["gross_amount_paise"] == gross
-    assert set(body["token_estimate"]) == {
-        "tier", "tier_label", "estimated_blended_tokens",
-        "range_min_tokens", "range_max_tokens",
-    }
+    assert {
+        "tier", "tier_label", "selected_tier", "display_tier", "display_tier_label",
+        "estimated_blended_tokens", "range_min_tokens", "range_max_tokens",
+        "estimate_available", "availability", "explanation",
+    } <= set(body["token_estimate"])
     assert body["token_estimate"]["estimated_blended_tokens"] > 0
     assert "provider" not in json.dumps(body).lower()
     assert "model" not in json.dumps(body).lower()
@@ -111,7 +112,8 @@ def test_voice_estimate_uses_speech_units_not_tokens(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["credit_bucket"] == "voice" and body["token_estimate"] is None
+    assert body["credit_bucket"] == "voice" and body["token_estimate"]["estimate_available"] is True
+    assert body["token_estimate"]["range_min_tokens"] > 0
     assert body["voice_estimate"]["estimated_stt_seconds"] > 0
     assert body["voice_estimate"]["estimated_tts_characters"] > 0
     assert body["voice_estimate"]["pricing_version"]

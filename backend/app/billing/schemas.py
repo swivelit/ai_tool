@@ -16,9 +16,15 @@ class CreateOrderRequest(BaseModel):
 class PublicTopupTokenEstimate(BaseModel):
     tier: str
     tier_label: str
+    selected_tier: str
+    display_tier: str
+    display_tier_label: str
     estimated_blended_tokens: int | None
-    range_min_tokens: int
-    range_max_tokens: int
+    range_min_tokens: int | None
+    range_max_tokens: int | None
+    estimate_available: bool
+    availability: Literal["available", "unavailable"]
+    explanation: str
 
 
 class PublicVoiceCreditEstimate(BaseModel):

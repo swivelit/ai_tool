@@ -554,7 +554,7 @@ def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
         "min_topup_paise": minimum, "max_topup_paise": maximum,
         "custom_topup_enabled": custom_topup_enabled(),
         "packages": packages,
-        "subscriptions": subscription_config_public(),
+        "subscriptions": subscription_config_public(swico_tier),
         "referrals": {"enabled": referrals_enabled(), "reward_mapping": referral_reward_mapping()},
     }
 
@@ -4782,13 +4782,7 @@ def estimate_topup(
     return {
         "gross_amount_paise": amount,
         "credit_bucket": credit_bucket,
-        "token_estimate": {
-            "tier": estimate["tier"],
-            "tier_label": estimate["tier_label"],
-            "estimated_blended_tokens": estimate["estimated_blended_tokens"],
-            "range_min_tokens": estimate["range_min_tokens"],
-            "range_max_tokens": estimate["range_max_tokens"],
-        } if credit_bucket == "chat" else None,
+        "token_estimate": estimate,
         "voice_estimate": _voice_credit_estimate(credited_amount_micros) if credit_bucket == "voice" else None,
     }
 
@@ -4839,12 +4833,12 @@ def payments(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0
         ),
-        "token_estimate": token_estimate(row.credited_amount_micros, tier=swico_tier) if row.credit_bucket == "chat" else None,
+        "token_estimate": token_estimate(row.credited_amount_micros, tier=swico_tier),
         "voice_estimate": _voice_credit_estimate(row.credited_amount_micros) if row.credit_bucket == "voice" else None,
         "reversal_token_estimate": token_estimate(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0, tier=swico_tier
-        ) if row.credit_bucket == "chat" else None,
+        ),
         "status": row.status,
         "created_at": row.created_at,
         "updated_at": row.updated_at,

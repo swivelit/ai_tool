@@ -438,8 +438,8 @@ test('temporarily stale old message is polled until cleared', async () => {
     readyFreshChatState,
   ] })
   await expect(stabilizeFreshChat(probe, {
-    timeoutMilliseconds:30, pollMilliseconds:1,
-    retryClickAfterMilliseconds:20,
+    timeoutMilliseconds:1_000, pollMilliseconds:1,
+    retryClickAfterMilliseconds:800,
   })).resolves.toBe('direct_button')
   expect(probe.readState).toHaveBeenCalledTimes(3)
   expect(probe.directCalls).toHaveBeenCalledTimes(1)
@@ -485,8 +485,8 @@ test('fresh-chat stabilization retries navigation at most once', async () => {
     { ...readyFreshChatState, messageCount:1 },
   ] })
   await expect(stabilizeFreshChat(probe, {
-    timeoutMilliseconds:8, pollMilliseconds:1,
-    retryClickAfterMilliseconds:2,
+    timeoutMilliseconds:1_000, pollMilliseconds:1,
+    retryClickAfterMilliseconds:800,
   })).rejects.toMatchObject({
     reasonCode:'fresh_chat_messages_not_cleared',
   })

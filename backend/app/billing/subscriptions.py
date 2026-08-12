@@ -93,7 +93,9 @@ def plan_or_raise(code: str | None) -> SubscriptionPlan:
     return plan
 
 
-def subscription_config_public() -> dict[str, Any]:
+def subscription_config_public(swico_tier: str = "lite") -> dict[str, Any]:
+    from .token_estimates import token_estimate
+
     plans = plan_catalog()
     return {
         "enabled": subscriptions_enabled(),
@@ -102,6 +104,9 @@ def subscription_config_public() -> dict[str, Any]:
             for plan in plans.values()
         ],
         "weekly_allowance_micros": weekly_allowance_micros(),
+        "weekly_token_estimate": token_estimate(
+            weekly_allowance_micros(), tier=swico_tier,
+        ),
         "weekly_allowance_rupees": weekly_allowance_micros() / 1_000_000,
         "no_rollover": True,
         "prorate_final_partial_week": os.getenv("WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK", "true").strip().lower() in {"1", "true", "yes", "on"},
@@ -471,6 +476,18 @@ def subscription_summary(session: Session, user_id: int, *, swico_tier: str = "l
         remaining = max(0, int(active.allowance_micros - active.reserved_micros - active.consumed_micros)) if active else 0
         used = int(active.consumed_micros) if active else 0
         reserved = int(active.reserved_micros) if active else 0
+        allowance_tokens = None if billing_exempt or not active else token_estimate(
+            int(active.allowance_micros), tier=swico_tier,
+        )
+        consumed_tokens = None if billing_exempt or not active else token_estimate(
+            used, tier=swico_tier,
+        )
+        reserved_tokens = None if billing_exempt or not active else token_estimate(
+            reserved, tier=swico_tier,
+        )
+        remaining_tokens = None if billing_exempt or not active else token_estimate(
+            remaining, tier=swico_tier,
+        )
         summary: dict[str, Any] = {
             "active": active is not None,
             "source": active_entitlement.source if active_entitlement else None,
@@ -484,12 +501,19 @@ def subscription_summary(session: Session, user_id: int, *, swico_tier: str = "l
             "reserved_micros": reserved,
             "remaining_micros": remaining,
             "progress_percent": min(100, ((used + reserved) * 100 / active.allowance_micros)) if active and active.allowance_micros else 0,
+            "allowance_token_estimate": allowance_tokens,
+            "consumed_token_estimate": consumed_tokens,
+            "reserved_token_estimate": reserved_tokens,
+            "remaining_token_estimate": remaining_tokens,
             "queued_entitlements": [{"source": row.source, "plan": row.plan_code, "starts_at": row.starts_at, "expires_at": row.ends_at} for row in queued],
             "payg_fallback_enabled": payg_fallback_enabled(session, user_id, bucket),
         }
         if bucket == "chat":
-            summary["token_estimate"] = None if billing_exempt else token_estimate(remaining, tier=swico_tier)
+            summary["token_estimate"] = remaining_tokens
         else:
-            summary["voice_estimate"] = {"remaining_micros": remaining, "note": "Voice usage can include speech processing and AI response generation."}
+            summary["voice_estimate"] = {
+                "remaining_token_estimate": remaining_tokens,
+                "note": "Estimated token equivalent. Voice usage can include speech processing and AI response generation.",
+            } if remaining_tokens is not None else None
         result[bucket] = summary
     return result

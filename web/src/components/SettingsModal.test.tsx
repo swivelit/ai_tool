@@ -125,10 +125,10 @@ it('shows concise tier estimates and this-month token categories', async () => {
   mockSettingsApi()
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
   await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
-  expect(screen.getByText('Chat credits available')).toBeInTheDocument()
-  expect(screen.getByText('Voice credits available')).toBeInTheDocument()
+  expect(screen.getByText('Chat tokens available')).toBeInTheDocument()
+  expect(screen.getByText('Voice estimated token equivalent available')).toBeInTheDocument()
   expect(screen.getByText('Swico Lite estimated token range')).toBeInTheDocument()
-  expect(screen.getByText('25,000–180,000 tokens')).toBeInTheDocument()
+  expect(screen.getByText('25K–180K tokens')).toBeInTheDocument()
   expect(screen.getByText('This month')).toBeInTheDocument()
   expect(screen.getAllByRole('progressbar')).toHaveLength(5)
   expect(screen.getByRole('progressbar', { name:'Swico Free credit utilization' })).toHaveAttribute('aria-valuenow', '0')
@@ -144,7 +144,6 @@ it('shows concise tier estimates and this-month token categories', async () => {
   expect(screen.getByText('300')).toBeInTheDocument()
   expect(screen.getByText('Output tokens')).toBeInTheDocument()
   expect(screen.getByText('400')).toBeInTheDocument()
-  expect(screen.getByText('25,000–180,000 tokens')).toBeInTheDocument()
   expect(screen.queryByText(/₹5/)).not.toBeInTheDocument()
   expect(screen.getByText('Total tokens')).toBeInTheDocument()
   expect(screen.getByText('1,600')).toBeInTheDocument()
@@ -154,6 +153,27 @@ it('shows concise tier estimates and this-month token categories', async () => {
   expect(screen.queryByText(/Pricing timestamp|Pricing as of/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/Measured requests|Estimated requests/i)).not.toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
+})
+
+it('uses friendly subscription labels instead of internal plan codes', async () => {
+  mockSettingsApi()
+  const estimate = usage.estimated_tokens_remaining
+  const subscriptions = {
+    enabled: true,
+    chat: {
+      active: true, source: 'referral_reward', plan: '1m', starts_at:'2026-08-01T00:00:00Z', expires_at:'2026-09-01T00:00:00Z',
+      current_window_start:'2026-08-01T00:00:00Z', next_reset_at:'2026-08-08T00:00:00Z', allowance_micros:125_000_000,
+      consumed_micros:0, reserved_micros:0, remaining_micros:125_000_000, progress_percent:0,
+      allowance_token_estimate:estimate, consumed_token_estimate:estimate, reserved_token_estimate:estimate, remaining_token_estimate:estimate,
+      token_estimate:estimate, voice_estimate:null, queued_entitlements:[{ source:'purchase', plan:'6m', starts_at:'2026-09-01T00:00:00Z', expires_at:'2027-03-01T00:00:00Z' }], payg_fallback_enabled:false,
+    },
+    voice:null,
+  }
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} subscriptions={subscriptions as never} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
+  expect(screen.getByText('Referral reward · 1 month')).toBeInTheDocument()
+  expect(screen.getByText('Queued: 6 months')).toBeInTheDocument()
+  expect(screen.queryByText(/1m|6m/)).not.toBeInTheDocument()
 })
 
 it('shows Unlimited without a fictitious range or top-up controls', async () => {

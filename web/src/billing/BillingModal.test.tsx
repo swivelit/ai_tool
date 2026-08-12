@@ -32,7 +32,7 @@ const subscriptionConfig = {
       { code:'6m' as const, label:'6 months', price_paise:800_000, duration_months:6 },
       { code:'1y' as const, label:'1 year', price_paise:1_200_000, duration_months:12 },
     ],
-    weekly_allowance_micros:125_000_000, weekly_allowance_rupees:125,
+    weekly_allowance_micros:125_000_000, weekly_allowance_rupees:125, weekly_token_estimate:estimate,
     no_rollover:true, prorate_final_partial_week:true, prepaid_non_renewing:true,
     referral_reward_mapping:{ '1m':{ weeks:1, months:0 }, '6m':{ weeks:3, months:0 }, '1y':{ weeks:0, months:2 } },
   },
@@ -49,7 +49,7 @@ it('renders exactly ₹15, ₹299, and Custom amount with ₹15 initially select
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
   render(<BillingModal user={{} as never} config={config} close={vi.fn()} refreshed={vi.fn()} />)
   await act(async () => { await Promise.resolve() })
-  const dialog = screen.getByRole('dialog', { name:'Top up' })
+  const dialog = screen.getByRole('dialog', { name:'Billing' })
   expect(dialog).not.toHaveAttribute('aria-describedby')
   expect(screen.getByText('Test Mode')).toBeInTheDocument()
   const cards = dialog.querySelectorAll('.packages button')
@@ -118,6 +118,27 @@ it('renders server-configured subscription plans and sends a plan-only checkout 
   expect(JSON.parse(String(call?.[2]?.body))).not.toHaveProperty('gross_amount_paise')
 })
 
+it('isolates subscription CTA state and requires a plan selection', async () => {
+  vi.mocked(apiJson).mockReset().mockResolvedValue({ items:[] })
+  render(<BillingModal user={{} as never} config={subscriptionConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('tab', { name:'Subscriptions' }))
+  const button = screen.getByRole('button', { name:'Choose a subscription plan' })
+  expect(button).toBeDisabled()
+  expect(screen.queryByRole('button', { name:'Pay ₹15 for Chat credits' })).not.toBeInTheDocument()
+  expect(screen.queryByText('₹125 per complete week')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:/1 month ₹1500/i }))
+  expect(screen.getByRole('button', { name:'Subscribe for ₹1500' })).toBeEnabled()
+})
+
+it('renders an explicit unavailable state instead of 0–0 tokens', async () => {
+  const unavailable = { ...estimate, estimated_blended_tokens:null, range_min_tokens:null, range_max_tokens:null, estimate_available:false, availability:'unavailable' as const, explanation:'Estimate temporarily unavailable.' }
+  const unavailableConfig = { ...config, packages:config.packages.map(item => ({ ...item, token_estimate:unavailable })) }
+  vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
+  render(<BillingModal user={{} as never} config={unavailableConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  expect(await screen.findAllByText('Estimate temporarily unavailable')).not.toHaveLength(0)
+  expect(screen.queryByText('0–0 tokens')).not.toBeInTheDocument()
+})
+
 it('shows referral code rules and claims the server-validated code', async () => {
   vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
     if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
@@ -178,7 +199,7 @@ it('debounces a valid ₹75 estimate, updates summary, retains input across tabs
   expect(await screen.findByRole('button', { name:'Pay ₹75 for Chat credits' })).toBeEnabled()
   expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹75 for Chat creditsEstimated token range 187K–1.3M tokens')
   await userEvent.click(screen.getByRole('tab', { name:'Payment history' }))
-  await userEvent.click(screen.getByRole('tab', { name:'Top up' }))
+  await userEvent.click(screen.getByRole('tab', { name:'Pay as you go' }))
   expect(screen.getByLabelText('Custom amount')).toHaveValue('75')
   await userEvent.click(screen.getByRole('button', { name:'Pay ₹75 for Chat credits' }))
   await screen.findByText('order stopped for test')
@@ -252,10 +273,10 @@ it('keeps completed payment details visible without service allocation', async (
 it('keeps checkout-disabled behavior and accessibility focus unchanged', async () => {
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
   render(<BillingModal user={{} as never} config={{ ...config, razorpay_key_id:'rzp_test_misleading', razorpay_mode:'live', checkout_enabled:false }} close={vi.fn()} refreshed={vi.fn()} />)
-  expect(screen.getByRole('button', { name:'Close top-up' })).toHaveFocus()
+  expect(screen.getByRole('button', { name:'Close billing' })).toHaveFocus()
   await userEvent.click(screen.getByRole('tab', { name:'Payment history' }))
   expect(await screen.findByText('No payments or refunds yet.')).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('tab', { name:'Top up' }))
+  await userEvent.click(screen.getByRole('tab', { name:'Pay as you go' }))
   expect(screen.queryByText('Test Mode')).not.toBeInTheDocument()
   expect(screen.getByText(/Checkout is currently disabled/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Pay ₹15 for Chat credits' })).toBeDisabled()

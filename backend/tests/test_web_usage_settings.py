@@ -100,7 +100,7 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
     assert body["by_tier"]["lite"]["total_tokens"] == 140
     assert body["by_tier"]["standard"]["request_count"] == 0
     assert body["by_tier"]["pro"]["debited_micros"] == 0
-    assert body["voice"] == {
+    expected_voice = {
         "label": "Voice", "stt_request_count": 1, "tts_request_count": 1,
         "llm_request_count": 1, "llm_input_tokens": 80,
         "llm_cached_input_tokens": 15, "llm_output_tokens": 20,
@@ -112,6 +112,8 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
             "utilization_percentage": 100.0,
             "utilization_basis": "available_plus_period_debit",
         }
+    assert {key: body["voice"][key] for key in expected_voice} == expected_voice
+    assert body["voice"]["token_estimate"]["estimate_available"] is True
     assert body["debited_micros"] == 42_000
     assert body["by_tier"]["lite"]["debited_micros"] == 20_000
 
@@ -168,7 +170,7 @@ def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(
     assert "reference_model" not in estimate
     assert "pricing_snapshot" not in estimate
     assert estimate["range_min_tokens"] <= estimate["range_max_tokens"]
-    assert "Estimated for Swico Lite" in estimate["explanation"]
+    assert "Swico Lite" in estimate["explanation"]
 
 
 def test_usage_summary_current_month_handles_first_day_in_asia_kolkata(
