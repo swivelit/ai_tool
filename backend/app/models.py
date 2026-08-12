@@ -294,6 +294,8 @@ class PaymentOrder(SQLModel, table=True):
     __table_args__ = (
         Index("ix_payment_order_user_created", "user_id", "created_at"),
         CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_payment_order_credit_bucket"),
+        CheckConstraint("purchase_type IN ('topup', 'subscription')", name="ck_payment_order_purchase_type"),
+        CheckConstraint("purchase_type <> 'subscription' OR credited_amount_micros = 0", name="ck_payment_order_subscription_no_wallet_credit"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
@@ -313,6 +315,163 @@ class PaymentOrder(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
     paid_at: Optional[datetime] = None
     refunded_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    purchase_type: str = Field(
+        default="topup",
+        max_length=24,
+        sa_column=Column(String(24), nullable=False, server_default="topup", index=True),
+    )
+    subscription_plan_code: Optional[str] = Field(default=None, max_length=8, index=True)
+    fulfillment_status: str = Field(
+        default="pending",
+        max_length=32,
+        sa_column=Column(String(32), nullable=False, server_default="pending", index=True),
+    )
+
+
+class SubscriptionEntitlement(SQLModel, table=True):
+    __tablename__ = "subscription_entitlement"
+    __table_args__ = (
+        Index("ix_subscription_entitlement_user_bucket_start", "user_id", "credit_bucket", "starts_at"),
+        UniqueConstraint("source_payment_order_id", name="uq_subscription_entitlement_payment"),
+        UniqueConstraint("source_referral_reward_id", name="uq_subscription_entitlement_reward"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_subscription_entitlement_bucket"),
+        CheckConstraint("source IN ('purchase', 'referral_reward')", name="ck_subscription_entitlement_source"),
+        CheckConstraint("status IN ('queued', 'active', 'expired', 'cancelled')", name="ck_subscription_entitlement_status"),
+        CheckConstraint("ends_at > starts_at", name="ck_subscription_entitlement_dates"),
+        CheckConstraint("weekly_allowance_micros >= 0", name="ck_subscription_entitlement_allowance"),
+        CheckConstraint("price_paise >= 0 AND duration_months >= 0 AND reward_weeks >= 0", name="ck_subscription_entitlement_snapshot"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(max_length=16, sa_column=Column(String(16), nullable=False))
+    source: str = Field(max_length=24, sa_column=Column(String(24), nullable=False))
+    plan_code: str = Field(max_length=8)
+    source_payment_order_id: Optional[str] = Field(default=None, foreign_key="payment_order.id", ondelete="RESTRICT", index=True)
+    source_referral_reward_id: Optional[str] = Field(default=None, foreign_key="referral_reward.id", ondelete="RESTRICT", index=True)
+    starts_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    ends_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    weekly_allowance_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    price_paise: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    duration_months: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    reward_weeks: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    rule_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    status: str = Field(default="queued", max_length=16, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class SubscriptionUsageWindow(SQLModel, table=True):
+    __tablename__ = "subscription_usage_window"
+    __table_args__ = (
+        UniqueConstraint("entitlement_id", "window_index", name="uq_subscription_window_entitlement_index"),
+        Index("ix_subscription_window_user_bucket_period", "user_id", "credit_bucket", "period_start", "period_end"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_subscription_window_bucket"),
+        CheckConstraint("allowance_micros >= 0 AND reserved_micros >= 0 AND consumed_micros >= 0", name="ck_subscription_window_non_negative"),
+        CheckConstraint("reserved_micros + consumed_micros <= allowance_micros", name="ck_subscription_window_not_overdrawn"),
+        CheckConstraint("period_end > period_start", name="ck_subscription_window_dates"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    entitlement_id: str = Field(foreign_key="subscription_entitlement.id", ondelete="RESTRICT", index=True)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(max_length=16, sa_column=Column(String(16), nullable=False))
+    window_index: int = Field(sa_column=Column(Integer, nullable=False))
+    period_start: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    period_end: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    allowance_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    consumed_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    version: int = Field(default=0)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class SubscriptionUsageLedger(SQLModel, table=True):
+    __tablename__ = "subscription_usage_ledger"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_subscription_usage_ledger_idempotency"),
+        Index("ix_subscription_usage_ledger_user_created", "user_id", "created_at"),
+        CheckConstraint("entry_type IN ('reservation', 'reservation_release', 'usage_debit')", name="ck_subscription_usage_ledger_type"),
+        CheckConstraint("amount_micros >= 0", name="ck_subscription_usage_ledger_amount"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_subscription_usage_ledger_bucket"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(max_length=16, sa_column=Column(String(16), nullable=False))
+    entitlement_id: str = Field(foreign_key="subscription_entitlement.id", ondelete="RESTRICT", index=True)
+    window_id: str = Field(foreign_key="subscription_usage_window.id", ondelete="RESTRICT", index=True)
+    usage_charge_id: Optional[str] = Field(default=None, foreign_key="usage_charge.id", ondelete="SET NULL", index=True)
+    entry_type: str = Field(max_length=24)
+    amount_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    idempotency_key: str = Field(max_length=200)
+    metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class SubscriptionPreference(SQLModel, table=True):
+    __tablename__ = "subscription_preference"
+    __table_args__ = (UniqueConstraint("user_id", "credit_bucket", name="uq_subscription_preference_user_bucket"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    credit_bucket: str = Field(max_length=16, sa_column=Column(String(16), nullable=False))
+    payg_fallback_enabled: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class ReferralCode(SQLModel, table=True):
+    __tablename__ = "referral_code"
+    __table_args__ = (UniqueConstraint("code", name="uq_referral_code_code"), UniqueConstraint("user_id", name="uq_referral_code_user"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    code: str = Field(max_length=32, index=True)
+    disabled: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false", index=True))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class ReferralAttribution(SQLModel, table=True):
+    __tablename__ = "referral_attribution"
+    __table_args__ = (
+        UniqueConstraint("referred_user_id", name="uq_referral_attribution_referred"),
+        CheckConstraint("referrer_user_id <> referred_user_id", name="ck_referral_attribution_not_self"),
+        CheckConstraint("status IN ('claimed', 'disabled')", name="ck_referral_attribution_status"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    referrer_user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    referred_user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    referral_code_id: str = Field(foreign_key="referral_code.id", ondelete="RESTRICT", index=True)
+    claimed_at: datetime = Field(default_factory=utc_now, index=True)
+    status: str = Field(default="claimed", max_length=16, index=True)
+
+
+class ReferralReward(SQLModel, table=True):
+    __tablename__ = "referral_reward"
+    __table_args__ = (
+        UniqueConstraint("qualifying_payment_order_id", name="uq_referral_reward_qualifying_order"),
+        Index("ix_referral_reward_referrer_status", "referrer_user_id", "status"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_referral_reward_bucket"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    referrer_user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    referred_user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    qualifying_payment_order_id: str = Field(foreign_key="payment_order.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(max_length=16, sa_column=Column(String(16), nullable=False))
+    purchased_plan_code: str = Field(max_length=8)
+    purchased_price_paise: int = Field(sa_column=Column(BigInteger, nullable=False))
+    reward_duration_months: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    reward_duration_weeks: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    generated_entitlement_id: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="pending", max_length=24, index=True)
+    manual_review_required: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
@@ -448,6 +607,7 @@ class UsageCharge(SQLModel, table=True):
         Index("ix_usage_charge_user_kind_settled", "user_id", "usage_kind", "settled_at"),
         UniqueConstraint("request_id", name="uq_usage_charge_request_id"),
         CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_usage_charge_credit_bucket"),
+        CheckConstraint("funding_source IN ('wallet', 'subscription', 'billing_exempt', 'free')", name="ck_usage_charge_funding_source"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
@@ -473,6 +633,18 @@ class UsageCharge(SQLModel, table=True):
     provider_cost_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     debited_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    funding_source: str = Field(
+        default="wallet",
+        max_length=24,
+        sa_column=Column(String(24), nullable=False, server_default="wallet", index=True),
+    )
+    subscription_window_id: Optional[str] = Field(
+        default=None,
+        foreign_key="subscription_usage_window.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
     billing_exemption_reason: Optional[str] = Field(default=None, max_length=64)
     status: str = Field(default="reserving", max_length=16, index=True)
     pricing_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))

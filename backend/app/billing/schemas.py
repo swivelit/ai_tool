@@ -6,9 +6,11 @@ from pydantic import BaseModel, Field
 
 
 class CreateOrderRequest(BaseModel):
-    gross_amount_paise: int = Field(gt=0, strict=True)
+    purchase_type: Literal["topup", "subscription"] = "topup"
+    gross_amount_paise: int | None = Field(default=None, gt=0, strict=True)
     idempotency_key: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
     credit_bucket: Literal["chat", "voice"] = "chat"
+    plan_code: Literal["1m", "6m", "1y"] | None = None
 
 
 class PublicTopupTokenEstimate(BaseModel):

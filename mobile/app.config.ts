@@ -427,7 +427,7 @@ export default {
   expo: {
     name: "Swico",
     slug: "tamil-ai",
-    version: "1.0.1",
+    version: "1.0.2",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
     scheme: APP_SCHEME,
@@ -552,7 +552,7 @@ export default {
 
     android: {
       package: "com.swico.swivel",
-      versionCode:2,
+      versionCode:3,
       ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "resize",

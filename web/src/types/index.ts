@@ -133,10 +133,35 @@ export type BillingConfig = {
   currency: 'INR'; credit_percent: string; razorpay_key_id: string; min_topup_paise: number;
   razorpay_mode: 'test' | 'live'; checkout_enabled: boolean;
   max_topup_paise: number; custom_topup_enabled: boolean; packages: BillingPackage[];
+  subscriptions?: SubscriptionConfig; referrals?: ReferralConfig;
+}
+export type SubscriptionPlan = { code: '1m' | '6m' | '1y'; label: string; price_paise: number; duration_months: number }
+export type SubscriptionConfig = {
+  enabled: boolean; plans: SubscriptionPlan[]; weekly_allowance_micros: number;
+  weekly_allowance_rupees: number; no_rollover: boolean; prorate_final_partial_week: boolean;
+  prepaid_non_renewing: boolean; referral_reward_mapping: Record<string, { weeks: number; months: number }>
+}
+export type SubscriptionEstimate = { remaining_micros: number; note: string }
+export type SubscriptionBucketSummary = {
+  active: boolean; source: 'purchase' | 'referral_reward' | null; plan: string | null;
+  starts_at: string | null; expires_at: string | null; current_window_start: string | null;
+  next_reset_at: string | null; allowance_micros: number; consumed_micros: number;
+  reserved_micros: number; remaining_micros: number; progress_percent: number;
+  token_estimate?: TokenEstimate | null; voice_estimate?: SubscriptionEstimate;
+  queued_entitlements: Array<{ source: string; plan: string; starts_at: string; expires_at: string }>;
+  payg_fallback_enabled: boolean;
+}
+export type SubscriptionSummary = { enabled: boolean; chat: SubscriptionBucketSummary | null; voice: SubscriptionBucketSummary | null }
+export type ReferralConfig = { enabled: boolean; reward_mapping: Record<string, { weeks: number; months: number }> }
+export type ReferralSummary = {
+  enabled: boolean; code: string | null; attributed: boolean; eligible_to_claim: boolean;
+  reward_mapping: Record<string, { weeks: number; months: number }>;
+  rewards: Array<{ id: string; role: string; credit_bucket: CreditBucket; plan_code: string; status: string; weeks: number; months: number; manual_review_required: boolean; created_at: string }>
 }
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
   wallet: Wallet; wallets?: Wallets; billing: BillingConfig; assistant: AssistantSettings;
+  subscriptions?: SubscriptionSummary;
   features: {
     web_chat: boolean; prepaid_billing: boolean;
     web_attachments: boolean; web_voice_recording: boolean;
@@ -189,6 +214,8 @@ export type PaymentStatus = {
   platform_share_paise: number; refunded_amount_paise: number; status: string;
   provider_payment_id: string | null; created_at: string; paid_at: string | null;
   refunded_at: string | null; updated_at: string;
+  purchase_type?: 'topup' | 'subscription'; subscription_plan_code?: string | null;
+  fulfillment_status?: string;
 }
 
 export type ProfileSettings = {
@@ -280,6 +307,8 @@ export type PaymentHistory = {
   credit_reversal_micros: number; status: string; created_at: string;
   updated_at: string; paid_at: string | null; refunded_at: string | null;
   payment_received: boolean; credit_applied: boolean;
+  purchase_type?: 'topup' | 'subscription'; subscription_plan_code?: string | null;
+  fulfillment_status?: string;
   token_estimate?: TokenEstimate; reversal_token_estimate?: TokenEstimate;
   voice_estimate?: VoiceCreditEstimate;
 }

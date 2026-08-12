@@ -1,5 +1,26 @@
 # Swico standalone web architecture
 
+## Website subscriptions and referrals
+
+The website keeps prepaid subscription entitlements separate from the existing
+Chat and Voice `WalletAccount` balances. `PaymentOrder` remains the durable
+Razorpay Orders record and dispatches either the unchanged top-up fulfillment
+path or the subscription fulfillment path. Subscription entitlements stack by
+bucket, materialize seven-day usage windows lazily from their UTC start and
+calendar-month expiry timestamps, and reserve/settle/release through an
+immutable subscription usage ledger. A request uses one source for its entire
+reservation; an explicitly enabled per-bucket pay-as-you-go fallback may fund
+the whole request only when the subscription window cannot cover it.
+
+Referral attribution is one-time and stored relationally. Only the referred
+user's first captured and fulfilled subscription can create one non-cash,
+non-transferable reward entitlement for the referrer. Payment verification,
+webhooks, and reconciliation all use the same idempotent fulfillment and
+unique constraints. Refund handling cancels unused/future subscription
+entitlements without invoking wallet reversal; partial subscription refunds
+remain manual-review records. There is no weekly reset job: windows are
+created on demand from timestamps.
+
 ## Boundaries
 
 `web/` is a standalone React, Vite, and TypeScript application. It has no imports from `mobile/` and no Expo, React Native, downloadable model, llama.cpp, local agent, or Qwen runtime dependency. Firebase Web Auth produces the bearer token used by the existing backend authentication dependency.

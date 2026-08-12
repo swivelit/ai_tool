@@ -11,10 +11,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlmodel import Session, select
 
-from ..models import ApiRateLimit, PaymentOrder, UsageCharge, WalletAccount, WalletLedger
+from ..models import ApiRateLimit, PaymentOrder, ReferralReward, SubscriptionEntitlement, SubscriptionUsageLedger, SubscriptionUsageWindow, UsageCharge, WalletAccount, WalletLedger
 from ..database import IS_POSTGRES
 from ..time_utils import utc_now
-from .errors import InsufficientCreditError, PaymentValidationError, RateLimitError
+from .errors import InsufficientCreditError, PaymentValidationError, RateLimitError, SubscriptionWeeklyLimitError
 from .usage_limits import (
     acquire_sqlite_usage_transaction_lock, enforce_usage_limit,
     settlement_limit_available,
@@ -161,14 +161,15 @@ def _ledger(
     return row
 
 
-def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
+def _credit_payment_once_topup(session: Session, order: PaymentOrder) -> WalletLedger:
     key = f"payment-credit:{order.id}"
     existing = session.exec(select(WalletLedger).where(WalletLedger.idempotency_key == key)).first()
     if existing:
         if existing.credit_bucket != normalize_credit_bucket(order.credit_bucket):
             raise PaymentValidationError("Payment credit already exists in another credit bucket.")
-        if order.status != "credited":
+        if order.status != "credited" or order.fulfillment_status != "fulfilled":
             order.status = "credited"
+            order.fulfillment_status = "fulfilled"
             order.updated_at = utc_now()
             session.add(order)
         return existing
@@ -184,10 +185,39 @@ def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
                   "credit_bucket": order.credit_bucket},
     )
     order.status = "credited"
+    order.fulfillment_status = "fulfilled"
     order.paid_at = order.paid_at or utc_now()
     order.updated_at = utc_now()
     session.add(order)
     return entry
+
+
+def fulfill_payment_once(session: Session, order: PaymentOrder):
+    """Idempotent payment dispatcher; legacy top-ups retain credit_payment_once semantics."""
+    if order.purchase_type == "subscription":
+        from .subscriptions import fulfill_subscription_payment
+        if order.fulfillment_status == "fulfilled":
+            existing = session.exec(select(SubscriptionEntitlement).where(
+                SubscriptionEntitlement.source_payment_order_id == order.id,
+            )).first()
+            if existing is not None:
+                return existing
+        return fulfill_subscription_payment(session, order)
+    return _credit_payment_once_topup(session, order)
+
+
+def credit_payment_once(session: Session, order: PaymentOrder):
+    """Backward-compatible entry point that dispatches by purchase type."""
+    if order.purchase_type == "subscription":
+        return fulfill_payment_once(session, order)
+    return _credit_payment_once_topup(session, order)
+
+
+def credit_payment_once_topup(session: Session, order: PaymentOrder) -> WalletLedger:
+    """Compatibility alias for callers that explicitly need the top-up path."""
+    if order.purchase_type != "topup":
+        raise PaymentValidationError("Expected a top-up payment order.")
+    return _credit_payment_once_topup(session, order)
 
 
 def create_usage_reservation(
@@ -207,19 +237,53 @@ def create_usage_reservation(
     if existing and existing.status != "released":
         return existing
     required = max(0, int(reserved_micros))
-    wallet = _locked_wallet(session, user_id, bucket)
-    available = int(wallet.balance_micros - wallet.reserved_micros)
-    if available < required or wallet.balance_micros <= 0:
-        raise InsufficientCreditError(available, required)
-    enforce_usage_limit(session, user_id=user_id, required_micros=required)
     attempt = 1
     if existing:
-        charge = existing
         try:
-            prior_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+            prior_snapshot = json.loads(existing.pricing_snapshot_json or "{}")
             attempt = int(prior_snapshot.get("reservation_attempt") or 1) + 1
         except (TypeError, ValueError):
             attempt = 2
+    subscription_window = None
+    funding_source = "wallet"
+    if required:
+        from .subscriptions import (
+            payg_fallback_enabled, reserve_subscription_window,
+            subscription_window_remaining,
+        )
+        subscription_window = reserve_subscription_window(
+            session, user_id=user_id, bucket=bucket,
+            request_id=f"{request_id}:attempt:{attempt}", amount_micros=required,
+        )
+        if subscription_window is not None:
+            marker = session.exec(select(SubscriptionUsageLedger).where(
+                SubscriptionUsageLedger.idempotency_key == f"subscription-reserve:{request_id}:attempt:{attempt}"
+            )).first()
+            if marker is not None:
+                funding_source = "subscription"
+            elif not payg_fallback_enabled(session, user_id, bucket):
+                wallet_probe = _locked_wallet(session, user_id, bucket)
+                raise SubscriptionWeeklyLimitError(
+                    credit_bucket=bucket,
+                    remaining_micros=subscription_window_remaining(subscription_window),
+                    reset_at=subscription_window.period_end.isoformat(),
+                    payg_available_micros=max(0, int(wallet_probe.balance_micros - wallet_probe.reserved_micros)),
+                    payg_fallback_enabled=False,
+                )
+            else:
+                subscription_window = None
+    wallet = None
+    if funding_source == "wallet":
+        wallet = _locked_wallet(session, user_id, bucket)
+        available = int(wallet.balance_micros - wallet.reserved_micros)
+        if available < required or wallet.balance_micros <= 0:
+            raise InsufficientCreditError(available, required)
+    if required:
+        # Keep the historical wallet-availability error precedence for top-ups,
+        # while still applying the monthly hard limit to either funding source.
+        enforce_usage_limit(session, user_id=user_id, required_micros=required)
+    if existing:
+        charge = existing
         charge.provider = provider
         charge.model = model
         charge.swico_tier = swico_tier
@@ -230,6 +294,8 @@ def create_usage_reservation(
         charge.characters = max(0, int(characters))
         charge.assistant_message_id = assistant_message_id
         charge.reserved_micros = required
+        charge.funding_source = funding_source
+        charge.subscription_window_id = subscription_window.id if subscription_window is not None else None
         charge.status = "reserved"
         charge.settled_at = None
         charge.pricing_snapshot_json = pricing_snapshot_json
@@ -239,6 +305,8 @@ def create_usage_reservation(
             model=model, swico_tier=swico_tier, reserved_micros=required, status="reserved",
             pricing_snapshot_json=pricing_snapshot_json, usage_kind=usage_kind,
             credit_bucket=bucket,
+            funding_source=funding_source,
+            subscription_window_id=subscription_window.id if subscription_window is not None else None,
             voice_turn_id=voice_turn_id, audio_milliseconds=max(0, int(audio_milliseconds)),
             characters=max(0, int(characters)), assistant_message_id=assistant_message_id,
         )
@@ -249,17 +317,27 @@ def create_usage_reservation(
     reservation_snapshot["reservation_attempt"] = attempt
     charge.pricing_snapshot_json = json.dumps(reservation_snapshot, sort_keys=True, separators=(",", ":"))
     session.add(charge)
-    wallet.reserved_micros += required
-    wallet.version += 1
-    wallet.updated_at = utc_now()
-    session.add(wallet)
+    if wallet is not None:
+        wallet.reserved_micros += required
+        wallet.version += 1
+        wallet.updated_at = utc_now()
+        session.add(wallet)
     session.flush()
-    _ledger(
-        session, wallet, entry_type="reservation", amount_micros=-required,
-        reference_type="usage_charge", reference_id=charge.id,
-        idempotency_key=f"usage-reserve:{request_id}:attempt:{attempt}",
-        metadata={"request_id": request_id, "attempt": attempt},
-    )
+    if funding_source == "subscription":
+        marker = session.exec(select(SubscriptionUsageLedger).where(
+            SubscriptionUsageLedger.idempotency_key == f"subscription-reserve:{request_id}:attempt:{attempt}"
+        )).first()
+        if marker is not None:
+            marker.usage_charge_id = charge.id
+            session.add(marker)
+    else:
+        assert wallet is not None
+        _ledger(
+            session, wallet, entry_type="reservation", amount_micros=-required,
+            reference_type="usage_charge", reference_id=charge.id,
+            idempotency_key=f"usage-reserve:{request_id}:attempt:{attempt}",
+            metadata={"request_id": request_id, "attempt": attempt},
+        )
     return charge
 
 
@@ -300,6 +378,8 @@ def create_billing_exempt_usage(
     charge.audio_milliseconds = max(0, int(audio_milliseconds))
     charge.characters = max(0, int(characters))
     charge.assistant_message_id = assistant_message_id
+    charge.funding_source = "billing_exempt"
+    charge.subscription_window_id = None
     charge.reserved_micros = 0
     charge.debited_micros = 0
     charge.billing_exemption_reason = reason
@@ -350,6 +430,8 @@ def create_swico_free_usage(
     charge.credit_bucket = bucket
     charge.voice_turn_id = voice_turn_id
     charge.assistant_message_id = assistant_message_id
+    charge.funding_source = "free"
+    charge.subscription_window_id = None
     charge.reserved_micros = 0
     charge.provider_cost_micros = 0
     charge.debited_micros = 0
@@ -444,6 +526,30 @@ def expand_usage_reservation(
     delta = max(0, int(additional_micros))
     if delta == 0:
         return charge
+    enforce_usage_limit(session, user_id=charge.user_id, required_micros=delta)
+    if charge.funding_source == "subscription":
+        from .subscriptions import reserve_subscription_window, subscription_window_remaining
+        window = reserve_subscription_window(
+            session, user_id=charge.user_id, bucket=charge.credit_bucket,
+            request_id=f"{request_id}:expansion:{expansion_id}", amount_micros=delta,
+        )
+        marker = session.exec(select(SubscriptionUsageLedger).where(
+            SubscriptionUsageLedger.idempotency_key == f"subscription-reserve:{request_id}:expansion:{expansion_id}"
+        )).first()
+        if window is None or marker is None:
+            reset_at = window.period_end.isoformat() if window is not None else utc_now().isoformat()
+            raise SubscriptionWeeklyLimitError(
+                credit_bucket=charge.credit_bucket,
+                remaining_micros=subscription_window_remaining(window) if window is not None else 0,
+                reset_at=reset_at, payg_available_micros=0,
+                payg_fallback_enabled=False,
+            )
+        if marker is not None:
+            marker.usage_charge_id = charge.id
+            session.add(marker)
+        charge.reserved_micros += delta
+        session.add(charge)
+        return charge
     wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     key = f"usage-expand:{request_id}:{expansion_id}"
     existing = session.exec(
@@ -456,7 +562,6 @@ def expand_usage_reservation(
     available = int(wallet.balance_micros - wallet.reserved_micros)
     if available < delta:
         raise InsufficientCreditError(available, delta)
-    enforce_usage_limit(session, user_id=charge.user_id, required_micros=delta)
     charge.reserved_micros += delta
     wallet.reserved_micros += delta
     wallet.version += 1
@@ -574,6 +679,62 @@ def settle_usage_reservation(
         return charge
     if charge.status != "reserved":
         raise PaymentValidationError("Usage reservation is not active.")
+    if charge.funding_source == "subscription":
+        reserved_provider = charge.provider
+        reserved_model = charge.model
+        provider_debit = max(0, int(provider_cost_micros))
+        try:
+            reservation_pricing_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+        except (TypeError, ValueError):
+            reservation_pricing_snapshot = {}
+        if provider:
+            charge.provider = provider
+        if model:
+            charge.model = model
+        if usage_kind is not None:
+            charge.usage_kind = _usage_kind(usage_kind)
+        if voice_turn_id is not None:
+            charge.voice_turn_id = voice_turn_id
+        if audio_milliseconds is not None:
+            charge.audio_milliseconds = max(0, int(audio_milliseconds))
+        if characters is not None:
+            charge.characters = max(0, int(characters))
+        if swico_tier is not None:
+            charge.swico_tier = swico_tier
+        from .subscriptions import settle_subscription_window
+        debit = settle_subscription_window(
+            session, charge=charge, provider_cost_micros=provider_debit,
+            request_id=request_id, metadata={"provider": reserved_provider},
+        )
+        charge.provider_cost_amount_decimal = provider_cost_amount
+        charge.provider_cost_currency = provider_cost_currency
+        charge.provider_cost_micros = provider_debit
+        charge.debited_micros = debit
+        charge.input_tokens = max(0, input_tokens)
+        charge.cached_input_tokens = max(0, cached_input_tokens)
+        charge.output_tokens = max(0, output_tokens)
+        charge.usage_source = usage_source if usage_source in {"actual", "estimated"} else "estimated"
+        try:
+            pricing_snapshot = json.loads(pricing_snapshot_json or "{}")
+        except (TypeError, ValueError):
+            pricing_snapshot = {}
+        pricing_snapshot["reservation"] = {
+            "provider": reserved_provider, "model": reserved_model,
+            "reserved_micros": int(charge.reserved_micros),
+            "pricing_snapshot": reservation_pricing_snapshot,
+        }
+        if provider_debit > debit:
+            pricing_snapshot["reconciliation"] = {
+                "state": "platform_absorbed_overage",
+                "amount_micros": provider_debit - debit,
+            }
+        charge.pricing_snapshot_json = json.dumps(pricing_snapshot, sort_keys=True, separators=(",", ":"))
+        charge.usd_to_inr_rate = usd_to_inr_rate
+        charge.assistant_message_id = assistant_message_id
+        charge.status = "settled"
+        charge.settled_at = utc_now()
+        session.add(charge)
+        return charge
     wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     reserved_provider = charge.provider
     reserved_model = charge.model
@@ -680,6 +841,17 @@ def release_usage_reservation(
             _annotate_release_reason(charge, reason)
             session.add(charge)
         return charge
+    if charge.funding_source == "subscription":
+        from .subscriptions import release_subscription_window
+        bounded_reason = _bounded_release_reason(reason)
+        release_subscription_window(
+            session, charge=charge, request_id=request_id, reason=bounded_reason,
+        )
+        charge.status = "released"
+        charge.settled_at = utc_now()
+        _annotate_release_reason(charge, bounded_reason)
+        session.add(charge)
+        return charge
     wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     reservation_attempt = _reservation_attempt(charge)
     wallet.reserved_micros = max(0, wallet.reserved_micros - int(charge.reserved_micros))
@@ -759,6 +931,48 @@ def recover_stale_usage_reservations(
 
 
 def reverse_credit_for_refund(session: Session, order: PaymentOrder, new_refunded_amount_paise: int) -> int:
+    if order.purchase_type == "subscription":
+        total_refunded = min(max(0, int(new_refunded_amount_paise)), int(order.gross_amount_paise))
+        order.refunded_amount_paise = max(order.refunded_amount_paise, total_refunded)
+        order.status = "refunded" if total_refunded >= order.gross_amount_paise else "partially_refunded"
+        order.refunded_at = utc_now() if order.status == "refunded" else order.refunded_at
+        try:
+            metadata = json.loads(order.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if order.status == "refunded":
+            entitlements = session.exec(select(SubscriptionEntitlement).where(
+                SubscriptionEntitlement.source_payment_order_id == order.id,
+            ).with_for_update()).all()
+            for entitlement in entitlements:
+                entitlement.status = "cancelled"
+                entitlement.updated_at = utc_now()
+                session.add(entitlement)
+            rewards = session.exec(select(ReferralReward).where(
+                ReferralReward.qualifying_payment_order_id == order.id,
+            ).with_for_update()).all()
+            for reward in rewards:
+                generated = session.get(SubscriptionEntitlement, reward.generated_entitlement_id) if reward.generated_entitlement_id else None
+                used = bool(generated and session.exec(select(SubscriptionUsageWindow).where(
+                    SubscriptionUsageWindow.entitlement_id == generated.id,
+                    (SubscriptionUsageWindow.consumed_micros > 0) | (SubscriptionUsageWindow.reserved_micros > 0),
+                )).first())
+                if used:
+                    reward.manual_review_required = True
+                else:
+                    reward.status = "cancelled"
+                    if generated:
+                        generated.status = "cancelled"
+                        generated.updated_at = utc_now()
+                        session.add(generated)
+                reward.updated_at = utc_now()
+                session.add(reward)
+        else:
+            metadata["manual_review_required"] = True
+        order.metadata_json = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+        order.updated_at = utc_now()
+        session.add(order)
+        return 0
     total_refunded = min(max(0, int(new_refunded_amount_paise)), int(order.gross_amount_paise))
     target_reversal = int(
         (Decimal(order.credited_amount_micros) * Decimal(total_refunded) / Decimal(order.gross_amount_paise))

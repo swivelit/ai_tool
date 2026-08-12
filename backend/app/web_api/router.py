@@ -33,7 +33,7 @@ from ..auth import (
 from ..alembic_utils import repository_alembic_head
 from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
-    UsageLimitReachedError,
+    SubscriptionWeeklyLimitError, UsageLimitReachedError,
 )
 from ..billing.pricing import (
     calculate_topup, credit_percent, env_decimal, reserve_price, snapshot_json, stt_price, tts_price,
@@ -42,10 +42,16 @@ from ..billing.razorpay_client import RazorpayClient, verify_checkout_signature,
 from ..billing.schemas import CreateOrderRequest, TopupEstimateResponse, VerifyPaymentRequest
 from ..billing.service import (
     create_billing_exempt_usage, create_usage_reservation, credit_payment_once,
+    fulfill_payment_once,
     enforce_rate_limit, expand_usage_reservation, get_wallet_summary, get_wallet_summaries, list_wallet_ledger,
     release_billing_exempt_usage, release_usage_reservation, reverse_credit_for_refund,
     settle_billing_exempt_usage, settle_usage_reservation,
     release_swico_free_usage,
+)
+from ..billing.subscriptions import (
+    claim_referral_code, plan_catalog, referral_code_for_user,
+    referral_reward_mapping, referrals_enabled, set_payg_fallback,
+    subscription_config_public, subscription_summary, subscriptions_enabled,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
 from ..billing.topups import (
@@ -95,7 +101,8 @@ from .swico_free_queue import (
 )
 from ..database import SessionLocal, get_session
 from ..models import (
-    GlobalQACache, PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage,
+    GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
+    ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
     WebKnowledgeDocument,
@@ -547,6 +554,8 @@ def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
         "min_topup_paise": minimum, "max_topup_paise": maximum,
         "custom_topup_enabled": custom_topup_enabled(),
         "packages": packages,
+        "subscriptions": subscription_config_public(),
+        "referrals": {"enabled": referrals_enabled(), "reward_mapping": referral_reward_mapping()},
     }
 
 
@@ -823,6 +832,9 @@ def bootstrap(
         "wallets": get_wallet_summaries(session, int(user.id), swico_tier=swico_tier,
                                          billing_exempt=billing_exempt),
         "billing": public_billing_config(swico_tier),
+        "subscriptions": subscription_summary(
+            session, int(user.id), swico_tier=swico_tier, billing_exempt=billing_exempt,
+        ),
         "assistant": public_tier_settings(swico_tier, free_available=free_available),
         "features": {
             "web_chat": True,
@@ -1055,8 +1067,22 @@ def create_voice_session(
     if not billing_exempt:
         voice_required = stt_price(5_000).micros + _voice_llm_preflight_micros(tier)
         voice_available = max(0, int(wallets["voice"]["available_micros"]))
-        if voice_available < voice_required:
+        voice_subscription = subscription_summary(session, int(user.id), swico_tier=tier).get("voice")
+        subscription_remaining = int(voice_subscription.get("remaining_micros", 0)) if isinstance(voice_subscription, dict) and voice_subscription.get("active") else 0
+        subscription_can_start = subscription_remaining >= voice_required
+        fallback = bool(voice_subscription.get("payg_fallback_enabled")) if isinstance(voice_subscription, dict) else False
+        if not subscription_can_start and voice_available < voice_required and not (isinstance(voice_subscription, dict) and voice_subscription.get("active") and fallback):
             session.rollback()
+            if isinstance(voice_subscription, dict) and voice_subscription.get("active") and not fallback:
+                outcome(402, "subscription_weekly_limit_reached")
+                return JSONResponse(status_code=402, content={"error": {
+                    "code": "subscription_weekly_limit_reached", "credit_bucket": "voice",
+                    "remaining_micros": subscription_remaining,
+                    "reset_at": voice_subscription.get("next_reset_at"),
+                    "payg_available_micros": voice_available,
+                    "payg_fallback_enabled": False,
+                    "message": "This subscription's weekly Voice allowance cannot cover the complete Voice session.",
+                }}, headers={"Cache-Control": "no-store"})
             outcome(402, "insufficient_voice_credit")
             return JSONResponse(status_code=402, content={"error": {
                 "code": "insufficient_voice_credit",
@@ -1437,6 +1463,15 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                         credit_bucket="voice", voice_turn_id=metadata.session_id,
                     )
                 billing_session.commit()
+        except SubscriptionWeeklyLimitError as exc:
+            await targeted_error(
+                "subscription_weekly_limit_reached",
+                "This subscription's weekly Voice allowance is used. Please wait for the reset or enable pay-as-you-go fallback.",
+                credit_bucket=exc.credit_bucket, remaining_micros=exc.remaining_micros,
+                reset_at=exc.reset_at, payg_available_micros=exc.payg_available_micros,
+                payg_fallback_enabled=exc.payg_fallback_enabled,
+            )
+            raise _VoiceTargetedStop from exc
         except InsufficientCreditError as exc:
             await targeted_error(
                 "insufficient_voice_credit", "Add Voice credits to continue.",
@@ -1510,6 +1545,15 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 else:
                     create(billing_session, reserved_micros=initial.micros, **common)
                 billing_session.commit()
+        except SubscriptionWeeklyLimitError as exc:
+            await _voice_send(
+                websocket, "warning", code="subscription_weekly_limit_reached",
+                credit_bucket=exc.credit_bucket, remaining_micros=exc.remaining_micros,
+                reset_at=exc.reset_at, payg_available_micros=exc.payg_available_micros,
+                payg_fallback_enabled=exc.payg_fallback_enabled,
+                message="Speech is unavailable; the completed text answer is preserved. Enable pay-as-you-go fallback or wait for the reset.",
+            )
+            return
         except InsufficientCreditError:
             await _voice_send(
                 websocket, "warning", code="insufficient_voice_credit", credit_bucket="voice",
@@ -1586,6 +1630,17 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                             )
                             billing_session.commit()
                         reserved_micros = next_price.micros
+                    except SubscriptionWeeklyLimitError as exc:
+                        exhausted = True
+                        await _voice_send(
+                            websocket, "warning", code="subscription_weekly_limit_reached",
+                            credit_bucket=exc.credit_bucket,
+                            remaining_micros=exc.remaining_micros, reset_at=exc.reset_at,
+                            payg_available_micros=exc.payg_available_micros,
+                            payg_fallback_enabled=exc.payg_fallback_enabled,
+                            message="Speech stopped; the completed text answer is preserved. Enable pay-as-you-go fallback or wait for the reset.",
+                        )
+                        break
                     except InsufficientCreditError:
                         exhausted = True
                         await _voice_send(
@@ -1641,6 +1696,15 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                     input_mode="realtime_voice", voice_turn_id=metadata.session_id,
                     billing_credit_bucket="voice",
                 )
+            except SubscriptionWeeklyLimitError as exc:
+                await targeted_error(
+                    "subscription_weekly_limit_reached",
+                    "This subscription's weekly Voice allowance is used. Please wait for the reset or enable pay-as-you-go fallback.",
+                    credit_bucket=exc.credit_bucket, remaining_micros=exc.remaining_micros,
+                    reset_at=exc.reset_at, payg_available_micros=exc.payg_available_micros,
+                    payg_fallback_enabled=exc.payg_fallback_enabled,
+                )
+                return
             except InsufficientCreditError as exc:
                 await targeted_error(
                     "insufficient_voice_credit", "Add Voice credits to continue Voice Mode.",
@@ -3554,6 +3618,14 @@ async def transcribe_web_audio(
         session.commit()
     except DocumentValidationError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
+    except SubscriptionWeeklyLimitError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "subscription_weekly_limit_reached", "message": "This subscription's weekly Voice allowance has been reached.",
+            "credit_bucket": exc.credit_bucket, "remaining_micros": exc.remaining_micros,
+            "reset_at": exc.reset_at, "payg_available_micros": exc.payg_available_micros,
+            "payg_fallback_enabled": exc.payg_fallback_enabled,
+        }}, headers={"Cache-Control": "no-store"})
     except InsufficientCreditError as exc:
         session.rollback()
         return JSONResponse(status_code=402, content={"error": {
@@ -3774,6 +3846,14 @@ async def synthesize_web_audio(
             },
         )
         session.commit()
+    except SubscriptionWeeklyLimitError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "subscription_weekly_limit_reached", "message": "This subscription's weekly Voice allowance has been reached.",
+            "credit_bucket": exc.credit_bucket, "remaining_micros": exc.remaining_micros,
+            "reset_at": exc.reset_at, "payg_available_micros": exc.payg_available_micros,
+            "payg_fallback_enabled": exc.payg_fallback_enabled,
+        }}, headers={"Cache-Control": "no-store"})
     except InsufficientCreditError as exc:
         session.rollback()
         return JSONResponse(status_code=402, content={"error": {
@@ -3986,6 +4066,16 @@ async def chat_stream(
             "available_micros": exc.available_micros,
             "estimated_required_micros": exc.estimated_required_micros,
             "credit_bucket": "chat",
+        }}, headers={"Cache-Control": "no-store"})
+    except SubscriptionWeeklyLimitError as exc:
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "subscription_weekly_limit_reached",
+            "credit_bucket": exc.credit_bucket,
+            "remaining_micros": exc.remaining_micros,
+            "reset_at": exc.reset_at,
+            "payg_available_micros": exc.payg_available_micros,
+            "payg_fallback_enabled": exc.payg_fallback_enabled,
+            "message": "This subscription's weekly allowance is used. It resets at the time shown, or enable pay-as-you-go fallback.",
         }}, headers={"Cache-Control": "no-store"})
     except UsageLimitReachedError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -4599,6 +4689,74 @@ def wallet(session: Session = Depends(get_session), auth: AuthUser = Depends(get
     return {**wallets["chat"], "wallet": wallets["chat"], "wallets": wallets}
 
 
+@router.get("/billing/subscriptions")
+def subscriptions(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    user = get_owned_user(session, auth)
+    return subscription_summary(
+        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
+        billing_exempt=is_internal_test_user(auth, user),
+    )
+
+
+@router.patch("/billing/subscription-preferences")
+def subscription_preferences(
+    payload: dict[str, Any] = Body(...), session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    bucket = str(payload.get("credit_bucket") or "").strip().lower()
+    if bucket not in {"chat", "voice"} or not isinstance(payload.get("payg_fallback_enabled"), bool):
+        raise HTTPException(422, "A credit bucket and boolean fallback preference are required.")
+    row = set_payg_fallback(session, int(user.id), bucket, payload["payg_fallback_enabled"])
+    session.commit()
+    return {"credit_bucket": row.credit_bucket, "payg_fallback_enabled": row.payg_fallback_enabled}
+
+
+@router.get("/billing/referral")
+def referral(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    user = get_owned_user(session, auth)
+    code = referral_code_for_user(session, int(user.id)) if referrals_enabled() else None
+    attribution = session.exec(select(ReferralAttribution).where(
+        ReferralAttribution.referred_user_id == user.id,
+    )).first()
+    rewards = session.exec(select(ReferralReward).where(
+        (ReferralReward.referrer_user_id == user.id) | (ReferralReward.referred_user_id == user.id),
+    ).order_by(ReferralReward.created_at.desc()).limit(50)).all()
+    session.commit()
+    return {
+        "enabled": referrals_enabled(),
+        "code": code.code if code and not code.disabled else None,
+        "attributed": attribution is not None,
+        "eligible_to_claim": referrals_enabled() and attribution is None and not session.exec(select(PaymentOrder.id).where(
+            PaymentOrder.user_id == user.id, PaymentOrder.purchase_type == "subscription",
+            PaymentOrder.status.in_(["captured", "fulfilled", "partially_refunded", "refunded"]),
+        )).first(),
+        "reward_mapping": referral_reward_mapping(),
+        "rewards": [{
+            "id": row.id, "role": "earned" if row.referrer_user_id == user.id else "qualifying_purchase",
+            "credit_bucket": row.credit_bucket, "plan_code": row.purchased_plan_code,
+            "status": row.status, "weeks": row.reward_duration_weeks,
+            "months": row.reward_duration_months, "manual_review_required": row.manual_review_required,
+            "created_at": row.created_at,
+        } for row in rewards],
+    }
+
+
+@router.post("/billing/referral/claim")
+def claim_referral(payload: dict[str, Any] = Body(...), session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    user = get_owned_user(session, auth)
+    code = str(payload.get("code") or "").strip()
+    if len(code) < 6 or len(code) > 32 or not code.isalnum():
+        raise HTTPException(422, "Enter a valid referral code.")
+    try:
+        row = claim_referral_code(session, referred_user_id=int(user.id), code=code)
+        session.commit()
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": row.status, "claimed_at": row.claimed_at}
+
+
 @router.get("/billing/estimate", response_model=TopupEstimateResponse)
 def estimate_topup(
     gross_amount_paise: int = Query(..., gt=0),
@@ -4672,6 +4830,8 @@ def payments(
     payment_received_statuses = {"captured", "credited", "partially_refunded", "refunded"}
     return {"items": [{
         "id": row.id, "gross_amount_paise": row.gross_amount_paise,
+        "purchase_type": row.purchase_type, "subscription_plan_code": row.subscription_plan_code,
+        "fulfillment_status": row.fulfillment_status,
         "credit_bucket": row.credit_bucket,
         "credited_amount_micros": row.credited_amount_micros,
         "platform_share_paise": row.platform_share_paise, "refunded_amount_paise": row.refunded_amount_paise,
@@ -4699,6 +4859,9 @@ def _payment_status_response(row: PaymentOrder) -> dict[str, Any]:
     return {
         "internal_order_id": row.id,
         "credit_bucket": row.credit_bucket,
+        "purchase_type": row.purchase_type,
+        "subscription_plan_code": row.subscription_plan_code,
+        "fulfillment_status": row.fulfillment_status,
         "gross_amount_paise": row.gross_amount_paise,
         "credited_amount_micros": row.credited_amount_micros,
         "platform_share_paise": row.platform_share_paise,
@@ -4741,23 +4904,43 @@ def create_order(payload: CreateOrderRequest, session: Session = Depends(get_ses
         })
     _razorpay_mode()
     _rate_limit(session, user_id=int(user.id), action="payment_order", limit=6)
-    try:
-        gross_amount_paise = validate_topup_amount(payload.gross_amount_paise)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    purchase_type = payload.purchase_type
+    plan = None
+    if purchase_type == "subscription":
+        if not subscriptions_enabled():
+            raise HTTPException(503, {"code": "subscriptions_disabled", "message": "Subscriptions are temporarily unavailable."})
+        plan = plan_catalog().get(payload.plan_code or "")
+        if plan is None:
+            raise HTTPException(422, "A valid subscription plan is required.")
+        if payload.gross_amount_paise is not None and payload.gross_amount_paise != plan.price_paise:
+            raise HTTPException(409, "The subscription amount must match the current server price.")
+        gross_amount_paise = plan.price_paise
+    else:
+        if payload.gross_amount_paise is None:
+            raise HTTPException(422, "gross_amount_paise is required for a top-up.")
+        try:
+            gross_amount_paise = validate_topup_amount(payload.gross_amount_paise)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     digest = hashlib.sha256(f"{user.id}:{payload.idempotency_key}".encode()).hexdigest()[:26]
     receipt = f"sw_{digest}"[:40]
     existing = session.exec(select(PaymentOrder).where(PaymentOrder.receipt == receipt, PaymentOrder.user_id == user.id)).first()
-    if existing and (existing.gross_amount_paise != gross_amount_paise or existing.credit_bucket != payload.credit_bucket):
-        raise HTTPException(409, "Idempotency key was already used for another amount or credit bucket.")
+    if existing and (existing.gross_amount_paise != gross_amount_paise or existing.credit_bucket != payload.credit_bucket or existing.purchase_type != purchase_type or existing.subscription_plan_code != payload.plan_code):
+        raise HTTPException(409, "Idempotency key was already used for another purchase.")
     if existing and existing.provider_order_id:
         return _order_checkout_response(existing)
-    credit_micros, platform_paise = calculate_topup(gross_amount_paise)
+    credit_micros, platform_paise = calculate_topup(gross_amount_paise) if purchase_type == "topup" else (0, 0)
     order = existing or PaymentOrder(
         user_id=int(user.id), receipt=receipt, gross_amount_paise=gross_amount_paise,
         credit_bucket=payload.credit_bucket,
         credited_amount_micros=credit_micros, platform_share_paise=platform_paise,
+        purchase_type=purchase_type, subscription_plan_code=payload.plan_code,
     )
+    if existing is not None:
+        existing.purchase_type = purchase_type
+        existing.subscription_plan_code = payload.plan_code
+        existing.credited_amount_micros = credit_micros
+        existing.platform_share_paise = platform_paise
     session.add(order)
     session.commit()  # The durable internal order exists before the external call.
     try:
@@ -4785,6 +4968,8 @@ def _order_checkout_response(order: PaymentOrder) -> dict[str, Any]:
         "credited_amount_micros": order.credited_amount_micros,
         "platform_share_paise": order.platform_share_paise,
         "credit_bucket": order.credit_bucket,
+        "purchase_type": order.purchase_type,
+        "subscription_plan_code": order.subscription_plan_code,
     }
 
 
@@ -4825,7 +5010,12 @@ def verify_payment(payload: VerifyPaymentRequest, session: Session = Depends(get
         raise HTTPException(409, "Payment order is already linked to another payment.")
     order.provider_payment_id = payload.razorpay_payment_id
     order.status = "captured"
-    credit_payment_once(session, order)
+    fulfill_payment_once(session, order)
+    if order.purchase_type == "subscription":
+        return {
+            "status": "fulfilled", "credited": False, "purchase_type": "subscription",
+            "subscriptions": subscription_summary(session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id))),
+        }
     return {
         "status": "credited",
         "credited": True,

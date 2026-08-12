@@ -6,7 +6,7 @@ export async function pollPaymentStatus(user: User, id: string, intervalMs = 200
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline && !signal?.aborted) {
     const state = await apiJson<PaymentStatus>(user, `/api/web/billing/payments/${id}`)
-    if (['credited', 'failed', 'refunded', 'partially_refunded'].includes(state.status)) return state
+    if (['credited', 'fulfilled', 'failed', 'refunded', 'partially_refunded'].includes(state.status)) return state
     await new Promise<void>(resolve => {
       const timer = window.setTimeout(resolve, intervalMs)
       signal?.addEventListener('abort', () => { window.clearTimeout(timer); resolve() }, { once: true })

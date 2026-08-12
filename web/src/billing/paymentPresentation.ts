@@ -25,6 +25,15 @@ export function paymentPresentation(payment: PaymentHistory): PaymentPresentatio
     timestampLabel: completedTimestamp ? 'Payment completed' as const : 'Checkout created' as const,
   }
 
+  if (payment.purchase_type === 'subscription') {
+    if (status === 'fulfilled' || status === 'captured' || status === 'credited') {
+      return { ...base, heading: 'Subscription fulfilled', detail: 'Prepaid subscription active or queued; no automatic renewal.', amountLabel: 'Gross amount paid' }
+    }
+    if (status === 'refunded' || status === 'partially_refunded') {
+      return { ...base, heading: status === 'refunded' ? 'Subscription refunded' : 'Subscription partially refunded', detail: status === 'partially_refunded' ? 'Manual review required for partial subscription refunds.' : 'Unused entitlement was cancelled.', amountLabel: 'Gross amount paid', showRefundAmount: true }
+    }
+  }
+
   if (status === 'creating') {
     return { ...base, heading: 'Preparing checkout', amountLabel: 'Selected checkout amount' }
   }

@@ -64,6 +64,7 @@ export function ChatPage() {
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null)
   const [billing, setBilling] = useState(false); const [settings, setSettings] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
   const [billingBucket, setBillingBucket] = useState<'chat' | 'voice'>('chat')
+  const [pendingReferralCode, setPendingReferralCode] = useState('')
   const [voiceMode, setVoiceMode] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
@@ -98,6 +99,14 @@ export function ChatPage() {
     userUidRef.current = userUid
     setRepository(value => value?.owner_uid === userUid ? value : null)
   }, [userUid])
+  useEffect(() => {
+    if (!user) return
+    const candidate = new URLSearchParams(window.location.search).get('ref')?.trim().toUpperCase() ?? ''
+    if (!/^[A-Z0-9]{6,32}$/.test(candidate)) return
+    setPendingReferralCode(candidate)
+    const cleanUrl = `${window.location.pathname}${window.location.hash}`
+    window.history.replaceState(window.history.state, document.title, cleanUrl)
+  }, [user])
   useEffect(() => {
     if (!repository) return
     const pending = pendingRepositoryThreadRebindRef.current
@@ -877,11 +886,11 @@ export function ChatPage() {
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment}
         addRepository={addRepository} removeRepository={removeRepository} />
     </section>
-    {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
+    {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} initialReferralCode={pendingReferralCode} close={closeBilling} refreshed={() => { void refreshWallet(); void apiJson<Bootstrap>(user, '/api/web/bootstrap').then(setBootstrap).catch(() => undefined) }} /></Suspense>}
     {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}
       tuning={bootstrap.voice_tuning} internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
       addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
-    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setRepository(null); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} knowledgeLibraryEnabled={Boolean(bootstrap.features.web_knowledge_library)} knowledgeUploads={attachments.filter((item): item is ReadyAttachment => item.status === 'ready')} /></Suspense>}
+    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setRepository(null); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} subscriptions={bootstrap.subscriptions} knowledgeLibraryEnabled={Boolean(bootstrap.features.web_knowledge_library)} knowledgeUploads={attachments.filter((item): item is ReadyAttachment => item.status === 'ready')} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>
 }

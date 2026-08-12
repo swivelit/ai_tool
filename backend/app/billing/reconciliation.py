@@ -33,7 +33,7 @@ def reconcile_razorpay_orders(
     """
     cutoff = utc_now() - timedelta(seconds=max(60, int(age_seconds)))
     statement = select(PaymentOrder).where(PaymentOrder.status.in_([
-        "created", "attempted", "captured", "credited", "partially_refunded", "refunded",
+        "created", "attempted", "captured", "credited", "fulfilled", "partially_refunded", "refunded",
     ]))
     if internal_order_id is None:
         statement = statement.where(PaymentOrder.created_at < cutoff)
@@ -48,7 +48,11 @@ def reconcile_razorpay_orders(
             "provider_order_status": None,
             "provider_payment_count": 0,
             "captured_payment_present": False,
-            "action": "already_credited" if order.status in {"credited", "partially_refunded", "refunded"} else "none",
+            "action": (
+                "already_fulfilled" if order.purchase_type == "subscription" and order.status in {"fulfilled", "partially_refunded", "refunded"}
+                else "already_credited" if order.status in {"credited", "partially_refunded", "refunded"}
+                else "none"
+            ),
             "severity": "info",
             "actionable": False,
         }
@@ -99,7 +103,7 @@ def reconcile_razorpay_orders(
                 outcome.update(action="review_long_lived_attempt", severity="warning", actionable=False)
             else:
                 outcome.update(action="review_provider_mismatch", severity="high", actionable=True)
-        if order.provider_payment_id and order.status in {"credited", "partially_refunded", "refunded"}:
+        if order.provider_payment_id and order.status in {"credited", "fulfilled", "partially_refunded", "refunded"}:
             provider_refunds = client.fetch_payment_refunds(order.provider_payment_id)
             items = provider_refunds.get("items") if isinstance(provider_refunds, dict) else []
             processed = [item for item in (items or []) if item.get("status") == "processed"]

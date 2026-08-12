@@ -80,6 +80,30 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     env = os.environ if environ is None else environ
     errors: list[str] = []
 
+    subscription_flags = (
+        "WEB_SUBSCRIPTIONS_ENABLED", "WEB_REFERRALS_ENABLED",
+        "WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK",
+        "WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT",
+    )
+    for name in subscription_flags:
+        if _bool(env, name, False) is None:
+            errors.append(f"{name} must be a boolean")
+    subscription_values = (
+        ("WEB_SUBSCRIPTION_1M_PRICE_PAISE", "150000", 150000),
+        ("WEB_SUBSCRIPTION_6M_PRICE_PAISE", "800000", 800000),
+        ("WEB_SUBSCRIPTION_1Y_PRICE_PAISE", "1200000", 1200000),
+        ("WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS", "125000000", 125000000),
+        ("WEB_REFERRAL_REWARD_1M_WEEKS", "1", 1),
+        ("WEB_REFERRAL_REWARD_6M_WEEKS", "3", 3),
+        ("WEB_REFERRAL_REWARD_1Y_MONTHS", "2", 2),
+    )
+    for name, default, expected in subscription_values:
+        value = _integer(env, name, default)
+        if value is None or value < 0:
+            errors.append(f"{name} must be a non-negative integer")
+        elif value != expected:
+            errors.append(f"{name} does not match the published subscription rule")
+
     if _value(env, "APP_ENV").lower() not in {"prod", "production"}:
         errors.append("APP_ENV must be production")
 

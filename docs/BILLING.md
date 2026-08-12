@@ -1,5 +1,13 @@
 # Token-credit billing
 
+## Website subscriptions and referrals
+
+Website subscriptions are prepaid Razorpay Orders (never recurring mandates or automatic renewals). The backend is authoritative for the 1m/6m/1y prices, Chat/Voice bucket, calendar-month expiry, ₹125 complete-week allowance (`125000000` micro-INR), lazy seven-day windows, final partial-window floor proration, and no rollover. Subscription allowance is held in entitlement/window tables, never in `WalletAccount` or `WalletLedger`. A request is reserved entirely from its active subscription window or entirely from the matching wallet when the user has enabled that bucket's pay-as-you-go fallback; funding sources never switch during expansion or settlement.
+
+Referral codes are random and unique. Attribution is one-time and must happen before the referred user's first successful subscription. Only that first captured and fulfilled subscription can create one referrer-only reward: 1m = one week, 6m = three weeks, 1y = two calendar months, in the purchased bucket. Rewards are entitlements, not cash or wallet credit. Payment verification, webhooks, and reconciliation share idempotent fulfillment and reward constraints. Full subscription refunds cancel unused/future entitlement and unstarted reward; partial refunds are manual-review records and do not use top-up wallet reversal.
+
+Backend configuration (website only): `WEB_SUBSCRIPTIONS_ENABLED`, `WEB_REFERRALS_ENABLED`, `WEB_SUBSCRIPTION_1M_PRICE_PAISE`, `WEB_SUBSCRIPTION_6M_PRICE_PAISE`, `WEB_SUBSCRIPTION_1Y_PRICE_PAISE`, `WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS`, `WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK`, `WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT`, `WEB_REFERRAL_REWARD_1M_WEEKS`, `WEB_REFERRAL_REWARD_6M_WEEKS`, and `WEB_REFERRAL_REWARD_1Y_MONTHS`. Safe defaults are in `backend/.env.example`; no `VITE_*` subscription variables are used.
+
 ## Units and allocation
 
 Razorpay orders/refunds use integer paise and the financial ledger uses integer micro-INR (`1 INR = 1,000,000 micro-INR`). Customers see **Token credits** as model-dependent token estimates. The product never claims that one credit equals one provider token and never displays internal capacity as cash. Model, provider, cached-input, input, and output rates affect actual usage.

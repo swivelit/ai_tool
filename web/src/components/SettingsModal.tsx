@@ -3,7 +3,7 @@ import { Archive, BookOpen, CreditCard, Database, Settings2, UserRound, X } from
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
-import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, SwicoTier, UsagePreferences, UsageSummary } from '../types'
+import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, SubscriptionBucketSummary, SubscriptionSummary, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
 import { SwicoTierSelector } from './SwicoTierSelector'
@@ -60,11 +60,11 @@ function UsageBars({ usage }: { usage: UsageSummary }) {
   </div>
 }
 
-export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile, knowledgeLibraryEnabled = false, knowledgeUploads = [] }: {
+export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile, knowledgeLibraryEnabled = false, knowledgeUploads = [], subscriptions }: {
   user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
   assistant: AssistantSettings; tierSaving: boolean; saveTier: (tier: SwicoTier) => Promise<void>;
   addCredits: () => void; openArchived: () => void; savedProfile: (profile: ProfileSettings) => void;
-  knowledgeLibraryEnabled?: boolean; knowledgeUploads?: ReadyAttachment[];
+  knowledgeLibraryEnabled?: boolean; knowledgeUploads?: ReadyAttachment[]; subscriptions?: SubscriptionSummary;
 }) {
   const [section, setSection] = useState<Section>('general')
   const [loaded, setLoaded] = useState<Loaded | null>(null)
@@ -76,6 +76,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
   const [unlimited, setUnlimited] = useState(true)
   const [warning, setWarning] = useState('80')
   const [notify, setNotify] = useState(true)
+  const [subscriptionData, setSubscriptionData] = useState<SubscriptionSummary | undefined>(subscriptions)
   const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null)
 
   const load = async () => {
@@ -98,6 +99,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
     } catch (error) { setLoadError(safeError(error)) }
   }
   useEffect(() => { void load() }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setSubscriptionData(subscriptions) }, [subscriptions])
   useEffect(() => {
     const refreshMemory = () => {
       void apiJson<MemorySettings>(user, '/api/web/settings/memory')
@@ -185,6 +187,12 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
       setLoaded(value => value ? { ...value, memory } : value); setNotice(memoryId ? 'Saved memory deleted.' : 'All cross-chat memory cleared.')
     } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
   }
+  const toggleFallback = async (bucket: 'chat' | 'voice', enabled: boolean) => {
+    try {
+      await apiJson(user, '/api/web/billing/subscription-preferences', { method: 'PATCH', body: JSON.stringify({ credit_bucket: bucket, payg_fallback_enabled: enabled }) })
+      setSubscriptionData(value => value ? { ...value, [bucket]: value[bucket] ? { ...value[bucket]!, payg_fallback_enabled: enabled } : value[bucket] } : value)
+    } catch (error) { setNotice(safeError(error)) }
+  }
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -204,6 +212,7 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
             <label>Email<input value={profile.email ?? ''} readOnly aria-describedby="email-readonly" /><small id="email-readonly">Email is managed by your sign-in account and cannot be changed here.</small></label>
           </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
           {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Token credits</h3>
+            {subscriptionData?.enabled && <div className="subscription-settings-cards"><h4>Subscriptions</h4>{(['chat', 'voice'] as const).map(bucket => { const item: SubscriptionBucketSummary | null | undefined = subscriptionData[bucket]; return <article key={bucket}><div><strong>{bucket === 'chat' ? 'Chat' : 'Voice'} subscription</strong><span>{item?.active ? `${item.source === 'referral_reward' ? 'Referral reward' : 'Plan'} · ${item.plan}` : 'Inactive'}</span></div>{item?.active && <><div className="usage-progress" role="progressbar" aria-label={`${bucket} subscription allowance used`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(item.progress_percent)}><span style={{ width: `${Math.min(100, item.progress_percent)}%` }} /></div><small>Used {item.consumed_micros.toLocaleString()} micros · Remaining {item.remaining_micros.toLocaleString()} micros</small><small>Next reset {item.next_reset_at ? new Date(item.next_reset_at).toLocaleString() : '—'} · Expires {item.expires_at ? new Date(item.expires_at).toLocaleString() : '—'}</small><small>No rollover. {bucket === 'voice' ? (item.voice_estimate?.note ?? 'Voice usage can include speech processing and AI response generation.') : 'Chat allowance is shown with your tier-aware estimate.'}</small>{item.queued_entitlements.length > 0 && <small>Queued: {item.queued_entitlements.map(entry => entry.plan).join(', ')}</small>}</>}{item && <label className="check-row"><input type="checkbox" checked={item.payg_fallback_enabled} onChange={event => void toggleFallback(bucket, event.target.checked)} />Allow pay-as-you-go fallback when this window cannot cover the full request</label>}</article>})}</div>}
             <div className="usage-cards"><article><span>Chat credits available</span><strong>{billingExempt ? 'Unlimited' : loaded.usage.chat_available_credits ?? loaded.usage.available_ai_credits}</strong></article><article><span>Voice credits available</span><strong>{billingExempt ? 'Unlimited' : loaded.usage.voice_available_credits ?? '0.000000'}</strong></article>{!billingExempt && <article><span>{loaded.usage.tier_label} estimated token range</span><strong>{tokenRange}</strong></article>}</div>
             <UsageBars usage={loaded.usage} />
             <div className="actual-usage" aria-label="This month token usage"><h4>This month</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl></div>

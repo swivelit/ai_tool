@@ -23,6 +23,21 @@ const config = {
 }
 const voiceEstimate = { pricing_version:'test-v1', estimated_stt_seconds:600, estimated_stt_minutes:'10.00', estimated_tts_characters:5000, assumption:'STT-only or TTS-only; not guaranteed.' }
 const voiceConfig = { ...config, packages:config.packages.map(item => ({ ...item, voice_estimate:voiceEstimate })) }
+const subscriptionConfig = {
+  ...config,
+  subscriptions: {
+    enabled:true,
+    plans:[
+      { code:'1m' as const, label:'1 month', price_paise:150_000, duration_months:1 },
+      { code:'6m' as const, label:'6 months', price_paise:800_000, duration_months:6 },
+      { code:'1y' as const, label:'1 year', price_paise:1_200_000, duration_months:12 },
+    ],
+    weekly_allowance_micros:125_000_000, weekly_allowance_rupees:125,
+    no_rollover:true, prorate_final_partial_week:true, prepaid_non_renewing:true,
+    referral_reward_mapping:{ '1m':{ weeks:1, months:0 }, '6m':{ weeks:3, months:0 }, '1y':{ weeks:0, months:2 } },
+  },
+  referrals: { enabled:true, reward_mapping:{ '1m':{ weeks:1, months:0 }, '6m':{ weeks:3, months:0 }, '1y':{ weeks:0, months:2 } } },
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -80,6 +95,43 @@ it('selects Voice credits and sends the authoritative bucket with speech estimat
   await screen.findByText('order stopped for test')
   const call = vi.mocked(apiJson).mock.calls.find(item => item[1] === '/api/web/billing/orders')
   expect(JSON.parse(String(call?.[2]?.body))).toMatchObject({ gross_amount_paise:1500, credit_bucket:'voice' })
+})
+
+it('renders server-configured subscription plans and sends a plan-only checkout payload', async () => {
+  vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
+    if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
+    if (path === '/api/web/billing/subscriptions') return Promise.resolve({ enabled:true, chat:null, voice:null })
+    if (path === '/api/web/billing/orders') return Promise.reject(new Error('order stopped for subscription test'))
+    throw new Error(`unexpected ${path}`)
+  })
+  render(<BillingModal user={{} as never} config={subscriptionConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('tab', { name:'Subscriptions' }))
+  expect(screen.getByText('₹1500')).toBeInTheDocument()
+  expect(screen.getByText('₹8000')).toBeInTheDocument()
+  expect(screen.getByText('₹12000')).toBeInTheDocument()
+  expect(screen.getByText(/never rolls over/i)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:/6 months ₹8000/i }))
+  await userEvent.click(screen.getByRole('button', { name:'Subscribe for ₹8000' }))
+  await screen.findByText('order stopped for subscription test')
+  const call = vi.mocked(apiJson).mock.calls.find(item => item[1] === '/api/web/billing/orders')
+  expect(JSON.parse(String(call?.[2]?.body))).toMatchObject({ purchase_type:'subscription', plan_code:'6m', credit_bucket:'chat' })
+  expect(JSON.parse(String(call?.[2]?.body))).not.toHaveProperty('gross_amount_paise')
+})
+
+it('shows referral code rules and claims the server-validated code', async () => {
+  vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
+    if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
+    if (path === '/api/web/billing/referral') return Promise.resolve({ code:'AB12CD34', eligible_to_claim:true, attribution:null, reward_mapping:{ '1m':{ weeks:1, months:0 } }, rewards:[] })
+    if (path === '/api/web/billing/referral/claim') return Promise.resolve({ status:'claimed' })
+    throw new Error(`unexpected ${path}`)
+  })
+  render(<BillingModal user={{} as never} config={subscriptionConfig} initialReferralCode="AB12CD34" close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('tab', { name:'Referral rewards' }))
+  expect(screen.getByText('AB12CD34')).toBeInTheDocument()
+  expect(screen.getByLabelText('Have a referral code?')).toHaveValue('AB12CD34')
+  await userEvent.click(screen.getByRole('button', { name:'Claim code' }))
+  expect(apiJson).toHaveBeenCalledWith(expect.anything(), '/api/web/billing/referral/claim', expect.objectContaining({ method:'POST' }))
+  expect(screen.getByText(/non-cash, non-transferable/i)).toBeInTheDocument()
 })
 
 it('validates custom whole rupees and never estimates or opens checkout for invalid input', async () => {

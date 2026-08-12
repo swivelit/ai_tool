@@ -6,7 +6,10 @@ from typing import Any, Iterable
 
 from sqlmodel import Session, select
 
-from ..models import PaymentOrder, ProcessedWebhook, UsageCharge, WalletAccount, WalletLedger
+from ..models import (
+    PaymentOrder, ProcessedWebhook, SubscriptionEntitlement, UsageCharge,
+    WalletAccount, WalletLedger,
+)
 from ..time_utils import ensure_utc, utc_now
 
 
@@ -54,6 +57,7 @@ def financial_audit(
     orders = list(session.exec(select(PaymentOrder)).all())
     ledgers = list(session.exec(select(WalletLedger)).all())
     webhooks = list(session.exec(select(ProcessedWebhook)).all())
+    entitlements = list(session.exec(select(SubscriptionEntitlement)).all())
 
     active_reserved_by_wallet: dict[tuple[int, str], int] = defaultdict(int)
     for charge in charges:
@@ -81,6 +85,7 @@ def financial_audit(
     captured = [
         row for row in orders
         if row.status == "captured" and ensure_utc(row.updated_at) < payment_cutoff
+        and row.purchase_type != "subscription"
         and str(row.id) not in payment_credit_refs
     ]
     finding = _finding("captured_payment_uncredited", (_item(row, current, timestamp="updated_at") for row in captured))
@@ -118,6 +123,7 @@ def financial_audit(
     credited_without_ledger = [
         row for row in orders
         if row.status in {"credited", "partially_refunded", "refunded"}
+        and row.purchase_type != "subscription"
         and str(row.id) not in payment_credit_refs
     ]
     finding = _finding(
@@ -133,8 +139,9 @@ def financial_audit(
         or int(row.refunded_amount_paise) > int(row.gross_amount_paise)
         or (row.status == "refunded" and int(row.refunded_amount_paise) != int(row.gross_amount_paise))
         or (row.status == "partially_refunded" and not (0 < int(row.refunded_amount_paise) < int(row.gross_amount_paise)))
-        or (row.status == "captured" and str(row.id) in payment_credit_refs)
+        or (row.status == "captured" and row.purchase_type != "subscription" and str(row.id) in payment_credit_refs)
         or (row.status in {"creating", "created", "attempted", "failed"} and row.paid_at is not None)
+        or (row.purchase_type == "subscription" and row.status in {"captured", "fulfilled"} and row.fulfillment_status != "fulfilled")
     ]
     finding = _finding("payment_state_inconsistency", (_item(row, current, timestamp="updated_at") for row in inconsistent))
     if finding:
@@ -146,7 +153,7 @@ def financial_audit(
             reversed_by_order[str(row.reference_id)] += -min(0, int(row.amount_micros))
     short_refunds = []
     for row in orders:
-        if not row.gross_amount_paise or not row.refunded_amount_paise:
+        if row.purchase_type == "subscription" or not row.gross_amount_paise or not row.refunded_amount_paise:
             continue
         expected = (
             int(row.credited_amount_micros) * int(row.refunded_amount_paise)
@@ -157,6 +164,19 @@ def financial_audit(
     finding = _finding(
         "refund_credit_reversal_shortfall",
         (_item(row, current, timestamp="updated_at") for row in short_refunds),
+    )
+    if finding:
+        findings.append(finding)
+
+    subscription_without_entitlement = [
+        row for row in orders
+        if row.purchase_type == "subscription"
+        and row.fulfillment_status == "fulfilled"
+        and not any(str(ent.source_payment_order_id) == str(row.id) for ent in entitlements)
+    ]
+    finding = _finding(
+        "fulfilled_subscription_missing_entitlement",
+        (_item(row, current, timestamp="updated_at") for row in subscription_without_entitlement),
     )
     if finding:
         findings.append(finding)
