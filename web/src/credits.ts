@@ -4,6 +4,13 @@ export function formatRupeesFromPaise(paise: number): string {
   return `${safe < 0 ? '-' : ''}₹${Math.floor(absolute / 100)}.${String(absolute % 100).padStart(2, '0')}`
 }
 
+/** Customer-facing INR formatting for whole-rupee prices and amounts. */
+export function formatRupeesForDisplay(paise: number): string {
+  const safe = Number.isSafeInteger(paise) ? paise : 0
+  if (safe % 100 !== 0) return formatRupeesFromPaise(safe)
+  return `₹${Math.floor(safe / 100).toLocaleString('en-IN')}`
+}
+
 export function compactTokens(tokens: number): string {
   const safe = Number.isSafeInteger(tokens) && tokens > 0 ? tokens : 0
   if (safe >= 1_000_000) return `${Math.floor(safe / 100_000) / 10}M`
@@ -35,6 +42,7 @@ export function tokenEstimateAvailable(estimate: TokenEstimateShape | null | und
 
 export function tokenEstimateLabel(estimate: TokenEstimateShape | null | undefined, unit: 'tokens' | 'token equivalent' = 'tokens'): string {
   if (!tokenEstimateAvailable(estimate)) return 'Estimate temporarily unavailable'
+  if (estimate?.estimated_blended_tokens === 0) return unit === 'tokens' ? '0 tokens' : '0 token equivalent'
   const label = tokenRangeLabel(estimate?.range_min_tokens, estimate?.range_max_tokens)
   return unit === 'tokens' ? label : label.replace(/ tokens$/, ' token equivalent')
 }

@@ -182,6 +182,8 @@ Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUT
 
 For the website subscription rollout, add these backend variables to the existing API service (never to the static site and never as `VITE_*` values): `WEB_SUBSCRIPTIONS_ENABLED=false`, `WEB_REFERRALS_ENABLED=false`, `WEB_SUBSCRIPTION_1M_PRICE_PAISE=150000`, `WEB_SUBSCRIPTION_6M_PRICE_PAISE=800000`, `WEB_SUBSCRIPTION_1Y_PRICE_PAISE=1200000`, `WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS=125000000`, `WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK=true`, `WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT=false`, `WEB_REFERRAL_REWARD_1M_WEEKS=1`, `WEB_REFERRAL_REWARD_6M_WEEKS=3`, and `WEB_REFERRAL_REWARD_1Y_MONTHS=2`. Enable subscriptions/referrals only after migration, Razorpay test-mode verification, legal publication, and supervised non-production checkout verification. There is no subscription reset cron or additional Render service.
 
+Before enabling either flag, deploy `ai_tool` and `swico-web` from the same Git commit and verify the backend release check reports `blocker_count=0` with repository/database head `b8f2c7d1e4a9`. If the backend is updated but the website still shows old billing text, use `swico-web → Manual Deploy → Clear build cache & deploy`, then repeat the frontend verification. This is a deployment check only; it adds no Render resource or variable.
+
 Exact environment delta for this release:
 
 Production should initially enable adaptive same-thread continuity with

@@ -106,12 +106,13 @@ it('renders server-configured subscription plans and sends a plan-only checkout 
   })
   render(<BillingModal user={{} as never} config={subscriptionConfig} close={vi.fn()} refreshed={vi.fn()} />)
   await userEvent.click(screen.getByRole('tab', { name:'Subscriptions' }))
-  expect(screen.getByText('₹1500')).toBeInTheDocument()
-  expect(screen.getByText('₹8000')).toBeInTheDocument()
-  expect(screen.getByText('₹12000')).toBeInTheDocument()
+  expect(screen.getByText('₹1,500')).toBeInTheDocument()
+  expect(screen.getByText('₹8,000')).toBeInTheDocument()
+  expect(screen.getByText('₹12,000')).toBeInTheDocument()
+  expect(screen.getAllByText(/25K–180K tokens per complete week/)).toHaveLength(3)
   expect(screen.getByText(/never rolls over/i)).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('button', { name:/6 months ₹8000/i }))
-  await userEvent.click(screen.getByRole('button', { name:'Subscribe for ₹8000' }))
+  await userEvent.click(screen.getByRole('button', { name:/6 months ₹8,000/i }))
+  await userEvent.click(screen.getByRole('button', { name:'Subscribe for ₹8,000' }))
   await screen.findByText('order stopped for subscription test')
   const call = vi.mocked(apiJson).mock.calls.find(item => item[1] === '/api/web/billing/orders')
   expect(JSON.parse(String(call?.[2]?.body))).toMatchObject({ purchase_type:'subscription', plan_code:'6m', credit_bucket:'chat' })
@@ -126,8 +127,33 @@ it('isolates subscription CTA state and requires a plan selection', async () => 
   expect(button).toBeDisabled()
   expect(screen.queryByRole('button', { name:'Pay ₹15 for Chat credits' })).not.toBeInTheDocument()
   expect(screen.queryByText('₹125 per complete week')).not.toBeInTheDocument()
-  await userEvent.click(screen.getByRole('button', { name:/1 month ₹1500/i }))
-  expect(screen.getByRole('button', { name:'Subscribe for ₹1500' })).toBeEnabled()
+  await userEvent.click(screen.getByRole('button', { name:/1 month ₹1,500/i }))
+  expect(screen.getByRole('button', { name:'Subscribe for ₹1,500' })).toBeEnabled()
+})
+
+it('does not leak PAYG custom validation into Subscriptions or subscription state back into PAYG', async () => {
+  vi.mocked(apiJson).mockReset().mockResolvedValue({ items:[] })
+  render(<BillingModal user={{} as never} config={subscriptionConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('button', { name:'Enter a custom payment amount' }))
+  expect(screen.getByRole('button', { name:'Enter a valid amount' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('tab', { name:'Subscriptions' }))
+  expect(screen.getByRole('button', { name:'Choose a subscription plan' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name:'Enter a valid amount' })).not.toBeInTheDocument()
+  expect(screen.queryByText('Pay ₹15 for Chat credits')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:/1 month ₹1,500/i }))
+  expect(screen.getByRole('button', { name:'Subscribe for ₹1,500' })).toBeEnabled()
+  await userEvent.click(screen.getByRole('tab', { name:'Pay as you go' }))
+  expect(screen.getByRole('button', { name:'Enter a valid amount' })).toBeDisabled()
+  expect(screen.queryByText('Subscribe for ₹1,500')).not.toBeInTheDocument()
+})
+
+it('uses token-equivalent wording for Voice subscription allowance', async () => {
+  vi.mocked(apiJson).mockReset().mockResolvedValue({ items:[] })
+  render(<BillingModal user={{} as never} config={subscriptionConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('tab', { name:'Subscriptions' }))
+  await userEvent.click(screen.getByRole('button', { name:'Voice' }))
+  expect(screen.getAllByText(/25K–180K estimated token equivalent per complete week/)).toHaveLength(3)
+  expect(screen.queryByText(/₹125 per complete week/)).not.toBeInTheDocument()
 })
 
 it('renders an explicit unavailable state instead of 0–0 tokens', async () => {
@@ -137,12 +163,13 @@ it('renders an explicit unavailable state instead of 0–0 tokens', async () => 
   render(<BillingModal user={{} as never} config={unavailableConfig} close={vi.fn()} refreshed={vi.fn()} />)
   expect(await screen.findAllByText('Estimate temporarily unavailable')).not.toHaveLength(0)
   expect(screen.queryByText('0–0 tokens')).not.toBeInTheDocument()
+  expect(screen.queryByText('~Estimate temporarily unavailable')).not.toBeInTheDocument()
 })
 
-it('shows referral code rules and claims the server-validated code', async () => {
+it('shows friendly referral labels and claims the server-validated code', async () => {
   vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
     if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
-    if (path === '/api/web/billing/referral') return Promise.resolve({ code:'AB12CD34', eligible_to_claim:true, attribution:null, reward_mapping:{ '1m':{ weeks:1, months:0 } }, rewards:[] })
+    if (path === '/api/web/billing/referral') return Promise.resolve({ code:'AB12CD34', eligible_to_claim:true, attribution:null, reward_mapping:{ '1m':{ weeks:1, months:0 }, '6m':{ weeks:3, months:0 }, '1y':{ weeks:0, months:2 } }, rewards:[{ id:'reward-1', status:'pending', plan_code:'6m', credit_bucket:'voice' }] })
     if (path === '/api/web/billing/referral/claim') return Promise.resolve({ status:'claimed' })
     throw new Error(`unexpected ${path}`)
   })
@@ -150,9 +177,22 @@ it('shows referral code rules and claims the server-validated code', async () =>
   await userEvent.click(screen.getByRole('tab', { name:'Referral rewards' }))
   expect(screen.getByText('AB12CD34')).toBeInTheDocument()
   expect(screen.getByLabelText('Have a referral code?')).toHaveValue('AB12CD34')
+  expect(screen.getByText('1 month subscription → 1 week free')).toBeInTheDocument()
+  expect(screen.getByText('6 months subscription → 3 weeks free')).toBeInTheDocument()
+  expect(screen.getByText('1 year subscription → 2 calendar months free')).toBeInTheDocument()
+  expect(screen.getByText('Pending · 6 months · Voice')).toBeInTheDocument()
+  expect(screen.queryByText(/\b(?:1m|6m|1y)\b/)).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name:'Claim code' }))
   expect(apiJson).toHaveBeenCalledWith(expect.anything(), '/api/web/billing/referral/claim', expect.objectContaining({ method:'POST' }))
   expect(screen.getByText(/non-cash, non-transferable/i)).toBeInTheDocument()
+})
+
+it('renders a legitimate zero estimate as zero tokens', async () => {
+  const zero = { ...estimate, estimated_blended_tokens:0, range_min_tokens:0, range_max_tokens:0 }
+  vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
+  render(<BillingModal user={{} as never} config={{ ...config, packages:config.packages.map(item => ({ ...item, token_estimate:zero })) }} close={vi.fn()} refreshed={vi.fn()} />)
+  expect(await screen.findAllByText('0 tokens')).not.toHaveLength(0)
+  expect(screen.queryByText('0–0 tokens')).not.toBeInTheDocument()
 })
 
 it('validates custom whole rupees and never estimates or opens checkout for invalid input', async () => {

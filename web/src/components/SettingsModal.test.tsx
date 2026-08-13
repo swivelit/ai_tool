@@ -153,6 +153,7 @@ it('shows concise tier estimates and this-month token categories', async () => {
   expect(screen.queryByText(/Pricing timestamp|Pricing as of/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/Measured requests|Estimated requests/i)).not.toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
+  expect(document.body.textContent).not.toMatch(/micros|micro-INR/i)
 })
 
 it('uses friendly subscription labels instead of internal plan codes', async () => {

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ShieldCheck, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { apiJson } from '../api/client'
-import { formatRupeesFromPaise, tokenEstimateAvailable, tokenEstimateLabel } from '../credits'
-import type { BillingConfig, BillingPackage, CreditBucket, PaymentHistory, ReferralSummary, SubscriptionPlan, SubscriptionSummary, TopupEstimateResponse, TopupTokenEstimate, VoiceCreditEstimate } from '../types'
+import { formatRupeesForDisplay, formatRupeesFromPaise, tokenEstimateAvailable, tokenEstimateLabel } from '../credits'
+import type { BillingConfig, BillingPackage, CreditBucket, PaymentHistory, ReferralSummary, SubscriptionPlan, SubscriptionSummary, TokenEstimate, TopupEstimateResponse, TopupTokenEstimate, VoiceCreditEstimate } from '../types'
 import { loadRazorpay } from './razorpay'
 import { pollPaymentStatus } from './paymentPolling'
 import { paymentPresentation } from './paymentPresentation'
@@ -14,7 +14,7 @@ type EstimateState = 'idle' | 'loading' | 'ready' | 'error'
 const PRESETS = [1500, 29900] as const
 
 function packageRupees(paise: number) {
-  return paise % 100 === 0 ? `₹${paise / 100}` : formatRupeesFromPaise(paise)
+  return formatRupeesForDisplay(paise)
 }
 
 function estimateRange(estimate: BillingPackage['token_estimate'] | TopupTokenEstimate | null) {
@@ -38,6 +38,21 @@ function subscriptionPlanLabel(code: string | null | undefined, plans: Subscript
 function referralRewardLabel(code: string, value: { weeks: number; months: number }, plans: SubscriptionPlan[]) {
   const duration = value.months ? `${value.months} calendar month${value.months === 1 ? '' : 's'}` : `${value.weeks} week${value.weeks === 1 ? '' : 's'}`
   return `${subscriptionPlanLabel(code, plans)} subscription → ${duration} free`
+}
+
+function referralRewardStatus(status: string) {
+  return ({ pending: 'Pending', earned: 'Earned', fulfilled: 'Earned', cancelled: 'Cancelled', manual_review: 'Manual review' }[status] ?? status.replaceAll('_', ' '))
+}
+
+function referralBucketLabel(bucket: string) {
+  return bucket === 'voice' ? 'Voice' : bucket === 'chat' ? 'Chat' : bucket.replaceAll('_', ' ')
+}
+
+function weeklyAllowanceLabel(estimate: TokenEstimate | null | undefined, voice: boolean) {
+  const value = tokenEstimateLabel(estimate, voice ? 'token equivalent' : 'tokens')
+  if (value === 'Estimate temporarily unavailable') return value
+  const labeled = voice ? value.replace(/ token equivalent$/, ' estimated token equivalent') : value
+  return `${labeled} per complete week`
 }
 
 function customAmount(value: string, config: BillingConfig): { paise: number | null; error: string | null } {
@@ -199,10 +214,10 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
     setEstimateState('idle')
   }
   const payButtonLabel = busy ? 'Please wait…'
+    : tab === 'subscriptions' ? (subscriptionPlan ? `Subscribe for ${packageRupees(subscriptionPlan.price_paise)}` : 'Choose a subscription plan')
     : selected === 'custom' && custom.paise === null ? 'Enter a valid amount'
     : selected === 'custom' && estimateState === 'loading' ? 'Calculating estimate…'
     : selected === 'custom' && estimateState === 'error' ? 'Estimate temporarily unavailable'
-    : tab === 'subscriptions' ? (subscriptionPlan ? `Subscribe for ${packageRupees(subscriptionPlan.price_paise)}` : 'Choose a subscription plan')
     : selectedAmountPaise !== null ? `Pay ${packageRupees(selectedAmountPaise)} for ${bucket === 'chat' ? 'Chat' : 'Voice'} credits`
     : 'Choose an amount'
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
@@ -215,22 +230,22 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
         {historyState === 'error' && <p role="alert">Payment history could not be loaded.</p>}
         {historyState === 'ready' && !history.length && <p>No payments or refunds yet.</p>}
         {history.map(item => { const presentation = paymentPresentation(item); const itemBucket = item.credit_bucket ?? 'chat'; const subscription = item.purchase_type === 'subscription'; return <article key={item.id}><header><strong>{presentation.heading}</strong><span className="credit-bucket-label">{itemBucket === 'voice' ? 'Voice' : 'Chat'} {subscription ? 'subscription' : 'credits'}</span>{subscription && item.subscription_plan_code && <span>{subscriptionPlanLabel(item.subscription_plan_code, config.subscriptions?.plans)} · prepaid, no automatic renewal</span>}{presentation.detail && <span>{presentation.detail}</span>}</header><dl>
-          {presentation.amountLabel && <div><dt>{presentation.amountLabel}</dt><dd>{formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>}
+          {presentation.amountLabel && <div><dt>{presentation.amountLabel}</dt><dd>{subscription ? formatRupeesForDisplay(item.gross_amount_paise) : formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>}
           {presentation.showTokensAdded && itemBucket === 'chat' && <div><dt>{subscription ? 'Subscription status' : 'Estimated tokens added'}</dt><dd>{subscription ? 'Allowance available after fulfillment' : estimateRange(item.token_estimate)}</dd></div>}
           {presentation.showTokensAdded && itemBucket === 'voice' && <div><dt>Voice component estimates</dt><dd>{voiceEstimateLabel(item.voice_estimate)}. Realtime Voice also uses Voice credits for AI response generation.</dd></div>}
-          {presentation.showRefundAmount && <div><dt>Refund amount</dt><dd>{formatRupeesFromPaise(item.refunded_amount_paise)}</dd></div>}
+          {presentation.showRefundAmount && <div><dt>Refund amount</dt><dd>{subscription ? formatRupeesForDisplay(item.refunded_amount_paise) : formatRupeesFromPaise(item.refunded_amount_paise)}</dd></div>}
           {presentation.showReversalEstimate && <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>}
         </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : tab === 'subscriptions' ? <>
         <div className="credit-bucket-tabs" role="group" aria-label="Subscription type"><button type="button" aria-pressed={bucket === 'chat'} className={bucket === 'chat' ? 'active' : ''} onClick={() => setBucket('chat')}>Chat</button><button type="button" aria-pressed={bucket === 'voice'} className={bucket === 'voice' ? 'active' : ''} onClick={() => setBucket('voice')}>Voice</button></div>
-        <div className="subscription-cards">{(config.subscriptions?.plans ?? []).map(plan => <button key={plan.code} className={subscriptionPlan?.code === plan.code ? 'selected' : ''} aria-pressed={subscriptionPlan?.code === plan.code} onClick={() => setSubscriptionPlan(plan)}><strong>{plan.label}</strong><span>{packageRupees(plan.price_paise)}</span><small>~{estimateRange(config.subscriptions?.weekly_token_estimate)} per complete week · expires after {plan.duration_months} calendar month{plan.duration_months === 1 ? '' : 's'}</small></button>)}</div>
+        <div className="subscription-cards">{(config.subscriptions?.plans ?? []).map(plan => <button key={plan.code} className={subscriptionPlan?.code === plan.code ? 'selected' : ''} aria-pressed={subscriptionPlan?.code === plan.code} onClick={() => setSubscriptionPlan(plan)}><strong>{plan.label}</strong><span>{packageRupees(plan.price_paise)}</span><small>{weeklyAllowanceLabel(config.subscriptions?.weekly_token_estimate, bucket === 'voice')} · expires after {plan.duration_months} calendar month{plan.duration_months === 1 ? '' : 's'}</small></button>)}</div>
         <p className="subscription-note">Prepaid and non-renewing. Allowance starts at fulfillment, resets in seven-day windows from that start time, never rolls over, and the final partial week is prorated at expiry. Chat and Voice subscriptions are separate.</p>
         {subscriptionPlan && <div className="package-summary"><strong>{bucket === 'chat' ? 'Chat' : 'Voice'} · {subscriptionPlan.label} · {packageRupees(subscriptionPlan.price_paise)}</strong><span>Checkout amount is confirmed by the server.</span></div>}
         <button className="primary wide" disabled={busy || !subscriptionPlan || !config.checkout_enabled} onClick={() => void checkout()}>{payButtonLabel}</button>
         {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}
       </> : tab === 'referral' ? <div className="referral-panel">
         {!referralState && <p role="status">Loading referral rewards…</p>}
-        {referralState && <><h3>Your referral code</h3><div className="referral-code"><code>{referralState.code ?? 'Unavailable'}</code>{referralState.code && <button type="button" onClick={() => void navigator.clipboard?.writeText(referralState.code ?? '')}>Copy code</button>}</div>{referralState.code && <button type="button" className="secondary-button" onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}?ref=${encodeURIComponent(referralState.code ?? '')}`)}>Copy referral link</button>}<p>Rewards are earned by the referrer after a referred user's first successful subscription. Rewards are non-cash, non-transferable, and use the purchased Chat or Voice bucket.</p>{referralState.eligible_to_claim && <form onSubmit={event => { event.preventDefault(); void apiJson(user, '/api/web/billing/referral/claim', { method:'POST', body:JSON.stringify({ code: referralInput }) }).then(() => { setReferralInput(''); setStatus('Referral code claimed.'); return apiJson<ReferralSummary>(user, '/api/web/billing/referral').then(setReferralState) }).catch(error => setStatus(error instanceof Error ? error.message : 'Referral code could not be claimed.')) }}><label htmlFor="referral-code-input">Have a referral code?</label><input id="referral-code-input" value={referralInput} onChange={event => setReferralInput(event.target.value)} autoComplete="off" /><button className="primary" type="submit" disabled={!referralInput.trim()}>Claim code</button></form>}<h3>Reward mapping</h3><ul>{Object.entries(referralState.reward_mapping).map(([code, value]) => <li key={code}>{referralRewardLabel(code, value, config.subscriptions?.plans ?? [])}</li>)}</ul>{referralState.rewards.map(reward => <article key={reward.id}>{reward.status} · {subscriptionPlanLabel(reward.plan_code, config.subscriptions?.plans)} · {reward.credit_bucket}</article>)}</>}
+        {referralState && <><h3>Your referral code</h3><div className="referral-code"><code>{referralState.code ?? 'Unavailable'}</code>{referralState.code && <button type="button" onClick={() => void navigator.clipboard?.writeText(referralState.code ?? '')}>Copy code</button>}</div>{referralState.code && <button type="button" className="secondary-button" onClick={() => void navigator.clipboard?.writeText(`${window.location.origin}?ref=${encodeURIComponent(referralState.code ?? '')}`)}>Copy referral link</button>}<p>Rewards are earned by the referrer after a referred user's first successful subscription. Rewards are non-cash, non-transferable, and use the purchased Chat or Voice bucket.</p>{referralState.eligible_to_claim && <form onSubmit={event => { event.preventDefault(); void apiJson(user, '/api/web/billing/referral/claim', { method:'POST', body:JSON.stringify({ code: referralInput }) }).then(() => { setReferralInput(''); setStatus('Referral code claimed.'); return apiJson<ReferralSummary>(user, '/api/web/billing/referral').then(setReferralState) }).catch(error => setStatus(error instanceof Error ? error.message : 'Referral code could not be claimed.')) }}><label htmlFor="referral-code-input">Have a referral code?</label><input id="referral-code-input" value={referralInput} onChange={event => setReferralInput(event.target.value)} autoComplete="off" /><button className="primary" type="submit" disabled={!referralInput.trim()}>Claim code</button></form>}<h3>Reward mapping</h3><ul>{Object.entries(referralState.reward_mapping).map(([code, value]) => <li key={code}>{referralRewardLabel(code, value, config.subscriptions?.plans ?? [])}</li>)}</ul>{referralState.rewards.map(reward => <article key={reward.id}>{referralRewardStatus(reward.status)} · {subscriptionPlanLabel(reward.plan_code, config.subscriptions?.plans)} · {referralBucketLabel(reward.credit_bucket)}</article>)}</>}
       </div> : <>
       <div className="credit-bucket-tabs" role="group" aria-label="Credit type"><button type="button" aria-pressed={bucket === 'chat'} className={bucket === 'chat' ? 'active' : ''} onClick={() => { setBucket('chat'); setCustomEstimate(null) }}>Chat credits</button><button type="button" aria-pressed={bucket === 'voice'} className={bucket === 'voice' ? 'active' : ''} onClick={() => { setBucket('voice'); setCustomEstimate(null) }}>Voice credits</button></div>
       <div className="packages">{PRESETS.map(amount => {
