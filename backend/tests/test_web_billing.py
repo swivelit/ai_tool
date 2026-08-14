@@ -843,6 +843,56 @@ def test_attempted_order_without_captured_payment_is_warning():
     assert result["captured_payment_present"] is False
 
 
+def test_reconciliation_excludes_orders_older_than_max_age_and_counts_them():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(days=2)
+        session.add(order); session.commit()
+        client = _ReconciliationClient(None)
+        results = reconcile_razorpay_orders(
+            session, client=client, max_age_seconds=3600,
+        )
+        assert results == []
+        assert client.requested_orders == []
+        assert results.out_of_window_count == 1
+        summary = reconciliation_summary(
+            results,
+            window_max_age_seconds=results.window_max_age_seconds,
+            out_of_window_count=results.out_of_window_count,
+        )
+    assert summary["window_max_age_seconds"] == 3600
+    assert summary["out_of_window_count"] == 1
+
+
+def test_targeted_reconciliation_bypasses_max_age_for_old_valid_capture():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(days=365)
+        session.add(order); session.commit()
+        payment = {
+            "id": "pay_old_targeted_capture", "order_id": order.provider_order_id,
+            "amount": 1500, "currency": "INR", "status": "captured",
+        }
+        results = reconcile_razorpay_orders(
+            session, client=_ReconciliationClient(payment), internal_order_id=order.id,
+            max_age_seconds=60,
+        )
+    assert results[0]["action"] == "credit_captured_payment"
+    assert results.window_max_age_seconds is None
+    assert results.out_of_window_count == 0
+
+
+def test_created_order_with_failed_provider_payment_reports_safe_status():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        failed = {"id": "pay_failed", "order_id": order.provider_order_id, "amount": 1500, "currency": "INR", "status": "failed"}
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(failed))[0]
+    assert result["action"] == "no_action_no_captured_payment"
+    assert result["provider_payment_statuses"] == ["failed"]
+
+
 def test_created_order_with_non_captured_provider_payment_has_clear_no_action():
     user = create_test_user()
     with SessionLocal() as session:
@@ -867,6 +917,8 @@ def test_reconciliation_summary_is_compact_and_only_lists_actionable_internal_id
         "count_by_severity": {"high": 1, "info": 1},
         "actionable_count": 1,
         "actionable_high_internal_order_ids": ["high-order"],
+        "window_max_age_seconds": None,
+        "out_of_window_count": 0,
     }
 
 

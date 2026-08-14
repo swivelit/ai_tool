@@ -129,6 +129,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     razorpay = sub.add_parser("razorpay")
     razorpay.add_argument("--age-seconds", type=int, default=900)
+    razorpay.add_argument(
+        "--max-age-seconds",
+        type=int,
+        default=int(os.getenv("BILLING_RECONCILIATION_MAX_AGE_SECONDS", "2592000")),
+    )
     razorpay.add_argument("--internal-order-id")
     razorpay.add_argument("--apply", action="store_true")
     razorpay.add_argument("--summary-only", action="store_true")
@@ -157,6 +162,7 @@ def _startup_record(
     if args.command == "razorpay":
         record["apply"] = bool(args.apply)
         record["summary_only"] = bool(args.summary_only)
+        record["max_age_seconds"] = args.max_age_seconds
         record["razorpay_mode"] = razorpay.mode if razorpay is not None else "unavailable"
         if args.fail_on_findings:
             record["fail_on_findings"] = True
@@ -221,9 +227,17 @@ def _run_command(
             age_seconds=args.age_seconds,
             apply=args.apply,
             internal_order_id=args.internal_order_id,
+            max_age_seconds=args.max_age_seconds,
         )
         if args.summary_only:
-            print(json.dumps({"apply": args.apply, "summary": reconciliation_summary(results)}, default=str, sort_keys=True))
+            print(json.dumps({
+                "apply": args.apply,
+                "summary": reconciliation_summary(
+                    results,
+                    window_max_age_seconds=results.window_max_age_seconds,
+                    out_of_window_count=results.out_of_window_count,
+                ),
+            }, default=str, sort_keys=True))
         else:
             print(json.dumps({"apply": args.apply, "results": results}, default=str))
         if not args.apply:

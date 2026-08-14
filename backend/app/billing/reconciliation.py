@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..models import PaymentOrder
@@ -11,10 +12,22 @@ from .razorpay_client import RazorpayClient
 from .service import credit_payment_once, reverse_credit_for_refund
 
 
-_SAFE_PROVIDER_ORDER_STATUSES = {"created", "attempted", "paid"}
+_SAFE_PROVIDER_PAYMENT_STATUSES = {"created", "authorized", "captured", "refunded", "failed"}
 
 
-def reconciliation_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+class ReconciliationResults(list[dict[str, Any]]):
+    """List-compatible reconciliation results with explicit window metadata."""
+
+    def __init__(self, *, window_max_age_seconds: int | None, out_of_window_count: int):
+        super().__init__()
+        self.window_max_age_seconds = window_max_age_seconds
+        self.out_of_window_count = out_of_window_count
+
+
+def reconciliation_summary(
+    results: list[dict[str, Any]], *, window_max_age_seconds: int | None = None,
+    out_of_window_count: int = 0,
+) -> dict[str, Any]:
     """Return safe, compact diagnostics for scheduled reconciliation logs."""
     by_action: dict[str, int] = {}
     by_severity: dict[str, int] = {}
@@ -35,41 +48,54 @@ def reconciliation_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "count_by_severity": dict(sorted(by_severity.items())),
         "actionable_count": actionable,
         "actionable_high_internal_order_ids": sorted(set(actionable_order_ids)),
+        "window_max_age_seconds": window_max_age_seconds,
+        "out_of_window_count": int(out_of_window_count),
     }
-
-
-def _safe_provider_order_status(provider: Any) -> str | None:
-    if not isinstance(provider, dict) or provider.get("status") is None:
-        return None
-    status = str(provider.get("status"))
-    return status if status in _SAFE_PROVIDER_ORDER_STATUSES else "unknown"
 
 
 def reconcile_razorpay_orders(
     session: Session, *, client: RazorpayClient, age_seconds: int = 900,
     apply: bool = False, internal_order_id: str | None = None,
-) -> list[dict[str, Any]]:
+    max_age_seconds: int | None = None,
+) -> ReconciliationResults:
     """Inspect non-terminal Razorpay orders and refunds; optionally repair state.
 
     This is deliberately an internal command API, not an HTTP route. Existing
     ledger idempotency keys make repeated runs safe, including after duplicate
     webhook delivery.
     """
-    cutoff = utc_now() - timedelta(seconds=max(60, int(age_seconds)))
-    statement = select(PaymentOrder).where(PaymentOrder.status.in_([
+    current = utc_now()
+    cutoff = current - timedelta(seconds=max(60, int(age_seconds)))
+    statuses = [
         "created", "attempted", "captured", "credited", "fulfilled", "partially_refunded", "refunded",
-    ]))
+    ]
+    statement = select(PaymentOrder).where(PaymentOrder.status.in_(statuses))
+    effective_max_age_seconds = None
+    out_of_window_count = 0
     if internal_order_id is None:
         statement = statement.where(PaymentOrder.created_at < cutoff)
+        if max_age_seconds is not None:
+            effective_max_age_seconds = max(60, int(max_age_seconds))
+            window_cutoff = current - timedelta(seconds=effective_max_age_seconds)
+            out_of_window_count = int(session.exec(
+                select(func.count(PaymentOrder.id)).where(
+                    PaymentOrder.status.in_(statuses),
+                    PaymentOrder.created_at < window_cutoff,
+                )
+            ).one())
+            statement = statement.where(PaymentOrder.created_at >= window_cutoff)
     else:
         statement = statement.where(PaymentOrder.id == internal_order_id)
     rows = session.exec(statement.order_by(PaymentOrder.created_at.asc())).all()
-    results: list[dict[str, Any]] = []
+    results = ReconciliationResults(
+        window_max_age_seconds=effective_max_age_seconds,
+        out_of_window_count=out_of_window_count,
+    )
     for order in rows:
         outcome: dict[str, Any] = {
             "internal_order_id": order.id,
             "from_status": order.status,
-            "provider_order_status": None,
+            "provider_payment_statuses": [],
             "provider_payment_count": 0,
             "captured_payment_present": False,
             "action": (
@@ -84,12 +110,16 @@ def reconcile_razorpay_orders(
             outcome.update(action="review_provider_mismatch", severity="high", actionable=True)
         elif order.provider_order_id and order.status in {"created", "attempted", "captured"}:
             provider = client.fetch_order_payments(order.provider_order_id)
-            outcome["provider_order_status"] = _safe_provider_order_status(provider)
             payments = provider.get("items") if isinstance(provider, dict) else None
             if not isinstance(payments, list):
                 outcome.update(action="review_provider_mismatch", severity="high", actionable=True)
                 results.append(outcome)
                 continue
+            outcome["provider_payment_statuses"] = sorted({
+                status if status in _SAFE_PROVIDER_PAYMENT_STATUSES else "unknown"
+                for item in payments
+                for status in [str(item.get("status")) if isinstance(item, dict) and item.get("status") is not None else "unknown"]
+            })
             outcome["provider_payment_count"] = len(payments)
             captured_payments = [
                 item for item in payments

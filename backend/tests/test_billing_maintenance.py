@@ -64,6 +64,7 @@ def test_razorpay_summary_only_is_readable_without_changing_dry_run_defaults() -
     args = billing_maintenance._parser().parse_args(["razorpay", "--summary-only"])
     assert args.summary_only is True
     assert args.apply is False
+    assert args.max_age_seconds == 2592000
 
 
 def _subprocess_environment(**updates: str) -> dict[str, str]:
@@ -360,6 +361,13 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
                     "order_id": provider_order_id,
                     "amount": 1000,
                     "currency": "INR",
+                    "status": "mystery",
+                },
+                {
+                    "id": "pay_maintenance_reconcile_captured",
+                    "order_id": provider_order_id,
+                    "amount": 1000,
+                    "currency": "INR",
                     "status": "captured",
                 }
             ]
@@ -375,6 +383,7 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         "apply": False,
         "command": "razorpay",
         "database_backend": "sqlite",
+        "max_age_seconds": 2592000,
         "razorpay_mode": "test",
         "summary_only": False,
     }
@@ -382,7 +391,7 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
     assert "test@example.com" not in safe_output
     assert "cli-provider-secret" not in safe_output
     assert "pay_maintenance_reconcile" not in safe_output
-    assert json.loads(safe_output)["results"][0]["provider_order_status"] == "unknown"
+    assert json.loads(safe_output)["results"][0]["provider_payment_statuses"] == ["captured", "unknown"]
 
     with SessionLocal() as session:
         assert session.get(PaymentOrder, order_id).status == "attempted"
@@ -390,7 +399,7 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         assert session.exec(select(WalletLedger)).all() == []
 
     assert billing_maintenance.main([
-        "razorpay", "--age-seconds", "900", "--fail-on-findings",
+        "razorpay", "--age-seconds", "900", "--max-age-seconds", "315360000", "--fail-on-findings",
     ]) == FINDINGS_EXIT_CODE
     capsys.readouterr()
     with SessionLocal() as session:
@@ -464,8 +473,12 @@ def test_razorpay_cli_apply_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> No
         lambda self, payment_id: {"items": []},
     )
 
-    assert billing_maintenance.main(["razorpay", "--age-seconds", "900", "--apply"]) == 0
-    assert billing_maintenance.main(["razorpay", "--age-seconds", "900", "--apply"]) == 0
+    assert billing_maintenance.main([
+        "razorpay", "--age-seconds", "900", "--max-age-seconds", "315360000", "--apply",
+    ]) == 0
+    assert billing_maintenance.main([
+        "razorpay", "--age-seconds", "900", "--max-age-seconds", "315360000", "--apply",
+    ]) == 0
 
     with SessionLocal() as session:
         assert session.get(PaymentOrder, order_id).status == "credited"

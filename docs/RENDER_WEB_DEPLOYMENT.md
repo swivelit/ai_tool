@@ -867,11 +867,32 @@ RAZORPAY_KEY_SECRET=<matching Test Mode secret>
 Its initial dry-run command is:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance razorpay \
-  --age-seconds 900 \
-  --summary-only \
-  --fail-on-findings
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --max-age-seconds 2592000 --summary-only --fail-on-findings
 ```
+
+The `BILLING_RECONCILIATION_MAX_AGE_SECONDS` default is `2592000` (30 days).
+Rows older than that sweep window remain covered by the read-only financial
+audit. If an order older than the window is found captured-uncredited, widen
+this variable for the reviewed sweep rather than silently narrowing audit
+coverage.
+
+### Captured-uncredited repair
+
+Suspend the Razorpay reconciliation Cron Job before editing its command. For a
+specific internal order, run the following three-command sequence, restoring
+the original command and resuming the Cron Job after the repair:
+
+```bash
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --fail-on-findings
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --apply
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --fail-on-findings
+```
+
+The first command is a single-order dry run, the second is the reviewed
+single-order `--apply` repair without `--fail-on-findings`, and the third
+confirms the order is already credited. The ledger idempotency key
+`payment-credit:<order-id>` makes a repeat `--apply` safe. Do not add `--apply`
+to the scheduled Cron Job.
 
 For a one-order dry-run investigation, obtain the internal UUID from approved
 operational evidence and run:
