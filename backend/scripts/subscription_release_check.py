@@ -23,6 +23,7 @@ from app.models import (
     SubscriptionUsageWindow, WalletLedger,
 )
 from app.billing.pricing import calculate_topup
+from app.billing.audit import financial_audit
 from app.billing.subscriptions import weekly_allowance_micros
 from app.billing.token_estimates import token_estimate
 from app.billing.topups import topup_packages
@@ -33,6 +34,44 @@ EXPECTED_TABLES = {
     "subscription_entitlement", "subscription_usage_window", "subscription_usage_ledger",
     "subscription_preference", "referral_code", "referral_attribution", "referral_reward",
 }
+
+
+def financial_integrity_summary(audit_report: dict[str, Any]) -> dict[str, Any]:
+    """Reduce the audit to safe release-gate counts without financial identifiers."""
+    findings = audit_report.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("financial audit findings are unavailable")
+    counts_by_category: dict[str, int] = {}
+    counts_by_severity: dict[str, int] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ValueError("financial audit finding is malformed")
+        category = str(finding.get("category") or "unknown")
+        count = int(finding.get("count") or 0)
+        severity = str(finding.get("severity") or "unknown")
+        counts_by_category[category] = counts_by_category.get(category, 0) + count
+        counts_by_severity[severity] = counts_by_severity.get(severity, 0) + count
+    actionable = int(audit_report.get("actionable_finding_count") or 0)
+    high_actionable = sum(
+        int(finding.get("count") or 0)
+        for finding in findings
+        if isinstance(finding, dict)
+        and finding.get("severity") == "high"
+        and finding.get("actionable") is True
+    )
+    return {
+        "actionable_finding_count": actionable,
+        "high_actionable_finding_count": high_actionable,
+        "counts_by_category": dict(sorted(counts_by_category.items())),
+        "counts_by_severity": dict(sorted(counts_by_severity.items())),
+        "captured_payment_uncredited": counts_by_category.get("captured_payment_uncredited", 0),
+        "payment_state_inconsistency": counts_by_category.get("payment_state_inconsistency", 0),
+        "stale_usage_reservation": counts_by_category.get("stale_usage_reservation", 0),
+        "duplicate_ledger_reference": counts_by_category.get("duplicate_ledger_reference", 0),
+        "failed_refund": counts_by_category.get("failed_refund", 0),
+        "refund_credit_reversal_shortfall": counts_by_category.get("refund_credit_reversal_shortfall", 0),
+        "ready": actionable == 0 and high_actionable == 0,
+    }
 
 
 def _int(name: str, default: int) -> int | None:
@@ -145,6 +184,7 @@ def build_report() -> dict[str, Any]:
         "duplicate_reward_count": 0,
         "invalid_referral_count": 0,
         "token_estimation_readiness": {},
+        "financial_integrity": {},
     }
     blockers = len(config_errors) + int(repository_head != EXPECTED_HEAD)
     try:
@@ -230,6 +270,25 @@ def build_report() -> dict[str, Any]:
             blockers += sum(report[key] for key in ("subscription_window_overdraw_count", "duplicate_entitlement_count", "duplicate_reward_count", "invalid_referral_count"))
     except Exception:
         report["payment_fulfillment_invariants"] = {"status": "unavailable"}
+        blockers += 1
+    try:
+        with SessionLocal() as session:
+            report["financial_integrity"] = financial_integrity_summary(financial_audit(session))
+        blockers += int(not report["financial_integrity"].get("ready", False))
+    except Exception:
+        report["financial_integrity"] = {
+            "status": "unavailable",
+            "actionable_finding_count": None,
+            "counts_by_category": {},
+            "counts_by_severity": {},
+            "captured_payment_uncredited": None,
+            "payment_state_inconsistency": None,
+            "stale_usage_reservation": None,
+            "duplicate_ledger_reference": None,
+            "failed_refund": None,
+            "refund_credit_reversal_shortfall": None,
+            "ready": False,
+        }
         blockers += 1
     try:
         report["token_estimation_readiness"] = _token_estimation_readiness()

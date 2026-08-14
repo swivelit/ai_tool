@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import date
 from pathlib import Path
@@ -80,7 +81,16 @@ def _is_iso_date(value: str) -> bool:
         return False
 
 
-def _approval_findings(publication: dict[str, Any]) -> list[str]:
+def legal_content_fingerprint(data: dict[str, Any]) -> str:
+    """Hash the canonical publishable policy pages, excluding approval metadata."""
+    pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
+    canonical = json.dumps(
+        pages, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _approval_findings(publication: dict[str, Any], content_fingerprint: str) -> list[str]:
     status = _value(publication, "publicationStatus")
     approval = publication.get("approval") if isinstance(publication.get("approval"), dict) else {}
     approval_type = _value(approval, "approvalType")
@@ -103,6 +113,11 @@ def _approval_findings(publication: dict[str, Any]) -> list[str]:
             errors.append("owner-attested publication approvalDate must use valid YYYY-MM-DD format")
         if _value(approval, "legalReviewStatus") != "not_reviewed_by_counsel":
             errors.append("owner-attested publication requires legalReviewStatus=not_reviewed_by_counsel")
+        approved_fingerprint = _value(approval, "approvedLegalContentSha256")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", approved_fingerprint):
+            errors.append("owner-approved publication requires a valid approvedLegalContentSha256")
+        elif approved_fingerprint.casefold() != content_fingerprint:
+            errors.append("approved legal-content SHA-256 does not match current publishable content")
 
         try:
             attestation = OWNER_ATTESTATION.read_text(encoding="utf-8")
@@ -115,6 +130,8 @@ def _approval_findings(publication: dict[str, Any]) -> list[str]:
                 errors.append("owner-attestation document date does not match publication metadata")
             if "Not reviewed or approved by legal counsel" not in attestation:
                 errors.append("owner-attestation document must state that counsel did not review or approve it")
+            if approved_fingerprint and f"Approved legal-content SHA-256: {approved_fingerprint}" not in attestation:
+                errors.append("owner-attestation document fingerprint does not match publication metadata")
 
     elif status == "approved_by_counsel":
         if approval_type != "counsel_approval":
@@ -128,6 +145,11 @@ def _approval_findings(publication: dict[str, Any]) -> list[str]:
             errors.append("counsel-approved publication is missing approvalDate")
         elif not _is_iso_date(approval_date):
             errors.append("counsel-approved publication approvalDate must use valid YYYY-MM-DD format")
+        approved_fingerprint = _value(approval, "approvedLegalContentSha256")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", approved_fingerprint):
+            errors.append("counsel-approved publication requires a valid approvedLegalContentSha256")
+        elif approved_fingerprint.casefold() != content_fingerprint:
+            errors.append("approved legal-content SHA-256 does not match current publishable content")
 
     elif status == "approved":
         errors.append("publicationStatus=approved is ambiguous; use owner_approved or approved_by_counsel")
@@ -186,7 +208,7 @@ def findings() -> list[str]:
 
     if not _value(publication, "businessIdentity"):
         errors.append("missing business identity")
-    errors.extend(_approval_findings(publication))
+    errors.extend(_approval_findings(publication, legal_content_fingerprint(data)))
     errors.extend(_stale_pricing_findings(data))
 
     errors.extend(_email_findings("support email", _value(publication, "supportEmail", "supportContact")))

@@ -60,6 +60,12 @@ def test_render_cron_operator_instructions_are_complete() -> None:
     assert missing == []
 
 
+def test_razorpay_summary_only_is_readable_without_changing_dry_run_defaults() -> None:
+    args = billing_maintenance._parser().parse_args(["razorpay", "--summary-only"])
+    assert args.summary_only is True
+    assert args.apply is False
+
+
 def _subprocess_environment(**updates: str) -> dict[str, str]:
     env = {
         "PYTHONPATH": str(BACKEND_ROOT),
@@ -370,6 +376,7 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         "command": "razorpay",
         "database_backend": "sqlite",
         "razorpay_mode": "test",
+        "summary_only": False,
     }
     safe_output = captured.out
     assert "test@example.com" not in safe_output

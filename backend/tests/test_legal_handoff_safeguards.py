@@ -33,6 +33,20 @@ def _publication_data() -> dict:
     return json.loads((ROOT / "web" / "src" / "content" / "legalContent.json").read_text(encoding="utf-8"))
 
 
+def _owner_approved_data() -> dict:
+    data = _publication_data()
+    data["publication"]["publicationStatus"] = "owner_approved"
+    data["publication"]["approval"] = {
+        "approvalType": "owner_attestation",
+        "approvedByNameOrRole": "Authorised Partner, Swivel Technologies",
+        "writtenAttestationReference": "SWICO-OWNER-PUBLICATION-2026-07-18",
+        "approvalDate": "2026-07-18",
+        "legalReviewStatus": "not_reviewed_by_counsel",
+        "approvedLegalContentSha256": PUBLICATION_CHECKER.legal_content_fingerprint(data),
+    }
+    return data
+
+
 def _publication_findings(
     tmp_path: Path,
     monkeypatch,
@@ -137,23 +151,49 @@ Refund window: TBD
     assert ("Refunds", "the refund window is unresolved") in findings
 
 
-def test_actual_owner_attested_publication_is_blocked_by_stale_package_approval(capsys):
+def test_revised_publication_remains_blocked_until_new_approval(capsys):
     data = _publication_data()
-    assert data["publication"]["publicationStatus"] == "owner_approved"
+    assert data["publication"]["publicationStatus"] == "unreviewed"
     blockers = PUBLICATION_CHECKER.findings()
-    assert blockers == [
-        "terms: approved package description still lists Rs.10, Rs.50, Rs.100 and Rs.500; exact owner/counsel-approved replacement wording is required",
-        "pricing: approved Gross top-up price section still describes the removed Rs.50, Rs.100 and Rs.500 package set; exact owner/counsel-approved replacement wording is required",
-        "owner attestation: approved package statement still lists ₹10, ₹50, ₹100 and ₹500; a new matching owner/counsel approval record is required",
-    ]
+    assert blockers == ["publicationStatus=unreviewed is not publishable"]
     assert PUBLICATION_CHECKER.main() == 1
     output = capsys.readouterr().out
     assert all(blocker in output for blocker in blockers)
-    assert "legal publication check failed: 3 blocker(s)" in output
+    assert "legal publication check failed: 1 blocker(s)" in output
+
+
+def test_legal_content_fingerprint_changes_for_material_page_edits():
+    data = _publication_data()
+    original = PUBLICATION_CHECKER.legal_content_fingerprint(data)
+    copied = json.loads(json.dumps(data))
+    assert PUBLICATION_CHECKER.legal_content_fingerprint(copied) == original
+    copied["pages"]["terms"]["sections"][0]["body"] += " Material change."
+    assert PUBLICATION_CHECKER.legal_content_fingerprint(copied) != original
+
+
+def test_matching_owner_fingerprint_and_attestation_can_pass(tmp_path: Path, monkeypatch):
+    data = _owner_approved_data()
+    fingerprint = data["publication"]["approval"]["approvedLegalContentSha256"]
+    attestation = "\n".join(
+        (
+            "Attestation reference: SWICO-OWNER-PUBLICATION-2026-07-18",
+            "Attestation date: 2026-07-18",
+            "Not reviewed or approved by legal counsel",
+            f"Approved legal-content SHA-256: {fingerprint}",
+        )
+    )
+    assert _publication_findings(tmp_path, monkeypatch, data, attestation=attestation) == []
+
+
+def test_owner_fingerprint_mismatch_blocks_publication(tmp_path: Path, monkeypatch):
+    data = _owner_approved_data()
+    data["publication"]["approval"]["approvedLegalContentSha256"] = "0" * 64
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "approved legal-content SHA-256 does not match current publishable content" in blockers
 
 
 def test_owner_status_without_approver_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"].pop("approvedByNameOrRole")
     assert "owner-attested publication is missing a valid approvedByNameOrRole" in _publication_findings(
         tmp_path, monkeypatch, data
@@ -161,7 +201,7 @@ def test_owner_status_without_approver_fails(tmp_path: Path, monkeypatch):
 
 
 def test_owner_status_without_attestation_reference_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"].pop("writtenAttestationReference")
     assert "owner-attested publication is missing a valid writtenAttestationReference" in _publication_findings(
         tmp_path, monkeypatch, data
@@ -169,7 +209,7 @@ def test_owner_status_without_attestation_reference_fails(tmp_path: Path, monkey
 
 
 def test_owner_status_without_approval_date_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"].pop("approvalDate")
     assert "owner-attested publication is missing approvalDate" in _publication_findings(
         tmp_path, monkeypatch, data
@@ -177,7 +217,7 @@ def test_owner_status_without_approval_date_fails(tmp_path: Path, monkeypatch):
 
 
 def test_owner_status_without_explicit_no_counsel_review_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"].pop("legalReviewStatus")
     assert (
         "owner-attested publication requires legalReviewStatus=not_reviewed_by_counsel"
@@ -186,41 +226,41 @@ def test_owner_status_without_explicit_no_counsel_review_fails(tmp_path: Path, m
 
 
 def test_missing_owner_attestation_document_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     blockers = _publication_findings(tmp_path, monkeypatch, data, attestation="")
     assert "owner-attested publication requires docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md" in blockers
 
 
 def test_mismatched_owner_attestation_reference_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"]["writtenAttestationReference"] = "SWICO-OWNER-PUBLICATION-MISMATCH"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "owner-attestation document reference does not match publication metadata" in blockers
 
 
 def test_mismatched_owner_attestation_date_fails(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"]["approvalDate"] = "2026-07-19"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "owner-attestation document date does not match publication metadata" in blockers
 
 
 def test_owner_approval_date_must_be_a_valid_iso_date(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"]["approvalDate"] = "2026-02-30"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "owner-attested publication approvalDate must use valid YYYY-MM-DD format" in blockers
 
 
 def test_plain_approved_status_is_rejected_as_ambiguous(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["publicationStatus"] = "approved"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "publicationStatus=approved is ambiguous; use owner_approved or approved_by_counsel" in blockers
 
 
 def test_publication_status_and_approval_type_must_match(tmp_path: Path, monkeypatch):
-    data = _publication_data()
+    data = _owner_approved_data()
     data["publication"]["approval"]["approvalType"] = "counsel_approval"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "owner-approved publication requires approvalType=owner_attestation" in blockers

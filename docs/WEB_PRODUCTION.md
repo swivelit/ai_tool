@@ -21,13 +21,13 @@
 - Set these backend-only Render values exactly for the reviewed package change:
 
   ```dotenv
-  BILLING_TOPUP_PACKAGES_PAISE=1000,29900
+  BILLING_TOPUP_PACKAGES_PAISE=1500,29900
   BILLING_ENFORCE_TOPUP_PACKAGES=false
-  BILLING_MIN_TOPUP_PAISE=1000
+  BILLING_MIN_TOPUP_PAISE=1500
   BILLING_MAX_TOPUP_PAISE=50000
   ```
 
-  Values are paise (`1000` is ₹10; `29900` is ₹299). Custom whole-rupee amounts
+  Values are paise (`1500` is ₹15; `29900` is ₹299). Custom whole-rupee amounts
   are accepted only inside the configured bounds and the backend remains
   authoritative. The frontend reads the maximum from public configuration.
   Changing the maximum requires deliberate operator review. Razorpay keys,
@@ -49,7 +49,7 @@
 - Schedule Razorpay reconciliation only in dry-run form and alert only on its
   high/actionable exit status:
 
-  `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings`
+  `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --summary-only --fail-on-findings`
 
 - Configure every financial Cron Job with `APP_ENV=production`, the Render
   PostgreSQL internal `DATABASE_URL`, `AUTO_CREATE_TABLES=false`,
@@ -65,7 +65,9 @@
   values. Avoid duplicate `DATABASE_URL` entries and verify the Cron Job sees
   the intended internal PostgreSQL URL without printing it.
 - Razorpay reconciliation is non-mutating unless `--apply` is explicitly
-  present. Never schedule `--apply`; do not switch to Live Mode automatically.
+  present. Never schedule `--apply`; staging uses Test Mode credentials and
+  production live checkout/reconciliation uses Live Mode credentials with the
+  production payment database. Never mix those modes or credentials.
 
 - Verify the API and static site use the same explicit Git branch. Verify the
   static response headers in the dashboard because `_headers` was not applied
@@ -103,7 +105,7 @@
   refund, full refund, and reconciliation alerts in the Render environment.
 - Confirm `/api/web/billing/public-config` returns the explicit expected
   `razorpay_mode`, `checkout_enabled`, `custom_topup_enabled=true`, bounds, and
-  exactly the 1,000/29,900-paise presets; never derive mode in the browser from
+  exactly the 1,500/29,900-paise presets; never derive mode in the browser from
   the public-key prefix.
 
 ## Razorpay Live two-phase cutover
@@ -112,19 +114,16 @@ Before either phase, run `python scripts/check-razorpay-live-readiness.py`; the 
 
 Phase one: use the Live key ID, Live key secret, and a separate Live webhook secret; set `RAZORPAY_MODE=live` and keep `BILLING_CHECKOUT_ENABLED=false`; deploy and verify; run Razorpay reconciliation and the financial audit. Test and Live credentials and webhooks are separate.
 
-Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one controlled ₹10 payment; verify exactly-once credit and webhook replay idempotency; run reconciliation and audit. Disable checkout immediately on any mismatch.
+Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one controlled ₹15 payment; verify exactly-once credit and webhook replay idempotency; run reconciliation and audit. Disable checkout immediately on any mismatch.
 
 ## Legal publication
 
-The seven policy bodies in `web/src/content/legalContent.json` retain their
-tracked owner approval and have not been reviewed or approved by legal counsel.
-The approved Terms package description, Pricing **Gross top-up price** section,
-and `docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md` still name the old
-₹10/₹50/₹100/₹500 package set. The repository checker therefore fails until
-exact owner/counsel-approved replacement wording and a matching approval record
-are supplied. Do not deploy this code or change approval metadata, versions, or
-effective dates speculatively. The checker does not provide legal advice or
-certify legal compliance.
+The revised policy pages in `web/src/content/legalContent.json` are proposed
+content and remain blocked until exact owner/counsel-approved replacement
+wording and a matching canonical SHA-256 approval record are supplied. Do not
+deploy this code or change approval metadata, versions, or effective dates
+speculatively. The checker does not provide legal advice or certify legal
+compliance.
 
 Raw PDFs, DOCX files, counsel correspondence, signatures, private identity
 material and any future private review evidence must remain under the ignored

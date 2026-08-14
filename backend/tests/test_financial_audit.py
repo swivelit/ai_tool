@@ -10,6 +10,7 @@ from app.models import PaymentOrder, ProcessedWebhook, UsageCharge, WalletAccoun
 from app.time_utils import utc_now
 from scripts import billing_maintenance
 from scripts.billing_maintenance import FINDINGS_EXIT_CODE
+from scripts.subscription_release_check import financial_integrity_summary
 from tests.conftest import create_test_user
 
 
@@ -45,6 +46,7 @@ def test_clean_audit():
     assert report["high_severity_count"] == 0
     assert report["actionable_finding_count"] == 0
     assert report["findings"] == []
+    assert financial_integrity_summary(report)["ready"] is True
 
 
 def test_old_created_order_is_informational_and_non_actionable():
@@ -59,6 +61,7 @@ def test_old_created_order_is_informational_and_non_actionable():
     assert report["informational_finding_count"] == 1
     assert report["high_severity_count"] == 0
     assert report["actionable_finding_count"] == 0
+    assert financial_integrity_summary(report)["ready"] is True
 
 
 def test_old_attempted_order_is_warning_and_non_actionable():
@@ -73,6 +76,7 @@ def test_old_attempted_order_is_warning_and_non_actionable():
     assert report["warning_finding_count"] == 1
     assert report["high_severity_count"] == 0
     assert report["actionable_finding_count"] == 0
+    assert financial_integrity_summary(report)["ready"] is True
 
 
 def test_negative_wallet_and_invalid_reservation():
@@ -115,6 +119,26 @@ def test_captured_order_is_not_double_counted():
         report = financial_audit(session)
     assert report["finding_count"] == 1
     assert _categories(report) == {"captured_payment_uncredited"}
+    summary = financial_integrity_summary(report)
+    assert summary["captured_payment_uncredited"] == 1
+    assert summary["ready"] is False
+
+
+def test_captured_subscription_awaiting_fulfillment_blocks_financial_release():
+    user = create_test_user()
+    order = _old_order(int(user.id), "captured")
+    order.purchase_type = "subscription"
+    order.subscription_plan_code = "1m"
+    order.credited_amount_micros = 0
+    order.fulfillment_status = "pending"
+    with SessionLocal() as session:
+        session.add(order)
+        session.flush()
+        report = financial_audit(session)
+    assert "payment_state_inconsistency" in _categories(report)
+    summary = financial_integrity_summary(report)
+    assert summary["payment_state_inconsistency"] == 1
+    assert summary["ready"] is False
 
 
 def test_credited_order_missing_ledger_is_high_and_actionable():

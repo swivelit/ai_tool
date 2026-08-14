@@ -14,6 +14,30 @@ from .service import credit_payment_once, reverse_credit_for_refund
 _SAFE_PROVIDER_ORDER_STATUSES = {"created", "attempted", "paid"}
 
 
+def reconciliation_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return safe, compact diagnostics for scheduled reconciliation logs."""
+    by_action: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
+    actionable = 0
+    actionable_order_ids: list[str] = []
+    for result in results:
+        action = str(result.get("action") or "unknown")
+        severity = str(result.get("severity") or "unknown")
+        by_action[action] = by_action.get(action, 0) + 1
+        by_severity[severity] = by_severity.get(severity, 0) + 1
+        if result.get("actionable") is True:
+            actionable += 1
+            if severity == "high" and result.get("internal_order_id"):
+                actionable_order_ids.append(str(result["internal_order_id"]))
+    return {
+        "total_inspected": len(results),
+        "count_by_action": dict(sorted(by_action.items())),
+        "count_by_severity": dict(sorted(by_severity.items())),
+        "actionable_count": actionable,
+        "actionable_high_internal_order_ids": sorted(set(actionable_order_ids)),
+    }
+
+
 def _safe_provider_order_status(provider: Any) -> str | None:
     if not isinstance(provider, dict) or provider.get("status") is None:
         return None
@@ -98,7 +122,10 @@ def reconcile_razorpay_orders(
                         order.status = "captured"
                         credit_payment_once(session, order)
             elif order.status == "created":
-                outcome.update(action="no_action_unattempted_checkout", severity="info", actionable=False)
+                outcome.update(
+                    action=("no_action_no_captured_payment" if outcome["provider_payment_count"] else "no_action_unattempted_checkout"),
+                    severity="info", actionable=False,
+                )
             elif order.status == "attempted":
                 outcome.update(action="review_long_lived_attempt", severity="warning", actionable=False)
             else:

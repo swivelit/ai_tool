@@ -18,7 +18,7 @@ Razorpay orders/refunds use integer paise and the financial ledger uses integer 
 
 `BILLING_CREDIT_PERCENT` remains exactly `50`. User-credit paise are floored; every fractional-paise remainder goes to the platform.
 
-- ₹10 / 1,000 paise creates exactly 5,000,000 internal micro-INR and 500 paise of platform allocation.
+- ₹15 / 1,500 paise creates exactly 7,500,000 internal micro-INR and 750 paise of platform allocation.
 - ₹299 / 29,900 paise creates exactly 149,500,000 internal micro-INR and 14,950 paise of platform allocation.
 - A custom ₹75 / 7,500 paise top-up creates exactly 37,500,000 internal micro-INR and 3,750 paise of platform allocation.
 
@@ -46,7 +46,7 @@ OpenAI USD costs use `USD_TO_INR_BILLING_RATE` and `OPENAI_FX_BUFFER_PERCENT`. S
 
 An internal order is durable before the provider call. Checkout verification uses the server-stored order, exact INR amount, captured status, and signature. Verification and captured/paid webhooks call the same idempotent credit function. Raw-body webhook HMAC and event IDs protect replay. Processed refunds reverse capacity; failed refunds are recorded without reversal.
 
-Public config returns explicit `razorpay_mode`, `checkout_enabled`, `custom_topup_enabled`, configured bounds, and package token estimates. The preset collection is exactly 1,000 and 29,900 paise (₹10 and ₹299). Custom whole-rupee amounts are enabled only when `BILLING_ENFORCE_TOPUP_PACKAGES=false` and must remain within `BILLING_MIN_TOPUP_PAISE` and `BILLING_MAX_TOPUP_PAISE`. The backend is authoritative; the browser cannot widen these bounds or bypass package enforcement. `BILLING_CHECKOUT_ENABLED=false` blocks new orders only; existing token credits remain usable.
+Public config returns explicit `razorpay_mode`, `checkout_enabled`, `custom_topup_enabled`, configured bounds, and package token estimates. The preset collection is exactly 1,500 and 29,900 paise (₹15 and ₹299). Custom whole-rupee amounts are enabled only when `BILLING_ENFORCE_TOPUP_PACKAGES=false` and must remain within `BILLING_MIN_TOPUP_PAISE` and `BILLING_MAX_TOPUP_PAISE`. The backend is authoritative; the browser cannot widen these bounds or bypass package enforcement. `BILLING_CHECKOUT_ENABLED=false` blocks new orders only; existing token credits remain usable.
 
 ## Chat and Voice credit buckets
 
@@ -97,15 +97,15 @@ The authenticated non-charging `GET /api/web/billing/estimate?gross_amount_paise
 Required production values are:
 
 ```dotenv
-BILLING_MIN_TOPUP_PAISE=1000
+BILLING_MIN_TOPUP_PAISE=1500
 BILLING_MAX_TOPUP_PAISE=50000
-BILLING_TOPUP_PACKAGES_PAISE=1000,29900
+BILLING_TOPUP_PACKAGES_PAISE=1500,29900
 BILLING_ENFORCE_TOPUP_PACKAGES=false
 ```
 
-These are paise values: `1000` means ₹10 and `29900` means ₹299. The ₹500 maximum is configuration, not frontend code. Any maximum change requires deliberate operator review of payment risk, customer copy, tests, and approved legal/pricing publication. Razorpay credentials, webhook events/secrets, the 50/50 calculation, wallet arithmetic, refunds, verification, and idempotency do not change.
+These are paise values: `1500` means ₹15 and `29900` means ₹299. The ₹500 maximum is configuration, not frontend code. Any maximum change requires deliberate operator review of payment risk, customer copy, tests, and approved legal/pricing publication. Razorpay credentials, webhook events/secrets, the 50/50 calculation, wallet arithmetic, refunds, verification, and idempotency do not change.
 
-The currently approved Terms package description, Pricing **Gross top-up price** section, and owner publication attestation still name the old ₹10/₹50/₹100/₹500 package set. `scripts/check-legal-publication.py` intentionally blocks release until exact owner/counsel-approved replacement wording and a matching approval record are supplied. Do not deploy this pricing change while that blocker remains.
+The revised Terms, Pricing, subscription and referral wording is proposed content. `scripts/check-legal-publication.py` intentionally blocks release until exact owner/counsel-approved wording and a matching canonical SHA-256 approval record are supplied. Do not deploy this pricing or product-copy change while that blocker remains.
 
 Payment-order states have deliberately different meanings:
 
@@ -142,6 +142,7 @@ Dry-run provider reconciliation:
 ```bash
 cd backend && python -m scripts.billing_maintenance razorpay \
   --age-seconds 900 \
+  --summary-only \
   --fail-on-findings
 ```
 
@@ -154,9 +155,9 @@ cd backend && python -m scripts.billing_maintenance razorpay \
   --fail-on-findings
 ```
 
-Provider reconciliation remains necessary because the financial audit intentionally does not call Razorpay. Dry-run results distinguish an unattempted checkout (info), a long-lived attempt (warning), a verified captured payment requiring credit (high/actionable), a provider mismatch (high/actionable), and an already credited order (info). Exact amount, INR currency, provider order ID, and captured state are checked before any credit. Provider mismatches are never applied automatically.
+Provider reconciliation remains necessary because the financial audit intentionally does not call Razorpay. Dry-run results distinguish an unattempted checkout (info), a non-captured payment attempt (info), a long-lived attempt (warning), a verified captured payment requiring credit (high/actionable), a provider mismatch (high/actionable), and an already credited order (info). Exact amount, INR currency, provider order ID, and captured state are checked before any credit. Provider mismatches are never applied automatically. Scheduled `--summary-only` output reports totals and safe action/severity counts, plus internal order IDs only for high/actionable findings; full results remain available for manual debugging.
 
-Never schedule `--apply`. A mutating run is a separately reviewed, one-off operator action; dry-run is always the scheduled form. Exit `0` covers clean, informational-only, and warning-only reports. With `--fail-on-findings`, exit `3` occurs only when a result is both high severity and actionable. Configuration errors use `78`. Audit output contains categories, counts, safe internal IDs, age, and status only. It excludes names, emails, prompts/responses, signatures, raw provider payloads, credentials, and database URLs. With `SENTRY_DSN` set, only actionable high-severity categories/counts use the existing PII-disabled Sentry integration. Recommended settings:
+Never schedule `--apply`. A mutating run is a separately reviewed, one-off operator action; dry-run is always the scheduled form. Staging checkout/reconciliation uses Test Mode credentials; production live checkout/reconciliation uses Live Mode credentials. Do not mix a production payment database with Test Mode credentials. Scheduled reconciliation remains read-only in either mode. Exit `0` covers clean, informational-only, and warning-only reports. With `--fail-on-findings`, exit `3` occurs only when a result is both high severity and actionable. Configuration errors use `78`. Audit output contains categories, counts, safe internal IDs, age, and status only. It excludes names, emails, prompts/responses, signatures, raw provider payloads, credentials, and database URLs. With `SENTRY_DSN` set, only actionable high-severity categories/counts use the existing PII-disabled Sentry integration. Recommended settings:
 
 Razorpay GET reads retry connection/connect/read timeouts and HTTP
 408/429/500/502/503/504. Backoff is exponential with bounded jitter and a

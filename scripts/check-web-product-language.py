@@ -45,6 +45,7 @@ PUBLIC_STRING_FORBIDDEN = (
     "micro inr",
 )
 WEEKLY_RUPEES_ACCESS = re.compile(r"(?:\.weekly_allowance_rupees|['\"]weekly_allowance_rupees['\"])")
+INTERNAL_MICROS_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]*_micros$")
 
 
 def production_files() -> list[Path]:
@@ -85,7 +86,11 @@ def main() -> int:
             # reject monetary-unit wording inside customer-facing string literals.
             if check_public_literals:
                 string_literals = re.findall(r"(['\"])(.*?)\1|`([^`]*)`", line)
-                literal_text = " ".join((single or double or template) for single, double, template in string_literals)
+                literal_text = " ".join(
+                    content or template
+                    for _quote, content, template in string_literals
+                    if not INTERNAL_MICROS_IDENTIFIER.fullmatch(content or template)
+                )
                 for phrase in PUBLIC_STRING_FORBIDDEN:
                     if phrase.casefold() in literal_text.casefold():
                         findings.append(f"{path.relative_to(REPOSITORY_ROOT)}:{line_number}: forbidden public usage wording: {phrase}")

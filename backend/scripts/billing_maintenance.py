@@ -131,6 +131,7 @@ def _parser() -> argparse.ArgumentParser:
     razorpay.add_argument("--age-seconds", type=int, default=900)
     razorpay.add_argument("--internal-order-id")
     razorpay.add_argument("--apply", action="store_true")
+    razorpay.add_argument("--summary-only", action="store_true")
     razorpay.add_argument("--fail-on-findings", action="store_true")
     audit = sub.add_parser("audit")
     audit.add_argument("--captured-uncredited-age-seconds", type=int, default=900)
@@ -155,6 +156,7 @@ def _startup_record(
     }
     if args.command == "razorpay":
         record["apply"] = bool(args.apply)
+        record["summary_only"] = bool(args.summary_only)
         record["razorpay_mode"] = razorpay.mode if razorpay is not None else "unavailable"
         if args.fail_on_findings:
             record["fail_on_findings"] = True
@@ -204,7 +206,7 @@ def _run_command(
             return bool(report["actionable_finding_count"])
 
         from app.billing.razorpay_client import RazorpayClient
-        from app.billing.reconciliation import reconcile_razorpay_orders
+        from app.billing.reconciliation import reconciliation_summary, reconcile_razorpay_orders
 
         if razorpay is None:  # Defensive: main always validates this command.
             raise MaintenanceConfigurationError(
@@ -220,7 +222,10 @@ def _run_command(
             apply=args.apply,
             internal_order_id=args.internal_order_id,
         )
-        print(json.dumps({"apply": args.apply, "results": results}, default=str))
+        if args.summary_only:
+            print(json.dumps({"apply": args.apply, "summary": reconciliation_summary(results)}, default=str, sort_keys=True))
+        else:
+            print(json.dumps({"apply": args.apply, "results": results}, default=str))
         if not args.apply:
             session.rollback()
         return any(

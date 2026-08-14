@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from app.billing.errors import InsufficientCreditError, PaymentValidationError
 from app.billing.audit import financial_audit
 from app.billing.pricing import calculate_topup, openai_price, sarvam_price, snapshot_json
-from app.billing.reconciliation import reconcile_razorpay_orders
+from app.billing.reconciliation import reconciliation_summary, reconcile_razorpay_orders
 from app.billing.service import (
     create_billing_exempt_usage, create_usage_reservation, credit_payment_once, get_wallet_summary,
     enforce_rate_limit, recover_stale_usage_reservations, release_usage_reservation,
@@ -841,6 +841,33 @@ def test_attempted_order_without_captured_payment_is_warning():
     assert result["severity"] == "warning" and result["actionable"] is False
     assert result["provider_payment_count"] == 1
     assert result["captured_payment_present"] is False
+
+
+def test_created_order_with_non_captured_provider_payment_has_clear_no_action():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        authorized = {"id":"pay_authorized", "order_id":order.provider_order_id, "amount":1500, "currency":"INR", "status":"authorized"}
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(authorized))[0]
+    assert result["action"] == "no_action_no_captured_payment"
+    assert result["severity"] == "info" and result["actionable"] is False
+    assert result["provider_payment_count"] == 1
+    assert result["captured_payment_present"] is False
+
+
+def test_reconciliation_summary_is_compact_and_only_lists_actionable_internal_ids():
+    summary = reconciliation_summary([
+        {"internal_order_id":"high-order", "action":"credit_captured_payment", "severity":"high", "actionable":True},
+        {"internal_order_id":"info-order", "action":"no_action_unattempted_checkout", "severity":"info", "actionable":False},
+    ])
+    assert summary == {
+        "total_inspected": 2,
+        "count_by_action": {"credit_captured_payment": 1, "no_action_unattempted_checkout": 1},
+        "count_by_severity": {"high": 1, "info": 1},
+        "actionable_count": 1,
+        "actionable_high_internal_order_ids": ["high-order"],
+    }
 
 
 def test_created_order_with_valid_captured_provider_payment_is_actionable():

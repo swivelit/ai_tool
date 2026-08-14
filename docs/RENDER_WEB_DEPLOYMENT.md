@@ -643,9 +643,9 @@ likely scanned, and `.doc` uploads instruct the user to save as DOCX.
   Do not create public Vite equivalents or a Vite WebSocket URL. The browser
   derives `wss://` from an HTTPS API origin (and `ws://` from localhost), and
   the authenticated bootstrap is authoritative.
-- Set API variable `BILLING_TOPUP_PACKAGES_PAISE=1000,29900`.
+- Set API variable `BILLING_TOPUP_PACKAGES_PAISE=1500,29900`.
 - Set API variable `BILLING_ENFORCE_TOPUP_PACKAGES=false`.
-- Set API variable `BILLING_MIN_TOPUP_PAISE=1000`.
+- Set API variable `BILLING_MIN_TOPUP_PAISE=1500`.
 - Set API variable `BILLING_MAX_TOPUP_PAISE=50000`.
 - Add backend-only `SWICO_DEFAULT_TIER=lite`, `SWICO_TIER_SELECTION_ENABLED=true`, and `SWICO_PRO_ENABLED=false`.
 - Add backend-only `SWICO_LITE_MODEL_PRIMARY`, `SWICO_LITE_MODEL_FALLBACKS`, `SWICO_STANDARD_MODEL_PRIMARY`, `SWICO_STANDARD_MODEL_FALLBACKS`, `SWICO_PRO_MODEL_PRIMARY`, and `SWICO_PRO_MODEL_FALLBACKS`. Production validation requires explicit allowlisted values; use the reviewed production mappings and pricing overrides.
@@ -668,7 +668,7 @@ Render setup is a secret file named `firebase-admin.json` plus
 rejects both methods together and rejects neither method; it never logs their
 values or credential paths.
 
-All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is ₹299. The preset list is exactly those two values; custom whole-rupee top-ups are accepted only from the configured 1,000-paise minimum through the configured maximum. The API remains authoritative. Do not hardcode or remove the 50,000-paise maximum in the static site, and treat any future maximum change as a deliberate operator review. This release does not change Razorpay keys, mode, webhook URL, subscribed events, or webhook secrets.
+The billing amounts above are integer paise: `1500` is ₹15 and `29900` is ₹299. The preset list is exactly those two values; custom whole-rupee top-ups are accepted only from the configured 1,500-paise minimum through the configured maximum. The API remains authoritative. Do not hardcode or remove the 50,000-paise maximum in the static site, and treat any future maximum change as a deliberate operator review. This release does not change Razorpay keys, mode, webhook URL, subscribed events, or webhook secrets.
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
@@ -855,8 +855,8 @@ RUN_MIGRATIONS_ON_STARTUP=false
 REQUIRE_MIGRATIONS_BEFORE_STARTUP=false
 ```
 
-Razorpay reconciliation additionally requires `RAZORPAY_MODE`,
-`RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET` in Test Mode:
+Staging Razorpay reconciliation additionally requires `RAZORPAY_MODE=test`,
+matching Test Mode credentials, and the staging payment database:
 
 ```bash
 RAZORPAY_MODE=test
@@ -869,6 +869,7 @@ Its initial dry-run command is:
 ```bash
 cd backend && python -m scripts.billing_maintenance razorpay \
   --age-seconds 900 \
+  --summary-only \
   --fail-on-findings
 ```
 
@@ -884,7 +885,11 @@ cd backend && python -m scripts.billing_maintenance razorpay \
 
 Dry-run is the default. Create and retain the Cron Job without `--apply`.
 Never schedule `--apply`; any mutating reconciliation is a separately reviewed,
-one-off operator action. Never enable Live Mode as part of Cron setup. Maintenance
+one-off operator action. Staging checkout/reconciliation uses Test Mode. Production
+live checkout/reconciliation uses Live Mode and the production payment database;
+never mix a production database with Test Mode credentials. Scheduled
+reconciliation remains read-only in either mode. Never enable Live Mode as part of
+Cron setup. Maintenance
 configuration errors exit with status `78` before database-engine or
 Razorpay-client creation and never print supplied values.
 
@@ -984,13 +989,13 @@ The API returns an explicit `razorpay_mode` enum and validates its public-key pr
 
 Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the owner-attested legal publication and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
 
-For this package change the legal portion is expected to block: the approved Terms, Pricing, digital-delivery, AI-usage, privacy and refund text describes a single product called Token Credits and does not explain separate Chat and Voice balances, bucket-specific consumption, or same-bucket refund reversal. The approved Terms package description, Pricing **Gross top-up price** section, and owner attestation also still describe ₹10/₹50/₹100/₹500. Those owner/counsel-controlled policy bodies were intentionally not edited here. Do not deploy the purchasable product change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from product copy or code.
+For this package change the legal portion is expected to block: the revised Terms, Pricing, and subscription/referral wording is proposed but not yet covered by a new authorised owner/counsel approval record and matching legal-content fingerprint. Do not deploy the purchasable product change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from product copy or code.
 
 ### Two-phase Live cutover
 
 Phase one keeps checkout closed. Configure the Live key ID, Live key secret, and a separate Live webhook secret; set `RAZORPAY_MODE=live` and `BILLING_CHECKOUT_ENABLED=false`; deploy and verify the canonical webhook/public configuration; then run reconciliation and the financial audit. Test and Live credentials and webhooks are separate and must never be mixed.
 
-Phase two sets `BILLING_CHECKOUT_ENABLED=true` and deploys separately. Make one controlled ₹10 payment, verify exactly-once credit and webhook replay idempotency, then run reconciliation and the financial audit. Disable checkout immediately and investigate if any amount, credit, webhook, ledger, reconciliation, or audit result mismatches.
+Phase two sets `BILLING_CHECKOUT_ENABLED=true` and deploys separately. Make one controlled ₹15 payment, verify exactly-once credit and webhook replay idempotency, then run reconciliation and the financial audit. Disable checkout immediately and investigate if any amount, credit, webhook, ledger, reconciliation, or audit result mismatches.
 
 ## Migration and rollback
 
@@ -1086,11 +1091,9 @@ reconciliation dry-run, and financial audit.
 
 ## Production launch checks
 
-Run `python scripts/check-legal-publication.py`. The seven policy bodies retain
-their tracked owner approval and have not been reviewed or approved by counsel,
-but the checker now blocks because the approved package wording and attestation
-do not match the ₹10/₹299/custom product. Exact owner/counsel-approved replacement
-wording and a matching approval record are required; do not change publication
+Run `python scripts/check-legal-publication.py`. The revised legal pages are
+proposed content and remain blocked until authorised owner/counsel approval and
+the matching canonical SHA-256 fingerprint are recorded. Do not change approval
 metadata or effective dates speculatively. The checker validates content and
 accountable publication metadata; it is not legal advice or legal-compliance
 certification. Verify provider prices/FX policy;
@@ -1119,4 +1122,4 @@ Mode.
 
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 
-After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹10 payment with owner-controlled payment details, verify one 5,000,000-micro-INR ledger credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
+After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹15 payment with owner-controlled payment details, verify the expected server-calculated credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
