@@ -236,6 +236,7 @@ def _run_command(
                     results,
                     window_max_age_seconds=results.window_max_age_seconds,
                     out_of_window_count=results.out_of_window_count,
+                    out_of_window_captured_count=results.out_of_window_captured_count,
                 ),
             }, default=str, sort_keys=True))
         else:

@@ -871,10 +871,12 @@ cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 -
 ```
 
 The `BILLING_RECONCILIATION_MAX_AGE_SECONDS` default is `2592000` (30 days).
-Rows older than that sweep window remain covered by the read-only financial
-audit. If an order older than the window is found captured-uncredited, widen
-this variable for the reviewed sweep rather than silently narrowing audit
-coverage.
+Captured orders are inspected regardless of age. The window applies only to
+the other non-terminal statuses; rows older than that window remain covered by
+the read-only financial audit. If an order older than the window is found
+captured-uncredited, widen this variable for the reviewed sweep rather than
+silently narrowing audit coverage. A reviewed `--max-age-seconds 0` performs an
+unbounded historical sweep.
 
 ### Captured-uncredited repair
 
@@ -883,9 +885,9 @@ specific internal order, run the following three-command sequence, restoring
 the original command and resuming the Cron Job after the repair:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --fail-on-findings
-cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --apply
-cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --max-age-seconds 2592000 --fail-on-findings
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --fail-on-findings
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --apply
+cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id <uuid> --age-seconds 900 --fail-on-findings
 ```
 
 The first command is a single-order dry run, the second is the reviewed
@@ -918,7 +920,10 @@ Clean, informational-only, and warning-only audit/reconciliation reports exit
 `0`. With `--fail-on-findings`, only high-severity actionable results exit `3`.
 Expected old abandoned checkouts appear as `abandoned_checkout_order`, severity
 `info`, actionable `false`, while the command exits `0`. Captured-uncredited or
-provider-mismatch results remain high/actionable and exit `3`. In the Render workspace,
+provider-mismatch results remain high/actionable and exit `3`. A clean sweep is
+evidence about inspected rows only; `billing-financial-audit` remains the
+authority for captured-uncredited coverage across all ages. In the Render
+workspace,
 open **Integrations → Notifications**, configure Email, Slack, or both, and set
 **Default Service Notifications** to **Only failure notifications** (or **All
 notifications**). On each Cron Job’s **Settings** page, scroll to

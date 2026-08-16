@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from ..models import PaymentOrder
@@ -13,20 +13,31 @@ from .service import credit_payment_once, reverse_credit_for_refund
 
 
 _SAFE_PROVIDER_PAYMENT_STATUSES = {"created", "authorized", "captured", "refunded", "failed"}
+_WINDOWED_STATUSES = (
+    "created", "attempted", "credited", "fulfilled", "partially_refunded", "refunded",
+)
+_ALWAYS_INSPECTED_STATUSES = ("captured",)
+_RECONCILIATION_STATUSES = (
+    "created", "attempted", "captured", "credited", "fulfilled", "partially_refunded", "refunded",
+)
 
 
 class ReconciliationResults(list[dict[str, Any]]):
     """List-compatible reconciliation results with explicit window metadata."""
 
-    def __init__(self, *, window_max_age_seconds: int | None, out_of_window_count: int):
+    def __init__(
+        self, *, window_max_age_seconds: int | None, out_of_window_count: int,
+        out_of_window_captured_count: int,
+    ):
         super().__init__()
         self.window_max_age_seconds = window_max_age_seconds
         self.out_of_window_count = out_of_window_count
+        self.out_of_window_captured_count = out_of_window_captured_count
 
 
 def reconciliation_summary(
     results: list[dict[str, Any]], *, window_max_age_seconds: int | None = None,
-    out_of_window_count: int = 0,
+    out_of_window_count: int = 0, out_of_window_captured_count: int = 0,
 ) -> dict[str, Any]:
     """Return safe, compact diagnostics for scheduled reconciliation logs."""
     by_action: dict[str, int] = {}
@@ -50,6 +61,7 @@ def reconciliation_summary(
         "actionable_high_internal_order_ids": sorted(set(actionable_order_ids)),
         "window_max_age_seconds": window_max_age_seconds,
         "out_of_window_count": int(out_of_window_count),
+        "out_of_window_captured_count": int(out_of_window_captured_count),
     }
 
 
@@ -62,34 +74,49 @@ def reconcile_razorpay_orders(
 
     This is deliberately an internal command API, not an HTTP route. Existing
     ledger idempotency keys make repeated runs safe, including after duplicate
-    webhook delivery.
+    webhook delivery. A non-positive max_age_seconds disables the historical window.
     """
     current = utc_now()
     cutoff = current - timedelta(seconds=max(60, int(age_seconds)))
-    statuses = [
-        "created", "attempted", "captured", "credited", "fulfilled", "partially_refunded", "refunded",
-    ]
-    statement = select(PaymentOrder).where(PaymentOrder.status.in_(statuses))
+    statement = select(PaymentOrder).where(PaymentOrder.status.in_(_RECONCILIATION_STATUSES))
     effective_max_age_seconds = None
     out_of_window_count = 0
+    out_of_window_captured_count = 0
     if internal_order_id is None:
         statement = statement.where(PaymentOrder.created_at < cutoff)
-        if max_age_seconds is not None:
+        if max_age_seconds is not None and int(max_age_seconds) > 0:
             effective_max_age_seconds = max(60, int(max_age_seconds))
             window_cutoff = current - timedelta(seconds=effective_max_age_seconds)
             out_of_window_count = int(session.exec(
                 select(func.count(PaymentOrder.id)).where(
-                    PaymentOrder.status.in_(statuses),
+                    PaymentOrder.status.in_(_WINDOWED_STATUSES),
                     PaymentOrder.created_at < window_cutoff,
                 )
             ).one())
-            statement = statement.where(PaymentOrder.created_at >= window_cutoff)
+            inspection_window = or_(
+                PaymentOrder.status.in_(_ALWAYS_INSPECTED_STATUSES),
+                and_(
+                    PaymentOrder.status.in_(_WINDOWED_STATUSES),
+                    PaymentOrder.created_at >= window_cutoff,
+                ),
+            )
+            # This count measures captured rows omitted by the window. The
+            # always-inspected branch makes the omitted set empty by design.
+            out_of_window_captured_count = int(session.exec(
+                select(func.count(PaymentOrder.id)).where(
+                    PaymentOrder.status.in_(_ALWAYS_INSPECTED_STATUSES),
+                    PaymentOrder.created_at < window_cutoff,
+                    ~inspection_window,
+                )
+            ).one())
+            statement = statement.where(inspection_window)
     else:
         statement = statement.where(PaymentOrder.id == internal_order_id)
     rows = session.exec(statement.order_by(PaymentOrder.created_at.asc())).all()
     results = ReconciliationResults(
         window_max_age_seconds=effective_max_age_seconds,
         out_of_window_count=out_of_window_count,
+        out_of_window_captured_count=out_of_window_captured_count,
     )
     for order in rows:
         outcome: dict[str, Any] = {
