@@ -19,7 +19,7 @@ from app.billing.service import (
     reverse_credit_for_refund, settle_usage_reservation,
 )
 from app.database import SessionLocal
-from app.models import PaymentOrder, UsageCharge, WalletLedger, WebUsagePreferences
+from app.models import PaymentOrder, SubscriptionEntitlement, UsageCharge, WalletLedger, WebUsagePreferences
 from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
 
@@ -30,6 +30,21 @@ def make_order(user_id: int, gross: int = 1500) -> PaymentOrder:
         user_id=user_id, receipt=f"receipt-{user_id}-{gross}", gross_amount_paise=gross,
         credited_amount_micros=credit, platform_share_paise=platform,
         provider_order_id=f"order_{user_id}_{gross}", status="captured",
+    )
+
+
+def make_subscription_order(user_id: int) -> PaymentOrder:
+    return PaymentOrder(
+        user_id=user_id,
+        receipt=f"subscription-receipt-{user_id}",
+        gross_amount_paise=150_000,
+        credited_amount_micros=0,
+        platform_share_paise=0,
+        provider_order_id=f"subscription-order-{user_id}",
+        purchase_type="subscription",
+        subscription_plan_code="1m",
+        status="created",
+        fulfillment_status="pending",
     )
 
 
@@ -488,6 +503,95 @@ def _webhook(client, event_id: str, payload: dict):
     raw = json.dumps(payload, separators=(",", ":")).encode()
     signature = hmac.new(b"test_webhook_secret", raw, hashlib.sha256).hexdigest()
     return client.post("/api/web/billing/razorpay/webhook", content=raw, headers={"content-type":"application/json", "x-razorpay-signature":signature, "x-razorpay-event-id":event_id})
+
+
+def test_subscription_duplicate_event_ids_restore_terminal_status_and_fulfill_once(client, monkeypatch):
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_subscription_order(int(user.id))
+        session.add(order)
+        session.commit()
+        order_id = order.id
+
+    payment = {
+        "id": "pay_subscription_once",
+        "order_id": f"subscription-order-{user.id}",
+        "amount": 150_000,
+        "currency": "INR",
+        "status": "captured",
+    }
+    captured = {"event": "payment.captured", "payload": {"payment": {"entity": payment}}}
+    assert _webhook(client, "evt-a", captured).status_code == 200
+    with SessionLocal() as session:
+        order = session.get(PaymentOrder, order_id)
+        assert order.status == "fulfilled"
+        assert len(session.exec(select(SubscriptionEntitlement)).all()) == 1
+
+    paid = {
+        "event": "order.paid",
+        "payload": {
+            "payment": {"entity": payment},
+            "order": {"entity": {
+                "id": f"subscription-order-{user.id}",
+                "amount_paid": 150_000,
+                "currency": "INR",
+                "status": "paid",
+            }},
+        },
+    }
+    assert _webhook(client, "evt-b", paid).status_code == 200
+    with SessionLocal() as session:
+        order = session.get(PaymentOrder, order_id)
+        assert order.status == "fulfilled"
+        assert len(session.exec(select(SubscriptionEntitlement)).all()) == 1
+        assert financial_audit(session)["actionable_finding_count"] == 0
+
+    monkeypatch.setattr("app.web_api.router.RazorpayClient.fetch_payment", lambda self, payment_id: payment)
+    signature = hmac.new(
+        b"test_checkout_secret",
+        f"subscription-order-{user.id}|pay_subscription_once".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    response = client.post(
+        "/api/web/billing/verify",
+        headers=auth_headers("test-uid"),
+        json={
+            "internal_order_id": order_id,
+            "razorpay_order_id": f"subscription-order-{user.id}",
+            "razorpay_payment_id": "pay_subscription_once",
+            "razorpay_signature": signature,
+        },
+    )
+    assert response.status_code == 200
+    with SessionLocal() as session:
+        assert session.get(PaymentOrder, order_id).status == "fulfilled"
+
+
+def test_subscription_reconciliation_converges_for_fulfilled_and_stranded_statuses():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_subscription_order(int(user.id))
+        session.add(order)
+        session.flush()
+        credit_payment_once(session, order)
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.commit()
+        order_id = order.id
+
+        first = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)
+        second = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)
+        assert first[0]["action"] == "already_fulfilled"
+        assert second[0]["action"] == "already_fulfilled"
+        assert session.get(PaymentOrder, order_id).status == "fulfilled"
+
+        stranded = session.get(PaymentOrder, order_id)
+        stranded.status = "captured"
+        stranded.updated_at = utc_now() - timedelta(hours=1)
+        session.add(stranded)
+        session.commit()
+        repaired = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)
+        assert repaired[0]["action"] == "already_fulfilled"
+        assert session.get(PaymentOrder, order_id).status == "fulfilled"
 
 
 def test_duplicate_and_out_of_order_paid_webhooks_credit_once(client):

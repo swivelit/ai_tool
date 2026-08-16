@@ -892,9 +892,16 @@ cd backend && python -m scripts.billing_maintenance razorpay --internal-order-id
 
 The first command is a single-order dry run, the second is the reviewed
 single-order `--apply` repair without `--fail-on-findings`, and the third
-confirms the order is already credited. The ledger idempotency key
+confirms the order is already fulfilled (or already credited for a top-up).
+The ledger idempotency key
 `payment-credit:<order-id>` makes a repeat `--apply` safe. Do not add `--apply`
 to the scheduled Cron Job.
+
+If a subscription order is reported as `credit_captured_payment`, repair it
+with the same one-off `--apply` sequence. The confirming dry run should then
+return `already_fulfilled` and exit `0`. If a repair exits `0` but the next
+sweep reports the same order again, that is evidence of a no-op, not a success;
+escalate it for investigation rather than repeating the repair blindly.
 
 For a one-order dry-run investigation, obtain the internal UUID from approved
 operational evidence and run:

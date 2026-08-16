@@ -201,6 +201,12 @@ def fulfill_payment_once(session: Session, order: PaymentOrder):
                 SubscriptionEntitlement.source_payment_order_id == order.id,
             )).first()
             if existing is not None:
+                if order.status not in {"fulfilled", "partially_refunded", "refunded"}:
+                    now = utc_now()
+                    order.status = "fulfilled"
+                    order.paid_at = order.paid_at or now
+                    order.updated_at = now
+                    session.add(order)
                 return existing
         return fulfill_subscription_payment(session, order)
     return _credit_payment_once_topup(session, order)

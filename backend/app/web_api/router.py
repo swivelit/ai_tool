@@ -198,6 +198,7 @@ from .adaptive_endpointing import (
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
+_TERMINAL_PAYMENT_STATUSES = frozenset({"credited", "fulfilled", "partially_refunded", "refunded"})
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _pending_generation_cancellations: dict[str, int] = {}
 _active_generations_lock = threading.Lock()
@@ -5003,7 +5004,8 @@ def verify_payment(payload: VerifyPaymentRequest, session: Session = Depends(get
     if order.provider_payment_id and order.provider_payment_id != payload.razorpay_payment_id:
         raise HTTPException(409, "Payment order is already linked to another payment.")
     order.provider_payment_id = payload.razorpay_payment_id
-    order.status = "captured"
+    if order.status not in _TERMINAL_PAYMENT_STATUSES:
+        order.status = "captured"
     fulfill_payment_once(session, order)
     if order.purchase_type == "subscription":
         return {
@@ -5075,7 +5077,8 @@ async def razorpay_webhook(request: Request):
             else:
                 if int(order_entity.get("amount_paid", -1)) != order.gross_amount_paise or order_entity.get("currency") != "INR" or order_entity.get("status") != "paid":
                     raise HTTPException(400, "Paid order details do not match.")
-            order.status = "captured"
+            if order.status not in _TERMINAL_PAYMENT_STATUSES:
+                order.status = "captured"
             credit_payment_once(session, order)
         elif event_type == "refund.processed":
             payment_id = str(refund.get("payment_id") or payment.get("id") or "")
@@ -5095,7 +5098,8 @@ async def razorpay_webhook(request: Request):
                     if str(payment.get("id") or "") != payment_id:
                         raise HTTPException(400, "Refund payment ID does not match.")
                     order.provider_payment_id = payment_id
-                    order.status = "captured"
+                    if order.status not in _TERMINAL_PAYMENT_STATUSES:
+                        order.status = "captured"
                     credit_payment_once(session, order)
             if order is None:
                 raise HTTPException(400, "Unknown refunded payment.")

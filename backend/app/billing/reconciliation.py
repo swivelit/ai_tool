@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
-from ..models import PaymentOrder
+from ..models import PaymentOrder, SubscriptionEntitlement
 from ..time_utils import utc_now
 from .razorpay_client import RazorpayClient
 from .service import credit_payment_once, reverse_credit_for_refund
@@ -20,6 +20,7 @@ _ALWAYS_INSPECTED_STATUSES = ("captured",)
 _RECONCILIATION_STATUSES = (
     "created", "attempted", "captured", "credited", "fulfilled", "partially_refunded", "refunded",
 )
+_TERMINAL_PAYMENT_STATUSES = frozenset({"credited", "fulfilled", "partially_refunded", "refunded"})
 
 
 class ReconciliationResults(list[dict[str, Any]]):
@@ -133,9 +134,22 @@ def reconcile_razorpay_orders(
             "severity": "info",
             "actionable": False,
         }
-        if order.status in {"created", "attempted", "captured"} and not order.provider_order_id:
+        subscription_already_fulfilled = False
+        if order.purchase_type == "subscription" and order.fulfillment_status == "fulfilled":
+            subscription_already_fulfilled = session.exec(select(SubscriptionEntitlement).where(
+                SubscriptionEntitlement.source_payment_order_id == order.id,
+            )).first() is not None
+            if subscription_already_fulfilled:
+                outcome.update(action="already_fulfilled", severity="info", actionable=False)
+                if apply and order.status not in {"fulfilled", "partially_refunded", "refunded"}:
+                    now = utc_now()
+                    order.status = "fulfilled"
+                    order.paid_at = order.paid_at or now
+                    order.updated_at = now
+                    session.add(order)
+        if not subscription_already_fulfilled and order.status in {"created", "attempted", "captured"} and not order.provider_order_id:
             outcome.update(action="review_provider_mismatch", severity="high", actionable=True)
-        elif order.provider_order_id and order.status in {"created", "attempted", "captured"}:
+        elif not subscription_already_fulfilled and order.provider_order_id and order.status in {"created", "attempted", "captured"}:
             provider = client.fetch_order_payments(order.provider_order_id)
             payments = provider.get("items") if isinstance(provider, dict) else None
             if not isinstance(payments, list):
@@ -176,7 +190,8 @@ def reconcile_razorpay_orders(
                     outcome.update(action="credit_captured_payment", severity="high", actionable=True)
                     if apply:
                         order.provider_payment_id = payment_id
-                        order.status = "captured"
+                        if order.status not in _TERMINAL_PAYMENT_STATUSES:
+                            order.status = "captured"
                         credit_payment_once(session, order)
             elif order.status == "created":
                 outcome.update(

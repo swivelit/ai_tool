@@ -147,6 +147,20 @@ def financial_audit(
     if finding:
         findings.append(finding)
 
+    stranded_subscriptions = [
+        row for row in orders
+        if row.purchase_type == "subscription"
+        and row.fulfillment_status == "fulfilled"
+        and row.status not in {"fulfilled", "partially_refunded", "refunded"}
+        and ensure_utc(row.updated_at) < payment_cutoff
+    ]
+    finding = _finding(
+        "subscription_status_not_terminal",
+        (_item(row, current, timestamp="updated_at") for row in stranded_subscriptions),
+    )
+    if finding:
+        findings.append(finding)
+
     reversed_by_order: dict[str, int] = defaultdict(int)
     for row in ledgers:
         if row.entry_type == "refund_debit" and row.reference_type == "payment_refund":

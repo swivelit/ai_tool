@@ -5,6 +5,7 @@ import pytest
 from sqlmodel import select
 
 from app.billing.audit import financial_audit
+from app.billing.subscriptions import create_entitlement
 from app.database import SessionLocal
 from app.models import PaymentOrder, ProcessedWebhook, UsageCharge, WalletAccount, WalletLedger
 from app.time_utils import utc_now
@@ -139,6 +140,47 @@ def test_captured_subscription_awaiting_fulfillment_blocks_financial_release():
     summary = financial_integrity_summary(report)
     assert summary["payment_state_inconsistency"] == 1
     assert summary["ready"] is False
+
+
+@pytest.mark.parametrize("status", ["captured", "fulfilled", "partially_refunded", "refunded"])
+def test_subscription_status_not_terminal_only_fires_for_stranded_fulfillment(status):
+    user = create_test_user(uid=f"subscription-audit-{status}", email=f"subscription-audit-{status}@example.test")
+    old = utc_now() - timedelta(hours=2)
+    with SessionLocal() as session:
+        order = _old_order(int(user.id), status)
+        order.purchase_type = "subscription"
+        order.subscription_plan_code = "1m"
+        order.credited_amount_micros = 0
+        order.fulfillment_status = "fulfilled"
+        order.status = status
+        order.updated_at = old
+        if status == "partially_refunded":
+            order.refunded_amount_paise = 500
+        elif status == "refunded":
+            order.refunded_amount_paise = order.gross_amount_paise
+        session.add(order)
+        session.flush()
+        create_entitlement(
+            session,
+            user_id=int(user.id),
+            credit_bucket="chat",
+            plan_code="1m",
+            source="purchase",
+            source_payment_order_id=order.id,
+            price_paise=150_000,
+            starts_at=old,
+        )
+        order.updated_at = old
+        session.add(order)
+        session.flush()
+        report = financial_audit(session)
+    categories = _categories(report)
+    if status == "captured":
+        finding = _finding(report, "subscription_status_not_terminal")
+        assert finding["severity"] == "high"
+        assert finding["actionable"] is True
+    else:
+        assert "subscription_status_not_terminal" not in categories
 
 
 def test_credited_order_missing_ledger_is_high_and_actionable():
