@@ -590,8 +590,91 @@ def test_subscription_reconciliation_converges_for_fulfilled_and_stranded_status
         session.add(stranded)
         session.commit()
         repaired = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)
-        assert repaired[0]["action"] == "already_fulfilled"
+        assert repaired[0]["action"] == "repair_subscription_status"
         assert session.get(PaymentOrder, order_id).status == "fulfilled"
+
+
+def test_stranded_subscription_is_actionable_warning_and_converges_to_fulfilled():
+    user = create_test_user(uid="subscription-warning", email="subscription-warning@example.test")
+    with SessionLocal() as session:
+        order = make_subscription_order(int(user.id))
+        session.add(order)
+        session.flush()
+        credit_payment_once(session, order)
+        order.created_at = utc_now() - timedelta(hours=1)
+        order.status = "captured"
+        session.add(order)
+        session.commit()
+        order_id = order.id
+
+        dry_run = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=False)
+        assert dry_run[0]["action"] == "repair_subscription_status"
+        assert dry_run[0]["severity"] == "warning"
+        assert dry_run[0]["actionable"] is True
+        summary = reconciliation_summary(dry_run)
+        assert summary["actionable_warning_internal_order_ids"] == [order_id]
+        assert summary["actionable_high_internal_order_ids"] == []
+
+        repaired = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)
+        assert repaired[0]["action"] == "repair_subscription_status"
+        assert session.get(PaymentOrder, order_id).status == "fulfilled"
+
+        confirming = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=False)
+        assert confirming[0]["from_status"] == "fulfilled"
+        assert confirming[0]["action"] == "already_fulfilled"
+        assert confirming[0]["severity"] == "info"
+        assert confirming[0]["actionable"] is False
+
+
+@pytest.mark.parametrize("status", ["fulfilled", "partially_refunded", "refunded"])
+def test_settled_subscription_statuses_are_not_repaired(status):
+    user = create_test_user(uid=f"subscription-settled-{status}", email=f"subscription-settled-{status}@example.test")
+    with SessionLocal() as session:
+        order = make_subscription_order(int(user.id))
+        session.add(order)
+        session.flush()
+        credit_payment_once(session, order)
+        order.created_at = utc_now() - timedelta(hours=1)
+        order.status = status
+        if status == "partially_refunded":
+            order.refunded_amount_paise = 75_000
+        elif status == "refunded":
+            order.refunded_amount_paise = order.gross_amount_paise
+        session.add(order)
+        session.commit()
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(None), apply=True)[0]
+        assert result["action"] == "already_fulfilled"
+        assert result["severity"] == "info"
+        assert result["actionable"] is False
+        assert session.get(PaymentOrder, order.id).status == status
+
+
+def test_stranded_subscription_polls_and_reconciles_processed_refund():
+    user = create_test_user(uid="subscription-refund", email="subscription-refund@example.test")
+    with SessionLocal() as session:
+        order = make_subscription_order(int(user.id))
+        session.add(order)
+        session.flush()
+        credit_payment_once(session, order)
+        order.provider_payment_id = "pay_subscription_refund"
+        order.status = "captured"
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order)
+        session.commit()
+        refunds = [{
+            "id": "rfnd_subscription",
+            "payment_id": order.provider_payment_id,
+            "amount": order.gross_amount_paise,
+            "currency": "INR",
+            "status": "processed",
+        }]
+        result = reconcile_razorpay_orders(
+            session,
+            client=_ReconciliationClient(None, refunds),
+            apply=True,
+        )[0]
+        assert result["action"] == "reconcile_refund"
+        assert session.get(PaymentOrder, order.id).status == "refunded"
 
 
 def test_duplicate_and_out_of_order_paid_webhooks_credit_once(client):
@@ -1055,6 +1138,7 @@ def test_reconciliation_summary_is_compact_and_only_lists_actionable_internal_id
         "count_by_severity": {"high": 1, "info": 1},
         "actionable_count": 1,
         "actionable_high_internal_order_ids": ["high-order"],
+        "actionable_warning_internal_order_ids": [],
         "window_max_age_seconds": None,
         "out_of_window_count": 0,
         "out_of_window_captured_count": 0,

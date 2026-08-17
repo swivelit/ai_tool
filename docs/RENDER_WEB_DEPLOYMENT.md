@@ -842,8 +842,12 @@ Configure `billing-financial-audit` with this read-only command:
 ```bash
 cd backend && python -m scripts.billing_maintenance audit \
   --captured-uncredited-age-seconds 900 \
+  --summary-only \
   --fail-on-findings
 ```
+
+Do not add `--summary-only` to the Render Cron Job until this maintenance
+change is deployed; before then, retain the existing full audit output.
 
 Every financial Cron Job requires:
 
@@ -899,9 +903,17 @@ to the scheduled Cron Job.
 
 If a subscription order is reported as `credit_captured_payment`, repair it
 with the same one-off `--apply` sequence. The confirming dry run should then
-return `already_fulfilled` and exit `0`. If a repair exits `0` but the next
-sweep reports the same order again, that is evidence of a no-op, not a success;
-escalate it for investigation rather than repeating the repair blindly.
+return `already_fulfilled`, with `from_status` equal to `fulfilled`, and exit
+`0`. The `already_fulfilled` action by itself is not sufficient evidence,
+because stranded subscriptions were previously reported with that action too.
+
+If a subscription order is reported as `repair_subscription_status`, it means
+the entitlement exists but the payment-order status is not terminal. It is a
+warning-severity actionable repair because no money is at risk; repair it with
+the same reviewed one-off `--apply` sequence. If a repair exits `0` but the
+next sweep reports the same order again, that is evidence of a no-op, not a
+success; escalate it for investigation rather than repeating the repair
+blindly.
 
 For a one-order dry-run investigation, obtain the internal UUID from approved
 operational evidence and run:
@@ -923,11 +935,13 @@ Cron setup. Maintenance
 configuration errors exit with status `78` before database-engine or
 Razorpay-client creation and never print supplied values.
 
-Clean, informational-only, and warning-only audit/reconciliation reports exit
-`0`. With `--fail-on-findings`, only high-severity actionable results exit `3`.
+Clean, informational-only, and non-actionable warning reports exit `0`. With
+`--fail-on-findings`, any actionable result exits `3`.
 Expected old abandoned checkouts appear as `abandoned_checkout_order`, severity
 `info`, actionable `false`, while the command exits `0`. Captured-uncredited or
-provider-mismatch results remain high/actionable and exit `3`. A clean sweep is
+provider-mismatch results remain high/actionable and exit `3`; a stranded
+subscription `repair_subscription_status` result is warning/actionable and also
+exits `3`. A clean sweep is
 evidence about inspected rows only; `billing-financial-audit` remains the
 authority for captured-uncredited coverage across all ages. In the Render
 workspace,

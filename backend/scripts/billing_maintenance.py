@@ -145,6 +145,7 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.getenv("BILLING_STALE_RESERVATION_AGE_SECONDS", "1800")),
     )
+    audit.add_argument("--summary-only", action="store_true")
     audit.add_argument("--fail-on-findings", action="store_true")
     return parser
 
@@ -167,6 +168,7 @@ def _startup_record(
         if args.fail_on_findings:
             record["fail_on_findings"] = True
     if args.command == "audit":
+        record["summary_only"] = bool(args.summary_only)
         record["fail_on_findings"] = bool(args.fail_on_findings)
     print(json.dumps(record, sort_keys=True), file=sys.stderr)
 
@@ -201,7 +203,36 @@ def _run_command(
                 stale_reservation_age_seconds=args.stale_reservation_age_seconds,
             )
             session.rollback()
-            print(json.dumps(report, default=str, sort_keys=True))
+            if args.summary_only:
+                actionable_internal_ids = sorted({
+                    str(item["internal_id"])
+                    for finding in report["findings"]
+                    if finding.get("actionable") is True
+                    for item in finding.get("items", [])
+                    if isinstance(item, dict) and item.get("internal_id")
+                })
+                print(json.dumps({
+                    "audit": report["audit"],
+                    "generated_at": report["generated_at"],
+                    "finding_count": report["finding_count"],
+                    "informational_finding_count": report["informational_finding_count"],
+                    "warning_finding_count": report["warning_finding_count"],
+                    "high_severity_count": report["high_severity_count"],
+                    "actionable_finding_count": report["actionable_finding_count"],
+                    "wallet_totals_by_bucket": report["wallet_totals_by_bucket"],
+                    "findings": [
+                        {
+                            "category": finding["category"],
+                            "severity": finding["severity"],
+                            "actionable": finding["actionable"],
+                            "count": finding["count"],
+                        }
+                        for finding in report["findings"]
+                    ],
+                    "actionable_internal_ids": actionable_internal_ids,
+                }, default=str, sort_keys=True))
+            else:
+                print(json.dumps(report, default=str, sort_keys=True))
             if int(report["actionable_finding_count"]) and os.getenv("SENTRY_DSN", "").strip():
                 bootstrap_observability()
                 safe_counts = {item["category"]: item["count"] for item in report["findings"]}
@@ -243,10 +274,7 @@ def _run_command(
             print(json.dumps({"apply": args.apply, "results": results}, default=str))
         if not args.apply:
             session.rollback()
-        return any(
-            item.get("severity") == "high" and item.get("actionable") is True
-            for item in results
-        )
+        return any(item.get("actionable") is True for item in results)
     except Exception:
         session.rollback()
         raise

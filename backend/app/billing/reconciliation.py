@@ -44,7 +44,8 @@ def reconciliation_summary(
     by_action: dict[str, int] = {}
     by_severity: dict[str, int] = {}
     actionable = 0
-    actionable_order_ids: list[str] = []
+    actionable_high_order_ids: list[str] = []
+    actionable_warning_order_ids: list[str] = []
     for result in results:
         action = str(result.get("action") or "unknown")
         severity = str(result.get("severity") or "unknown")
@@ -53,13 +54,16 @@ def reconciliation_summary(
         if result.get("actionable") is True:
             actionable += 1
             if severity == "high" and result.get("internal_order_id"):
-                actionable_order_ids.append(str(result["internal_order_id"]))
+                actionable_high_order_ids.append(str(result["internal_order_id"]))
+            if severity == "warning" and result.get("internal_order_id"):
+                actionable_warning_order_ids.append(str(result["internal_order_id"]))
     return {
         "total_inspected": len(results),
         "count_by_action": dict(sorted(by_action.items())),
         "count_by_severity": dict(sorted(by_severity.items())),
         "actionable_count": actionable,
-        "actionable_high_internal_order_ids": sorted(set(actionable_order_ids)),
+        "actionable_high_internal_order_ids": sorted(set(actionable_high_order_ids)),
+        "actionable_warning_internal_order_ids": sorted(set(actionable_warning_order_ids)),
         "window_max_age_seconds": window_max_age_seconds,
         "out_of_window_count": int(out_of_window_count),
         "out_of_window_captured_count": int(out_of_window_captured_count),
@@ -140,7 +144,10 @@ def reconcile_razorpay_orders(
                 SubscriptionEntitlement.source_payment_order_id == order.id,
             )).first() is not None
             if subscription_already_fulfilled:
-                outcome.update(action="already_fulfilled", severity="info", actionable=False)
+                if order.status in {"fulfilled", "partially_refunded", "refunded"}:
+                    outcome.update(action="already_fulfilled", severity="info", actionable=False)
+                else:
+                    outcome.update(action="repair_subscription_status", severity="warning", actionable=True)
                 if apply and order.status not in {"fulfilled", "partially_refunded", "refunded"}:
                     now = utc_now()
                     order.status = "fulfilled"
@@ -202,7 +209,13 @@ def reconcile_razorpay_orders(
                 outcome.update(action="review_long_lived_attempt", severity="warning", actionable=False)
             else:
                 outcome.update(action="review_provider_mismatch", severity="high", actionable=True)
-        if order.provider_payment_id and order.status in {"credited", "fulfilled", "partially_refunded", "refunded"}:
+        if order.provider_payment_id and (
+            order.status in {"credited", "fulfilled", "partially_refunded", "refunded"}
+            or (
+                order.purchase_type == "subscription"
+                and order.fulfillment_status == "fulfilled"
+            )
+        ):
             provider_refunds = client.fetch_payment_refunds(order.provider_payment_id)
             items = provider_refunds.get("items") if isinstance(provider_refunds, dict) else []
             processed = [item for item in (items or []) if item.get("status") == "processed"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 import shutil
 import subprocess
@@ -53,7 +54,7 @@ def test_render_cron_operator_instructions_are_complete() -> None:
         "service-level `DATABASE_URL`",
         "must be rotated manually in Render",
         "Never schedule `--apply`",
-        "only high-severity actionable results exit `3`",
+        "any actionable result exits `3`",
     )
 
     missing = [item for item in required if item not in instructions]
@@ -65,6 +66,45 @@ def test_razorpay_summary_only_is_readable_without_changing_dry_run_defaults() -
     assert args.summary_only is True
     assert args.apply is False
     assert args.max_age_seconds == 2592000
+
+
+def test_audit_summary_only_is_compact_and_full_audit_remains_detailed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    user = create_test_user(uid="maintenance-audit-summary", email="maintenance-audit-summary@example.test")
+    old = utc_now() - timedelta(hours=2)
+    with SessionLocal() as session:
+        order = PaymentOrder(
+            user_id=int(user.id),
+            receipt="maintenance-audit-summary-receipt",
+            gross_amount_paise=1500,
+            credited_amount_micros=7_500_000,
+            platform_share_paise=750,
+            status="captured",
+            updated_at=old,
+        )
+        session.add(order)
+        session.commit()
+        order_id = order.id
+
+    _configure_local_cli(monkeypatch)
+    assert billing_maintenance.main(["audit", "--summary-only", "--fail-on-findings"]) == FINDINGS_EXIT_CODE
+    summary_output = capsys.readouterr()
+    summary = json.loads(summary_output.out)
+    assert summary["audit"] == "financial_integrity"
+    assert {"finding_count", "informational_finding_count", "warning_finding_count", "high_severity_count", "actionable_finding_count"} <= set(summary)
+    assert "wallet_totals_by_bucket" in summary
+    assert summary["actionable_internal_ids"] == [order_id]
+    assert all(set(finding) == {"category", "severity", "actionable", "count"} for finding in summary["findings"])
+    assert "items" not in summary_output.out
+    assert json.loads(summary_output.err)["summary_only"] is True
+
+    assert billing_maintenance.main(["audit", "--fail-on-findings"]) == FINDINGS_EXIT_CODE
+    full_output = capsys.readouterr()
+    full = json.loads(full_output.out)
+    assert all("items" in finding for finding in full["findings"])
+    assert json.loads(full_output.err)["summary_only"] is False
 
 
 def _subprocess_environment(**updates: str) -> dict[str, str]:
