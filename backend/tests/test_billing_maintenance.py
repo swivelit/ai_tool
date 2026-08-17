@@ -104,7 +104,39 @@ def test_audit_summary_only_is_compact_and_full_audit_remains_detailed(
     full_output = capsys.readouterr()
     full = json.loads(full_output.out)
     assert all("items" in finding for finding in full["findings"])
+    assert all("internal_ids" not in finding for finding in full["findings"])
     assert json.loads(full_output.err)["summary_only"] is False
+
+
+def test_audit_summary_only_uses_complete_actionable_id_list(monkeypatch, capsys):
+    internal_ids = [f"actionable-{index:02d}" for index in range(60)]
+    report = {
+        "audit": "financial_integrity",
+        "generated_at": "2026-08-17T00:00:00+00:00",
+        "finding_count": 60,
+        "informational_finding_count": 0,
+        "warning_finding_count": 0,
+        "high_severity_count": 60,
+        "actionable_finding_count": 60,
+        "wallet_totals_by_bucket": {"chat": {}, "voice": {}},
+        "findings": [{
+            "category": "test_actionable",
+            "severity": "high",
+            "actionable": True,
+            "count": 60,
+            "items": [{"internal_id": value} for value in internal_ids[:50]],
+            "internal_ids": internal_ids,
+        }],
+    }
+    monkeypatch.setattr("app.billing.audit.financial_audit", lambda session, **kwargs: report)
+    _configure_local_cli(monkeypatch)
+    assert billing_maintenance.main(["audit", "--summary-only"]) == 0
+    output = capsys.readouterr().out
+    summary = json.loads(output)
+    assert summary["actionable_internal_ids"] == internal_ids
+    assert all("items" not in finding for finding in summary["findings"])
+    assert {"finding_count", "informational_finding_count", "warning_finding_count", "high_severity_count", "actionable_finding_count"} <= set(summary)
+    assert "wallet_totals_by_bucket" in summary
 
 
 def _subprocess_environment(**updates: str) -> dict[str, str]:

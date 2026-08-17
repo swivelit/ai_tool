@@ -4,7 +4,7 @@ from datetime import timedelta
 import pytest
 from sqlmodel import select
 
-from app.billing.audit import financial_audit
+from app.billing.audit import _finding as build_finding, financial_audit
 from app.billing.subscriptions import create_entitlement
 from app.database import SessionLocal
 from app.models import PaymentOrder, ProcessedWebhook, UsageCharge, WalletAccount, WalletLedger
@@ -36,6 +36,22 @@ def _old_order(user_id: int, status: str) -> PaymentOrder:
         created_at=old,
         updated_at=old,
     )
+
+
+def test_actionable_finding_keeps_full_internal_ids_with_capped_preview():
+    rows = [{"internal_id": f"order-{index:02d}"} for index in range(60)]
+    finding = build_finding("test_actionable", rows)
+    assert finding["count"] == 60
+    assert len(finding["items"]) == 50
+    assert finding["internal_ids"] == [f"order-{index:02d}" for index in range(60)]
+
+
+def test_informational_finding_does_not_include_internal_ids():
+    rows = [{"internal_id": f"checkout-{index:02d}"} for index in range(60)]
+    finding = build_finding("test_informational", rows, severity="info", actionable=False)
+    assert finding["count"] == 60
+    assert len(finding["items"]) == 50
+    assert "internal_ids" not in finding
 
 
 def test_clean_audit():

@@ -848,6 +848,9 @@ cd backend && python -m scripts.billing_maintenance audit \
 
 Do not add `--summary-only` to the Render Cron Job until this maintenance
 change is deployed; before then, retain the existing full audit output.
+In summary mode, `actionable_internal_ids` is the complete actionable ID list.
+The `items` array in full-report output is only a 50-item preview per finding,
+so do not use full-report output to enumerate an actionable set.
 
 Every financial Cron Job requires:
 

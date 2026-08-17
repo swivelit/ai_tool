@@ -35,13 +35,20 @@ def _finding(
     items = list(rows)
     if not items:
         return None
-    return {
+    finding = {
         "category": category,
         "severity": severity,
         "actionable": actionable,
         "count": len(items),
         "items": items[:50],
     }
+    if actionable:
+        finding["internal_ids"] = sorted({
+            str(item["internal_id"])
+            for item in items
+            if isinstance(item, dict) and item.get("internal_id")
+        })
+    return finding
 
 
 def financial_audit(

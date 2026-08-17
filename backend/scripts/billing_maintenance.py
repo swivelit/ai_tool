@@ -204,12 +204,21 @@ def _run_command(
             )
             session.rollback()
             if args.summary_only:
+                def _actionable_ids(finding: dict) -> list[str]:
+                    internal_ids = finding.get("internal_ids")
+                    if isinstance(internal_ids, list):
+                        return [str(value) for value in internal_ids if value]
+                    return [
+                        str(item["internal_id"])
+                        for item in finding.get("items", [])
+                        if isinstance(item, dict) and item.get("internal_id")
+                    ]
+
                 actionable_internal_ids = sorted({
-                    str(item["internal_id"])
+                    internal_id
                     for finding in report["findings"]
                     if finding.get("actionable") is True
-                    for item in finding.get("items", [])
-                    if isinstance(item, dict) and item.get("internal_id")
+                    for internal_id in _actionable_ids(finding)
                 })
                 print(json.dumps({
                     "audit": report["audit"],
@@ -232,7 +241,25 @@ def _run_command(
                     "actionable_internal_ids": actionable_internal_ids,
                 }, default=str, sort_keys=True))
             else:
-                print(json.dumps(report, default=str, sort_keys=True))
+                has_over_cap_actionable_finding = any(
+                    finding.get("actionable") is True
+                    and isinstance(finding.get("internal_ids"), list)
+                    and len(finding["internal_ids"]) > 50
+                    for finding in report["findings"]
+                )
+                if has_over_cap_actionable_finding:
+                    full_report = report
+                else:
+                    full_report = dict(report)
+                    full_report["findings"] = [
+                        {
+                            key: value
+                            for key, value in finding.items()
+                            if key != "internal_ids"
+                        }
+                        for finding in report["findings"]
+                    ]
+                print(json.dumps(full_report, default=str, sort_keys=True))
             if int(report["actionable_finding_count"]) and os.getenv("SENTRY_DSN", "").strip():
                 bootstrap_observability()
                 safe_counts = {item["category"]: item["count"] for item in report["findings"]}
