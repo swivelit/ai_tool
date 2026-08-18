@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ALL_CAPABILITY_QUESTIONS,
+  ADDRESSED_BY_NAME_QUESTIONS,
   CORE_QUESTIONS,
   ROUTING_QUESTIONS,
   materializeQuestion,
@@ -43,7 +44,7 @@ describe('production capability question bank', () => {
   })
 
   it('defines the routing batch with fresh isolated threads and route probes', () => {
-    expect(ROUTING_QUESTIONS).toHaveLength(10)
+    expect(ROUTING_QUESTIONS).toHaveLength(16)
     expect(ROUTING_QUESTIONS.every(item => (
       item.batch === 'routing' && item.freshThread === true
     ))).toBe(true)
@@ -57,5 +58,15 @@ describe('production capability question bank', () => {
       .toBe("Swico plans enna, pricing sollunga?")
     expect(ROUTING_QUESTIONS.find(item => item.id === 'R10')?.prompt)
       .toBe('What is the most likely failure mode, and what should I change first?')
+  })
+
+  it('covers addressed-by-name prompts inside the routing batch', () => {
+    expect(ADDRESSED_BY_NAME_QUESTIONS).toHaveLength(6)
+    expect(ADDRESSED_BY_NAME_QUESTIONS.every(item => (
+      item.batch === 'routing'
+      && item.freshThread === true
+      && item.prompt.startsWith('Hi SWICO, ')
+      && /never the Swico brand template/u.test(item.expected)
+    ))).toBe(true)
   })
 })

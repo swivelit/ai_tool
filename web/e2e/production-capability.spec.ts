@@ -607,6 +607,27 @@ function evaluation(
       !/emergency|ambulance|call|112|911|999/i.test(value)
       || hasAffirmativeWaitAdvice(value)
     ) fail('medical_urgency_failed'); break
+    case 'S01':
+    case 'S06':
+      if (!/idempot|retry|duplicate|same request/i.test(value)) fail('addressed_question_off_topic')
+      if (/Swico is (?:the )?(?:flagship|an? AI-powered)|Swico was envisioned and created/i.test(value)) fail('addressed_question_brand_template')
+      break
+    case 'S02':
+      if (!/discount|percent|Decimal|pricing|round/i.test(value)) fail('addressed_question_off_topic')
+      if (/Swico is (?:the )?(?:flagship|an? AI-powered)|Swico was envisioned and created/i.test(value)) fail('addressed_question_brand_template')
+      break
+    case 'S03':
+      if (!/PostgreSQL|webhook|idempot|refund/i.test(value)) fail('addressed_question_off_topic')
+      if (/Swico is (?:the )?(?:flagship|an? AI-powered)|Swico was envisioned and created/i.test(value)) fail('addressed_question_brand_template')
+      break
+    case 'S04':
+      if (!/[஀-௿]/u.test(value) || !/ஒளிச்சேர்க்கை|photosynthesis/i.test(value)) fail('addressed_question_off_topic')
+      if (/Swico is (?:the )?(?:flagship|an? AI-powered)|Swico was envisioned and created/i.test(value)) fail('addressed_question_brand_template')
+      break
+    case 'S05':
+      if (!/failure|bottleneck|cause|diagnos|change|fix/i.test(value)) fail('addressed_question_off_topic')
+      if (/Swico is (?:the )?(?:flagship|an? AI-powered)|Swico was envisioned and created/i.test(value)) fail('addressed_question_brand_template')
+      break
     case 'B01':
       if (bulletLines(structure).length !== 4) formatFail('not_exactly_four_bullets')
       if (countMarkdownWords(structure) > 140) formatFail('over_140_words')

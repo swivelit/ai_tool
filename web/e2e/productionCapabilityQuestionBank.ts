@@ -200,6 +200,43 @@ export const VOICE_QUESTIONS: CapabilityQuestion[] = [
   { id:'I04', category:'I', batch:'voice-ui', prompt:'What is two plus two?', expected:'Voice reply play/pause/replay/error recovery with visible text and no render-driven duplicate debit.' },
 ]
 
+const addressedByName = (
+  id: string,
+  prompt: string,
+  expected: string,
+): CapabilityQuestion => ({
+  id, category:'S', batch:'routing', tier:'standard', freshThread:true,
+  prompt:`Hi SWICO, ${prompt}`,
+  expected,
+})
+
+export const ADDRESSED_BY_NAME_QUESTIONS: CapabilityQuestion[] = [
+  addressedByName(
+    'S01', B01,
+    'On-topic idempotency explanation with exactly four bullets; never the Swico brand template.',
+  ),
+  addressedByName(
+    'S02', B02,
+    'The requested pricing correction and two Python test blocks; never the Swico brand template.',
+  ),
+  addressedByName(
+    'S03', B03,
+    'Complete ten-part Razorpay architecture; never the Swico brand template.',
+  ),
+  addressedByName(
+    'S04', 'ஒளிச்சேர்க்கை எப்படி வேலை செய்கிறது? ஐந்து எளிய தமிழ் வாக்கியங்களில் விளக்கவும்.',
+    'Five simple Tamil photosynthesis sentences; never the Swico brand template.',
+  ),
+  addressedByName(
+    'S05', 'What is the most likely failure mode, and what should I change first?',
+    'On-topic failure-mode guidance; never the Swico brand template.',
+  ),
+  addressedByName(
+    'S06', 'Explain idempotency in payment APIs to a junior developer. Use exactly four bullet points, include one concrete retry example, and use no more than 140 words.',
+    'Exactly four on-topic idempotency bullets; never the Swico brand template.',
+  ),
+]
+
 export const ROUTING_QUESTIONS: CapabilityQuestion[] = [
   {
     id:'R01', category:'R', batch:'routing', tier:'pro', freshThread:true,
@@ -267,6 +304,7 @@ Cover these ten numbered areas concisely: database schema and unique constraints
     prompt:'What is the most likely failure mode, and what should I change first?',
     expected:'Provider generation; an unqualified failure-mode question must not select deterministic pricing.',
   },
+  ...ADDRESSED_BY_NAME_QUESTIONS,
 ]
 
 export const ALL_CAPABILITY_QUESTIONS = [

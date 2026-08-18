@@ -331,6 +331,62 @@ def test_ordinary_questions_are_not_brand_classified(question):
 
 
 @pytest.mark.parametrize(
+    "question",
+    [
+        "Hi SWICO, I'm studying in 10th standard. Can you explain photosynthesis in a simple way with an example?",
+        "Hi SWICO, can you explain the difference between frontend and backend development?",
+        "Hi SWICO, I need a final-year project idea based on artificial intelligence. Can you suggest a few practical ideas",
+        "Hi SWICO, imagine a city wants to reduce plastic waste by 50% in five years. What practical steps should the city take, and why would each step help",
+        "Hi SWICO, my Python application works correctly with 1,000 records but becomes extremely slow with 1 million records. What are the likely causes, how would you diagnose the bottleneck, and what optimizations would you consider",
+        "hi swico ,what is AI",
+    ],
+)
+def test_vocative_product_address_does_not_hijack_ordinary_questions(question):
+    assert classify_swico_brand_query(question) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is Swico?",
+        "Hi Swico, who are you?",
+        "Who created you?",
+        "Tell me about Swico",
+        "Which company developed you?",
+        "What can Swico do?",
+        "Who made Swico?",
+        "How does Swico work?",
+        "Is Swico secure?",
+        "What model do you use?",
+    ],
+)
+def test_aboutness_brand_questions_still_use_the_brand_route(question):
+    assert classify_swico_brand_query(question) is not None
+
+
+def test_long_vocative_question_is_not_given_the_simple_brand_budget():
+    question = (
+        "Hi SWICO, my Python application works correctly with 1,000 records but becomes extremely slow "
+        "with 1 million records. What are the likely causes, how would you diagnose the bottleneck, "
+        "and what optimizations would you consider"
+    )
+    optimized = optimize_web_turn(question)
+    assert optimized.answer_class != "simple"
+    assert optimized.optimization_route != "deterministic_swico_brand"
+
+
+def test_english_message_overrides_stored_tamil_preference_for_brand_reply():
+    english = swico_brand_response(
+        SwicoBrandSubintent.ABOUT, reply_language="ta", message="What is Swico?"
+    )
+    tamil = swico_brand_response(
+        SwicoBrandSubintent.ABOUT, reply_language="en", message="ஸ்விகோ என்றால் என்ன?"
+    )
+    assert "Swico is" in english
+    assert "Swivel Technologies உருவாக்கிய" in tamil
+
+
+@pytest.mark.parametrize(
     "followup",
     [
         "Who made it?",

@@ -77,6 +77,14 @@ def optimize_web_turn(
         else classify_swico_brand_query(text, previous_topic=previous_topic)
     )
     if brand_match is not None:
+        # Lazy import avoids coupling this optimizer's module initialization to
+        # the deterministic-answer module, which imports the brand classifier.
+        from .deterministic_answers import deterministic_scope_decision
+
+        scope = deterministic_scope_decision(text, previous_topic=previous_topic)
+        if scope.scope_gate_reason is not None:
+            brand_match = None
+    if brand_match is not None:
         maximum = output_ceiling("simple")
         metrics = {
             "optimization_route": "deterministic_swico_brand",

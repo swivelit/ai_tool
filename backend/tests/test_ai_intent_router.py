@@ -81,6 +81,21 @@ def test_speech_translation_and_safety_intents():
     assert classify_intent("I have chest pain, what dosage should I take?").intent == "unsafe_or_sensitive"
 
 
+def test_technical_diagnosis_is_not_mistaken_for_clinical_safety():
+    assert classify_intent("how would you diagnose the bottleneck").intent != "unsafe_or_sensitive"
+
+
+def test_crisis_breathing_message_still_uses_safety_path():
+    assert classify_intent("my chest hurts and I can't breathe").intent == "unsafe_or_sensitive"
+
+
+@pytest.mark.parametrize("wake", ["hi swico", "hey swico", "hello swico", "swico", "swaiko"])
+def test_swico_wake_words_are_removed_as_wake_prefixes(wake):
+    normalized = normalize_voice_query_for_intent(f"{wake}, explain this")
+    assert normalized["stripped_wake_word"] is True
+    assert normalized["normalized"] == "explain this"
+
+
 def test_emergency_symptoms_are_distinct_from_harmful_safety_requests():
     emergency = classify_intent(
         "A hypothetical person has sudden crushing chest pain, difficulty "

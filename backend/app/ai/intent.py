@@ -18,6 +18,11 @@ _WAKE_PREFIXES: tuple[str, ...] = (
     "hi elli",
     "hello elli",
     "elli",
+    "hey swico",
+    "hi swico",
+    "hello swico",
+    "swico",
+    "swaiko",
     "vanakkam",
     "வணக்கம் elli",
     "வணக்கம்",
@@ -35,6 +40,11 @@ _WAKE_WORD_PREFIXES = {
     "hi elli",
     "hello elli",
     "elli",
+    "hey swico",
+    "hi swico",
+    "hello swico",
+    "swico",
+    "swaiko",
     "vanakkam",
     "வணக்கம் elli",
     "வணக்கம்",
@@ -116,6 +126,37 @@ _DEFENSIVE_ACCOUNT_SECURITY_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_UNCONDITIONAL_SAFETY_RE = re.compile(
+    r"\b(?:suicide|self[- ]?harm|kill myself|hurt myself|harm myself|"
+    r"overdose|cannot breathe|can't breathe|chest pain)\b",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_CLINICAL_RE = re.compile(
+    r"\b(?:emergency|diagnos(?:e|is)|dosage|prescription|bleeding)\b",
+    re.IGNORECASE,
+)
+_HEALTH_DOMAIN_RE = re.compile(
+    r"\b(?:symptom|patient|illness|disease|condition|doctor|hospital|medical|"
+    r"health|fever|infection|blood|medicine|drug|mg|ml|pain)\b",
+    re.IGNORECASE,
+)
+_TECHNICAL_DOMAIN_RE = re.compile(
+    r"\b(?:bug|error|exception|code|application|database|query|server|latency|"
+    r"performance|bottleneck|memory leak|stack trace|cpu|index|deployment|log)\b",
+    re.IGNORECASE,
+)
+_SAFETY_ADVICE_RE = re.compile(
+    r"\b(?:medical advice|legal advice|tax advice|investment advice|stock tip|lawsuit)\b",
+    re.IGNORECASE,
+)
+_UNSAFE_OR_SENSITIVE_RE = re.compile(
+    r"\b(?:suicide|self[- ]?harm|kill myself|hurt myself|harm myself|"
+    r"emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|"
+    r"medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|"
+    r"tax advice|investment advice|stock tip)\b",
+    re.IGNORECASE,
+)
+
 
 def is_harmful_credential_abuse(message: str) -> bool:
     text = str(message or "").strip()
@@ -132,6 +173,17 @@ def is_urgent_medical_emergency(message: str) -> bool:
             _URGENT_BREATHING_RE.search(text)
             or _URGENT_RADIATION_RE.search(text)
         )
+    )
+
+
+def is_unsafe_or_sensitive(message: str) -> bool:
+    text = str(message or "")
+    if _UNCONDITIONAL_SAFETY_RE.search(text) or _SAFETY_ADVICE_RE.search(text):
+        return True
+    return bool(
+        _AMBIGUOUS_CLINICAL_RE.search(text)
+        and _HEALTH_DOMAIN_RE.search(text)
+        and not _TECHNICAL_DOMAIN_RE.search(text)
     )
 
 
@@ -169,7 +221,7 @@ _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("unsafe_or_sensitive", re.compile(r"\b(suicide|self[- ]?harm|kill myself|hurt myself|harm myself|emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|tax advice|investment advice|stock tip)\b", re.I)),
+    ("unsafe_or_sensitive", _UNSAFE_OR_SENSITIVE_RE),
     ("file_retrieval", re.compile(r"\b(open|find|show|get|retrieve)\b.*\b(file|files|doc|docs|document|documents|pdf|notes?)\b|\b(?:yesterday|today|nethu|naethu|inniku|business|work|home)\b.*\b(?:open|find|show|notes?|pdf|file)\b|\b(?:நேத்து|நேற்று|இன்று|business|work|home)\b.*\b(?:open|find|show|notes?|pdf|file|காட்டு|திற)\b|(?:file|pdf|notes?)\s+(?:show|open)\s*(?:பண்ணு|pannu)?", re.I)),
     ("creative_tool", re.compile(r"\b(create|make|edit|generate|clean up|cleanup)\b.*\b(poster|image|photo|video|audio|song|voice edit|thumbnail|recording)\b|\b(poster|image|photo|video|audio)\b.*\b(edit|editing|generate|cleanup|clean up)\b", re.I)),
     ("document", re.compile(
@@ -319,6 +371,8 @@ def _classify_intent_text(
         )
     for intent, pattern in _PATTERNS:
         if pattern.search(text):
+            if intent == "unsafe_or_sensitive" and not is_unsafe_or_sensitive(text):
+                continue
             if intent == "greeting":
                 if not prefix_greeting and not is_pure_greeting(original_message or text):
                     continue

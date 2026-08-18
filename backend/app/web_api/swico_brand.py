@@ -265,6 +265,12 @@ _TAMIL_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
 _PRODUCT_REFERENCE_RE = re.compile(
     r"(?:\bswico\b|\bswivel\s+technologies\b|\bjeyanth\b|ஸ்விகோ|சுவிகோ|ஸ்விவல்)", re.I
 )
+_VOCATIVE_ADDRESS_RE = re.compile(
+    r"^\s*(?:(?:hi|hey|hello|yo|ok|okay|vanakkam|வணக்கம்)\s+)?"
+    r"(?:swico|swaiko|ஸ்விகோ|சுவிகோ)"
+    r"(?=\s|$|[,.:;!?،।\-–—])[,.:;!?،।\-–—\s]*",
+    re.I,
+)
 _SELF_REFERENCE_RE = re.compile(
     r"(?:\bwho\s+are\s+you\b|\bwhat\s+are\s+you\b|\bwhat(?:'s|\s+is)\s+your\s+name\b|"
     r"\bwhat\s+ai\s+are\s+you\b|\bwho\s+(?:created|made|developed|built)\s+you\b|"
@@ -285,6 +291,28 @@ _CONTEXTUAL_REFERENCE_RE = re.compile(
     r"what\s+is\s+(?:its|the)\s+architecture|who\s+leads\s+it)\s*[?.!]*$",
     re.I,
 )
+_BRAND_QUESTION_FRAME_RE = re.compile(
+    r"(?:"
+    r"\bwhat\s+is\s+(?:swico|swaiko)\b|"
+    r"\bwhat\s+(?:swico|swaiko)\s+is\b|"
+    r"\bwho\s+(?:created|made|developed|built|owns|leads)\b|"
+    r"\bwho\s+(?:is\s+the\s+)?founder\b|"
+    r"\btell\s+me\s+about\s+(?:swico|swaiko)\b|"
+    r"\bwhat\s+can\s+(?:swico|swaiko)\s+do\b|"
+    r"\bwhat\s+can\s+you\s+do\b|"
+    r"\bwhich\s+company\b|\babout\s+(?:swico|swaiko)\b|"
+    r"\b(?:swico|swaiko)['’]s\s+(?:architecture|pricing|plans?|credits?|billing|privacy|security|model|provider|ceo|founder)\b|"
+    r"\bis\s+(?:swico|swaiko)\b|\bdoes\s+(?:swico|swaiko)\b|"
+    r"\bhow\s+does\s+(?:swico|swaiko)\s+work\b|"
+    r"\b(?:swico|swaiko)\s+vs\.?\s+\S+\b|"
+    r"\b\S+\s+vs\.?\s+(?:swico|swaiko)\b|"
+    r"\bcompare\s+(?:swico|swaiko)\b|"
+    r"\bwhat\s+(?:model|provider|ai)\s+(?:powers|runs|drives)\s+(?:swico|swaiko)\b|"
+    r"\b(?:what\s+can\s+you\s+do|how\s+does\s+it\s+work|is\s+it\s+secure)\b|"
+    r"(?:என்றால் என்ன|எந்த நிறுவனம்|யார்.*(?:உருவாக்க|செய்த|வழிநடத்த))"
+    r")",
+    re.I,
+)
 
 
 def swico_brand_guard_enabled() -> bool:
@@ -300,9 +328,11 @@ def classify_swico_brand_query(
     text = " ".join(str(message or "").split()).strip()
     if not text or not swico_brand_guard_enabled():
         return None
+    vocative = _VOCATIVE_ADDRESS_RE.match(text)
+    classified_text = text[vocative.end():].strip() if vocative else text
     # Product names inside validation payloads, code, JSON keys/values, or code
     # fences are data rather than a request for the public Swico profile.
-    payload_free = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    payload_free = re.sub(r"```.*?```", " ", classified_text, flags=re.DOTALL)
     payload_free = re.sub(r"\{.*\}|\[.*\]", " ", payload_free, flags=re.DOTALL)
     payload_free = re.sub(
         r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')""", " ", payload_free
@@ -313,13 +343,16 @@ def classify_swico_brand_query(
             r".*\b(?:json|code|data|payload)\b|"
             r"\b(?:json|code|data|payload)\b.*"
             r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b",
-            text,
+            classified_text,
             re.IGNORECASE,
         )
     )
-    product_reference = bool(_PRODUCT_REFERENCE_RE.search(payload_free))
-    explicit = bool(product_reference or _SELF_REFERENCE_RE.search(text))
-    if validation_payload and not product_reference and not _SELF_REFERENCE_RE.search(text):
+    self_reference = bool(_SELF_REFERENCE_RE.search(classified_text))
+    product_reference = bool(_PRODUCT_REFERENCE_RE.search(payload_free) or vocative)
+    frame_text = f"swico {payload_free}" if vocative else payload_free
+    aboutness = bool(_BRAND_QUESTION_FRAME_RE.search(frame_text))
+    explicit = bool(self_reference or (product_reference and aboutness))
+    if validation_payload and not product_reference and not self_reference:
         explicit = False
     contextual = bool(
         not explicit
@@ -328,7 +361,7 @@ def classify_swico_brand_query(
     )
     if not explicit and not contextual:
         return None
-    return SwicoBrandMatch(_select_subintent(text), contextual=contextual)
+    return SwicoBrandMatch(_select_subintent(classified_text), contextual=contextual)
 
 
 def swico_brand_response(
@@ -472,7 +505,11 @@ def _configured_upstream_model_names() -> set[str]:
 
 def _wants_tamil(reply_language: str | None, message: str) -> bool:
     language = str(reply_language or "").strip().lower()
-    return language in {"ta", "tamil", "mixed", "tanglish"} or bool(
-        re.search(r"[\u0b80-\u0bff]", str(message or ""))
-        or re.search(r"\b(?:yaar|enna|eppadi|pannanga|tamil|tanglish)\b", str(message or ""), re.I)
-    )
+    text = str(message or "")
+    if re.search(r"[\u0b80-\u0bff]", text) or re.search(
+        r"\b(?:yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I
+    ):
+        return True
+    if re.search(r"[A-Za-z]", text):
+        return False
+    return language in {"ta", "tamil", "mixed", "tanglish"}
