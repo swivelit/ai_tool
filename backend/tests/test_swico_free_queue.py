@@ -18,6 +18,7 @@ from app.time_utils import utc_now
 from app.web_api.swico_free_queue import (
     SWICO_FREE_CHAT_JOB_TYPE,
     enqueue_swico_free_chat,
+    queue_diagnostics,
     queue_metrics,
     queue_position,
 )
@@ -109,6 +110,78 @@ def test_queue_metrics_are_safe_and_position_excludes_terminal_jobs():
         assert metrics["cancelled_count"] == 1
         assert metrics["failed_count"] == 1
         assert metrics["completed_last_minute"] == 1
+
+
+def test_recent_transient_metrics_do_not_turn_historical_events_into_warnings():
+    engine = db_engine()
+    now = utc_now()
+    with Session(engine) as session:
+        for label, timestamp in (
+            ("recent", now - timedelta(seconds=30)),
+            ("expired", now - timedelta(minutes=16)),
+            ("legacy", None),
+        ):
+            payload = {"request_id": label, "_transient_unavailable": 1}
+            if timestamp is not None:
+                payload["_transient_unavailable_at"] = [timestamp.isoformat()]
+            session.add(Job(
+                user_id=1, job_type=SWICO_FREE_CHAT_JOB_TYPE, status="completed",
+                payload_json=json.dumps(payload), run_at=now, created_at=now,
+                updated_at=now, started_at=now, finished_at=now,
+            ))
+        session.commit()
+        hot = queue_metrics(session)
+        diagnostics = queue_diagnostics(session)
+    assert hot["transient_laptop_unavailable_recent"] == 1
+    assert hot["transient_laptop_unavailable_count"] == 1
+    assert diagnostics["transient_laptop_unavailable_lifetime"] == 3
+    assert diagnostics["transient_laptop_unavailable_count"] == 3
+
+
+def test_recent_busy_metric_is_separate_and_expires_without_row_mutation():
+    engine = db_engine()
+    now = utc_now()
+    with Session(engine) as session:
+        session.add(Job(
+            user_id=1, job_type=SWICO_FREE_CHAT_JOB_TYPE, status="completed",
+            payload_json=json.dumps({
+                "request_id": "busy", "_transient_busy": 2,
+                "_transient_busy_at": [(now - timedelta(minutes=16)).isoformat()],
+            }), run_at=now, created_at=now, updated_at=now,
+            started_at=now, finished_at=now,
+        ))
+        session.commit()
+        before = session.get(Job, 1).payload_json
+        metrics = queue_metrics(session)
+        after = session.get(Job, 1).payload_json
+    assert metrics["transient_laptop_busy_recent"] == 0
+    assert metrics["transient_laptop_busy_count"] == 0
+    assert before == after
+
+
+def test_queue_metrics_uses_aggregates_and_bounded_service_sample(monkeypatch):
+    engine = db_engine()
+    now = utc_now()
+    with Session(engine) as session:
+        for index in range(300):
+            session.add(Job(
+                user_id=1, job_type=SWICO_FREE_CHAT_JOB_TYPE, status="completed",
+                payload_json="{}", run_at=now, created_at=now, updated_at=now,
+                started_at=now - timedelta(seconds=2), finished_at=now,
+            ))
+        session.commit()
+        statements: list[str] = []
+        original_exec = session.exec
+
+        def tracked_exec(statement, *args, **kwargs):
+            statements.append(str(statement).lower())
+            return original_exec(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "exec", tracked_exec)
+        metrics = queue_metrics(session)
+    assert metrics["completed_count"] == 300
+    assert any("count(job.id)" in statement for statement in statements)
+    assert not any("select job.id, job.user_id" in statement for statement in statements)
 
 
 def test_generic_worker_cannot_claim_swico_free_jobs():

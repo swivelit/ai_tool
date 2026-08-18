@@ -19,7 +19,7 @@ from sqlmodel import Session
 from app.database import engine
 from app.web_api.swico_free_queue import (
     durable_queue_enabled,
-    queue_metrics,
+    queue_diagnostics,
     queue_worker_enabled,
 )
 
@@ -34,7 +34,7 @@ def main() -> int:
 
     def report() -> dict[str, object]:
         with Session(engine) as session:
-            metrics = queue_metrics(session)
+            metrics = queue_diagnostics(session)
         live = live_runtime_status()
         return {
             "queue_enabled": durable_queue_enabled(),

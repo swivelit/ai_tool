@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 from statistics import mean
 from time import monotonic
 from typing import Any
 
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from ..ai.providers.swico_free_provider import (
@@ -27,6 +28,9 @@ from ..time_utils import utc_now
 
 SWICO_FREE_CHAT_JOB_TYPE = "swico_free_chat"
 ACTIVE_STATUSES = ("queued", "retrying", "running")
+RECENT_TRANSIENT_WINDOW_SECONDS = 15 * 60
+TRANSIENT_EVENT_HISTORY_LIMIT = 32
+SERVICE_TIME_SAMPLE_SIZE = 200
 _running_cancellations: dict[str, GenerationCancellation] = {}
 _running_lock = threading.Lock()
 
@@ -59,6 +63,42 @@ def _elapsed(now, value) -> float:
     elif value.tzinfo is not None and now.tzinfo is None:
         value = value.replace(tzinfo=None)
     return max(0.0, (now - value).total_seconds())
+
+
+def _event_timestamp_list(payload: dict[str, Any], key: str, now) -> list[str]:
+    values = payload.get(key)
+    if not isinstance(values, list):
+        values = []
+    cutoff = now - timedelta(seconds=RECENT_TRANSIENT_WINDOW_SECONDS)
+    retained: list[str] = []
+    for value in values[-TRANSIENT_EVENT_HISTORY_LIMIT:]:
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed.tzinfo is None and now.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=now.tzinfo)
+        if parsed >= cutoff:
+            retained.append(value)
+    return retained
+
+
+def _record_transient_event(payload: dict[str, Any], key: str, now) -> None:
+    values = payload.get(key)
+    if not isinstance(values, list):
+        values = []
+    values = [value for value in values if isinstance(value, str)]
+    values.append(now.isoformat())
+    payload[key] = values[-TRANSIENT_EVENT_HISTORY_LIMIT:]
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def request_id_from_job(job: Job) -> str:
@@ -226,8 +266,15 @@ def _handle_swico_free_chat(session: Session, payload: dict[str, Any]) -> dict[s
             charge.status = "free_pending"
             charge.settled_at = None
             session.add(charge)
-        payload["_transient_busy"] = int(payload.get("_transient_busy") or 0) + int(exc.code == "swico_free_busy")
-        payload["_transient_unavailable"] = int(payload.get("_transient_unavailable") or 0) + int(exc.code != "swico_free_busy")
+        event_now = utc_now()
+        is_busy = exc.code == "swico_free_busy"
+        payload["_transient_busy"] = int(payload.get("_transient_busy") or 0) + int(is_busy)
+        payload["_transient_unavailable"] = int(payload.get("_transient_unavailable") or 0) + int(not is_busy)
+        _record_transient_event(
+            payload,
+            "_transient_busy_at" if is_busy else "_transient_unavailable_at",
+            event_now,
+        )
         job.payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         session.commit()
         raise JobRetryLater(exc.code, delay_seconds=2.0)
@@ -249,49 +296,123 @@ def build_swico_free_queue(engine: Any) -> DBJobQueue:
 
 
 def queue_position(session: Session, *, job: Job) -> dict[str, Any]:
-    active = session.exec(select(Job).where(
-        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
-        Job.status.in_(ACTIVE_STATUSES),
-    ).order_by(Job.created_at.asc(), Job.id.asc())).all()
-    waiting = [row for row in active if row.status in {"queued", "retrying"}]
-    own = next((row for row in active if row.id == job.id), job)
-    if own.status == "running":
+    if job.status == "running":
         return {"running": True, "queue_position": None}
-    if own.status not in {"queued", "retrying"}:
+    if job.status not in {"queued", "retrying"}:
         return {"running": False, "queue_position": None}
-    return {"running": False, "queue_position": next((i + 1 for i, row in enumerate(waiting) if row.id == own.id), None)}
+    if job.id is None:
+        return {"running": False, "queue_position": None}
+    position = session.exec(select(func.count(Job.id)).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+        Job.status.in_(("queued", "retrying")),
+        or_(
+            Job.created_at < job.created_at,
+            and_(Job.created_at == job.created_at, Job.id <= job.id),
+        ),
+    )).one()
+    return {"running": False, "queue_position": int(position or 0) or None}
 
 
 def queue_metrics(session: Session) -> dict[str, Any]:
-    rows = session.exec(select(Job).where(Job.job_type == SWICO_FREE_CHAT_JOB_TYPE)).all()
     now = utc_now()
-    completed = [row for row in rows if row.status == "completed" and row.finished_at]
-    service = [max(0.0, (row.finished_at - row.started_at).total_seconds()) for row in completed if row.started_at]
+    status_rows = session.exec(select(Job.status, func.count(Job.id)).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+    ).group_by(Job.status)).all()
+    counts = {str(status): int(count or 0) for status, count in status_rows}
+    oldest_created_at = session.exec(select(func.min(Job.created_at)).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+        Job.status.in_(("queued", "retrying")),
+    )).one()
+    recent_payloads = session.exec(select(Job.payload_json).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+        Job.updated_at >= now - timedelta(seconds=RECENT_TRANSIENT_WINDOW_SECONDS),
+    )).all()
+    busy = 0
+    unavailable = 0
+    for payload_json in recent_payloads:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            continue
+        busy += len(_event_timestamp_list(payload, "_transient_busy_at", now))
+        unavailable += len(_event_timestamp_list(payload, "_transient_unavailable_at", now))
+    service_rows = session.exec(select(Job.started_at, Job.finished_at).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+        Job.status == "completed",
+        Job.started_at.is_not(None),
+        Job.finished_at.is_not(None),
+    ).order_by(Job.finished_at.desc()).limit(SERVICE_TIME_SAMPLE_SIZE)).all()
+    service = [
+        max(0.0, (finished_at - started_at).total_seconds())
+        for started_at, finished_at in service_rows
+        if started_at is not None and finished_at is not None
+    ]
     def count_since(seconds: int) -> int:
-        return sum(1 for row in completed if row.finished_at and _elapsed(now, row.finished_at) <= seconds)
-    waiting = [row for row in rows if row.status in {"queued", "retrying"}]
-    oldest = min((_elapsed(now, row.created_at) for row in waiting), default=0.0)
-    busy = sum(int(_payload(row).get("_transient_busy") or 0) for row in rows)
-    unavailable = sum(int(_payload(row).get("_transient_unavailable") or 0) for row in rows)
-    stale = sum(int(_payload(row).get("_stale_recoveries") or 0) for row in rows)
+        return int(session.exec(select(func.count(Job.id)).where(
+            Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+            Job.status == "completed",
+            Job.finished_at >= now - timedelta(seconds=seconds),
+        )).one() or 0)
+
     ordered = sorted(service)
     p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else 0.0
     return {
-        "queued_count": sum(row.status == "queued" for row in rows),
-        "running_count": sum(row.status == "running" for row in rows),
-        "completed_count": sum(row.status == "completed" for row in rows),
-        "cancelled_count": sum(row.status == "cancelled" for row in rows),
-        "failed_count": sum(row.status == "failed" for row in rows),
-        "retrying_count": sum(row.status == "retrying" for row in rows),
-        "oldest_queue_wait_seconds": round(oldest, 3),
+        "queued_count": counts.get("queued", 0),
+        "running_count": counts.get("running", 0),
+        "completed_count": counts.get("completed", 0),
+        "cancelled_count": counts.get("cancelled", 0),
+        "failed_count": counts.get("failed", 0),
+        "retrying_count": counts.get("retrying", 0),
+        "oldest_queue_wait_seconds": round(_elapsed(now, oldest_created_at), 3),
         "completed_last_minute": count_since(60),
         "completed_last_5_minutes": count_since(300),
         "average_service_seconds": round(mean(service), 3) if service else 0.0,
         "p95_service_seconds": round(p95, 3),
+        "transient_laptop_busy_recent": busy,
+        "transient_laptop_unavailable_recent": unavailable,
+        # Retain the established keys for hot-path callers; they now describe
+        # the recent health window. Full lifetime values are supplied by the
+        # explicit queue_diagnostics() path below.
+        "transient_laptop_busy_count": busy,
+        "transient_laptop_unavailable_count": unavailable,
+    }
+
+
+def queue_diagnostics(session: Session) -> dict[str, Any]:
+    """Return the slower lifetime counters for reports and release checks.
+
+    Lifetime transient totals predate timestamp metadata and live inside the
+    durable payload JSON, so they cannot be reconstructed from the hot-path
+    aggregate without a schema change. This explicit operational path scans
+    payloads only when a report or release check asks for historical totals.
+    """
+    metrics = queue_metrics(session)
+    payloads = session.exec(select(Job.payload_json).where(
+        Job.job_type == SWICO_FREE_CHAT_JOB_TYPE,
+    )).all()
+    busy = 0
+    unavailable = 0
+    stale = 0
+    for payload_json in payloads:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            continue
+        busy += _safe_nonnegative_int(payload.get("_transient_busy"))
+        unavailable += _safe_nonnegative_int(payload.get("_transient_unavailable"))
+        stale += _safe_nonnegative_int(payload.get("_stale_recoveries"))
+    metrics.update({
+        "transient_laptop_busy_lifetime": busy,
+        "transient_laptop_unavailable_lifetime": unavailable,
         "transient_laptop_busy_count": busy,
         "transient_laptop_unavailable_count": unavailable,
         "stale_job_recoveries": stale,
-    }
+    })
+    return metrics
 
 
 def cancel_queued_job(session: Session, *, user_id: int, request_id: str) -> str | None:

@@ -28,7 +28,7 @@ from sqlmodel import Session  # noqa: E402
 from app.alembic_utils import repository_alembic_head  # noqa: E402
 from app.database import engine  # noqa: E402
 from app.production_config import production_configuration_errors  # noqa: E402
-from app.web_api.swico_free_queue import queue_metrics  # noqa: E402
+from app.web_api.swico_free_queue import queue_diagnostics  # noqa: E402
 from scripts import swico_free_probe as probe  # noqa: E402
 from scripts.swico_free_queue_report import live_runtime_status  # noqa: E402
 
@@ -87,8 +87,16 @@ def queue_warning_checks(metrics: Mapping[str, object]) -> list[Check]:
 
     queued = number("queued_count")
     oldest = number("oldest_queue_wait_seconds")
-    unavailable = number("transient_laptop_unavailable_count")
-    busy = number("transient_laptop_busy_count")
+    unavailable = number(
+        "transient_laptop_unavailable_recent"
+        if "transient_laptop_unavailable_recent" in metrics
+        else "transient_laptop_unavailable_count"
+    )
+    busy = number(
+        "transient_laptop_busy_recent"
+        if "transient_laptop_busy_recent" in metrics
+        else "transient_laptop_busy_count"
+    )
     checks: list[Check] = []
     if queued > 0:
         checks.append(Check("queued_work", "warn", f"{int(queued)} queued"))
@@ -97,9 +105,9 @@ def queue_warning_checks(metrics: Mapping[str, object]) -> list[Check]:
     if oldest >= OLDEST_QUEUE_WAIT_WARNING_SECONDS:
         checks.append(Check("oldest_queue_wait", "warn", "wait_above_warning_threshold"))
     if unavailable >= TRANSIENT_WARNING_THRESHOLD:
-        checks.append(Check("transient_laptop_unavailable", "warn", "observed"))
+        checks.append(Check("transient_laptop_unavailable_recent", "warn", "observed"))
     if busy >= TRANSIENT_WARNING_THRESHOLD:
-        checks.append(Check("transient_laptop_busy", "warn", "observed"))
+        checks.append(Check("transient_laptop_busy_recent", "warn", "observed"))
     return checks
 
 
@@ -190,7 +198,7 @@ def build_report() -> dict[str, object]:
     metrics: dict[str, object] = {}
     try:
         with Session(engine) as session:
-            metrics = queue_metrics(session)
+            metrics = queue_diagnostics(session)
         checks.append(Check("queue_query", "pass", "available"))
     except Exception:
         checks.append(Check("queue_query", "fail", "database_unavailable"))
@@ -205,7 +213,8 @@ def build_report() -> dict[str, object]:
         for key in (
             "queued_count", "running_count", "completed_count", "cancelled_count",
             "failed_count", "retrying_count", "oldest_queue_wait_seconds",
-            "transient_laptop_unavailable_count", "transient_laptop_busy_count",
+            "transient_laptop_unavailable_recent", "transient_laptop_busy_recent",
+            "transient_laptop_unavailable_lifetime", "transient_laptop_busy_lifetime",
             "stale_job_recoveries",
         )
         if key in metrics

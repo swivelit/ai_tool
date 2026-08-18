@@ -57,10 +57,25 @@ Keep this value between `0` and `3`; malformed values fail production
 configuration validation. A stream is never replayed after visible output has
 started.
 
+The queue time settings have distinct scopes. `SWICO_FREE_MAX_QUEUE_WAIT_SECONDS`
+and `SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS` are validated by the API and are
+enforced by the Swico Free node for its local generation admission/deadline;
+they do not expire or delete an already accepted PostgreSQL durable-queue job.
+The API also uses the total-request value as an ETA fallback when no service
+sample is available. Changing the durable-job semantics would require a
+separate design so strict FIFO and accepted-job durability remain intact.
+Queue/status requests use the lightweight active-queue snapshot. The queue
+report and release check additionally read lifetime diagnostic counters from
+durable payload metadata; those slower operational reports do not run in the
+request path.
+
 ## Released Swico Free operational values
 
-The released production API currently uses the following Swico Free values;
-the token is a Render secret and is never printed by operational scripts:
+The following are example Swico Free operational values for a deliberate
+production rollout. The Render environment is the source of truth for the
+currently active values; the repository cannot attest to the live rollout
+percentage. The token is a Render secret and is never printed by operational
+scripts:
 
 ```dotenv
 SWICO_FREE_ENABLED=true

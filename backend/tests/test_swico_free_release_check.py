@@ -38,6 +38,88 @@ def test_release_queue_backlog_is_warning_only_and_content_free():
     assert "answer" not in rendered.lower()
 
 
+def test_historical_transient_totals_do_not_warn_but_recent_events_do():
+    historical = release.queue_warning_checks({
+        "queued_count": 0, "running_count": 0, "oldest_queue_wait_seconds": 0,
+        "transient_laptop_unavailable_recent": 0,
+        "transient_laptop_unavailable_lifetime": 14,
+        "transient_laptop_busy_recent": 0,
+        "transient_laptop_busy_lifetime": 9,
+    })
+    assert not any("transient_laptop" in check.name for check in historical)
+
+    recent_unavailable = release.queue_warning_checks({
+        "transient_laptop_unavailable_recent": 1,
+        "transient_laptop_busy_recent": 0,
+    })
+    assert [check.name for check in recent_unavailable] == [
+        "transient_laptop_unavailable_recent",
+    ]
+
+    recent_busy = release.queue_warning_checks({
+        "transient_laptop_unavailable_recent": 0,
+        "transient_laptop_busy_recent": 1,
+    })
+    assert [check.name for check in recent_busy] == ["transient_laptop_busy_recent"]
+
+
+def test_release_warning_compatibility_falls_back_to_legacy_count_fields():
+    checks = release.queue_warning_checks({
+        "transient_laptop_unavailable_count": 1,
+        "transient_laptop_busy_count": 0,
+    })
+    assert [check.name for check in checks] == ["transient_laptop_unavailable_recent"]
+
+
+def test_current_health_failure_is_a_release_blocker(monkeypatch):
+    monkeypatch.setattr(release.probe, "_base_url", lambda: ("https://free.example", "secret"))
+    monkeypatch.setattr(release.probe, "_connect_retries", lambda: 2)
+    monkeypatch.setattr(release.probe, "_check", lambda _client, name, *_args, **_kwargs: release.probe.ProbeResult(
+        name, False, "health_failed",
+    ))
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(release.httpx, "Client", Client)
+    checks = release._inference_checks()
+    assert any(check.name == "/health" and check.status == "fail" for check in checks)
+
+
+def test_current_generation_failure_is_a_release_blocker(monkeypatch):
+    monkeypatch.setattr(release.probe, "_base_url", lambda: ("https://free.example", "secret"))
+    monkeypatch.setattr(release.probe, "_connect_retries", lambda: 2)
+
+    def check(_client, name, _method, _path, _payload=None):
+        return release.probe.ProbeResult(name, name != "/v1/generate", "generation_failed" if name == "/v1/generate" else None)
+
+    monkeypatch.setattr(release.probe, "_check", check)
+    monkeypatch.setattr(release.probe, "_check_stream", lambda _client: release.probe.ProbeResult(
+        "/v1/generate/stream", True,
+    ))
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(release.httpx, "Client", Client)
+    checks = release._inference_checks()
+    assert any(check.name == "/v1/generate" and check.status == "fail" for check in checks)
+
+
 def test_release_check_reports_head_and_endpoint_checks_without_printing_content(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_DURABLE_QUEUE_ENABLED", "true")
     monkeypatch.setenv("SWICO_FREE_QUEUE_WORKER_ENABLED", "true")
@@ -47,7 +129,7 @@ def test_release_check_reports_head_and_endpoint_checks_without_printing_content
         [release.Check("alembic_current", "pass", "current")],
         {"repository_head": "7b4c9e1a2d6f", "database_heads": ["7b4c9e1a2d6f"]},
     ))
-    monkeypatch.setattr(release, "queue_metrics", lambda session: {
+    monkeypatch.setattr(release, "queue_diagnostics", lambda session: {
         "queued_count": 0, "running_count": 0, "completed_count": 7,
         "failed_count": 0, "oldest_queue_wait_seconds": 0,
         "transient_laptop_unavailable_count": 0,
