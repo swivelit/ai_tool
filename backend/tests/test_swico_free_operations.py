@@ -58,6 +58,8 @@ def test_render_probe_checks_all_endpoints_without_printing_secret(monkeypatch, 
         def __exit__(self, *_args):
             return False
 
+    transport = type("Transport", (), {"retries": 2})()
+    monkeypatch.setattr(swico_free_probe.httpx, "HTTPTransport", lambda *, retries: transport)
     monkeypatch.setattr(swico_free_probe.httpx, "Client", Client)
     assert swico_free_probe.main(["--pretty"]) == 0
     output = capsys.readouterr().out
@@ -66,6 +68,7 @@ def test_render_probe_checks_all_endpoints_without_printing_secret(monkeypatch, 
     assert "PASS /v1/generate" in output
     assert token not in output
     assert captured["headers"]["Authorization"] == f"Bearer {token}"
+    assert captured["transport"].retries == 2
 
 
 def test_render_probe_fails_closed_without_valid_https_configuration(monkeypatch, capsys):
@@ -75,6 +78,16 @@ def test_render_probe_fails_closed_without_valid_https_configuration(monkeypatch
     output = capsys.readouterr().out
     assert "FAIL" in output
     assert "127.0.0.1" not in output
+
+
+def test_render_probe_fails_closed_for_invalid_connection_retry_configuration(monkeypatch, capsys):
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    monkeypatch.setenv("SWICO_FREE_CONNECT_RETRIES", "4")
+    assert swico_free_probe.main(["--pretty"]) == 2
+    output = capsys.readouterr().out
+    assert "invalid_connect_retries" in output
+    assert "free.example" not in output
 
 
 def test_windows_scripts_share_quote_safe_dotenv_loader():

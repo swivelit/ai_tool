@@ -267,6 +267,9 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_timeout = _integer(env, "SWICO_FREE_INFERENCE_TIMEOUT_SECONDS", "90")
     if free_timeout is None or free_timeout <= 0 or free_timeout > 120:
         errors.append("SWICO_FREE_INFERENCE_TIMEOUT_SECONDS must be between 1 and 120")
+    free_connect_retries = _integer(env, "SWICO_FREE_CONNECT_RETRIES", "2")
+    if free_connect_retries is None or not 0 <= free_connect_retries <= 3:
+        errors.append("SWICO_FREE_CONNECT_RETRIES must be between 0 and 3")
     free_queue_wait = _integer(env, "SWICO_FREE_MAX_QUEUE_WAIT_SECONDS", "15")
     if free_queue_wait is None or not 1 <= free_queue_wait <= 60:
         errors.append("SWICO_FREE_MAX_QUEUE_WAIT_SECONDS must be between 1 and 60")

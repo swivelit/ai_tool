@@ -38,6 +38,23 @@ class SwicoFreeTimeoutError(SwicoFreeProviderError):
         )
 
 
+SWICO_FREE_CONNECT_RETRIES_DEFAULT = 2
+SWICO_FREE_CONNECT_RETRIES_MAX = 3
+
+
+def _connect_retries() -> int:
+    try:
+        retries = int(os.getenv(
+            "SWICO_FREE_CONNECT_RETRIES",
+            str(SWICO_FREE_CONNECT_RETRIES_DEFAULT),
+        ).strip())
+    except (TypeError, ValueError) as exc:
+        raise SwicoFreeUnavailableError() from exc
+    if not 0 <= retries <= SWICO_FREE_CONNECT_RETRIES_MAX:
+        raise SwicoFreeUnavailableError()
+    return retries
+
+
 class _VisibleTextFilter:
     _OPEN = "<think>"
     _CLOSE = "</think>"
@@ -125,15 +142,19 @@ def _messages(request: AIRequest, route: AIRoute) -> list[dict[str, str]]:
 class SwicoFreeProvider(AIProvider):
     """Authenticated Render-to-laptop provider with no paid-provider fallback."""
 
+    def _client(self, base_url: str, token: str, timeout: float) -> httpx.Client:
+        return httpx.Client(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
+            transport=httpx.HTTPTransport(retries=_connect_retries()),
+        )
+
     def _post(self, endpoint: str, payload: dict[str, Any]) -> httpx.Response:
         base_url, token, timeout = _settings()
         try:
-            response = httpx.post(
-                f"{base_url}{endpoint}",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                json=payload,
-                timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
-            )
+            with self._client(base_url, token, timeout) as client:
+                response = client.post(endpoint, json=payload)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
             raise SwicoFreeUnavailableError() from exc
         if response.status_code == 429:
@@ -210,69 +231,69 @@ class SwicoFreeProvider(AIProvider):
         usage: dict[str, Any] = {}
         visible_filter = _VisibleTextFilter()
         try:
-            with httpx.stream(
-                "POST", f"{base_url}/v1/generate/stream",
-                headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"},
-                json={"messages": messages, "max_output_tokens": min(512, max(1, int(route.max_output_tokens)))},
-                timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
-            ) as response:
-                if isinstance(cancellation, GenerationCancellation):
-                    cancellation.bind_stream(response)
-                if response.status_code == 429:
-                    raise SwicoFreeBusyError()
-                if response.status_code == 504:
-                    raise SwicoFreeTimeoutError()
-                if response.status_code >= 400:
-                    raise SwicoFreeUnavailableError()
-                for line in response.iter_lines():
-                    if isinstance(cancellation, GenerationCancellation) and cancellation.cancelled:
-                        text = "".join(parts).strip()
-                        raise GenerationCancelled(
-                            AIProviderResponse(
-                                text=text, provider="swico_free", model=None, route=route.route,
-                                reason=route.reason, language=route.language, intent=route.intent,
-                                input_tokens=int(usage.get("input_tokens") or 0),
-                                output_tokens=int(usage.get("output_tokens") or max(0, len(text.encode("utf-8")) // 3)),
-                                characters=len(text), raw={"cancelled": True, "usage_actual": bool(usage)},
-                            ) if text else None
-                        )
-                    value = str(line or "")
-                    if not value.startswith("data:"):
-                        continue
-                    data = value[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data)
-                    except json.JSONDecodeError:
+            with self._client(base_url, token, timeout) as client:
+                with client.stream(
+                    "POST", "/v1/generate/stream",
+                    headers={"Accept": "text/event-stream"},
+                    json={"messages": messages, "max_output_tokens": min(512, max(1, int(route.max_output_tokens)))},
+                ) as response:
+                    if isinstance(cancellation, GenerationCancellation):
+                        cancellation.bind_stream(response)
+                    if response.status_code == 429:
+                        raise SwicoFreeBusyError()
+                    if response.status_code == 504:
+                        raise SwicoFreeTimeoutError()
+                    if response.status_code >= 400:
                         raise SwicoFreeUnavailableError()
-                    if isinstance(event, dict) and isinstance(event.get("usage"), dict):
-                        usage.update(event["usage"])
-                    if isinstance(event, dict) and event.get("error"):
-                        if str(event.get("error")).strip().lower() == "swico_free_timeout":
-                            raise SwicoFreeTimeoutError()
-                        raise SwicoFreeUnavailableError()
-                    if isinstance(event, dict) and event.get("finish_reason"):
-                        usage["finish_reason"] = str(event["finish_reason"]).strip().lower()
-                        usage["truncated"] = bool(event.get("truncated")) or usage["finish_reason"] == "timeout"
-                        if usage["finish_reason"] == "cancelled":
-                            partial = "".join(parts).strip()
+                    for line in response.iter_lines():
+                        if isinstance(cancellation, GenerationCancellation) and cancellation.cancelled:
+                            text = "".join(parts).strip()
                             raise GenerationCancelled(
                                 AIProviderResponse(
-                                    text=partial, provider="swico_free", model=None,
-                                    route=route.route, reason=route.reason,
-                                    language=route.language, intent=route.intent,
-                                    characters=len(partial), raw={"cancelled": True},
-                                ) if partial else None
+                                    text=text, provider="swico_free", model=None, route=route.route,
+                                    reason=route.reason, language=route.language, intent=route.intent,
+                                    input_tokens=int(usage.get("input_tokens") or 0),
+                                    output_tokens=int(usage.get("output_tokens") or max(0, len(text.encode("utf-8")) // 3)),
+                                    characters=len(text), raw={"cancelled": True, "usage_actual": bool(usage)},
+                                ) if text else None
                             )
-                    delta = event.get("delta") if isinstance(event, dict) else None
-                    if delta is None and isinstance(event, dict):
-                        delta = event.get("text")
-                    if delta:
-                        chunk = visible_filter.feed(str(delta))
-                        if chunk:
-                            parts.append(chunk)
-                            on_delta(chunk)
+                        value = str(line or "")
+                        if not value.startswith("data:"):
+                            continue
+                        data = value[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(data)
+                        except json.JSONDecodeError:
+                            raise SwicoFreeUnavailableError()
+                        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+                            usage.update(event["usage"])
+                        if isinstance(event, dict) and event.get("error"):
+                            if str(event.get("error")).strip().lower() == "swico_free_timeout":
+                                raise SwicoFreeTimeoutError()
+                            raise SwicoFreeUnavailableError()
+                        if isinstance(event, dict) and event.get("finish_reason"):
+                            usage["finish_reason"] = str(event["finish_reason"]).strip().lower()
+                            usage["truncated"] = bool(event.get("truncated")) or usage["finish_reason"] == "timeout"
+                            if usage["finish_reason"] == "cancelled":
+                                partial = "".join(parts).strip()
+                                raise GenerationCancelled(
+                                    AIProviderResponse(
+                                        text=partial, provider="swico_free", model=None,
+                                        route=route.route, reason=route.reason,
+                                        language=route.language, intent=route.intent,
+                                        characters=len(partial), raw={"cancelled": True},
+                                    ) if partial else None
+                                )
+                        delta = event.get("delta") if isinstance(event, dict) else None
+                        if delta is None and isinstance(event, dict):
+                            delta = event.get("text")
+                        if delta:
+                            chunk = visible_filter.feed(str(delta))
+                            if chunk:
+                                parts.append(chunk)
+                                on_delta(chunk)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
             raise SwicoFreeUnavailableError() from exc
         finally:

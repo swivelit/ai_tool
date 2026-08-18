@@ -113,6 +113,24 @@ it('shows top response tools only after non-empty assistant completion', () => {
   expect(screen.queryByRole('toolbar', { name: 'Response tools' })).not.toBeInTheDocument()
 })
 
+it('does not render a standalone zero for an empty retryable assistant response', () => {
+  render(<Conversation messages={[message('retry-empty', {
+    content:'', status:'retryable', usage_source:null, input_tokens:0, output_tokens:0,
+    failure_code:'swico_free_unavailable',
+  })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByText('Swico Free is temporarily unavailable. Please retry.')).toBeInTheDocument()
+  expect(screen.queryByText(/^0$/)).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Retry answer' })).toBeInTheDocument()
+})
+
+it('keeps intentional cancellation language for an empty cancelled response', () => {
+  render(<Conversation messages={[message('cancelled-empty', {
+    content:'', status:'cancelled', usage_source:null, input_tokens:0, output_tokens:0,
+  })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByText('Generation stopped.')).toBeInTheDocument()
+  expect(screen.queryByText(/temporarily unavailable|please retry/i)).not.toBeInTheDocument()
+})
+
 it('keeps assistant edits local and uses the working copy for toolbar copy', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined)
   Object.defineProperty(navigator, 'clipboard', {

@@ -14,6 +14,10 @@ from urllib.parse import urlsplit
 import httpx
 
 
+SWICO_FREE_CONNECT_RETRIES_DEFAULT = 2
+SWICO_FREE_CONNECT_RETRIES_MAX = 3
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     name: str
@@ -28,6 +32,17 @@ def _timeout_seconds() -> float:
     except ValueError:
         value = 90.0
     return min(120.0, max(1.0, value))
+
+
+def _connect_retries() -> int | None:
+    try:
+        value = int(os.getenv(
+            "SWICO_FREE_CONNECT_RETRIES",
+            str(SWICO_FREE_CONNECT_RETRIES_DEFAULT),
+        ).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= SWICO_FREE_CONNECT_RETRIES_MAX else None
 
 
 def _base_url() -> tuple[str, str] | tuple[None, str]:
@@ -185,11 +200,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     timeout_seconds = _timeout_seconds()
+    connect_retries = _connect_retries()
+    if connect_retries is None:
+        result = ProbeResult("configuration", False, "invalid_connect_retries")
+        _print_result(result, args.pretty)
+        if not args.pretty:
+            print(f"swico_free_probe=fail {result.category}")
+        return 2
     timeout = httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
     with httpx.Client(
         base_url=base_url,
         headers={"Authorization": f"Bearer {token_or_error}", "Accept": "application/json"},
         timeout=timeout,
+        transport=httpx.HTTPTransport(retries=connect_retries),
     ) as client:
         health = _check(client, "/health", "GET", "/health")
         results = [health]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -12,7 +13,8 @@ import pytest
 from sqlmodel import select
 
 from app.ai.providers.swico_free_provider import (
-    SwicoFreeProvider, SwicoFreeTimeoutError, SwicoFreeUnavailableError,
+    SwicoFreeBusyError, SwicoFreeProvider, SwicoFreeTimeoutError,
+    SwicoFreeUnavailableError,
 )
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest, AIRoute
@@ -78,24 +80,144 @@ def test_free_provider_authenticates_backend_to_backend_without_logging_secrets(
     monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", token)
     captured: dict[str, object] = {}
 
-    def fake_post(url, *, headers, json, timeout):
-        captured.update({"url": url, "headers": headers, "json": json, "timeout": timeout})
-        return httpx.Response(
-            200,
-            json={"text": "safe response", "usage": {"input_tokens": 3, "output_tokens": 2}},
-            request=httpx.Request("POST", url),
-        )
+    def fake_transport(*, retries):
+        captured["retries"] = retries
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+        def handle(request):
+            captured.update({
+                "url": str(request.url), "headers": request.headers,
+                "json": json.loads(request.content),
+            })
+            return httpx.Response(
+                200,
+                json={"text": "safe response", "usage": {"input_tokens": 3, "output_tokens": 2}},
+                request=request,
+            )
+
+        return httpx.MockTransport(handle)
+
+    monkeypatch.setattr(httpx, "HTTPTransport", fake_transport)
     response = SwicoFreeProvider().complete(
         AIRequest(1, "private prompt", "en", "text", "auth-test", {}, []),
         AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
     )
     assert captured["url"] == "https://free.example/v1/generate"
     assert captured["headers"]["Authorization"] == f"Bearer {token}"
+    assert captured["retries"] == 2
     assert response.provider == "swico_free"
     assert token not in caplog.text
     assert "private prompt" not in caplog.text
+
+
+def test_free_provider_retries_only_bounded_connection_failures(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    monkeypatch.setenv("SWICO_FREE_CONNECT_RETRIES", "2")
+    attempts = 0
+
+    class FakeTransport:
+        def __init__(self, *, retries):
+            self.retries = retries
+
+    class FakeClient:
+        def __init__(self, *, transport, **_kwargs):
+            self.retries = transport.retries
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, endpoint, **_kwargs):
+            nonlocal attempts
+            for attempt in range(self.retries + 1):
+                attempts += 1
+                if attempt == 0:
+                    _connection_error = httpx.ConnectError(
+                        "handshake failed", request=httpx.Request("POST", f"https://free.example{endpoint}"),
+                    )
+                    continue
+                return httpx.Response(
+                    200, json={"text": "safe", "usage": {"input_tokens": 1, "output_tokens": 1}},
+                    request=httpx.Request("POST", f"https://free.example{endpoint}"),
+                )
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(httpx, "HTTPTransport", FakeTransport)
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    response = SwicoFreeProvider().complete(
+        AIRequest(1, "prompt", "en", "text", "retry", {}, []),
+        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+    )
+    assert response.text == "safe"
+    assert attempts == 2
+
+
+def test_free_provider_exhausted_connection_retries_are_unavailable(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    monkeypatch.setenv("SWICO_FREE_CONNECT_RETRIES", "2")
+    attempts = 0
+
+    class FakeTransport:
+        def __init__(self, *, retries):
+            self.retries = retries
+
+    class FakeClient:
+        def __init__(self, *, transport, **_kwargs):
+            self.retries = transport.retries
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, endpoint, **_kwargs):
+            nonlocal attempts
+            for _attempt in range(self.retries + 1):
+                attempts += 1
+                _connection_error = httpx.ConnectError(
+                    "handshake failed", request=httpx.Request("POST", f"https://free.example{endpoint}"),
+                )
+            raise _connection_error
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(httpx, "HTTPTransport", FakeTransport)
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with pytest.raises(SwicoFreeUnavailableError) as error:
+        SwicoFreeProvider().complete(
+            AIRequest(1, "prompt", "en", "text", "retry-exhausted", {}, []),
+            AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+        )
+    assert error.value.code == "swico_free_unavailable"
+    assert attempts == 3
+
+
+def test_free_provider_does_not_retry_http_busy_response(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    request = httpx.Request("POST", "https://free.example/v1/generate")
+    response = httpx.Response(429, request=request)
+    calls = 0
+
+    def handle(_request):
+        nonlocal calls
+        calls += 1
+        return response
+
+    monkeypatch.setattr(httpx, "HTTPTransport", lambda *, retries: httpx.MockTransport(handle))
+    with pytest.raises(SwicoFreeBusyError) as error:
+        SwicoFreeProvider().complete(
+            AIRequest(1, "prompt", "en", "text", "busy", {}, []),
+            AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+        )
+    assert error.value.code == "swico_free_busy"
+    assert calls == 1
 
 
 def test_free_provider_preserves_length_finish_and_truncation(monkeypatch):
@@ -103,16 +225,16 @@ def test_free_provider_preserves_length_finish_and_truncation(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
     monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
 
-    def fake_post(url, **_kwargs):
+    def fake_post(_self, url, _payload):
         return httpx.Response(
             200,
             json={
                 "text": "truncated answer", "finish_reason": "length", "truncated": True,
                 "usage": {"input_tokens": 4, "output_tokens": 32},
-            }, request=httpx.Request("POST", url),
+            }, request=httpx.Request("POST", f"https://free.example{url}"),
         )
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(SwicoFreeProvider, "_post", fake_post)
     response = SwicoFreeProvider().complete(
         AIRequest(1, "prompt", "en", "text", "finish-length", {}, []),
         AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 512),
@@ -146,6 +268,41 @@ def test_free_provider_stream_preserves_length_finish_and_truncation(monkeypatch
     monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
     monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
 
+    def fake_transport(*, retries):
+        assert retries == 2
+        return httpx.MockTransport(lambda request: httpx.Response(
+            200,
+            content=(
+                b'data: {"delta":"partial"}\n'
+                b'data: {"usage":{"input_tokens":3,"output_tokens":32,"finish_reason":"length","truncated":true}}\n'
+                b'data: [DONE]\n'
+            ),
+            request=request,
+        ))
+
+    monkeypatch.setattr(httpx, "HTTPTransport", fake_transport)
+    response = SwicoFreeProvider().stream_complete(
+        AIRequest(1, "prompt", "en", "text", "stream-length", {
+            "cancellation_signal": None,
+        }, []),
+        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 512),
+        lambda _delta: None,
+    )
+    assert response.raw["finish_reason"] == "length"
+    assert response.raw["truncated"] is True
+
+
+def test_free_provider_retries_stream_connection_before_output(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    monkeypatch.setenv("SWICO_FREE_CONNECT_RETRIES", "2")
+    stream_attempts = 0
+
+    class FakeTransport:
+        def __init__(self, *, retries):
+            self.retries = retries
+
     class Response:
         status_code = 200
 
@@ -156,22 +313,88 @@ def test_free_provider_stream_preserves_length_finish_and_truncation(monkeypatch
             return False
 
         def iter_lines(self):
-            return iter([
-                'data: {"delta":"partial"}',
-                'data: {"usage":{"input_tokens":3,"output_tokens":32,"finish_reason":"length","truncated":true}}',
-                'data: [DONE]',
-            ])
+            return iter(['data: {"delta":"retried"}', 'data: [DONE]'])
 
-    monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: Response())
+    class FakeClient:
+        def __init__(self, *, transport, **_kwargs):
+            self.retries = transport.retries
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def stream(self, _method, endpoint, **_kwargs):
+            nonlocal stream_attempts
+            for attempt in range(self.retries + 1):
+                stream_attempts += 1
+                if attempt == 0:
+                    continue
+                return Response()
+            raise httpx.ConnectError(
+                "stream handshake failed", request=httpx.Request("POST", f"https://free.example{endpoint}"),
+            )
+
+    monkeypatch.setattr(httpx, "HTTPTransport", FakeTransport)
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    chunks: list[str] = []
     response = SwicoFreeProvider().stream_complete(
-        AIRequest(1, "prompt", "en", "text", "stream-length", {
-            "cancellation_signal": None,
-        }, []),
-        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 512),
-        lambda _delta: None,
+        AIRequest(1, "prompt", "en", "text", "stream-retry", {}, []),
+        AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+        chunks.append,
     )
-    assert response.raw["finish_reason"] == "length"
-    assert response.raw["truncated"] is True
+    assert response.text == "retried"
+    assert chunks == ["retried"]
+    assert stream_attempts == 2
+
+
+def test_free_provider_does_not_replay_after_stream_output(monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
+    monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
+    stream_calls = 0
+
+    class Response:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_lines(self):
+            yield 'data: {"delta":"visible"}'
+            raise httpx.ConnectError(
+                "stream read failed", request=httpx.Request("POST", "https://free.example/v1/generate/stream"),
+            )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            nonlocal stream_calls
+            stream_calls += 1
+            return Response()
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    chunks: list[str] = []
+    with pytest.raises(SwicoFreeUnavailableError):
+        SwicoFreeProvider().stream_complete(
+            AIRequest(1, "prompt", "en", "text", "stream-no-replay", {}, []),
+            AIRoute("swico_free", None, "swico_free_general", "test", "en", "general", 32),
+            chunks.append,
+        )
+    assert chunks == ["visible"]
+    assert stream_calls == 1
 
 
 def test_free_embedding_path_uses_remote_e5_and_not_openai(monkeypatch):
@@ -372,7 +595,13 @@ def test_unavailable_provider_error_is_safe_and_never_logs_prompt(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_INFERENCE_BASE_URL", "https://free.example")
     monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
     request = httpx.Request("POST", "https://free.example/v1/generate")
-    monkeypatch.setattr(httpx, "post", lambda *_args, **_kwargs: (_ for _ in ()).throw(httpx.ConnectError("offline", request=request)))
+    def fake_transport(*, retries):
+        assert retries == 2
+        return httpx.MockTransport(lambda _request: (_ for _ in ()).throw(
+            httpx.ConnectError("offline", request=request)
+        ))
+
+    monkeypatch.setattr(httpx, "HTTPTransport", fake_transport)
     with pytest.raises(SwicoFreeUnavailableError) as error:
         SwicoFreeProvider().complete(
             AIRequest(1, "private prompt", "en", "text", "offline", {}, []),
@@ -388,7 +617,10 @@ def test_free_provider_maps_laptop_timeout_without_fallback(monkeypatch):
     monkeypatch.setenv("SWICO_FREE_INFERENCE_TOKEN", "x" * 40)
     request = httpx.Request("POST", "https://free.example/v1/generate")
     response = httpx.Response(504, json={"detail": {"code": "swico_free_timeout"}}, request=request)
-    monkeypatch.setattr(httpx, "post", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(
+        httpx, "HTTPTransport",
+        lambda *, retries: httpx.MockTransport(lambda _request: response),
+    )
     with pytest.raises(SwicoFreeTimeoutError) as error:
         SwicoFreeProvider().complete(
             AIRequest(1, "private prompt", "en", "text", "timeout", {}, []),

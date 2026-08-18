@@ -26,6 +26,13 @@ function record(data: unknown): Record<string, unknown> {
   return typeof data === 'object' && data !== null ? data as Record<string, unknown> : {}
 }
 
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string' && !value.trim()) return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
 function sources(data: unknown): SourceSummary[] {
   const values = Array.isArray(data) ? data : []
   return values.flatMap(value => {
@@ -91,13 +98,16 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         continuation_segment_index: Number(data.continuation_segment_index ?? 0),
         continuation_rewind_characters: Number(data.continuation_rewind_characters ?? 0),
       } : null }
-    case 'status':
+    case 'status': {
+      const queuePosition = finiteNumber(data.queue_position)
+      const estimatedWaitSeconds = finiteNumber(data.estimated_wait_seconds)
       return {
         ...state,
         phase: String(data.phase ?? ''),
-        queuePosition: Number.isFinite(Number(data.queue_position)) ? Math.max(1, Number(data.queue_position)) : null,
-        estimatedWaitSeconds: Number.isFinite(Number(data.estimated_wait_seconds)) ? Math.max(0, Number(data.estimated_wait_seconds)) : null,
+        queuePosition: queuePosition === null ? null : Math.max(1, queuePosition),
+        estimatedWaitSeconds: estimatedWaitSeconds === null ? null : Math.max(0, estimatedWaitSeconds),
       }
+    }
     case 'delta':
       return {
         ...state, phase: 'responding',

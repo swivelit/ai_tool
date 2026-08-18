@@ -17,6 +17,7 @@ SWICO_FREE_MAX_OUTPUT_TOKENS=256
 SWICO_FREE_INFERENCE_BASE_URL=https://desktop-qtf7f78.tailbdb31e.ts.net
 SWICO_FREE_INFERENCE_TOKEN=<shared-with-the-Windows-node-secret>
 SWICO_FREE_INFERENCE_TIMEOUT_SECONDS=90
+SWICO_FREE_CONNECT_RETRIES=2
 SWICO_FREE_EMBEDDING_DIMENSIONS=384
 SWICO_FREE_MAX_QUEUE_WAIT_SECONDS=15
 SWICO_FREE_MAX_TOTAL_REQUEST_SECONDS=45
@@ -49,6 +50,13 @@ cd backend
 python scripts/swico_free_queue_report.py --pretty
 ```
 
+`SWICO_FREE_CONNECT_RETRIES=2` enables at most two additional HTTPX transport
+attempts for connection establishment, including TLS setup. It does not retry
+HTTP error responses, and normal TLS certificate verification remains enabled.
+Keep this value between `0` and `3`; malformed values fail production
+configuration validation. A stream is never replayed after visible output has
+started.
+
 ## Released Swico Free operational values
 
 The released production API currently uses the following Swico Free values;
@@ -70,6 +78,7 @@ SWICO_FREE_RATE_LIMIT_PER_MINUTE=2
 SWICO_FREE_DAILY_MESSAGE_LIMIT=10
 SWICO_FREE_INFERENCE_BASE_URL=https://desktop-qtf7f78.tailbdb31e.ts.net
 SWICO_FREE_INFERENCE_TOKEN=<same-secret-as-the-Windows-node>
+SWICO_FREE_CONNECT_RETRIES=2
 SWICO_DEFAULT_TIER=lite
 ```
 

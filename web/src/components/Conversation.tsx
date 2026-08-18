@@ -256,6 +256,19 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
     message.content, message.continuation_render_prefix,
   )
   const displayedContent = workingCopy ?? originalDisplayContent
+  const emptyAssistantState = message.status === 'retryable'
+    ? message.failure_code === 'service_budget_reached'
+      ? 'Service capacity is temporarily full. Please retry later.'
+      : message.failure_code === 'swico_free_busy'
+        ? 'Swico Free is busy. Please retry shortly.'
+      : message.failure_code === 'swico_free_timeout'
+          ? 'Swico Free timed out. Please retry.'
+          : message.failure_code === 'swico_free_unavailable'
+            ? 'Swico Free is temporarily unavailable. Please retry.'
+            : message.failure_code === 'stream_interrupted'
+              ? 'The connection ended before Swico finished. Please retry.'
+              : 'Swico could not complete this response. Please retry.'
+    : 'Generation stopped.'
   return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''} ${highlighted ? 'search-highlight' : ''}`}
     data-message-id={message.id} data-request-id={message.request_id ?? undefined}><div className="message-body">
     {message.status === 'complete' && displayedContent && <ResponseToolbar
@@ -265,7 +278,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
       onApply={setWorkingCopy}
       onReset={() => setWorkingCopy(null)}
     />}
-    {displayedContent ? <MarkdownMessage streaming={message.status === 'streaming'}>{displayedContent}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
+    {displayedContent ? <MarkdownMessage streaming={message.status === 'streaming'}>{displayedContent}</MarkdownMessage> : message.status === 'streaming' ? null : <p>{emptyAssistantState}</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
     {!!message.sources?.length && <SourceCitations sources={message.sources} />}
     {message.quality && <ResponseQualityPanel quality={message.quality} />}
@@ -282,7 +295,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
       {message.status === 'retryable' && <button aria-label="Retry answer" title={retryBlocked ? `Retry available after ${new Date(retryAtMilliseconds).toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' })}` : 'Retry answer'} disabled={retryBlocked} onClick={() => retry(message)}><RefreshCw size={16} /></button>}
       {regenerationAvailable && message.status === 'complete' && <button className="regenerate-answer" aria-label="Regenerate answer" title="Regenerate answer" disabled={editingDisabled} onClick={() => regenerateResponse(message)}><RotateCcw size={16} /> Regenerate</button>}
       {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" disabled={continuationActive} onClick={() => continueResponse(message)}><RefreshCw size={16} /> {continuationActive ? 'Continuing…' : 'Continue response'}</button>}
-      {(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
+      {Boolean(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
         <span>{message.tier_label || 'Swico'}</span>
         <span>Input {message.input_tokens.toLocaleString()} · Output {message.output_tokens.toLocaleString()} · Total {(message.input_tokens + message.output_tokens).toLocaleString()} tokens</span>
         <span>{message.usage_source === 'actual' ? 'Measured usage' : 'Estimated usage'}</span>

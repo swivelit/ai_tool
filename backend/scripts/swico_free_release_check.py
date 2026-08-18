@@ -122,12 +122,16 @@ def _inference_checks() -> list[Check]:
     base_url, token_or_error = probe._base_url()
     if base_url is None:
         return [Check("inference_configuration", "fail", str(token_or_error))]
+    connect_retries = probe._connect_retries()
+    if connect_retries is None:
+        return [Check("inference_configuration", "fail", "invalid_connect_retries")]
     timeout_seconds = probe._timeout_seconds()
     timeout = httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
     with httpx.Client(
         base_url=base_url,
         headers={"Authorization": f"Bearer {token_or_error}", "Accept": "application/json"},
         timeout=timeout,
+        transport=httpx.HTTPTransport(retries=connect_retries),
     ) as client:
         health = probe._check(client, "/health", "GET", "/health")
         results: list[probe.ProbeResult] = [health]

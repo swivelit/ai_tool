@@ -57,6 +57,11 @@ describe('chatStreamReducer', () => {
     expect(state).toMatchObject({ phase:'queued', queuePosition:4, estimatedWaitSeconds:18 })
     expect(JSON.stringify(state)).not.toMatch(/must-not-be-retained|user_id/)
   })
+  it('does not turn null queue metadata into a visible queue position or wait time', () => {
+    let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'queued-null', threadId:'t1', tier:'free', tierLabel:'Swico Free' })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'status', data:{ phase:'queued', queue_position:null, estimated_wait_seconds:null } } })
+    expect(state).toMatchObject({ phase:'queued', queuePosition:null, estimatedWaitSeconds:null })
+  })
   it('preserves partial text and makes an interrupted stream retryable', () => {
     let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'r-partial', threadId:'t1', tier:'standard', tierLabel:'Swico' })
     state = chatStreamReducer(state, { type:'event', event:{ event:'delta', data:{ text:'Partial answer' } } })
