@@ -415,12 +415,17 @@ def _rate_limit(session: Session, *, user_id: int, action: str, limit: int) -> N
 
 
 class SwicoFreeLimitError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, *, retry_after_seconds: int = 60,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
 
 
-def _enforce_swico_free_limits(user_id: int) -> None:
+def _enforce_swico_free_limits(
+    user_id: int, *, internal_account: bool = False,
+) -> None:
     try:
         minute_limit = int(os.getenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "2"))
         daily_limit = int(os.getenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "10"))
@@ -428,6 +433,10 @@ def _enforce_swico_free_limits(user_id: int) -> None:
         raise SwicoFreeLimitError(
             "swico_free_rate_limited", "Swico Free is temporarily rate limited."
         ) from exc
+    # Keep configuration parsing above the exemption: internal accounts do not
+    # weaken startup/request configuration guards, only user-level quotas.
+    if internal_account:
+        return
     with SessionLocal() as session:
         try:
             enforce_rate_limit(
@@ -465,9 +474,14 @@ def _enforce_swico_free_limits(user_id: int) -> None:
             # queued or transiently retrying request is not a successful
             # daily message and therefore must not consume this allowance.
             if completed >= daily_cap:
+                next_reset = day_start + timedelta(days=1)
+                retry_after_seconds = max(
+                    1, int((next_reset - now).total_seconds())
+                )
                 raise SwicoFreeLimitError(
                     "swico_free_daily_limit",
                     "Swico Free has reached its daily message limit. Please try again tomorrow.",
+                    retry_after_seconds=retry_after_seconds,
                 )
             session.commit()
         except RateLimitError as exc:
@@ -4025,7 +4039,12 @@ async def chat_stream(
                 "Swico Free is not available for this account yet.",
             )
         rollout_decision, request_triag_settings = _web_rollout(auth, user)
-        _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
+        web_chat_limit = int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12"))
+        if not billing_exempt:
+            _rate_limit(
+                rate_session, user_id=user_id, action="web_chat",
+                limit=web_chat_limit,
+            )
         rate_session.commit()
     resume_accepted_queue = False
     if durable_queue_enabled():
@@ -4111,7 +4130,9 @@ async def chat_stream(
 
     if prepared.route.provider == "swico_free" and not resume_accepted_queue:
         try:
-            _enforce_swico_free_limits(user_id)
+            _enforce_swico_free_limits(
+                user_id, internal_account=billing_exempt,
+            )
         except SwicoFreeLimitError as exc:
             try:
                 _release_swico_free_request(prepared.request_id)
@@ -4121,7 +4142,9 @@ async def chat_stream(
                     extra={"request_id": prepared.request_id},
                 )
             return _temporary_error(
-                429, exc.code, str(exc), headers={"Retry-After": "60"},
+                429, exc.code, str(exc), headers={
+                    "Retry-After": str(exc.retry_after_seconds),
+                },
             )
     if prepared.route.provider == "swico_free" and durable_queue_enabled():
         with SessionLocal() as queue_session:

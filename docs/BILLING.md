@@ -34,7 +34,7 @@ Wallet/bootstrap/settlement events, package previews, payment/refund history, ex
 
 Usage summaries count terminal provider-backed rows, including billing-exempt audit rows, and expose actual input, cached-input, output, and total tokens plus provider-reported versus estimated request counts. Debit totals still include only wallet charges. Released, failed, free cache, safety, and deterministic responses are excluded.
 
-Allowlisted internal capability-test accounts are exempt only from prepaid-wallet billing. They create no wallet reservation, debit, credit, payment, or ledger entry. Provider-backed turns still create a terminal `billing_exempt` `UsageCharge` with the public Swico tier, internal provider/model, actual or estimated tokens, provider cost, zero reserved/debited micros, and the exemption reason. Provider budgets, authentication, rate limits, model health, tier availability, and safety controls remain active.
+Allowlisted internal capability-test accounts are exempt from prepaid-wallet billing and website user-level Chat limits, including the general `web_chat` minute limit and Swico Free's user-level minute/daily message limits. They create no wallet reservation, debit, credit, payment, or ledger entry. Provider-backed turns still create a terminal `billing_exempt` `UsageCharge` with the public Swico tier, internal provider/model, actual or estimated tokens, provider cost, zero reserved/debited micros, and the exemption reason. Authentication, safety controls, provider/global budgets, model health, tier availability, Swico Free enablement, node/queue capacity, and Voice-specific rate limits remain active.
 
 ## Charging and invariants
 

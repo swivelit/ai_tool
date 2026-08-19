@@ -28,7 +28,11 @@ SWICO_FREE_QUEUE_STALE_RUNNING_SECONDS=120
 ```
 
 The backend admits verified `SWICO_INTERNAL_TEST_EMAILS` accounts regardless
-of rollout percentage. Ordinary users are assigned by a stable backend-only
+of rollout percentage. For website Chat capability testing, those verified
+accounts bypass the general `web_chat` minute limit and Swico Free's user-level
+minute/daily message limits. They remain subject to authentication, safety,
+provider/global budgets, model health, Swico Free enablement, actual node and
+durable-queue capacity, and Voice-specific rate limits. Ordinary users are assigned by a stable backend-only
 user identifier hash; rollout buckets are never returned by bootstrap,
 settings, diagnostics, or logs. Run the secret-safe probe from Render Shell:
 

@@ -5,6 +5,7 @@ import json
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -570,6 +571,35 @@ def test_free_daily_limit_is_isolated_from_paid_chat_rate_limits(monkeypatch):
     with SessionLocal() as session:
         _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
         _rate_limit(session, user_id=int(user.id), action="web_chat", limit=2)
+
+
+def test_free_daily_limit_retry_after_is_until_next_utc_day(monkeypatch):
+    user = create_test_user("free-daily-retry-after", "free-daily-retry-after@example.com")
+    monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "10")
+    monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "1")
+    monkeypatch.setattr(
+        "app.web_api.router.utc_now",
+        lambda: datetime(2031, 11, 17, 23, 59, 30, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        "app.billing.service.utc_now",
+        lambda: datetime(2031, 11, 17, 23, 59, 30, tzinfo=timezone.utc),
+    )
+    with SessionLocal() as session:
+        create_swico_free_usage(
+            session, request_id="free-daily-retry-completed", user_id=int(user.id),
+            thread_id=None, pricing_snapshot_json="{}",
+        )
+        settle_swico_free_usage(
+            session, request_id="free-daily-retry-completed", input_tokens=2,
+            cached_input_tokens=0, output_tokens=3, usage_source="actual",
+            pricing_snapshot_json="{}",
+        )
+        session.commit()
+    with pytest.raises(SwicoFreeLimitError) as error:
+        _enforce_swico_free_limits(int(user.id))
+    assert error.value.code == "swico_free_daily_limit"
+    assert error.value.retry_after_seconds == 30
 
 
 def test_failed_free_generation_does_not_consume_completed_daily_allowance(monkeypatch):

@@ -198,7 +198,10 @@ Backend runtime state remains under `backend/data/`:
 4. Add the verified account email to `SWICO_INTERNAL_TEST_EMAILS=<dedicated-test-email>` on the backend.
 5. Deploy the backend.
 6. Sign in and confirm the UI displays **Unlimited**.
-7. Keep provider daily budgets and rate limits active.
+7. User-level website Chat minute limits are bypassed for this verified account,
+   including Swico Free's minute/daily user limits. Keep safety controls,
+   provider/global budgets, Swico Free enablement, node/queue capacity, and
+   Voice-specific rate limits active.
 8. Remove the email from the allowlist to revoke billing exemption.
 
 Never put the account password in README, Git, Render logs, screenshots, or frontend variables.

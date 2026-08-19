@@ -7,8 +7,10 @@ from sqlmodel import select
 
 from app.ai.types import AIProviderResponse
 from app.auth import AuthUser, is_internal_test_email, is_internal_test_user
+from app.billing.service import create_swico_free_usage, settle_swico_free_usage
 from app.database import SessionLocal
 from app.models import UsageCharge, User, WalletLedger, WebChatMessage, WebUsagePreferences
+from app.web_api.router import _enforce_swico_free_limits
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -46,6 +48,46 @@ def test_request_body_email_cannot_grant_exemption(client, monkeypatch):
         "email": TEST_EMAIL,
     })
     assert response.status_code == 422
+
+
+def test_verified_internal_account_bypasses_swico_free_user_limits(monkeypatch):
+    _configure(monkeypatch)
+    user = create_test_user("internal-free-limits", TEST_EMAIL)
+    monkeypatch.setenv("SWICO_FREE_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("SWICO_FREE_DAILY_MESSAGE_LIMIT", "1")
+
+    # Saturate both ordinary user-level controls first. The secured route
+    # passes the result of is_internal_test_user as internal_account=True.
+    _enforce_swico_free_limits(int(user.id))
+    with SessionLocal() as session:
+        create_swico_free_usage(
+            session, request_id="internal-free-completed", user_id=int(user.id),
+            thread_id=None, pricing_snapshot_json="{}",
+        )
+        settle_swico_free_usage(
+            session, request_id="internal-free-completed", input_tokens=2,
+            cached_input_tokens=0, output_tokens=3, usage_source="actual",
+            pricing_snapshot_json="{}",
+        )
+        session.commit()
+
+    _enforce_swico_free_limits(int(user.id), internal_account=True)
+
+
+def test_ordinary_account_still_hits_general_web_chat_limit(client, monkeypatch):
+    create_test_user("ordinary-chat-limit", "ordinary-chat-limit@example.test")
+    monkeypatch.setenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "1")
+    headers = auth_headers("ordinary-chat-limit", "ordinary-chat-limit@example.test")
+    first = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "21000000-0000-4000-8000-000000000001",
+        "message": "hello",
+    })
+    second = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "21000000-0000-4000-8000-000000000002",
+        "message": "hello",
+    })
+    assert first.status_code == 200
+    assert second.status_code == 429
 
 
 def test_internal_account_is_zero_debit_but_provider_cost_is_audited(
@@ -122,15 +164,11 @@ def test_internal_account_keeps_rate_limit_safety_and_provider_budget(
     headers = auth_headers("internal-guards", TEST_EMAIL)
 
     monkeypatch.setenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "2")
-    for index in range(2):
+    for index in range(3):
         assert client.post("/api/web/chat/stream", headers=headers, json={
             "request_id": f"30000000-0000-4000-8000-{index:012d}",
             "message": "hello",
         }).status_code == 200
-    assert client.post("/api/web/chat/stream", headers=headers, json={
-        "request_id": "30000000-0000-4000-8000-000000000003",
-        "message": "hello",
-    }).status_code == 429
 
     # A new user/window isolates the remaining guards from the rate-limit proof.
     second_email = "second.tester@example.test"
