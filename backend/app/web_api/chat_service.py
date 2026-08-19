@@ -2990,9 +2990,11 @@ def prepare_web_turn(
 
 
 def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:
-    tamil = str(
+    reply_language = str(
         request.reply_language or route.metadata.get("reply_language") or route.language
-    ).strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
+    ).strip().lower()
+    tamil = reply_language in {"ta", "tamil", "mixed"}
+    tanglish = reply_language == "tanglish"
     if route.intent == "swico_brand":
         text = swico_brand_response(
             str(route.metadata.get("brand_subintent") or "general"),
@@ -3019,23 +3021,27 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             "Swico இன்னும் இணையத்தில் நேரடி தரவு அணுகலை வழங்கவில்லை; எனவே தற்போதைய "
             "வானிலை, மதிப்பெண்கள் அல்லது விலைகளை நான் கூற முடியாது, ஊகிக்கவும் மாட்டேன்."
             if tamil else
+            "Swico-ku web-la innum live data access illa; athanala current weather, scores illa prices-a solla mudiyadhu, guess-um panna maatten."
+            if tanglish else
             "Swico does not have live data access on the web yet, so it cannot give "
             "current weather, scores or prices, and will not guess."
         )
     elif route.provider == "blocked":
         text = "I can’t help with that request, but I can help with a safer alternative."
     elif route.intent == "greeting":
-        text = "வணக்கம்! இன்று நான் எப்படி உதவலாம்?" if tamil else "Hi! How can I help you today?"
+        text = "வணக்கம்! இன்று நான் எப்படி உதவலாம்?" if tamil else "Vanakkam! Innaikku naan eppadi help pannalaam?" if tanglish else "Hi! How can I help you today?"
     elif route.intent == "thanks":
-        text = "வரவேற்கிறேன்." if tamil else "You’re welcome."
+        text = "வரவேற்கிறேன்." if tamil else "Parava illa." if tanglish else "You’re welcome."
     elif route.intent == "capabilities":
         text = (
             "கேள்விகள், விளக்கங்கள், எழுதுதல், திட்டமிடல் மற்றும் நிரலாக்கத்தில் நான் உதவ முடியும்."
             if tamil else
+            "Questions, explanations, writing, planning, coding ellathulayum naan help panna mudiyum."
+            if tanglish else
             "I can help with questions, explanations, writing, planning, and coding."
         )
     elif route.intent in _WEB_UNSUPPORTED_INTENTS:
-        text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "That capability is not available on the web yet."
+        text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "Andha capability innum web-la available illa." if tanglish else "That capability is not available on the web yet."
     else:
         logger.warning(
             "deterministic_intent_unmapped",

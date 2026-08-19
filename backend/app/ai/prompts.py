@@ -464,12 +464,20 @@ def _language_contract(language: Any) -> str:
             "Language contract: answer only in English, even if the user spoke Tamil or Tanglish. "
             "Do not translate the final answer into Tamil."
         )
-    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
+    if normalized in {"ta", "tamil"}:
         return (
-            "Language contract: answer in natural light Chennai Tamil/Tanglish by default, not formal textbook Tamil. "
+            "Language contract: answer naturally in Tamil using Tamil Unicode script. English technical terms may remain English where natural. "
+            "Keep a natural light Chennai Tamil/Tanglish conversational tone, but do not silently switch to Tanglish or Roman script. "
+            "Keep the language conversational, not formal textbook Tamil. "
             "Use simple local conversational phrasing such as seri, ipdi, unga, konjam, romba, or na only where natural. "
             "Do not overdo slang, do not use caricature, offensive dialect imitation, or excessive da/machi. "
             "Keep technical, medical, and legal facts accurate and clear. Use formal Tamil only if the user asks for formal Tamil."
+        )
+    if normalized == "tanglish":
+        return (
+            "Language contract: answer in natural conversational Tamil written only with Roman/Latin characters. "
+            "Natural English code-mixing is allowed. Do not output Tamil Unicode characters unless the user explicitly requests Tamil script. "
+            "Keep technical, medical, and legal facts accurate and clear."
         )
     return "Language contract: answer in the requested language clearly and naturally."
 

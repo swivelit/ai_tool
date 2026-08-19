@@ -212,6 +212,10 @@ def test_profile_settings_are_owner_scoped_and_validated(client):
         "assistant_name": "Kavi", "reply_language": "ta",
         "email": "profile-owner@example.com", "email_editable": False,
     }
+    tanglish = client.patch("/api/web/settings/profile", headers=headers, json={"reply_language": "tanglish"})
+    assert tanglish.status_code == 200
+    assert tanglish.json()["reply_language"] == "tanglish"
+    assert client.get("/api/web/settings/profile", headers=headers).json()["reply_language"] == "tanglish"
     assert client.patch("/api/web/settings/profile", headers=headers, json={"timezone": "Mars/Olympus"}).status_code == 422
     assert client.patch("/api/web/settings/profile", headers=headers, json={"reply_language": "fr"}).status_code == 422
     assert client.patch("/api/web/settings/profile", headers=headers, json={"name": "   "}).status_code == 422

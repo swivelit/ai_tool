@@ -277,14 +277,14 @@ function profile(value: unknown): RestorableProfile | null {
     || !(typeof value.place === 'string' || value.place === null)
     || typeof value.timezone !== 'string'
     || typeof value.assistant_name !== 'string'
-    || !['en', 'ta'].includes(String(value.reply_language))
+    || !['en', 'ta', 'tanglish'].includes(String(value.reply_language))
   ) return null
   return {
     name:value.name,
     place:value.place,
     timezone:value.timezone,
     assistant_name:value.assistant_name,
-    reply_language:value.reply_language as 'en' | 'ta',
+    reply_language:value.reply_language as 'en' | 'ta' | 'tanglish',
   }
 }
 

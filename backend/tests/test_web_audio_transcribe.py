@@ -58,6 +58,27 @@ def test_success_returns_transcript_only_and_persists_no_chat_or_mobile_item(cli
         assert charge.usage_kind == "stt" and charge.status == "settled"
 
 
+def test_web_stt_uses_translit_mode_and_does_not_use_reply_language_as_input_language(client, monkeypatch):
+    user = create_test_user("voice-user", "voice-user@example.com"); _fund(int(user.id))
+    calls: list[tuple[tuple, dict]] = []
+
+    def transcribe(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "naalaiku meeting eppo?"
+
+    monkeypatch.setenv("WEB_STT_MODE", "translit")
+    monkeypatch.setattr("app.web_api.router.transcribe_audio_file", transcribe)
+    response = client.post(
+        "/api/web/audio/transcribe",
+        headers=auth_headers("voice-user", "voice-user@example.com"),
+        data={"operation_id": str(uuid4()), "voice_turn_id": str(uuid4()), "language": "en"},
+        files={"file": ("recording.webm", b"webm-audio", "audio/webm;codecs=opus")},
+    )
+    assert response.status_code == 200
+    assert calls and calls[0][0][2] is None
+    assert calls[0][1]["mode"] == "translit"
+
+
 def test_raw_audio_is_removed_after_success(client, monkeypatch):
     user = create_test_user("voice-user", "voice-user@example.com"); _fund(int(user.id))
     import app.web_api.router as router

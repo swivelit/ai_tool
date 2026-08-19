@@ -118,7 +118,7 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
             prefer_provider="sarvam",
             reason="reply_language_prefers_indic",
             input_language=input_language,
-            reply_language="ta",
+            reply_language="tanglish" if reply == "tanglish" else "ta",
             provider_preference="sarvam",
         )
 

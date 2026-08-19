@@ -399,7 +399,7 @@ export type RestorableProfile = {
   place: string | null
   timezone: string
   assistant_name: string
-  reply_language: 'en' | 'ta'
+  reply_language: 'en' | 'ta' | 'tanglish'
 }
 
 export type RestorableUsagePreferences = {

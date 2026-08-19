@@ -83,6 +83,8 @@ def test_voice_session_requires_auth_and_uses_saved_tier_language(client, monkey
     assert body["media_source_allowed"] is False
     assert "user" not in body["websocket_url"]
     assert "ticket" not in body["websocket_url"]
+    assert body["stt_language"] == "unknown"
+    assert body["stt_mode"] == "translit"
 
 
 def test_auto_session_accepts_only_bounded_capabilities(client, monkeypatch):

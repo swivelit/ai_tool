@@ -29,6 +29,11 @@ class VoiceTicket:
     output_codec: str = "mp3"
     sample_rate: int = 24_000
     media_source_allowed: bool = False
+    # `language` remains the reply-language field for old tickets and clients.
+    # STT is deliberately independent and defaults safely for tickets minted
+    # before these fields existed.
+    stt_language: str = "unknown"
+    stt_mode: str = "translit"
 
 
 class VoiceSessionConflict(RuntimeError):

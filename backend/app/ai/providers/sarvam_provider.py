@@ -131,7 +131,7 @@ def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
 def normalize_sarvam_tts_language_code(target_language_code: str | None, *, fallback_reply_language: str | None = None) -> str:
     value = str(target_language_code or "").strip().lower()
     fallback = str(fallback_reply_language or "").strip().lower()
-    if value in {"ta", "ta-in", "tamil"}:
+    if value in {"ta", "ta-in", "tamil", "tanglish"}:
         return "ta-IN"
     if value in {"en", "en-in", "english"}:
         return "en-IN"
@@ -437,6 +437,7 @@ class SarvamProvider(AIProvider):
         *,
         content_type: Optional[str] = None,
         filename: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> str:
         api_key = self._api_key()
         if not api_key:
@@ -451,8 +452,10 @@ class SarvamProvider(AIProvider):
         normalized_language = normalize_audio_language(language)
         self.last_stt_detected_language = None
         model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
-        mode = os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe"
-        form_data: dict[str, str] = {"model": model, "mode": mode}
+        stt_mode = str(mode or os.getenv("SARVAM_STT_MODE", "transcribe")).strip().lower() or "transcribe"
+        if stt_mode not in {"transcribe", "translit"}:
+            stt_mode = "transcribe"
+        form_data: dict[str, str] = {"model": model, "mode": stt_mode}
         if normalized_language:
             form_data["language_code"] = normalized_language
         started = time.perf_counter()

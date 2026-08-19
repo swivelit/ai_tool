@@ -150,7 +150,8 @@ def apply_reply_language_contract(
 ) -> OutputContract:
     """Make the selected profile language verifiable, not prompt-only advice."""
 
-    if str(reply_language or "").strip().casefold() != "ta":
+    normalized = str(reply_language or "").strip().casefold()
+    if normalized != "ta":
         return contract
     return replace(contract, required_script="tamil")
 

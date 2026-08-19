@@ -603,7 +603,7 @@ def _serialize_message(
         except ValueError:
             voice_turn_id = None
     reply_language = metadata.get("reply_language")
-    reply_language = reply_language if reply_language in {"en", "ta"} else None
+    reply_language = reply_language if reply_language in {"en", "ta", "tanglish"} else None
     raw_attachments = metadata.get("attachments")
     status_cache = attachment_cache if attachment_cache is not None else {}
     for value in raw_attachments if isinstance(raw_attachments, list) else []:
@@ -785,12 +785,17 @@ def _serialize_message(
 
 def _resolved_reply_language(user) -> str:
     value = str(user.reply_language or "").strip().lower()
-    if value not in {"en", "ta"}:
+    if value not in {"en", "ta", "tanglish"}:
         raise HTTPException(422, {
             "code": "invalid_profile_language",
-            "message": "Saved reply language must be English or Tamil.",
+            "message": "Saved reply language must be English, Tamil, or Tanglish.",
         })
     return value
+
+
+def _web_stt_mode() -> str:
+    value = str(os.getenv("WEB_STT_MODE", "translit") or "translit").strip().lower()
+    return value if value in {"transcribe", "translit"} else "translit"
 
 
 def _owned_thread(session: Session, user_id: int, thread_id: str) -> WebChatThread:
@@ -1117,6 +1122,7 @@ def create_voice_session(
         playback_mode=playback["playback_mode"], output_codec=playback["output_codec"],
         sample_rate=playback["sample_rate"],
         media_source_allowed=playback["media_source_allowed"],
+        stt_language="unknown", stt_mode=_web_stt_mode(),
     )
     try:
         ticket = _tickets().mint(metadata, ttl, max_session)
@@ -1146,6 +1152,8 @@ def create_voice_session(
         "tier": tier,
         "tier_label": SWICO_TIER_LABELS[tier],
         "language": language,
+        "stt_language": "unknown",
+        "stt_mode": _web_stt_mode(),
         "playback_mode": playback["playback_mode"],
         "selected_codec": playback["output_codec"],
         "provider_sample_rate": playback["sample_rate"] if playback["output_codec"] == "linear16" else None,
@@ -1507,7 +1515,14 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         if not provider.stt_connected:
             stage = "sarvam_stt_connect"
             try:
-                await provider.connect_stt(metadata.language)
+                try:
+                    await provider.connect_stt(metadata.stt_language, mode=metadata.stt_mode)
+                except TypeError as exc:
+                    # Keep compatibility with older injected/legacy streaming
+                    # adapters while the website metadata remains explicit.
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    await provider.connect_stt(metadata.stt_language)
             except SarvamStreamingError as exc:
                 with SessionLocal() as billing_session:
                     if metadata.billing_exempt:
@@ -3502,7 +3517,8 @@ async def transcribe_web_audio(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    language = language or request.query_params.get("language")
+    # Keep the optional field for legacy clients, but never use it as a web
+    # STT restriction. The website path always auto-detects and transliterates.
     if selected_swico_tier(session, int(user.id)) == "free":
         await file.close()
         return _temporary_error(
@@ -3555,9 +3571,9 @@ async def transcribe_web_audio(
         if size <= 0:
             return _temporary_error(400, "empty_audio", "The recording is empty. Please record for a moment and try again.")
         duration, duration_method = estimate_audio_duration_details(temp_path, content_type, size)
-        max_seconds = min(300, max(1, int(os.getenv("WEB_AUDIO_MAX_SECONDS", "300"))))
+        max_seconds = min(30, max(1, int(os.getenv("WEB_AUDIO_MAX_SECONDS", "30"))))
         if duration > max_seconds:
-            return _temporary_error(413, "audio_too_long", "Recordings are limited to 300 seconds.")
+            return _temporary_error(413, "audio_too_long", "Recordings are limited to 30 seconds.")
         audio_milliseconds = int(
             (Decimal(str(duration)) * Decimal("1000")).to_integral_value(rounding=ROUND_CEILING)
         )
@@ -3586,9 +3602,10 @@ async def transcribe_web_audio(
             transcribe_audio_file,
             stt_provider,
             temp_path,
-            language,
+            None,
             content_type=content_type,
             filename=f"recording{extension}",
+            mode=_web_stt_mode(),
         )
         if billing_exempt:
             charge = settle_billing_exempt_usage(
@@ -3614,7 +3631,7 @@ async def transcribe_web_audio(
             session,
             AIProviderResponse(
                 text="", provider="sarvam", model=model, route="sarvam_stt",
-                reason="web_voice_dictation", language=normalize_audio_language(language) or "auto",
+                reason="web_voice_dictation", language=stt_provider.last_stt_detected_language or "auto",
                 intent="stt", audio_seconds=float(Decimal(audio_milliseconds) / Decimal("1000")),
                 characters=len(transcript), estimated_cost_amount=price.amount,
                 estimated_cost_currency="INR",
@@ -3698,7 +3715,6 @@ async def transcribe_web_audio(
             "transcript": transcript,
             "detected_language": (
                 stt_provider.last_stt_detected_language
-                or normalize_audio_language(language)
                 or "auto"
             ),
             "duration_seconds": float(Decimal(audio_milliseconds) / Decimal("1000")),
@@ -3778,7 +3794,7 @@ async def synthesize_web_audio(
             f"This reply is too long to play as voice (maximum {max_characters} characters).",
         )
     reply_language = metadata.get("reply_language")
-    if reply_language not in {"en", "ta"}:
+    if reply_language not in {"en", "ta", "tanglish"}:
         reply_language = _resolved_reply_language(user)
     target_language_code = normalize_sarvam_tts_language_code(reply_language)
     model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)

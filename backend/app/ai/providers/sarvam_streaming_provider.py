@@ -19,6 +19,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
 from .sarvam_provider import (
+    normalize_audio_language,
     normalize_sarvam_tts_language_code,
     normalize_sarvam_tts_model,
     resolve_sarvam_tts_voice,
@@ -264,12 +265,15 @@ class SarvamStreamingProvider:
                 safe_code="abnormal_close", retryable=True,
             ) from exc
 
-    async def connect_stt(self, language: str) -> None:
-        language_code = normalize_sarvam_tts_language_code(language)
+    async def connect_stt(self, language: str | None = None, *, mode: str | None = None) -> None:
+        language_code = normalize_audio_language(language) or "unknown"
+        stt_mode = str(mode or os.getenv("SARVAM_STT_MODE", "transcribe")).strip().lower() or "transcribe"
+        if stt_mode not in {"transcribe", "translit"}:
+            stt_mode = "transcribe"
         query = urlencode({
             "language-code": language_code,
             "model": os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
-            "mode": "transcribe",
+            "mode": stt_mode,
             "sample_rate": str(SARVAM_STT_SAMPLE_RATE),
             "input_audio_codec": SARVAM_STT_INPUT_AUDIO_CODEC,
             "vad_signals": "true",

@@ -151,7 +151,7 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
           status: data.cancelled ? 'cancelled' : 'complete',
           input_mode: data.input_mode === 'voice' ? 'voice' : 'text',
           voice_turn_id: data.voice_turn_id ? String(data.voice_turn_id) : null,
-          reply_language: data.reply_language === 'ta' ? 'ta' : data.reply_language === 'en' ? 'en' : null,
+          reply_language: data.reply_language === 'ta' ? 'ta' : data.reply_language === 'tanglish' ? 'tanglish' : data.reply_language === 'en' ? 'en' : null,
           finish_reason: String(data.finish_reason ?? 'unknown'),
           truncated: Boolean(data.truncated), can_continue: Boolean(data.can_continue),
           completion_status: String(data.completion_status ?? 'unknown'),

@@ -139,7 +139,8 @@ def classify_transcript(
     if lowered.endswith(_TRAILING_MARKS):
         return TranscriptClassification.UNFINISHED
     last = lowered.rstrip(".!?।").split()[-1] if lowered.rstrip(".!?।").split() else ""
-    continuations = _TA_CONTINUATIONS if str(language).lower().startswith("ta") else _EN_CONTINUATIONS
+    normalized_language = str(language).lower()
+    continuations = _TA_CONTINUATIONS if normalized_language.startswith("ta") or normalized_language == "tanglish" else _EN_CONTINUATIONS
     if last in continuations:
         return TranscriptClassification.UNFINISHED
     partial_is_ahead = bool(partial and len(partial) > len(final))

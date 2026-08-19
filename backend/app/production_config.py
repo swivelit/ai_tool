@@ -239,10 +239,13 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         ("WEB_TTS_MAX_CHARACTERS", "5000"),
         ("WEB_STT_RATE_LIMIT_PER_MINUTE", "10"),
         ("WEB_TTS_RATE_LIMIT_PER_MINUTE", "10"),
+        ("WEB_AUDIO_MAX_SECONDS", "30"),
     ):
         configured = _integer(env, name, default)
-        if configured is None or configured <= 0:
+        if configured is None or configured <= 0 or (name == "WEB_AUDIO_MAX_SECONDS" and configured > 30):
             errors.append(f"{name} must be a positive integer")
+    if _value(env, "WEB_STT_MODE", "translit").lower() not in {"transcribe", "translit"}:
+        errors.append("WEB_STT_MODE is unsupported")
     for name, default in (
         ("SARVAM_PRICE_STT_INR_PER_HOUR", "30"),
         ("SARVAM_PRICE_TTS_V2_INR_PER_10K_CHARS", "15"),

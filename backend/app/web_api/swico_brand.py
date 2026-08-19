@@ -261,6 +261,40 @@ _TAMIL_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
     SwicoBrandSubintent.GENERAL: "Swico, CEO Jeyanth தலைமையில் உருவாக்கப்பட்ட Swivel Technologies-ன் முக்கிய AI உதவியாளர்.",
 }
 
+# Deterministic brand replies need the same distinction as provider prompts:
+# Tanglish is Tamil expressed in Roman characters, not Tamil Unicode and not
+# the Tamil-script response set.
+_TANGLISH_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
+    SwicoBrandSubintent.PUBLIC_PROFILE: "Swico, Swivel Technologies uruvaakkiya mukkiya AI assistant. CEO Jeyanth athan uruvaakkathai lead panninaar.",
+    SwicoBrandSubintent.IDENTITY: "Naan Swico — Swivel Technologies uruvaakkiya AI assistant.",
+    SwicoBrandSubintent.CREATOR: "Swico-va CEO Jeyanth leadership-la plan panni uruvaakkinaanga; idhu Swivel Technologies-oda mukkiya AI product.",
+    SwicoBrandSubintent.LEADERSHIP: "Swico uruvaakkathai CEO Jeyanth lead panninaar; idhu Swivel Technologies-oda mukkiya AI product.",
+    SwicoBrandSubintent.COMPANY: "Swico, Swivel Technologies uruvaakkiya mukkiya AI product.",
+    SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "Approved information padi Swico, Swivel Technologies-oda mukkiya product; CEO Jeyanth leadership-la uruvaakkappattadhu. Idharku mela separate founder illa legal owner details available illa.",
+    SwicoBrandSubintent.CAPABILITIES: "Swico voice, text, pala mozhi support, document analysis, content creation, summary, explanation, planning, research matrum daily problem-solving-la help pannum.",
+    SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico quality, speed, cost-ai balance panna advanced language models matrum intelligent routing use pannum. Neenga pesura assistant Swico dhaan.",
+    SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture moolama thevaiyana context mattum select panni, unnecessary token usage-ai kuraichu requests-ai efficient-aa route pannum.",
+    SwicoBrandSubintent.AGENTS: "Swico agent-based architecture moolama thevaiyana context-ai select panni requests-ai efficient-aa route pannum.",
+    SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico agent-based architecture, selective context matrum intelligent routing moolama unnecessary token usage-ai kuraikkum.",
+    SwicoBrandSubintent.MULTILINGUAL: "Swico pala mozhigalil natural voice matrum text conversations-ai support pannum.",
+    SwicoBrandSubintent.DOCUMENTS: "Swico upload panna documents matrum supported files-ai analyse panni useful information edukkum.",
+    SwicoBrandSubintent.VOICE: "Swico natural voice conversations-ai support panni, user pesi mudichadhukku piragu reply panna design pannappattadhu.",
+    SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits matrum transparent usage tracking-ai provide pannum.",
+    SwicoBrandSubintent.CREDITS: "Swico-la wallet-based AI usage credits vaangi, remaining credits-ai track pannalaam.",
+    SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking moolama use pannina alavum available credits-um clear-aa theriyum.",
+    SwicoBrandSubintent.SECURITY: "Swico secure authentication matrum cloud infrastructure use pannum; security, privacy, responsible AI mukkiya principles.",
+    SwicoBrandSubintent.PRIVACY: "Privacy, security matrum responsible AI Swico development-oda mukkiya principles.",
+    SwicoBrandSubintent.CONTEXT: "Swico conversation context-ai maintain panni, time pogapoga relevant personal assistance provide pannum.",
+    SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis, contextual assistance matrum wallet usage tracking ulla practical personal assistant.",
+    SwicoBrandSubintent.PURPOSE: "Swico AI-ai practical, trustworthy, accessible matrum affordable assistant-aa maatha aim pannum.",
+    SwicoBrandSubintent.TEXT: "Swico text moolama questions, writing, summary, explanation, planning matrum research-ku help pannum.",
+    SwicoBrandSubintent.TECHNOLOGY: "Swico language matrum speech models, intelligent routing, agent-based processing, contextual memory matrum secure cloud technologies-ai combine pannum.",
+    SwicoBrandSubintent.SCALABILITY: "Swico reliable-aa pala users-ai support panna scalable cloud deployment-kaga design pannappattadhu.",
+    SwicoBrandSubintent.UPDATES: "Swico pudhu capabilities matrum improvements-ai regular updates moolama continue-aa develop pannum.",
+    SwicoBrandSubintent.ABOUT: "Swico, Swivel Technologies uruvaakkiya AI personal assistant; voice, text, multilingual help, context matrum document analysis-ai support pannum.",
+    SwicoBrandSubintent.GENERAL: "Swico, CEO Jeyanth leadership-la uruvaakkappatta Swivel Technologies-oda mukkiya AI assistant.",
+}
+
 
 _PRODUCT_REFERENCE_RE = re.compile(
     r"(?:\bswico\b|\bswivel\s+technologies\b|\bjeyanth\b|ஸ்விகோ|சுவிகோ|ஸ்விவல்)", re.I
@@ -371,14 +405,18 @@ def swico_brand_response(
         selected = SwicoBrandSubintent(str(getattr(subintent, "value", subintent)))
     except ValueError:
         selected = SwicoBrandSubintent.GENERAL
-    templates = _TAMIL_RESPONSES if _wants_tamil(reply_language, message) else _ENGLISH_RESPONSES
+    templates = (
+        _TAMIL_RESPONSES if _wants_tamil(reply_language, message)
+        else _TANGLISH_RESPONSES if _wants_tanglish(reply_language, message)
+        else _ENGLISH_RESPONSES
+    )
     text = templates.get(selected) or templates[SwicoBrandSubintent.GENERAL]
     return validate_swico_public_response(text)
 
 
 def public_swico_response_templates() -> tuple[str, ...]:
     """Return the bounded public templates for repository regression checks."""
-    return tuple(_ENGLISH_RESPONSES.values()) + tuple(_TAMIL_RESPONSES.values())
+    return tuple(_ENGLISH_RESPONSES.values()) + tuple(_TAMIL_RESPONSES.values()) + tuple(_TANGLISH_RESPONSES.values())
 
 
 def validate_swico_public_response(text: str) -> str:
@@ -506,10 +544,22 @@ def _configured_upstream_model_names() -> set[str]:
 def _wants_tamil(reply_language: str | None, message: str) -> bool:
     language = str(reply_language or "").strip().lower()
     text = str(message or "")
-    if re.search(r"[\u0b80-\u0bff]", text) or re.search(
-        r"\b(?:yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I
-    ):
+    if re.search(r"[\u0b80-\u0bff]", text):
+        return True
+    if language == "tanglish":
+        return False
+    if re.search(r"\b(?:yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I):
         return True
     if re.search(r"[A-Za-z]", text):
         return False
     return language in {"ta", "tamil", "mixed", "tanglish"}
+
+
+def _wants_tanglish(reply_language: str | None, message: str) -> bool:
+    language = str(reply_language or "").strip().lower()
+    text = str(message or "")
+    if re.search(r"[\u0b80-\u0bff]", text):
+        return False
+    if language == "tanglish":
+        return True
+    return bool(re.search(r"\b(?:vanakkam|yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I))

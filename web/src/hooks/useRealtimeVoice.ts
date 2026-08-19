@@ -13,7 +13,7 @@ export type VoiceTurnDone = {
 }
 type Ticket = {
   protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
-  tier: string; tier_label: string; language: 'en' | 'ta'; wallets: Wallets;
+  tier: string; tier_label: string; language: 'en' | 'ta' | 'tanglish'; wallets: Wallets;
   approved_websocket_hosts?: string[];
   playback_mode?: PlaybackMode; selected_codec?: AudioCodec;
   provider_sample_rate?: number | null; media_source_allowed?: boolean;

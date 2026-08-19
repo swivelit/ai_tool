@@ -419,14 +419,14 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
     minimum, maximum = topup_bounds()
     custom_enabled = custom_topup_enabled()
     package_text = ", ".join(_rupees(value) for value in packages) or "none configured"
-    tanglish = (
-        str(reply_language or "").strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
-        or bool(re.search(
+    language = str(reply_language or "").strip().lower()
+    tamil = language in {"ta", "tamil", "mixed"}
+    tanglish = language == "tanglish" or (
+        not tamil and bool(re.search(
             r"\b(?:panna|seiya|eppadi|epdi|vaanga|enna|sollunga)\b",
             text,
             re.I,
         ))
-        or bool(re.search(r"[\u0B80-\u0BFF]", text))
     )
 
     if _TOPUP_HOW.search(text):
@@ -435,13 +435,15 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
         ).strip().lower() in {"1", "true", "yes", "on"}
         if not checkout_enabled:
             answer = (
+                "AI credit top-up checkout தற்போது கிடைக்கவில்லை." if tamil else
+                "AI credit top-up checkout ippo available illa." if tanglish else
                 "AI credit top-up checkout is currently unavailable."
-                if not tanglish else
-                "AI credit top-up checkout ippo available illa."
             )
+        elif tamil:
+            answer = "Website-ல் **Add credits** திறந்து, package அல்லது அனுமதிக்கப்பட்ட தொகையைத் தேர்ந்தெடுத்து Razorpay checkout முடிக்கவும்."
         elif tanglish:
             answer = (
-                "Web-la **Add credits** open pannunga, package அல்லது allowed amount-a "
+                "Web-la **Add credits** open pannunga, package illa allowed amount-a "
                 "select panni Razorpay checkout complete pannunga."
             )
         else:
@@ -454,28 +456,29 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
     if _TOPUP_PACKAGES.search(text):
         return (
             (
+                f"கிடைக்கும் top-up packages: {package_text}." if tamil else
+                f"Available recharge packages: {package_text}." if tanglish else
                 f"Available top-up packages: {package_text}."
-                if not tanglish else
-                f"Available recharge packages: {package_text}."
             ),
             "billing_topup_packages",
         )
     if _TOPUP_BOUNDS.search(text):
         return (
             (
-                f"The configured top-up range is {_rupees(minimum)} to "
-                f"{_rupees(maximum)}, using whole-rupee amounts."
+                f"Configured top-up range {_rupees(minimum)} முதல் {_rupees(maximum)} வரை; முழு ரூபாய் தொகைகளைப் பயன்படுத்தலாம்." if tamil else
+                f"The configured top-up range is {_rupees(minimum)} to {_rupees(maximum)}, using whole-rupee amounts."
             ),
             "billing_topup_bounds",
         )
     if _TOPUP_CUSTOM.search(text):
         if custom_enabled and not enforce_topup_packages():
             return (
-                f"Yes. You can enter any whole-rupee top-up from "
-                f"{_rupees(minimum)} to {_rupees(maximum)}.",
+                f"ஆம். {_rupees(minimum)} முதல் {_rupees(maximum)} வரை எந்த முழு ரூபாய் top-up-ஐயும் உள்ளிடலாம்." if tamil else
+                f"Yes. You can enter any whole-rupee top-up from {_rupees(minimum)} to {_rupees(maximum)}.",
                 "billing_custom_topup",
             )
         return (
+            f"இல்லை. Configured packages-ல் ஒன்றைத் தேர்ந்தெடுக்கவும்: {package_text}." if tamil else
             f"No. Choose one of the configured packages: {package_text}.",
             "billing_custom_topup",
         )
@@ -493,7 +496,12 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
             + f". AI usage is paid from credits; configured top-up packages are "
             f"{package_text}."
         )
-        if tanglish:
+        if tamil:
+            answer = (
+                "Swico-வின் கிடைக்கும் modes: " + "; ".join(tiers)
+                + f". AI usage credits மூலம் செலுத்தப்படும்; configured top-up packages: {package_text}."
+            )
+        elif tanglish:
             answer = (
                 "Swico-oda available modes: " + "; ".join(tiers)
                 + f". AI usage credits-la pay aagum; configured top-up packages: "

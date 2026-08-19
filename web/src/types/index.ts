@@ -87,7 +87,7 @@ export type Message = {
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
   attachments?: MessageAttachment[];
-  input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
+  input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | 'tanglish' | null;
   finish_reason?: string; truncated?: boolean; can_continue?: boolean;
   completion_status?: string;
   failure_code?: string | null;
@@ -205,7 +205,7 @@ export type RealtimeVoicePlaybackMode = 'buffered_mp3' | 'pcm_stream' | 'auto'
 export type RealtimeVoiceCodec = 'mp3' | 'linear16'
 export type RealtimeVoiceSession = {
   protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
-  tier: SwicoTier; tier_label: string; language: 'en' | 'ta'; wallets: Wallets;
+  tier: SwicoTier; tier_label: string; language: 'en' | 'ta' | 'tanglish'; wallets: Wallets;
   playback_mode: RealtimeVoicePlaybackMode; selected_codec: RealtimeVoiceCodec;
   provider_sample_rate: number | null; media_source_allowed: boolean;
 }
@@ -223,7 +223,7 @@ export type PaymentStatus = {
 
 export type ProfileSettings = {
   name: string; place: string | null; timezone: string; assistant_name: string;
-  reply_language: 'en' | 'ta'; email: string | null; email_editable: false;
+  reply_language: 'en' | 'ta' | 'tanglish'; email: string | null; email_editable: false;
 }
 export type UsagePreferences = {
   period: 'monthly'; hard_limit_micros: number | null; hard_limit_ai_credits: string | null;

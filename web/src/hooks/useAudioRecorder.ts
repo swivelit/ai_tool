@@ -3,7 +3,7 @@ import type { User } from 'firebase/auth'
 import { transcribeAudio } from '../api/client'
 import type { AudioRecorderState, Wallet } from '../types'
 
-const MAX_RECORDING_SECONDS = 300
+const MAX_RECORDING_SECONDS = 30
 const MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
   'audio/webm',

@@ -189,7 +189,7 @@ class ProfilePatch(BaseModel):
     place: str | None = Field(default=None, max_length=120)
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
     assistant_name: str | None = Field(default=None, min_length=1, max_length=40)
-    reply_language: str | None = Field(default=None, min_length=2, max_length=2)
+    reply_language: str | None = Field(default=None, min_length=2, max_length=16)
 
     @field_validator("name", "assistant_name", mode="before")
     @classmethod
@@ -220,8 +220,8 @@ class ProfilePatch(BaseModel):
         if value is None:
             return value
         cleaned = str(value).strip().lower()
-        if cleaned not in {"en", "ta"}:
-            raise ValueError("Reply language must be English or Tamil.")
+        if cleaned not in {"en", "ta", "tanglish"}:
+            raise ValueError("Reply language must be English, Tamil, or Tanglish.")
         return cleaned
 
 

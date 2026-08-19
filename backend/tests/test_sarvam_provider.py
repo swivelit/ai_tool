@@ -10,7 +10,7 @@ from app.ai.providers.sarvam_provider import (
     SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
     SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
     SarvamProvider,
-    resolve_sarvam_tts_voice,
+    normalize_sarvam_tts_language_code, resolve_sarvam_tts_voice,
 )
 from app.ai.types import AIRequest, AIRoute
 
@@ -27,6 +27,10 @@ class _FakeCompletions:
 class _BlankCompletions:
     def __call__(self, **_kwargs):
         return {"choices": [{"message": {"content": "   "}}]}
+
+
+def test_tanglish_uses_tamil_compatible_tts_language():
+    assert normalize_sarvam_tts_language_code("tanglish") == "ta-IN"
 
 
 def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):

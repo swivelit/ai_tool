@@ -130,15 +130,15 @@ it('ignores a pending transcription after its thread scope changes', async () =>
   expect(screen.getByTestId('status')).toHaveTextContent('idle')
 })
 
-it('automatically stops at 300 seconds', async () => {
+it('automatically stops at 30 seconds', async () => {
   vi.useFakeTimers()
   const stopTrack = vi.fn()
   installMedia(() => Promise.resolve({ getTracks:() => [{ stop:stopTrack }] } as unknown as MediaStream))
-  const transcribe = vi.fn().mockResolvedValue({ transcript:'max', detected_language:'en', duration_seconds:300, duration_milliseconds:300000, voice_turn_id:'voice-turn', stt_charge:{ charged_micros:1, voice_credits:'0.000001' }, wallet:{} })
+  const transcribe = vi.fn().mockResolvedValue({ transcript:'max', detected_language:'en', duration_seconds:30, duration_milliseconds:30000, voice_turn_id:'voice-turn', stt_charge:{ charged_micros:1, voice_credits:'0.000001' }, wallet:{} })
   render(<Harness transcribe={transcribe} />)
   await act(async () => { fireEvent.click(screen.getByText('start')); await Promise.resolve() })
   expect(screen.getByTestId('status')).toHaveTextContent('recording')
-  await act(async () => { vi.advanceTimersByTime(300_000); await Promise.resolve(); await Promise.resolve() })
+  await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve(); await Promise.resolve() })
   expect(stopTrack).toHaveBeenCalledOnce()
   expect(transcribe).toHaveBeenCalledOnce()
 })

@@ -98,6 +98,15 @@ def test_tamil_mode_prompt_enforces_chennai_conversational_style():
     assert "excessive da/machi" in instructions
 
 
+def test_tanglish_mode_prompt_requires_roman_script():
+    request = AIRequest(1, "Explain photosynthesis", "tanglish", "text", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
+
+    assert "Roman/Latin characters" in instructions
+    assert "Do not output Tamil Unicode characters" in instructions
+
+
 def test_provider_messages_include_hidden_profile_context():
     request = AIRequest(
         1,

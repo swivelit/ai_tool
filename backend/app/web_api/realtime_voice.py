@@ -107,7 +107,7 @@ def transcript_appears_unfinished(transcript: str, language: str) -> bool:
     cleaned = " ".join(str(transcript or "").split()).strip()
     if not cleaned or _TERMINAL.search(cleaned):
         return False
-    if str(language).lower().startswith("ta"):
+    if str(language).lower().startswith("ta") or str(language).lower() == "tanglish":
         return bool(_TA_CONTINUATIONS.search(cleaned))
     return bool(_EN_CONTINUATIONS.search(cleaned))
 

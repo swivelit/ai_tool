@@ -204,6 +204,20 @@ it('edits profile, validates required fields, and saves owner fields only', asyn
   expect(screen.getByDisplayValue('h@example.com')).toHaveAttribute('readonly')
 })
 
+it('offers Tanglish and saves the canonical tanglish preference', async () => {
+  mockSettingsApi()
+  const savedProfile = vi.fn()
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={savedProfile} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Profile' }))
+  expect(screen.getByRole('option', { name:'Tanglish' })).toBeInTheDocument()
+  await userEvent.selectOptions(screen.getByLabelText('Reply language'), 'tanglish')
+  await userEvent.click(screen.getByRole('button', { name:'Save profile' }))
+  await waitFor(() => expect(savedProfile).toHaveBeenCalledWith(expect.objectContaining({ reply_language:'tanglish' })))
+  await userEvent.click(screen.getByRole('button', { name:'General' }))
+  await userEvent.click(screen.getByRole('button', { name:'Profile' }))
+  expect(screen.getByLabelText('Reply language')).toHaveValue('tanglish')
+})
+
 it('configures an estimated monthly token limit and warning threshold', async () => {
   mockSettingsApi()
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
