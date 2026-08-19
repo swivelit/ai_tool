@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from ..openai_model_router import OpenAIModelRouter
 from .swico_tiers import SwicoTierUnavailableError, free_enabled, free_output_token_ceiling
@@ -44,6 +45,10 @@ class AIProviderRouter:
             "intent_before_cleanup": intent.metadata.get("intent_before_cleanup") or intent.intent,
             "intent_after_cleanup": intent.intent,
         }
+        if intent.metadata.get("tool_intent_candidate"):
+            intent_metadata["tool_intent_candidate"] = intent.metadata[
+                "tool_intent_candidate"
+            ]
         max_output_tokens = _max_output_tokens(request.message)
 
         if intent.intent in {
@@ -82,10 +87,28 @@ class AIProviderRouter:
 
         web_attachment_qa = bool(
             request.metadata.get("client_surface") == "web"
-            and intent.intent in {"document", "file_retrieval"}
+            and (
+                intent.intent in {"document", "file_retrieval"}
+                or (
+                    intent.intent == "general"
+                    and re.search(
+                        r"\b(?:attached|uploaded)\s+\b(?:pdf|document|file|spreadsheet|"
+                        r"presentation|word document)\b",
+                        request.message,
+                        re.IGNORECASE,
+                    )
+                )
+            )
             and int(request.metadata.get("validated_attachment_count") or 0) > 0
             and bool(request.metadata.get("validated_attachment_chunks_present"))
         )
+        if web_attachment_qa and intent.intent == "general":
+            intent = IntentDecision(
+                intent="document",
+                route="general",
+                reason="validated_attachment_question",
+                metadata=intent.metadata,
+            )
         if intent.route == "backend_tool" and not web_attachment_qa:
             return AIRoute(
                 provider="backend_tool",

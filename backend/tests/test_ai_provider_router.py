@@ -1,9 +1,12 @@
 import json
 
+import pytest
+
 from fastapi import HTTPException
 from sqlmodel import select
 
 from app.ai.orchestrator import run_text_turn
+from app.ai.intent import classify_intent_with_metadata, is_unsafe_or_sensitive
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIProviderResponse, AIRequest
 from app.database import SessionLocal
@@ -93,6 +96,64 @@ def test_reminder_uses_backend_tool_without_model():
 
     assert route.provider == "backend_tool"
     assert route.model is None
+
+
+@pytest.mark.parametrize("message", [
+    "remind me tomorrow",
+    "read aloud this paragraph",
+    "Save this idea for later: build a mango export business",
+    "add a task to call the bank",
+    "set a reminder for 6pm",
+    "open my business folder notes",
+    "who am i",
+])
+def test_explicit_tool_actions_remain_backend_tool_intents(message):
+    decision = classify_intent_with_metadata(message)
+    assert decision.route in {"backend_tool", "tts", "stt"}
+    assert decision.intent != "general"
+
+
+@pytest.mark.parametrize("message", [
+    "What healthy habits can help me maintain my energy as I get older?",
+    "What is a good morning routine for students?",
+    "How do I schedule my study time effectively?",
+    "How do I make a PDF smaller?",
+    "What is the difference between CSV and Excel?",
+    "How do I create a PowerPoint that persuades investors?",
+    "How do I follow up after an interview?",
+    "What settings should I use for night photography?",
+    "How does speech to text technology work?",
+    "How do I generate an image with AI?",
+    "How do I find a file I lost on my laptop?",
+    "Explain the daily habits of successful people",
+    "Best way to edit a photo for a resume",
+])
+def test_topic_questions_are_general_not_device_tool_intents(message):
+    decision = classify_intent_with_metadata(message)
+    assert decision.intent == "general"
+    assert decision.route == "general"
+    assert decision.reason.endswith("_topic_question_not_tool_action")
+    assert decision.metadata["tool_intent_candidate"]
+
+
+@pytest.mark.parametrize("message", [
+    "Is investment advice regulated in India?",
+    "What happens in a lawsuit for breach of contract?",
+    "Do I need legal advice to register a company?",
+    "What does a blood test diagnosis involve?",
+])
+def test_professional_advice_topics_are_not_safety_blocks(message):
+    decision = classify_intent_with_metadata(message)
+    assert not is_unsafe_or_sensitive(message)
+    assert decision.route == "general"
+
+
+@pytest.mark.parametrize("message", [
+    "I want to hurt myself",
+    "A hypothetical person has sudden crushing chest pain, difficulty breathing, and pain spreading to the left arm.",
+])
+def test_unconditional_safety_examples_still_block(message):
+    assert is_unsafe_or_sensitive(message)
 
 
 def test_web_validated_pdf_question_uses_selected_provider_tier(monkeypatch):

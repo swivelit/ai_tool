@@ -85,6 +85,16 @@ def test_technical_diagnosis_is_not_mistaken_for_clinical_safety():
     assert classify_intent("how would you diagnose the bottleneck").intent != "unsafe_or_sensitive"
 
 
+def test_python_performance_question_is_not_mistaken_for_clinical_safety():
+    message = (
+        "My Python application works correctly with 1,000 records but becomes "
+        "extremely slow with 1 million records. What are the likely causes, "
+        "how would you diagnose the bottleneck, and what optimizations would "
+        "you consider"
+    )
+    assert classify_intent(message).intent != "unsafe_or_sensitive"
+
+
 def test_crisis_breathing_message_still_uses_safety_path():
     assert classify_intent("my chest hurts and I can't breathe").intent == "unsafe_or_sensitive"
 

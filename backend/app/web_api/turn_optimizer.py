@@ -28,6 +28,10 @@ _STRUCTURED_VALIDATION_REQUEST = re.compile(
     r"\b(?:validate|validation|valid|check|format|pretty[- ]?print)\b",
     re.IGNORECASE | re.DOTALL,
 )
+_WEB_UNSUPPORTED_INTENTS = frozenset({
+    "reminder", "routine", "profile", "settings", "note", "task",
+    "document", "file_retrieval", "creative_tool", "tts", "stt",
+})
 
 
 @dataclass(frozen=True)
@@ -470,10 +474,7 @@ def _local_route(intent: str) -> str:
         return "credential_abuse_safety_block"
     if intent == "urgent_medical_emergency":
         return "medical_emergency_guidance"
-    if intent in {
-        "reminder", "routine", "profile", "settings", "note", "task",
-        "document", "file_retrieval", "creative_tool", "tts", "stt",
-    }:
+    if intent in _WEB_UNSUPPORTED_INTENTS:
         return "unsupported_web_capability"
     return ""
 

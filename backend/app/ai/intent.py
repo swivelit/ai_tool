@@ -145,8 +145,64 @@ _TECHNICAL_DOMAIN_RE = re.compile(
     r"performance|bottleneck|memory leak|stack trace|cpu|index|deployment|log)\b",
     re.IGNORECASE,
 )
-_SAFETY_ADVICE_RE = re.compile(
-    r"\b(?:medical advice|legal advice|tax advice|investment advice|stock tip|lawsuit)\b",
+
+_INTERROGATIVE_LEAD_RE = re.compile(
+    r"^\s*(?:what|why|how|which|who|when|where|is|are|do|does|did|can|"
+    r"could|should|would|explain|tell\s+me|describe|compare|define|"
+    r"help\s+me\s+understand|difference\s+between)\b",
+    re.IGNORECASE,
+)
+_TOPIC_FRAME_RE = re.compile(
+    r"\b(?:best\s+way\s+to|how\s+does\s+\w+(?:\s+\w+){0,5}\s+work|"
+    r"what\s+is\s+the\s+difference|examples?\s+of|why\s+do\s+people|"
+    r"in\s+general)\b",
+    re.IGNORECASE,
+)
+_ASSISTANT_DIRECTED_RE = re.compile(
+    r"\b(?:remind\s+me|remember\s+this|save\s+this|note\s+this|"
+    r"add\s+(?:a\s+)?(?:task|to[- ]?do|note|reminder)|"
+    r"set\s+(?:a\s+)?(?:reminder|alarm|routine)|"
+    r"read\s+aloud\s+(?:this|it|the)|speak\s+(?:this|it)|"
+    r"transcribe\s+(?:this|the\s+audio)|open\s+my|show\s+my|find\s+my|"
+    r"delete\s+my|update\s+my|change\s+my|my\s+profile|"
+    r"my\s+routine|"
+    r"what\s+do\s+you\s+know\s+about\s+me|who\s+am\s+i)\b",
+    re.IGNORECASE,
+)
+
+
+def is_tool_action_request(text: str) -> bool:
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if _ASSISTANT_DIRECTED_RE.search(t):
+        return True
+    if _INTERROGATIVE_LEAD_RE.search(t):
+        return False
+    if _TOPIC_FRAME_RE.search(t):
+        return False
+    if t.rstrip().endswith("?"):
+        return False
+    return True
+
+
+_CONVERSATIONAL_LOCAL = {"greeting", "thanks", "capabilities"}
+_DEVICE_TOOL_INTENTS = {
+    "reminder", "routine", "profile", "settings", "note", "task",
+    "document", "file_retrieval", "creative_tool",
+}
+_GATED_TOOL_INTENTS = _DEVICE_TOOL_INTENTS | {"tts", "stt"}
+
+_PROFESSIONAL_ADVICE_RE = re.compile(
+    r"\b(?:should\s+i\s+(?:sue|invest)|"
+    r"what\s+should\s+i\s+invest\s+in|"
+    r"(?:give|provide)\s+me\s+(?:some\s+)?(?:medical|legal|tax|investment)\s+advice|"
+    r"(?<!do\s)i\s+(?:need|want)\s+(?:some\s+)?(?:medical|legal|tax|investment)\s+advice|"
+    r"is\s+my\s+case\b|my\s+lawyer\b)\b",
+    re.IGNORECASE,
+)
+_CLINICAL_INFORMATIONAL_RE = re.compile(
+    r"\bwhat\s+does\b[^?\n]{0,100}\bdiagnos(?:e|is)\b[^?\n]{0,100}\binvolve\b",
     re.IGNORECASE,
 )
 _UNSAFE_OR_SENSITIVE_RE = re.compile(
@@ -178,8 +234,10 @@ def is_urgent_medical_emergency(message: str) -> bool:
 
 def is_unsafe_or_sensitive(message: str) -> bool:
     text = str(message or "")
-    if _UNCONDITIONAL_SAFETY_RE.search(text) or _SAFETY_ADVICE_RE.search(text):
+    if _UNCONDITIONAL_SAFETY_RE.search(text) or _PROFESSIONAL_ADVICE_RE.search(text):
         return True
+    if _CLINICAL_INFORMATIONAL_RE.search(text):
+        return False
     return bool(
         _AMBIGUOUS_CLINICAL_RE.search(text)
         and _HEALTH_DOMAIN_RE.search(text)
@@ -327,6 +385,7 @@ def classify_intent_with_metadata(message: str) -> IntentDecision:
     intent_after = _classify_intent_text(classify_text, original_message=original, prefix_greeting=False)
     metadata = {
         **normalization,
+        **intent_after.metadata,
         "intent_before_cleanup": intent_before.intent,
         "intent_after_cleanup": intent_after.intent,
     }
@@ -345,6 +404,7 @@ def _classify_intent_text(
     prefix_greeting: bool = False,
 ) -> IntentDecision:
     text = str(message or "").strip()
+    source_text = str(original_message or text).strip()
     contextual = classify_contextual_followup(text)
     if contextual is not None:
         return contextual
@@ -376,8 +436,18 @@ def _classify_intent_text(
             if intent == "greeting":
                 if not prefix_greeting and not is_pure_greeting(original_message or text):
                     continue
-            if intent in {"reminder", "routine", "profile", "settings", "note", "task", "document", "file_retrieval", "creative_tool", "greeting", "thanks", "capabilities"}:
+            if intent in _CONVERSATIONAL_LOCAL:
                 return IntentDecision(intent=intent, route="backend_tool", reason=f"{intent}_tool_intent")
+            if intent in _GATED_TOOL_INTENTS:
+                if is_tool_action_request(source_text):
+                    route = "backend_tool" if intent in _DEVICE_TOOL_INTENTS else intent
+                    return IntentDecision(intent=intent, route=route, reason=f"{intent}_tool_intent")
+                return IntentDecision(
+                    intent="general",
+                    route="general",
+                    reason=f"{intent}_topic_question_not_tool_action",
+                    metadata={"tool_intent_candidate": intent},
+                )
             if intent in {"weather", "live_data"}:
                 return IntentDecision(intent=intent, route="blocked_live_data", reason="live_data_requires_configured_provider")
             if intent == "unsafe_or_sensitive":

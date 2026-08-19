@@ -4,7 +4,7 @@ export const PRODUCTION_CAPABILITY_CONFIRMATION =
   'I_UNDERSTAND_THIS_RUNS_BILLABLE_PRODUCTION_CAPABILITY_TESTS'
 
 export const PRODUCTION_CAPABILITY_BATCHES = [
-  'core', 'context', 'rag', 'repository', 'voice-ui', 'routing', 'all', 'full',
+  'core', 'context', 'rag', 'repository', 'voice-ui', 'routing', 'consumer', 'all', 'full',
 ] as const
 
 export type ProductionCapabilityBatch =

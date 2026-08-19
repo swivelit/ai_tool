@@ -3,13 +3,37 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from config import MEDICAL_SAFETY_NOTE
 from stage_behaviour_questions import BehaviourQuestionnaire
 from stage_english_remodel import EnglishRemodeler
 from stage_openai_core import OpenAICore
 from app.ai.orchestrator import run_text_turn
+from app.ai.intent import classify_intent_with_metadata
 from app.ai.types import AIRequest
 from app.database import SessionLocal
+
+
+@pytest.mark.parametrize("message", [
+    "What healthy habits can help me maintain my energy as I get older?",
+    "How do I make a PDF smaller?",
+    "What settings should I use for night photography?",
+])
+def test_benign_topic_questions_are_not_local_tool_routes(message: str) -> None:
+    decision = classify_intent_with_metadata(message)
+    assert decision.intent == "general"
+    assert decision.route == "general"
+
+
+@pytest.mark.parametrize("message", [
+    "Is investment advice regulated in India?",
+    "What happens in a lawsuit for breach of contract?",
+    "Do I need legal advice to register a company?",
+    "What does a blood test diagnosis involve?",
+])
+def test_professional_topic_questions_remain_general(message: str) -> None:
+    assert classify_intent_with_metadata(message).route == "general"
 
 
 class FixedCore:

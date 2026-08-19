@@ -379,6 +379,45 @@ def test_unsupported_web_tool_is_truthful_and_safety_stays_distinct(client):
         )).first() is None
 
 
+def test_topic_questions_reach_a_provider(client, monkeypatch):
+    user = create_test_user()
+    _fund(int(user.id))
+
+    def fake_stream(self, request, route, on_delta):
+        on_delta("Provider answer")
+        return AIProviderResponse(
+            text="Provider answer",
+            provider="openai",
+            model=route.model,
+            route=route.route,
+            reason=route.reason,
+            language="en",
+            intent=route.intent,
+            input_tokens=12,
+            output_tokens=8,
+            raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        fake_stream,
+    )
+    for index, message in enumerate([
+        "What healthy habits can help me maintain my energy as I get older?",
+        "How do I make a PDF smaller?",
+        "What settings should I use for night photography?",
+    ], start=1):
+        request_id = f"10000000-0000-4000-8000-00000000010{index}"
+        response = client.post(
+            "/api/web/chat/stream",
+            headers=auth_headers("test-uid"),
+            json={"request_id": request_id, "message": message},
+        )
+        assert response.status_code == 200
+        assert "That capability is not available on the web yet." not in response.text
+        assert "Provider answer" in _stream_text(response)
+
+
 def test_success_settles_and_duplicate_request_does_not_reinvoke_provider(client, monkeypatch):
     user = create_test_user(); _fund(int(user.id))
     calls = {"count": 0}

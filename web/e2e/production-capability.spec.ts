@@ -87,6 +87,7 @@ import {
 import {
   CORE_QUESTIONS,
   ALL_CAPABILITY_QUESTIONS,
+  CONSUMER_QUESTIONS,
   CONTEXT_QUESTIONS,
   RAG_QUESTIONS,
   REPOSITORY_QUESTIONS,
@@ -2608,6 +2609,30 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     })
   }
 
+  const runConsumer = async () => {
+    for (const question of CONSUMER_QUESTIONS) {
+      if (stopAfterSecret) {
+        results.push(skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'not_run',
+          'stopped_after_potential_secret',
+        ))
+        continue
+      }
+      try {
+        await runQuestion(question)
+      } catch (error) {
+        const reason = safeHarnessReason(error)
+        const failedResult = skippedResult(
+          materializeQuestion(question, runId), backendRelease(), 'failed', reason,
+        )
+        if (error instanceof CapabilityQuestionExecutionError) {
+          failedResult.requestId = error.requestId
+        }
+        results.push(failedResult)
+      }
+    }
+  }
+
   const runContext = async () => {
     const dQuestions = CONTEXT_QUESTIONS.filter(item => item.category === 'D')
     for (const question of dQuestions) await runQuestion(question)
@@ -3765,6 +3790,7 @@ test('production-safe standalone Swico capability benchmark', async ({ page, con
     }
     if (!deterministicGreetingPassed) throw new Error('deterministic_greeting_prerequisite_failed')
     if (!stopAfterSecret && batchIncludes(gate.batch, 'routing')) await runRouting()
+    if (!stopAfterSecret && batchIncludes(gate.batch, 'consumer')) await runConsumer()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'context')) await runContext()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'rag')) await runRag()
     if (!stopAfterSecret && batchIncludes(gate.batch, 'repository')) await runRepository()

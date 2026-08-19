@@ -151,7 +151,8 @@ from .repository_store import (
 from .repository_service import invalidate_repository_index
 from .usage_service import selected_swico_tier
 from .turn_optimizer import (
-    WebTurnOptimization, optimizer_enabled, output_ceiling, select_context_turns,
+    WebTurnOptimization, _WEB_UNSUPPORTED_INTENTS, optimizer_enabled,
+    output_ceiling, select_context_turns,
     with_prompt_estimate,
 )
 from .continuation import (
@@ -2173,7 +2174,10 @@ def prepare_web_turn(
                 )
             else:
                 route = AIProviderRouter().select_route(ai_request)
-                if route.provider in {"openai", "sarvam", "swico_free"}:
+                if (
+                    preliminary.local_intent in _WEB_UNSUPPORTED_INTENTS
+                    and route.provider in {"openai", "sarvam", "swico_free"}
+                ):
                     route = AIRoute(
                         "backend_tool", None, "unsupported_web_capability",
                         "web_capability_not_available", route.language,
@@ -3010,6 +3014,14 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             "process, enable multi-factor authentication, review active sessions, "
             "and contact the service’s security support if compromise is suspected."
         )
+    elif route.route == "live_data_disabled":
+        text = (
+            "Swico இன்னும் இணையத்தில் நேரடி தரவு அணுகலை வழங்கவில்லை; எனவே தற்போதைய "
+            "வானிலை, மதிப்பெண்கள் அல்லது விலைகளை நான் கூற முடியாது, ஊகிக்கவும் மாட்டேன்."
+            if tamil else
+            "Swico does not have live data access on the web yet, so it cannot give "
+            "current weather, scores or prices, and will not guess."
+        )
     elif route.provider == "blocked":
         text = "I can’t help with that request, but I can help with a safer alternative."
     elif route.intent == "greeting":
@@ -3022,8 +3034,14 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             if tamil else
             "I can help with questions, explanations, writing, planning, and coding."
         )
-    else:
+    elif route.intent in _WEB_UNSUPPORTED_INTENTS:
         text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "That capability is not available on the web yet."
+    else:
+        logger.warning(
+            "deterministic_intent_unmapped",
+            extra={"intent": route.intent, "route": route.route},
+        )
+        text = "I’m unable to complete that request on this route right now."
     return AIProviderResponse(
         text=text,
         provider="backend_tool" if route.intent == "swico_brand" else "blocked",
@@ -5662,7 +5680,12 @@ def execute_web_turn(
                 response = provider.complete(prepared.ai_request, prepared.route)
         else:
             response = _deterministic_response(prepared.ai_request, prepared.route)
-            if guard_enabled:
+            if (
+                guard_enabled
+                and prepared.route.route not in {
+                    "unsupported_web_capability", "live_data_disabled",
+                }
+            ):
                 prepared.answer_quality = AnswerGuard().check(
                     response.text,
                     AnswerGuardContext(
