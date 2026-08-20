@@ -50,6 +50,8 @@ SARVAM_TTS_BULBUL_V2_SPEAKERS = {
 SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL = (
     "No speech was detected in the uploaded audio. Hold the mic until recording starts, then speak for at least a second."
 )
+SARVAM_STT_MODES = frozenset({"transcribe", "translate", "verbatim", "translit", "codemix"})
+WEB_STT_MODES = frozenset({"transcribe", "translit"})
 SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES = {
     "application/octet-stream",
     "audio/aac",
@@ -65,6 +67,14 @@ _MOBILE_AUDIO_UPLOAD_MIME_TYPES = {
     "audio/x-m4a",
     "application/mp4",
 }
+
+
+def normalize_sarvam_stt_mode(value: str | None, *, website: bool = False) -> str:
+    """Keep shared Sarvam modes broad while constraining the web policy."""
+
+    configured = str(value or "transcribe").strip().lower() or "transcribe"
+    allowed = WEB_STT_MODES if website else SARVAM_STT_MODES
+    return configured if configured in allowed else "transcribe"
 
 
 def _extract_chat_usage(raw: Any) -> dict[str, int]:
@@ -452,9 +462,9 @@ class SarvamProvider(AIProvider):
         normalized_language = normalize_audio_language(language)
         self.last_stt_detected_language = None
         model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
-        stt_mode = str(mode or os.getenv("SARVAM_STT_MODE", "transcribe")).strip().lower() or "transcribe"
-        if stt_mode not in {"transcribe", "translit"}:
-            stt_mode = "transcribe"
+        stt_mode = normalize_sarvam_stt_mode(
+            mode or os.getenv("SARVAM_STT_MODE", "transcribe")
+        )
         form_data: dict[str, str] = {"model": model, "mode": stt_mode}
         if normalized_language:
             form_data["language_code"] = normalized_language

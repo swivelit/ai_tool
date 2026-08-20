@@ -354,7 +354,8 @@ def test_deterministic_scope_keeps_direct_tanglish_pricing_question():
         )
     assert response is not None
     assert response.intent == "billing_tier_pricing"
-    assert "Swico-oda" in response.text
+    assert "Swico’s" in response.text
+    assert "Swico-oda" not in response.text
 
 
 def test_pricing_intent_rejects_unqualified_mode_questions():

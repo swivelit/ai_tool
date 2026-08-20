@@ -30,6 +30,7 @@ from app.web_ai.persistence import get_or_create_usage_stage, persist_answer_qua
 from app.web_ai.request_audit import build_request_audit
 from app.web_ai.settings import TriagSettings
 from app.web_ai.streaming_policy import StreamingPolicy
+from app.web_api.chat_service import _insufficient_private_source_text
 from app.web_ai.triage import AttachmentMetadata, TriageInput, build_execution_plan
 from app.web_api.chat_service import (
     _missing_requested_private_identifier, _parse_verifier_status,
@@ -288,6 +289,22 @@ def test_private_source_question_is_insufficient_when_identifier_is_absent():
     assert _missing_requested_private_identifier(
         "What is the passport number?", supported,
     ) is False
+
+
+@pytest.mark.parametrize(
+    ("language", "expected", "unexpected"),
+    [
+        ("en", "The attached sources", "Upload panna"),
+        ("ta", "பதிவேற்றிய", "The attached sources"),
+        ("tanglish", "Upload panna", "பதிவேற்றிய"),
+    ],
+)
+def test_private_source_insufficient_message_follows_reply_language(
+    language, expected, unexpected,
+):
+    answer = _insufficient_private_source_text(language)
+    assert expected in answer
+    assert unexpected not in answer
 
 
 def test_live_plan_lists_only_enabled_phase3_provider_stages():

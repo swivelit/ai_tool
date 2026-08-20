@@ -244,7 +244,9 @@ projects:
               - key: WEB_ATTACHMENT_PROMPT_MAX_CHARS
                 value: "6000"
               - key: WEB_AUDIO_MAX_SECONDS
-                value: "300"
+                value: "30"
+              - key: WEB_STT_MODE
+                value: "translit"
               - key: WEB_TTS_MAX_CHARACTERS
                 value: "5000"
               - key: WEB_UPLOAD_RATE_LIMIT_PER_MINUTE

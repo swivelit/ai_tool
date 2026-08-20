@@ -43,6 +43,15 @@ it('has exactly one normal-state button and removes all secondary session contro
   expect(document.querySelector('.voice-controls')).not.toBeInTheDocument()
 })
 
+it('labels a Tanglish Voice session explicitly', () => {
+  vi.mocked(useRealtimeVoice).mockReturnValue({
+    ...base,
+    ticketInfo:{ ...base.ticketInfo, language:'tanglish' },
+  } as never)
+  render(<VoiceMode {...props} />)
+  expect(screen.getByText('Swico Pro · Tanglish')).toBeInTheDocument()
+})
+
 it('shows partial and assistant captions automatically with their labels', () => {
   vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, partial:'spoken question', assistant:'spoken answer' } as never)
   render(<VoiceMode {...props} />)

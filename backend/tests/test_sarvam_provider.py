@@ -10,7 +10,8 @@ from app.ai.providers.sarvam_provider import (
     SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
     SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
     SarvamProvider,
-    normalize_sarvam_tts_language_code, resolve_sarvam_tts_voice,
+    normalize_sarvam_stt_mode, normalize_sarvam_tts_language_code,
+    resolve_sarvam_tts_voice,
 )
 from app.ai.types import AIRequest, AIRoute
 
@@ -31,6 +32,11 @@ class _BlankCompletions:
 
 def test_tanglish_uses_tamil_compatible_tts_language():
     assert normalize_sarvam_tts_language_code("tanglish") == "ta-IN"
+
+
+@pytest.mark.parametrize("mode", ["transcribe", "translate", "verbatim", "translit", "codemix"])
+def test_shared_sarvam_stt_modes_remain_supported(mode):
+    assert normalize_sarvam_stt_mode(mode) == mode
 
 
 def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):
@@ -110,8 +116,8 @@ def test_sarvam_chat_gets_chennai_tamil_style_instruction_for_tamil_reply(monkey
     )
 
     system_prompt = completions.calls[0]["messages"][0]["content"]
-    assert "natural light Chennai Tamil/Tanglish" in system_prompt
-    assert "not formal textbook Tamil" in system_prompt
+    assert "natural conversational Tamil in Tamil script" in system_prompt
+    assert "rather than formal textbook Tamil" in system_prompt
 
 
 def test_sarvam_chat_missing_key_is_sanitized(monkeypatch):

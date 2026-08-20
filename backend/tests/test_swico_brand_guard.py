@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,7 @@ from app.web_api.swico_brand import (
     swico_brand_response,
     validate_swico_public_response,
 )
+from app.web_api.deterministic_answers import try_deterministic_answer
 from app.web_api.turn_optimizer import optimize_web_turn
 from tests.conftest import auth_headers, create_test_user
 from tests.test_web_chat_api import _sse_events, _stream_text
@@ -375,15 +377,58 @@ def test_long_vocative_question_is_not_given_the_simple_brand_budget():
     assert optimized.optimization_route != "deterministic_swico_brand"
 
 
-def test_english_message_overrides_stored_tamil_preference_for_brand_reply():
-    english = swico_brand_response(
+def test_saved_reply_language_is_authoritative_for_brand_reply():
+    tamil = swico_brand_response(
         SwicoBrandSubintent.ABOUT, reply_language="ta", message="What is Swico?"
     )
-    tamil = swico_brand_response(
+    english = swico_brand_response(
         SwicoBrandSubintent.ABOUT, reply_language="en", message="ஸ்விகோ என்றால் என்ன?"
     )
-    assert "Swico is" in english
+    tanglish = swico_brand_response(
+        SwicoBrandSubintent.ABOUT,
+        reply_language="tanglish",
+        message="Recharge eppadi panna mudiyum?",
+    )
     assert "Swivel Technologies உருவாக்கிய" in tamil
+    assert "Swico is" in english
+    assert "உருவாக்கிய" not in english
+    assert "Swivel Technologies uruvaakkiya" in tanglish
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_language", "unexpected"),
+    [
+        ("What is Swico?", "ta", "Swico is"),
+        ("Does Swico support Tanglish?", "en", "உருவாக்கிய"),
+        ("Recharge eppadi panna mudiyum?", "en", "pannunga"),
+    ],
+)
+def test_deterministic_language_prefers_saved_profile_over_input_style(
+    message, expected_language, unexpected,
+):
+    answer = swico_brand_response(
+        SwicoBrandSubintent.ABOUT,
+        reply_language=expected_language,
+        message=message,
+    )
+    if expected_language == "ta":
+        assert re.search(r"[\u0b80-\u0bff]", answer)
+    else:
+        assert unexpected not in answer
+
+
+def test_saved_english_preference_keeps_tanglish_billing_input_english():
+    with SessionLocal() as session:
+        response = try_deterministic_answer(
+            session,
+            user_id=1,
+            message="Credits vaanga eppadi?",
+            reply_language="en",
+            request_id="language-authority-billing",
+        )
+    assert response is not None
+    assert "Open **Add credits**" in response.text
+    assert "pannunga" not in response.text
 
 
 @pytest.mark.parametrize(

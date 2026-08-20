@@ -6,6 +6,7 @@ from typing import Optional
 
 
 INDIC_REPLY_LANGUAGE_ALIASES = {"ta", "tamil", "mixed", "tanglish"}
+WEB_REPLY_LANGUAGES = frozenset({"en", "ta", "tanglish"})
 
 _SCRIPT_RANGES: tuple[tuple[str, str, str], ...] = (
     ("ta", "\u0b80", "\u0bff"),
@@ -71,6 +72,25 @@ class LanguageDecision:
 
 def _normalized_reply_language(reply_language: Optional[str]) -> str:
     return str(reply_language or "").strip().lower()
+
+
+def resolve_web_reply_language(
+    reply_language: Optional[str], message: str = ""
+) -> str:
+    """Resolve website reply style, preferring a valid saved preference."""
+
+    normalized = _normalized_reply_language(reply_language)
+    if normalized in WEB_REPLY_LANGUAGES:
+        return normalized
+    # Keep legacy/shared aliases compatible without exposing them as new web
+    # profile values.
+    if normalized in {"tamil", "mixed"}:
+        return "ta"
+    if _script_language(message) == "ta":
+        return "ta"
+    if _romanized_language(message) == "ta":
+        return "tanglish"
+    return "en"
 
 
 def _script_language(message: str) -> Optional[str]:

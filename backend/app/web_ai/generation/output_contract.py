@@ -54,6 +54,7 @@ class OutputContract:
     exact_json_keys: tuple[str, ...] = ()
     exact_sentence_count: int | None = None
     required_script: str | None = None
+    forbid_tamil_script: bool = False
     exact_question_count: int | None = None
     exact_word_count: int | None = None
     required_phrase: str | None = None
@@ -73,6 +74,7 @@ class OutputContract:
             bool(self.exact_json_keys),
             self.exact_sentence_count is not None,
             self.required_script is not None,
+            self.forbid_tamil_script,
             self.exact_question_count is not None,
             self.exact_word_count is not None,
             self.required_phrase_count is not None,
@@ -91,6 +93,7 @@ class OutputContract:
             or self.exact_word_count is not None
             or self.exact_sentence_count is not None
             or self.required_script is not None
+            or self.forbid_tamil_script
             or self.exact_bullet_count is not None
             or self.exact_fenced_block_count is not None
             or self.required_final_word is not None
@@ -132,6 +135,7 @@ class OutputContract:
                 bounded[key] = raw[:160]
         if str(value.get("required_script") or "").casefold() == "tamil":
             bounded["required_script"] = "tamil"
+        bounded["forbid_tamil_script"] = value.get("forbid_tamil_script") is True
         for key in ("json_only", "no_title", "no_introductory_prose"):
             bounded[key] = value.get(key) is True
         prefixes = value.get("fenced_block_prefixes")
@@ -151,6 +155,12 @@ def apply_reply_language_contract(
     """Make the selected profile language verifiable, not prompt-only advice."""
 
     normalized = str(reply_language or "").strip().casefold()
+    if normalized == "tanglish":
+        # An explicit Tamil-script request wins over the profile's normal
+        # Tanglish contract for this message.
+        if contract.required_script == "tamil":
+            return contract
+        return replace(contract, forbid_tamil_script=True)
     if normalized != "ta":
         return contract
     return replace(contract, required_script="tamil")
@@ -243,7 +253,14 @@ def extract_output_contract(message: str) -> OutputContract:
     required_script = None
     if (
         re.search(r"\bTamil\b[^.\n]{0,40}\bsentences?\b", text, re.IGNORECASE)
+        or re.search(
+            r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
+            r"[^.\n]{0,50}\bTamil(?:\s+Unicode)?(?:\s+script)?\b",
+            text,
+            re.IGNORECASE,
+        )
         or ("தமிழ்" in text and "வாக்கிய" in text)
+        or re.search(r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", text)
     ):
         required_script = "tamil"
 
@@ -444,6 +461,17 @@ def validate_output_contract(
             f"output_contract_{name}",
             "passed" if passed else "failed",
             "" if passed else reason,
+        ))
+    if contract.forbid_tamil_script and contract.required_script != "tamil":
+        contains_tamil_script = bool(re.search(r"[\u0B80-\u0BFF]", value))
+        checks.append(QualityCheck(
+            "output_contract_forbid_tamil_script",
+            "failed" if contains_tamil_script else "passed",
+            "unexpected_tamil_script" if contains_tamil_script else "",
+            observations=(
+                ("contains_tamil_script", int(contains_tamil_script)),
+                ("validator_version", SENTENCE_VALIDATOR_VERSION),
+            ),
         ))
 
     if contract.exact_bullet_count is not None:

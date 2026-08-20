@@ -6,6 +6,8 @@ import os
 import re
 from typing import Mapping
 
+from ..ai.language import resolve_web_reply_language
+
 
 SWICO_PUBLIC_PROFILE_VERSION = "2026-07-v1"
 
@@ -405,11 +407,11 @@ def swico_brand_response(
         selected = SwicoBrandSubintent(str(getattr(subintent, "value", subintent)))
     except ValueError:
         selected = SwicoBrandSubintent.GENERAL
-    templates = (
-        _TAMIL_RESPONSES if _wants_tamil(reply_language, message)
-        else _TANGLISH_RESPONSES if _wants_tanglish(reply_language, message)
-        else _ENGLISH_RESPONSES
-    )
+    language = resolve_web_reply_language(reply_language, message)
+    templates = {
+        "ta": _TAMIL_RESPONSES,
+        "tanglish": _TANGLISH_RESPONSES,
+    }.get(language, _ENGLISH_RESPONSES)
     text = templates.get(selected) or templates[SwicoBrandSubintent.GENERAL]
     return validate_swico_public_response(text)
 
@@ -542,24 +544,8 @@ def _configured_upstream_model_names() -> set[str]:
 
 
 def _wants_tamil(reply_language: str | None, message: str) -> bool:
-    language = str(reply_language or "").strip().lower()
-    text = str(message or "")
-    if re.search(r"[\u0b80-\u0bff]", text):
-        return True
-    if language == "tanglish":
-        return False
-    if re.search(r"\b(?:yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I):
-        return True
-    if re.search(r"[A-Za-z]", text):
-        return False
-    return language in {"ta", "tamil", "mixed", "tanglish"}
+    return resolve_web_reply_language(reply_language, message) == "ta"
 
 
 def _wants_tanglish(reply_language: str | None, message: str) -> bool:
-    language = str(reply_language or "").strip().lower()
-    text = str(message or "")
-    if re.search(r"[\u0b80-\u0bff]", text):
-        return False
-    if language == "tanglish":
-        return True
-    return bool(re.search(r"\b(?:vanakkam|yaar|enna|eppadi|pannanga|tamil|tanglish)\b", text, re.I))
+    return resolve_web_reply_language(reply_language, message) == "tanglish"

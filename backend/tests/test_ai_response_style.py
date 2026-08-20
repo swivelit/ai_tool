@@ -93,8 +93,9 @@ def test_tamil_mode_prompt_enforces_chennai_conversational_style():
 
     instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
 
-    assert "natural light Chennai Tamil/Tanglish" in instructions
-    assert "not formal textbook Tamil" in instructions
+    assert "natural conversational Tamil in Tamil script" in instructions
+    assert "Tamil/Tanglish conversational tone" not in instructions
+    assert "rather than formal textbook Tamil" in instructions
     assert "excessive da/machi" in instructions
 
 
@@ -229,6 +230,6 @@ def test_unclear_medical_tamil_response_uses_local_tanglish_contract():
 
     instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
 
-    assert "natural light Chennai Tamil/Tanglish" in instructions
+    assert "natural conversational Tamil in Tamil script" in instructions
     assert "local conversational" in instructions
     assert "qualified clinician" in instructions

@@ -38,6 +38,48 @@ def test_tamil_profile_language_becomes_a_verified_script_contract():
     assert all(check.status == "passed" for check in tamil)
 
 
+def test_tanglish_profile_rejects_unexpected_tamil_script():
+    contract = apply_reply_language_contract(
+        extract_output_contract("Explain photosynthesis clearly."), "tanglish"
+    )
+    assert contract.forbid_tamil_script is True
+    assert all(
+        check.status == "passed"
+        for check in validate_output_contract(
+            "Photosynthesis-na plants sunlight use panni food make pannum.",
+            contract,
+        )
+    )
+    failed = validate_output_contract("ஒளிச்சேர்க்கை plants-ku mukkiyam.", contract)
+    tamil_check = next(
+        check for check in failed
+        if check.check_type == "output_contract_forbid_tamil_script"
+    )
+    assert tamil_check.status == "failed"
+    guarded = AnswerGuard().check(
+        "ஒளிச்சேர்க்கை plants-ku mukkiyam.",
+        AnswerGuardContext(
+            answer_class="normal",
+            task_contract="Explain photosynthesis clearly.",
+            verified_buffered=True,
+            output_contract=contract,
+        ),
+    )
+    assert guarded.status == "unverified"
+
+
+def test_explicit_tamil_script_request_overrides_tanglish_profile_contract():
+    base = extract_output_contract("Reply using Tamil script.")
+    assert base.required_script == "tamil"
+    contract = apply_reply_language_contract(base, "tanglish")
+    assert contract.required_script == "tamil"
+    assert contract.forbid_tamil_script is False
+    assert all(
+        check.status == "passed"
+        for check in validate_output_contract("ஒளிச்சேர்க்கை முக்கியமானது.", contract)
+    )
+
+
 B01 = (
     "Explain idempotency in payment APIs to a junior developer. Use exactly "
     "four bullet points, include one concrete retry example, and use no more "

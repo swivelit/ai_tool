@@ -300,7 +300,10 @@ def _build_dynamic_system_instructions(
             "answer/topic rather than treating the current sentence as a standalone question."
         )
         if _requests_tamil(request.message, language):
-            parts.append("Answer in simple Tamil or natural Tanglish as requested; preserve the prior topic.")
+            if str(language or "").strip().lower() == "tanglish":
+                parts.append("Answer in natural Tanglish using Roman/Latin characters; preserve the prior topic.")
+            else:
+                parts.append("Answer in simple Tamil using Tamil Unicode script; preserve the prior topic.")
 
     age_style = (
         _age_adaptive_style(request.metadata)
@@ -467,8 +470,8 @@ def _language_contract(language: Any) -> str:
     if normalized in {"ta", "tamil"}:
         return (
             "Language contract: answer naturally in Tamil using Tamil Unicode script. English technical terms may remain English where natural. "
-            "Keep a natural light Chennai Tamil/Tanglish conversational tone, but do not silently switch to Tanglish or Roman script. "
-            "Keep the language conversational, not formal textbook Tamil. "
+            "Use natural conversational Tamil in Tamil script; do not silently switch to Tanglish or Roman script. "
+            "Keep the language conversational rather than formal textbook Tamil. "
             "Use simple local conversational phrasing such as seri, ipdi, unga, konjam, romba, or na only where natural. "
             "Do not overdo slang, do not use caricature, offensive dialect imitation, or excessive da/machi. "
             "Keep technical, medical, and legal facts accurate and clear. Use formal Tamil only if the user asks for formal Tamil."
@@ -533,7 +536,10 @@ def _is_app_architecture_question(message: Any) -> bool:
 
 def _requests_tamil(message: Any, language: Any) -> bool:
     text = str(message or "").lower()
-    return str(language or "").lower() in {"ta", "tamil", "mixed", "tanglish"} or bool(
+    normalized_language = str(language or "").strip().lower()
+    if normalized_language in {"en", "english"}:
+        return False
+    return normalized_language in {"ta", "tamil", "mixed", "tanglish"} or bool(
         re.search(r"\b(tamil|tanglish|tamil la|in tamil)\b", text) or re.search(r"[\u0b80-\u0bff]", str(message or ""))
     )
 

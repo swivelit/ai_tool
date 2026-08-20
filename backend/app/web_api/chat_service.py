@@ -17,6 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
+from ..ai.language import resolve_web_reply_language
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
@@ -2990,15 +2991,16 @@ def prepare_web_turn(
 
 
 def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:
-    reply_language = str(
-        request.reply_language or route.metadata.get("reply_language") or route.language
-    ).strip().lower()
-    tamil = reply_language in {"ta", "tamil", "mixed"}
+    configured_reply_language = (
+        request.reply_language or route.metadata.get("reply_language")
+    )
+    reply_language = resolve_web_reply_language(configured_reply_language, request.message)
+    tamil = reply_language == "ta"
     tanglish = reply_language == "tanglish"
     if route.intent == "swico_brand":
         text = swico_brand_response(
             str(route.metadata.get("brand_subintent") or "general"),
-            reply_language=request.reply_language or route.language,
+            reply_language=reply_language,
             message=request.message,
         )
     elif route.intent == "urgent_medical_emergency":
@@ -3371,6 +3373,11 @@ def _insufficient_private_source_text(reply_language: str) -> str:
         return (
             "பதிவேற்றிய ஆவணங்கள் இந்தத் தகவலை வழங்கவில்லை; எனவே கிடைத்த "
             "ஆதாரத்திலிருந்து இதைத் தீர்மானிக்க முடியாது."
+        )
+    if reply_language == "tanglish":
+        return (
+            "Upload panna sources-la indha information illa; available evidence-la "
+            "irundhu idhai determine panna mudiyadhu."
         )
     return (
         "The attached sources do not provide this information, so I cannot "

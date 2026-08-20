@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from sqlmodel import Session
 
 from ..ai.tools import handle_backend_tool
+from ..ai.language import resolve_web_reply_language
 from ..ai.swico_tiers import public_tier_settings
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.topups import (
@@ -419,15 +420,9 @@ def _billing_answer(message: str, reply_language: str | None) -> tuple[str, str]
     minimum, maximum = topup_bounds()
     custom_enabled = custom_topup_enabled()
     package_text = ", ".join(_rupees(value) for value in packages) or "none configured"
-    language = str(reply_language or "").strip().lower()
-    tamil = language in {"ta", "tamil", "mixed"}
-    tanglish = language == "tanglish" or (
-        not tamil and bool(re.search(
-            r"\b(?:panna|seiya|eppadi|epdi|vaanga|enna|sollunga)\b",
-            text,
-            re.I,
-        ))
-    )
+    language = resolve_web_reply_language(reply_language, text)
+    tamil = language == "ta"
+    tanglish = language == "tanglish"
 
     if _TOPUP_HOW.search(text):
         checkout_enabled = str(

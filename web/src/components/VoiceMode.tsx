@@ -76,7 +76,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
       <header className="voice-mode-header">
         <div className="voice-mode-identity">
           <strong id="voice-mode-title">Voice</strong>
-          <span>{voice.ticketInfo?.tier_label ?? 'Swico'} · {voice.ticketInfo?.language === 'ta' ? 'Tamil' : 'English'}</span>
+          <span>{voice.ticketInfo?.tier_label ?? 'Swico'} · {voice.ticketInfo?.language === 'ta' ? 'Tamil' : voice.ticketInfo?.language === 'tanglish' ? 'Tanglish' : 'English'}</span>
         </div>
         <button ref={closeRef} className="voice-close" aria-label="Close Voice Mode" aria-busy={finishing} disabled={finishing} onClick={() => void finish()}><X /></button>
       </header>
