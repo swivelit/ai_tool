@@ -15,6 +15,7 @@ from app.web_ai.generation.task_requirements import TaskRequirementContract
 from app.web_ai.generation.output_format import FENCED_CODE_OUTPUT_INSTRUCTION
 
 from .types import AIRequest, AIRoute
+from .language import WEB_REPLY_LANGUAGES, normalize_web_reply_language, web_reply_language_name, web_reply_language_script
 from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
 
 
@@ -461,7 +462,7 @@ def format_recent_context(context_turns: list[dict[str, str]], *, max_turns: int
 
 
 def _language_contract(language: Any) -> str:
-    normalized = str(language or "").strip().lower()
+    normalized = normalize_web_reply_language(str(language or "").strip().lower()) or str(language or "").strip().lower()
     if normalized in {"en", "english"}:
         return (
             "Language contract: answer only in English, even if the user spoke Tamil or Tanglish. "
@@ -480,6 +481,13 @@ def _language_contract(language: Any) -> str:
         return (
             "Language contract: answer in natural conversational Tamil written only with Roman/Latin characters. "
             "Natural English code-mixing is allowed. Do not output Tamil Unicode characters unless the user explicitly requests Tamil script. "
+            "Keep technical, medical, and legal facts accurate and clear."
+        )
+    if normalized in {"hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"}:
+        return (
+            f"Language contract: answer naturally in {web_reply_language_name(normalized)} "
+            f"using {web_reply_language_script(normalized)}. Preserve natural grammar and "
+            "use English technical terms only where natural. Do not silently switch to English. "
             "Keep technical, medical, and legal facts accurate and clear."
         )
     return "Language contract: answer in the requested language clearly and naturally."
@@ -536,10 +544,10 @@ def _is_app_architecture_question(message: Any) -> bool:
 
 def _requests_tamil(message: Any, language: Any) -> bool:
     text = str(message or "").lower()
-    normalized_language = str(language or "").strip().lower()
-    if normalized_language in {"en", "english"}:
-        return False
-    return normalized_language in {"ta", "tamil", "mixed", "tanglish"} or bool(
+    normalized_language = normalize_web_reply_language(str(language or "").strip().lower())
+    if normalized_language in WEB_REPLY_LANGUAGES:
+        return normalized_language in {"ta", "tanglish"}
+    return bool(
         re.search(r"\b(tamil|tanglish|tamil la|in tamil)\b", text) or re.search(r"[\u0b80-\u0bff]", str(message or ""))
     )
 

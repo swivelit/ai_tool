@@ -40,7 +40,7 @@ flowchart TD
 
 | Request type | Provider/model |
 | --- | --- |
-| Tamil/Indic script or Tanglish/Hinglish | Sarvam `sarvam-30b` |
+| Tamil, Tanglish, or supported Indic-language script (Hindi, Bengali, Telugu, Kannada, Malayalam, Marathi, Gujarati, Punjabi, Odia) | Sarvam `sarvam-105b` |
 | Complex Indic reasoning | Sarvam `sarvam-105b` |
 | English general chat | OpenAI ladder: `gpt-5-nano` Responses, then `gpt-4.1-nano`, then `gpt-4o-mini` |
 | Coding, architecture, debugging | OpenAI ladder: `gpt-5-mini` Responses, then `gpt-4.1-mini`, then `gpt-4o-mini` |

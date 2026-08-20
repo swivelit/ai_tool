@@ -17,7 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
-from ..ai.language import resolve_web_reply_language
+from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
@@ -2995,8 +2995,6 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
         request.reply_language or route.metadata.get("reply_language")
     )
     reply_language = resolve_web_reply_language(configured_reply_language, request.message)
-    tamil = reply_language == "ta"
-    tanglish = reply_language == "tanglish"
     if route.intent == "swico_brand":
         text = swico_brand_response(
             str(route.metadata.get("brand_subintent") or "general"),
@@ -3004,14 +3002,14 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             message=request.message,
         )
     elif route.intent == "urgent_medical_emergency":
-        text = (
+        text = localized_web_deterministic_text(reply_language, "urgent_medical_emergency") or (
             "These symptoms could be a medical emergency. Call your applicable "
             "local emergency number or emergency services immediately, and have "
             "someone stay with the person if possible. I can’t diagnose the cause "
             "here, but do not wait for a routine appointment or online consultation."
         )
     elif route.intent == "harmful_credential_abuse":
-        text = (
+        text = localized_web_deterministic_text(reply_language, "harmful_credential_abuse") or (
             "I can’t help steal passwords, bypass authentication, phish for "
             "credentials, or take over another person’s account. If this is "
             "your account, use the official password-reset or account-recovery "
@@ -3019,31 +3017,17 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
             "and contact the service’s security support if compromise is suspected."
         )
     elif route.route == "live_data_disabled":
-        text = (
-            "Swico இன்னும் இணையத்தில் நேரடி தரவு அணுகலை வழங்கவில்லை; எனவே தற்போதைய "
-            "வானிலை, மதிப்பெண்கள் அல்லது விலைகளை நான் கூற முடியாது, ஊகிக்கவும் மாட்டேன்."
-            if tamil else
-            "Swico-ku web-la innum live data access illa; athanala current weather, scores illa prices-a solla mudiyadhu, guess-um panna maatten."
-            if tanglish else
-            "Swico does not have live data access on the web yet, so it cannot give "
-            "current weather, scores or prices, and will not guess."
-        )
+        text = localized_web_deterministic_text(reply_language, "live_data_disabled")
     elif route.provider == "blocked":
-        text = "I can’t help with that request, but I can help with a safer alternative."
+        text = localized_web_deterministic_text(reply_language, "blocked")
     elif route.intent == "greeting":
-        text = "வணக்கம்! இன்று நான் எப்படி உதவலாம்?" if tamil else "Vanakkam! Innaikku naan eppadi help pannalaam?" if tanglish else "Hi! How can I help you today?"
+        text = localized_web_deterministic_text(reply_language, "greeting")
     elif route.intent == "thanks":
-        text = "வரவேற்கிறேன்." if tamil else "Parava illa." if tanglish else "You’re welcome."
+        text = localized_web_deterministic_text(reply_language, "thanks")
     elif route.intent == "capabilities":
-        text = (
-            "கேள்விகள், விளக்கங்கள், எழுதுதல், திட்டமிடல் மற்றும் நிரலாக்கத்தில் நான் உதவ முடியும்."
-            if tamil else
-            "Questions, explanations, writing, planning, coding ellathulayum naan help panna mudiyum."
-            if tanglish else
-            "I can help with questions, explanations, writing, planning, and coding."
-        )
+        text = localized_web_deterministic_text(reply_language, "capabilities")
     elif route.intent in _WEB_UNSUPPORTED_INTENTS:
-        text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "Andha capability innum web-la available illa." if tanglish else "That capability is not available on the web yet."
+        text = localized_web_deterministic_text(reply_language, "unsupported")
     else:
         logger.warning(
             "deterministic_intent_unmapped",
@@ -3369,20 +3353,7 @@ def _repository_forbidden_stack_assumptions(
 
 
 def _insufficient_private_source_text(reply_language: str) -> str:
-    if reply_language == "ta":
-        return (
-            "பதிவேற்றிய ஆவணங்கள் இந்தத் தகவலை வழங்கவில்லை; எனவே கிடைத்த "
-            "ஆதாரத்திலிருந்து இதைத் தீர்மானிக்க முடியாது."
-        )
-    if reply_language == "tanglish":
-        return (
-            "Upload panna sources-la indha information illa; available evidence-la "
-            "irundhu idhai determine panna mudiyadhu."
-        )
-    return (
-        "The attached sources do not provide this information, so I cannot "
-        "determine it from the available evidence."
-    )
+    return localized_web_deterministic_text(reply_language, "private_source")
 
 
 def _execute_phase2_retrieval(

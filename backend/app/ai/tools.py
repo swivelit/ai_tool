@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from ..models import DailyRoutine, DocumentArtifact, User, UserProfile
 from ..time_utils import utc_now
 from .intent import classify_intent, is_pure_greeting, looks_like_question_after_greeting
+from .language import localized_web_deterministic_text, normalize_web_reply_language
 from .tool_registry import get_tool_capability
 from .types import AIProviderResponse, AIRequest, AIRoute
 
@@ -91,17 +92,27 @@ def _handle_greeting(request: AIRequest, route: AIRoute) -> AIProviderResponse:
     if not is_pure_greeting(request.message):
         text = "I should answer that as a normal question, not a greeting."
         return _tool_response(text, request, route, item_metadata=_assistant_metadata(request.message, text), action="greeting_guard_fallthrough")
-    text = "வணக்கம். எப்படி உதவலாம்?" if _prefers_tamil(request, route) else "Hi. How can I help?"
+    text = (
+        localized_web_deterministic_text(request.reply_language or route.language, "greeting")
+        if request.metadata.get("client_surface") == "web"
+        else "வணக்கம். எப்படி உதவலாம்?" if _prefers_tamil(request, route) else "Hi. How can I help?"
+    )
     return _tool_response(text, request, route, item_metadata=_assistant_metadata(request.message, text), action="local_greeting")
 
 
 def _handle_thanks(request: AIRequest, route: AIRoute) -> AIProviderResponse:
-    text = "சரி." if _prefers_tamil(request, route) else "You’re welcome."
+    text = (
+        localized_web_deterministic_text(request.reply_language or route.language, "thanks")
+        if request.metadata.get("client_surface") == "web"
+        else "சரி." if _prefers_tamil(request, route) else "You’re welcome."
+    )
     return _tool_response(text, request, route, item_metadata=_assistant_metadata(request.message, text), action="local_thanks")
 
 
 def _handle_capabilities(request: AIRequest, route: AIRoute) -> AIProviderResponse:
-    if _prefers_tamil(request, route):
+    if request.metadata.get("client_surface") == "web":
+        text = localized_web_deterministic_text(request.reply_language or route.language, "capabilities")
+    elif _prefers_tamil(request, route):
         text = "நான் reminders, notes, tasks, PDF/DOCX/XLSX/PPTX files, saved file search, profile/routine questions ஆகியவற்றை உதவ முடியும்."
     else:
         text = "I can help with reminders, notes, tasks, PDF/DOCX/XLSX/PPTX files, saved file search, and profile or routine questions."
@@ -502,16 +513,24 @@ def _user_timezone(user: Optional[User]) -> ZoneInfo:
 
 
 def _requested_reply_language(message: str) -> Optional[str]:
-    if re.search(r"\b(?:english|en)\b", message, flags=re.I):
-        return "en"
-    if re.search(r"\b(?:tamil|ta|தமிழ்)\b", message, flags=re.I):
-        return "ta"
+    language_terms = {
+        "english": "en", "en": "en", "tamil": "ta", "ta": "ta", "தமிழ்": "ta",
+        "tanglish": "tanglish", "hindi": "hi", "hi": "hi", "bengali": "bn", "bn": "bn",
+        "telugu": "te", "te": "te", "kannada": "kn", "kn": "kn", "malayalam": "ml", "ml": "ml",
+        "marathi": "mr", "mr": "mr", "gujarati": "gu", "gu": "gu", "punjabi": "pa", "pa": "pa",
+        "odia": "od", "oriya": "od", "od": "od",
+    }
+    for term, language in language_terms.items():
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", message, flags=re.I):
+            return language
     return None
 
 
 def _prefers_tamil(request: AIRequest, route: AIRoute) -> bool:
-    value = str(request.reply_language or route.language or "").strip().lower()
-    return value in {"ta", "tamil", "mixed", "tanglish"} or bool(re.search(r"[\u0b80-\u0bff]", request.message))
+    value = normalize_web_reply_language(str(request.reply_language or route.language or "").strip().lower())
+    if value in {"en", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"}:
+        return False
+    return value in {"ta", "tanglish"} or bool(re.search(r"[\u0b80-\u0bff]", request.message))
 
 
 def classify_folder_category(message: str) -> str:

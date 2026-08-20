@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { API_BASE, ApiError, apiJson, endVoiceSession as requestEndVoiceSession } from '../api/client'
 import type { CreditBucket, VoiceTuning, Wallets } from '../types'
+import type { ReplyLanguage } from '../language'
 
 export type VoicePhase = 'connecting' | 'listening' | 'endpoint_pending' | 'thinking' | 'speaking' | 'interrupted' | 'closing' | 'error' | 'closed'
 export type PlaybackState = 'provider_stream_open' | 'provider_stream_finished' | 'media_buffer_draining' | 'playing' | 'playback_finished' | 'interrupted' | 'playback_error' | 'autoplay_blocked'
@@ -13,7 +14,7 @@ export type VoiceTurnDone = {
 }
 type Ticket = {
   protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
-  tier: string; tier_label: string; language: 'en' | 'ta' | 'tanglish'; wallets: Wallets;
+  tier: string; tier_label: string; language: ReplyLanguage; wallets: Wallets;
   approved_websocket_hosts?: string[];
   playback_mode?: PlaybackMode; selected_codec?: AudioCodec;
   provider_sample_rate?: number | null; media_source_allowed?: boolean;

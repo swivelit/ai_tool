@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..ai.language import is_supported_web_reply_language
+
 
 class ThreadCreate(BaseModel):
     title: str = Field(default="New chat", max_length=120)
@@ -220,8 +222,8 @@ class ProfilePatch(BaseModel):
         if value is None:
             return value
         cleaned = str(value).strip().lower()
-        if cleaned not in {"en", "ta", "tanglish"}:
-            raise ValueError("Reply language must be English, Tamil, or Tanglish.")
+        if not is_supported_web_reply_language(cleaned):
+            raise ValueError("Unsupported website reply language.")
         return cleaned
 
 

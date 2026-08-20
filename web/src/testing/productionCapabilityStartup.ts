@@ -4,6 +4,7 @@ import {
   type DeployedApi,
   type RestorableProfile,
 } from './deployedSafety'
+import { isReplyLanguage } from '../language'
 
 export type StartupSnapshotStep =
   | 'active_threads'
@@ -277,14 +278,14 @@ function profile(value: unknown): RestorableProfile | null {
     || !(typeof value.place === 'string' || value.place === null)
     || typeof value.timezone !== 'string'
     || typeof value.assistant_name !== 'string'
-    || !['en', 'ta', 'tanglish'].includes(String(value.reply_language))
+    || !isReplyLanguage(value.reply_language)
   ) return null
   return {
     name:value.name,
     place:value.place,
     timezone:value.timezone,
     assistant_name:value.assistant_name,
-    reply_language:value.reply_language as 'en' | 'ta' | 'tanglish',
+    reply_language:value.reply_language,
   }
 }
 

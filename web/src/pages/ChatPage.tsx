@@ -13,6 +13,7 @@ import { useVoiceReply } from '../hooks/useVoiceReply'
 import type { VoiceTurnDone } from '../hooks/useRealtimeVoice'
 import { frontendRelease } from '../config/publicConfig'
 import { voiceAvailability } from '../voiceReadiness'
+import { isReplyLanguage } from '../language'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
@@ -458,7 +459,7 @@ export function ChatPage() {
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
     if (!existingUser && !revisionTarget && !requestOptions?.continueMessageId) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
-      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: bootstrap.user.reply_language === 'ta' ? 'ta' : bootstrap.user.reply_language === 'tanglish' ? 'tanglish' : 'en' }
+      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: isReplyLanguage(bootstrap.user.reply_language) ? bootstrap.user.reply_language : 'en' }
       setMessages(value => [...value, optimistic])
     }
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)

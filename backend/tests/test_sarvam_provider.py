@@ -34,6 +34,21 @@ def test_tanglish_uses_tamil_compatible_tts_language():
     assert normalize_sarvam_tts_language_code("tanglish") == "ta-IN"
 
 
+@pytest.mark.parametrize("reply_language, expected", [
+    ("en", "en-IN"), ("hi", "hi-IN"), ("bn", "bn-IN"),
+    ("ta", "ta-IN"), ("te", "te-IN"), ("kn", "kn-IN"),
+    ("ml", "ml-IN"), ("mr", "mr-IN"), ("gu", "gu-IN"),
+    ("pa", "pa-IN"), ("od", "od-IN"), ("or", "od-IN"),
+])
+def test_supported_web_reply_languages_map_to_sarvam_tts_codes(reply_language, expected):
+    assert normalize_sarvam_tts_language_code(reply_language) == expected
+
+
+def test_unknown_sarvam_tts_language_does_not_silently_fall_back_to_english():
+    with pytest.raises(ValueError, match="Unsupported Sarvam TTS language"):
+        normalize_sarvam_tts_language_code("xx")
+
+
 @pytest.mark.parametrize("mode", ["transcribe", "translate", "verbatim", "translit", "codemix"])
 def test_shared_sarvam_stt_modes_remain_supported(mode):
     assert normalize_sarvam_stt_mode(mode) == mode

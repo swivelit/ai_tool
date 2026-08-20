@@ -71,6 +71,10 @@ from ..ai.providers.sarvam_provider import (
     normalize_sarvam_tts_language_code, normalize_stt_upload_mime_type,
     resolve_sarvam_tts_voice,
 )
+from ..ai.language import (
+    WEB_REPLY_LANGUAGES, is_supported_web_reply_language,
+    normalize_web_reply_language,
+)
 from ..ai.providers.sarvam_streaming_provider import (
     SarvamStreamingError, SarvamStreamingProvider, sarvam_tts_output_codec,
     sarvam_tts_sample_rate,
@@ -602,8 +606,9 @@ def _serialize_message(
             voice_turn_id = str(UUID(str(row.request_id)))
         except ValueError:
             voice_turn_id = None
-    reply_language = metadata.get("reply_language")
-    reply_language = reply_language if reply_language in {"en", "ta", "tanglish"} else None
+    reply_language = normalize_web_reply_language(metadata.get("reply_language"))
+    if reply_language not in WEB_REPLY_LANGUAGES:
+        reply_language = None
     raw_attachments = metadata.get("attachments")
     status_cache = attachment_cache if attachment_cache is not None else {}
     for value in raw_attachments if isinstance(raw_attachments, list) else []:
@@ -785,12 +790,13 @@ def _serialize_message(
 
 def _resolved_reply_language(user) -> str:
     value = str(user.reply_language or "").strip().lower()
-    if value not in {"en", "ta", "tanglish"}:
+    normalized = normalize_web_reply_language(value)
+    if normalized not in WEB_REPLY_LANGUAGES:
         raise HTTPException(422, {
             "code": "invalid_profile_language",
-            "message": "Saved reply language must be English, Tamil, or Tanglish.",
+            "message": "Saved reply language is not supported on the website.",
         })
-    return value
+    return normalized
 
 
 def _web_stt_mode() -> str:
@@ -844,7 +850,7 @@ def bootstrap(
             )
         ).validation_capability_sync()
     return {
-        "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
+        "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": _resolved_reply_language(user)},
         # `wallet` is the legacy Chat wallet and remains for mobile/web
         # compatibility. New clients should use `wallets`.
         "wallet": get_wallet_summary(session, int(user.id), swico_tier=swico_tier,
@@ -2260,7 +2266,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
 def _profile_response(user) -> dict[str, Any]:
     return {
         "name": user.name, "place": user.place, "timezone": user.timezone,
-        "assistant_name": user.assistant_name, "reply_language": user.reply_language,
+        "assistant_name": user.assistant_name, "reply_language": _resolved_reply_language(user),
         "email": user.email, "email_editable": False,
     }
 
@@ -3794,7 +3800,7 @@ async def synthesize_web_audio(
             f"This reply is too long to play as voice (maximum {max_characters} characters).",
         )
     reply_language = metadata.get("reply_language")
-    if reply_language not in {"en", "ta", "tanglish"}:
+    if not is_supported_web_reply_language(reply_language):
         reply_language = _resolved_reply_language(user)
     target_language_code = normalize_sarvam_tts_language_code(reply_language)
     model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)

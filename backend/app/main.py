@@ -5164,7 +5164,7 @@ def _active_model_routing_config() -> Dict[str, Any]:
             "max_output_default": router.max_output_default,
             "max_output_hard": router.max_output_hard,
             "disabled_models": sorted(router.disabled_models),
-            "sarvam_chat_model": os.getenv("SARVAM_CHAT_MODEL", "sarvam-30b") or "sarvam-30b",
+            "sarvam_chat_model": os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b") or "sarvam-105b",
             "sarvam_reasoning_model": os.getenv("SARVAM_CHAT_MODEL_REASONING", "sarvam-105b") or "sarvam-105b",
             "sarvam_stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
             "default_speech_language": DEFAULT_SPEECH_LANGUAGE,

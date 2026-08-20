@@ -1,3 +1,5 @@
+import type { ReplyLanguage } from '../language'
+
 export type Wallet = {
   credit_bucket?: CreditBucket;
   balance_micros: number; reserved_micros: number; available_micros: number;
@@ -87,7 +89,7 @@ export type Message = {
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
   attachments?: MessageAttachment[];
-  input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | 'tanglish' | null;
+  input_mode: InputMode; voice_turn_id: string | null; reply_language: ReplyLanguage | null;
   finish_reason?: string; truncated?: boolean; can_continue?: boolean;
   completion_status?: string;
   failure_code?: string | null;
@@ -162,7 +164,7 @@ export type ReferralSummary = {
   rewards: Array<{ id: string; role: string; credit_bucket: CreditBucket; plan_code: string; status: string; weeks: number; months: number; manual_review_required: boolean; created_at: string }>
 }
 export type Bootstrap = {
-  user: { id: number; name: string; email: string | null; reply_language: string };
+  user: { id: number; name: string; email: string | null; reply_language: ReplyLanguage };
   wallet: Wallet; wallets?: Wallets; billing: BillingConfig; assistant: AssistantSettings;
   subscriptions?: SubscriptionSummary;
   features: {
@@ -205,7 +207,7 @@ export type RealtimeVoicePlaybackMode = 'buffered_mp3' | 'pcm_stream' | 'auto'
 export type RealtimeVoiceCodec = 'mp3' | 'linear16'
 export type RealtimeVoiceSession = {
   protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
-  tier: SwicoTier; tier_label: string; language: 'en' | 'ta' | 'tanglish'; wallets: Wallets;
+  tier: SwicoTier; tier_label: string; language: ReplyLanguage; wallets: Wallets;
   playback_mode: RealtimeVoicePlaybackMode; selected_codec: RealtimeVoiceCodec;
   provider_sample_rate: number | null; media_source_allowed: boolean;
 }
@@ -223,7 +225,7 @@ export type PaymentStatus = {
 
 export type ProfileSettings = {
   name: string; place: string | null; timezone: string; assistant_name: string;
-  reply_language: 'en' | 'ta' | 'tanglish'; email: string | null; email_editable: false;
+  reply_language: ReplyLanguage; email: string | null; email_editable: false;
 }
 export type UsagePreferences = {
   period: 'monthly'; hard_limit_micros: number | null; hard_limit_ai_credits: string | null;

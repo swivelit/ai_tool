@@ -1,4 +1,5 @@
 import type { APIRequestContext, Page, Request, Response } from '@playwright/test'
+import type { ReplyLanguage } from '../language'
 
 export type ApiResult<T> = {
   status: number
@@ -399,7 +400,7 @@ export type RestorableProfile = {
   place: string | null
   timezone: string
   assistant_name: string
-  reply_language: 'en' | 'ta' | 'tanglish'
+  reply_language: ReplyLanguage
 }
 
 export type RestorableUsagePreferences = {

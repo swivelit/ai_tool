@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type Route } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import type { ReplyLanguage } from '../src/language'
 
 test.skip((process.env.PLAYWRIGHT_MODE ?? 'local') !== 'local', 'Local mocked suite only')
 
@@ -23,7 +24,7 @@ type MockState = {
   monthlyUsed: number
   hardLimit: number | null
   warningThreshold: number
-  profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: 'en' | 'ta'; email: string; email_editable: false }
+  profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: ReplyLanguage; email: string; email_editable: false }
   payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; updated_at: string; paid_at: string | null; refunded_at: string | null; payment_received: boolean; credit_applied: boolean; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
   threads: Array<{ id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }>
   messages: Array<Record<string, unknown>>
@@ -175,7 +176,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
         `event: thread\ndata: {"thread_id":"thread-1"}\n\n`,
         `event: status\ndata: {"phase":"responding"}\n\n`,
         `event: delta\ndata: {"text":"வணக்கம் — **ready**"}\n\n`,
-        `event: usage\ndata: {"provider":"sarvam","model":"sarvam-30b","input_tokens":10,"output_tokens":4,"usage_source":"actual","charged_micros":1200}\n\n`,
+        `event: usage\ndata: {"provider":"sarvam","model":"sarvam-105b","input_tokens":10,"output_tokens":4,"usage_source":"actual","charged_micros":1200}\n\n`,
         `event: wallet\ndata: ${JSON.stringify({balance_micros:state.wallet,reserved_micros:0,available_micros:state.wallet,version:3,token_estimate:tokenEstimate()})}\n\n`,
         `event: done\ndata: {"message_id":"assistant-${requestId}","thread_id":"thread-1","cancelled":false}\n\n`,
       ].join('')
@@ -249,7 +250,7 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await page.getByLabel('Message Swico').fill('தமிழில் பதில்')
   await page.getByRole('button', { name: 'Send message' }).click()
   await expect(page.getByText('வணக்கம் —')).toBeVisible()
-  await expect(page.getByText(/sarvam|sarvam-30b/)).toHaveCount(0)
+  await expect(page.getByText(/sarvam|sarvam-105b/)).toHaveCount(0)
 
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Open sidebar' }).click()

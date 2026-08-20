@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { apiJson } from '../api/client'
@@ -216,6 +216,17 @@ it('offers Tanglish and saves the canonical tanglish preference', async () => {
   await userEvent.click(screen.getByRole('button', { name:'General' }))
   await userEvent.click(screen.getByRole('button', { name:'Profile' }))
   expect(screen.getByLabelText('Reply language')).toHaveValue('tanglish')
+})
+
+it('offers the complete production reply-language set with native labels', async () => {
+  mockSettingsApi()
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Profile' }))
+  const options = within(screen.getByLabelText('Reply language')).getAllByRole('option')
+  expect(options.map(option => option.textContent)).toEqual([
+    'English', 'தமிழ்', 'Tanglish', 'हिन्दी', 'বাংলা', 'తెలుగు', 'ಕನ್ನಡ',
+    'മലയാളം', 'मराठी', 'ગુજરાતી', 'ਪੰਜਾਬੀ', 'ଓଡ଼ିଆ',
+  ])
 })
 
 it('configures an estimated monthly token limit and warning threshold', async () => {

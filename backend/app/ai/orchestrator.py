@@ -14,6 +14,7 @@ from sqlmodel import Session
 from .budget import enforce_free_text_quota, enforce_provider_budget
 from .agent_runtime import AgentRuntime, agentic_mode_enabled
 from .intent import classify_contextual_followup
+from .language import normalize_web_reply_language, web_reply_language_name
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
@@ -272,7 +273,7 @@ def _fallback_route(route: AIRoute, request: AIRequest, context: dict[str, Any])
             return None
         return AIRoute(
             provider="sarvam",
-            model="sarvam-30b",
+            model="sarvam-105b",
             route=f"sarvam_fallback_for_{route.intent}",
             reason="openai_failed_fallback_to_sarvam",
             language=route.language,
@@ -291,7 +292,7 @@ def _provider_unavailable_response(
     text = "The selected AI provider is temporarily unavailable. Please try again shortly."
     if route.provider == "openai" and route.intent in {"coding", "complex_reasoning"}:
         text = "The reasoning provider is temporarily unavailable. Please try again shortly."
-    if route.language in {"ta", "mixed"} or route.intent.startswith("contextual_"):
+    if normalize_web_reply_language(route.language) not in {None, "en"} or route.intent.startswith("contextual_"):
         text = "மன்னிக்கவும், இப்போது பதில் உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்."
     return AIProviderResponse(
         text=text,
@@ -360,7 +361,7 @@ def _prepare_contextual_followup(request: AIRequest) -> tuple[Optional[AIRequest
     if not target:
         text = (
             "எதை தமிழில் எளிமையாக விளக்க வேண்டும்?"
-            if language in {"ta", "mixed"}
+            if language == "ta"
             else "What should I explain or rewrite?"
         )
         response = AIProviderResponse(
@@ -420,7 +421,7 @@ def _expanded_contextual_prompt(message: str, intent: str, target: dict[str, str
         "contextual_rewrite": "rewrite or shorten the previous answer",
         "contextual_explain": "explain the previous topic simply",
     }.get(intent, "answer the contextual follow-up")
-    language_label = "Tamil" if language in {"ta", "mixed", "tanglish"} else "English"
+    language_label = web_reply_language_name(language)
     return (
         f"Current follow-up: {message}\n"
         f"Requested operation: {operation}.\n"
@@ -432,8 +433,9 @@ def _expanded_contextual_prompt(message: str, intent: str, target: dict[str, str
 
 def _contextual_language(message: str, reply_language: Optional[str]) -> str:
     text = str(message or "").lower()
-    if reply_language and str(reply_language).lower() in {"ta", "tamil", "mixed", "tanglish"}:
-        return "ta"
+    normalized_reply = normalize_web_reply_language(reply_language)
+    if normalized_reply:
+        return normalized_reply
     if re.search(r"\b(tamil|tanglish|tamil la|in tamil|sollu|sollunga|pannunga|simple ah|short ah)\b", text) or re.search(r"[\u0b80-\u0bff]", str(message or "")):
         return "ta"
     return str(reply_language or "en").strip().lower() or "en"

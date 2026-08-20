@@ -25,21 +25,28 @@ def _request(message: str, reply_language: str | None = "en", channel: str = "te
     )
 
 
-def test_tamil_script_routes_to_sarvam_30b(monkeypatch):
-    monkeypatch.setenv("SARVAM_CHAT_MODEL", "sarvam-30b")
+def test_tamil_script_routes_to_current_sarvam_model(monkeypatch):
+    monkeypatch.setenv("SARVAM_CHAT_MODEL", "sarvam-105b")
     route = AIProviderRouter().select_route(_request("வணக்கம், நான் என்ன சாப்பிடலாம்?", None))
 
     assert route.provider == "sarvam"
-    assert route.model == "sarvam-30b"
+    assert route.model == "sarvam-105b"
 
 
-def test_tanglish_routes_to_sarvam_30b(monkeypatch):
-    monkeypatch.setenv("SARVAM_CHAT_MODEL", "sarvam-30b")
+def test_tanglish_routes_to_current_sarvam_model(monkeypatch):
+    monkeypatch.setenv("SARVAM_CHAT_MODEL", "sarvam-105b")
     route = AIProviderRouter().select_route(_request("Tamil la explain pannunga", None))
 
     assert route.provider == "sarvam"
-    assert route.model == "sarvam-30b"
+    assert route.model == "sarvam-105b"
     assert route.intent.startswith("contextual_")
+
+
+def test_sarvam_runtime_default_is_current_model(monkeypatch):
+    monkeypatch.delenv("SARVAM_CHAT_MODEL", raising=False)
+    route = AIProviderRouter().select_route(_request("தமிழில் விளக்குங்கள்", None))
+    assert route.provider == "sarvam"
+    assert route.model == "sarvam-105b"
 
 
 def test_web_openai_only_mode_never_routes_to_sarvam(monkeypatch):

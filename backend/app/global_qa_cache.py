@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, select
 
 from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, QACache
+from .ai.language import normalize_web_reply_language, is_supported_web_reply_language
 from .openai_model_router import stable_user_hash
 from .openai_tracked import cached_text_embedding
 from .time_utils import utc_now
@@ -1055,12 +1056,8 @@ def _not_expired(row: GlobalQACache, now: Optional[datetime] = None) -> bool:
 
 
 def _answer_language(reply_language: Optional[str]) -> Optional[str]:
-    normalized = str(reply_language or "").strip().lower()
-    if normalized in {"en", "english"}:
-        return "en"
-    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
-        return "ta"
-    return None
+    normalized = normalize_web_reply_language(reply_language)
+    return normalized if is_supported_web_reply_language(normalized) else None
 
 
 def _query_embedding_bundle(question: str, query_embedding: Any = None) -> Dict[str, Any]:

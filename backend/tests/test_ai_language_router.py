@@ -1,6 +1,35 @@
+import pytest
+
 from app.ai.language import detect_language, should_prefer_sarvam
 from app.ai.router import AIProviderRouter
+from app.ai.prompts import build_provider_messages
 from app.ai.types import AIRequest
+from app.ai.types import AIRoute
+from app.web_api.chat_service import _deterministic_response
+
+
+@pytest.mark.parametrize("language, expected_script", [
+    ("hi", "Devanagari"), ("bn", "Bengali"), ("te", "Telugu"),
+    ("ml", "Malayalam"),
+])
+def test_supported_reply_languages_are_preserved_in_routing_and_prompt(language, expected_script):
+    request = AIRequest(1, "Explain this", language, "text", "language-script", {})
+    route = AIProviderRouter().select_route(request)
+    assert route.language == language
+    system = build_provider_messages(request, route, provider="sarvam")[0]["content"]
+    assert expected_script in system
+    assert f"{language}" not in system or "Language contract" in system
+
+
+@pytest.mark.parametrize("language", ["en", "ta", "tanglish", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"])
+def test_deterministic_greeting_preserves_selected_reply_language(language):
+    request = AIRequest(1, "Hi", language, "text", "deterministic-language", {})
+    route = AIRoute("backend_tool", None, "backend_tool", "greeting", language, "greeting", 0)
+    response = _deterministic_response(request, route)
+    assert response.raw["provider_calls_with_usage"] == 0
+    assert response.text
+    if language == "en":
+        assert response.text.startswith("Hi!")
 
 
 def test_tamil_script_prefers_sarvam():

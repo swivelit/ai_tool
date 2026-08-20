@@ -3,14 +3,14 @@
     "name": "Voice Agent AI",
     "domain": "AI-powered onboarding platform",
     "summary": "Voice Agent AI is a next-generation AI-powered onboarding platform that helps businesses create seamless, conversational onboarding experiences using natural language processing and voice technology.",
-    "specialization": "The platform speaks Tanglish (Tamil + English) natively for South Indian users."
+    "specialization": "The platform supports multilingual chat and voice experiences, including English and supported Indian languages, with Roman-script Tamil/Tanglish support."
   },
   "documents": [
     {
       "id": "about_company",
       "category": "company_overview",
       "question": "What is Voice Agent AI?",
-      "answer": "Voice Agent AI is a next-generation AI-powered onboarding platform that helps businesses create seamless, conversational onboarding experiences using natural language processing and voice technology. It also speaks Tanglish (Tamil + English) natively for South Indian users.",
+      "answer": "Voice Agent AI is a next-generation AI-powered onboarding platform that helps businesses create seamless, conversational onboarding experiences using natural language processing and voice technology. It supports multilingual experiences, including Roman-script Tamil/Tanglish for South Indian users.",
       "related_questions": [
         "Tell me about Voice Agent AI.",
         "What does your company do?",
@@ -54,7 +54,7 @@
       "id": "voice_recognition_accuracy",
       "category": "voice_ai",
       "question": "How accurate is the voice recognition?",
-      "answer": "The speech-to-text system is optimized for Tamil and Tanglish and delivers over 95% accuracy for clear audio.",
+      "answer": "The website supports automatic multilingual speech-to-text and Roman-script output for Tamil/Tanglish. Results vary with language, accent, background noise and audio quality; no universal accuracy percentage is promised.",
       "related_questions": [
         "How good is your speech recognition?",
         "What is the voice recognition accuracy?",
@@ -67,8 +67,7 @@
         "speech to text",
         "voice recognition",
         "Tamil",
-        "Tanglish",
-        "95%"
+        "Tanglish"
       ],
       "source_section": "Frequently Asked Questions"
     },

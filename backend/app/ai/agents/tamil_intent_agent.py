@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..agent_schemas import AgentIntentResult
 from ..intent import classify_intent
+from ..language import normalize_web_reply_language
 from ..tools import classify_folder_category
 from ..types import AIRequest
 
@@ -65,8 +66,9 @@ class TamilIntentAgent:
     @staticmethod
     def _language(message: str, reply_language: Optional[str]) -> str:
         requested = str(reply_language or "").strip().lower()
-        if requested in {"ta", "tamil", "mixed", "tanglish"}:
-            return "ta"
+        normalized = normalize_web_reply_language(requested)
+        if normalized:
+            return normalized
         if requested in {"en", "english"} and not (_TAMIL_RE.search(message) or _TANGLISH_RE.search(message)):
             return "en"
         if _TAMIL_RE.search(message) or _TANGLISH_RE.search(message):

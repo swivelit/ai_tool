@@ -52,6 +52,15 @@ it('labels a Tanglish Voice session explicitly', () => {
   expect(screen.getByText('Swico Pro · Tanglish')).toBeInTheDocument()
 })
 
+it('uses the reusable language label for a newly supported Voice language', () => {
+  vi.mocked(useRealtimeVoice).mockReturnValue({
+    ...base,
+    ticketInfo:{ ...base.ticketInfo, language:'hi' },
+  } as never)
+  render(<VoiceMode {...props} />)
+  expect(screen.getByText('Swico Pro · Hindi')).toBeInTheDocument()
+})
+
 it('shows partial and assistant captions automatically with their labels', () => {
   vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, partial:'spoken question', assistant:'spoken answer' } as never)
   render(<VoiceMode {...props} />)

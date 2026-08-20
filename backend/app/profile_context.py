@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlmodel import Session, select
 
 from .age_utils import normalize_age_group
+from .ai.language import normalize_web_reply_language
 from .models import User, UserProfile
 
 
@@ -53,8 +54,7 @@ def _compact(value: Any, limit: int = 800) -> Any:
 
 
 def _reply_language(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
-    return "en" if normalized in {"en", "english"} else "ta"
+    return normalize_web_reply_language(str(value or "").strip().lower()) or "ta"
 
 
 def _infer_tone(summary: str) -> str:

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from ...observability import chat_log_payload
 from ...openai_model_router import OpenAIModelRouter
 from ..prompts import build_provider_messages, serialize_provider_messages
+from ..language import normalize_web_reply_language
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
@@ -52,6 +53,11 @@ SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL = (
 )
 SARVAM_STT_MODES = frozenset({"transcribe", "translate", "verbatim", "translit", "codemix"})
 WEB_STT_MODES = frozenset({"transcribe", "translit"})
+SARVAM_TTS_LANGUAGE_CODES = {
+    "en": "en-IN", "hi": "hi-IN", "bn": "bn-IN", "ta": "ta-IN",
+    "tanglish": "ta-IN", "te": "te-IN", "kn": "kn-IN", "ml": "ml-IN",
+    "mr": "mr-IN", "gu": "gu-IN", "pa": "pa-IN", "od": "od-IN",
+}
 SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES = {
     "application/octet-stream",
     "audio/aac",
@@ -141,13 +147,15 @@ def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
 def normalize_sarvam_tts_language_code(target_language_code: str | None, *, fallback_reply_language: str | None = None) -> str:
     value = str(target_language_code or "").strip().lower()
     fallback = str(fallback_reply_language or "").strip().lower()
-    if value in {"ta", "ta-in", "tamil", "tanglish"}:
-        return "ta-IN"
-    if value in {"en", "en-in", "english"}:
-        return "en-IN"
-    if fallback in {"ta", "ta-in", "tamil", "mixed", "tanglish"}:
-        return "ta-IN"
-    return "en-IN"
+    for candidate in (value, fallback):
+        normalized = normalize_web_reply_language(candidate)
+        if normalized in SARVAM_TTS_LANGUAGE_CODES:
+            return SARVAM_TTS_LANGUAGE_CODES[normalized]
+        if candidate in {code.lower() for code in SARVAM_TTS_LANGUAGE_CODES.values()}:
+            return candidate[:2].lower() + "-IN"
+    if not value and not fallback:
+        raise ValueError("Sarvam TTS language is required")
+    raise ValueError("Unsupported Sarvam TTS language")
 
 
 def _language_default_speaker(language_code: str) -> str:
@@ -676,7 +684,7 @@ class SarvamProvider(AIProvider):
 def chat_model_for_intent(intent: str) -> str:
     if intent in {"coding", "complex_reasoning"}:
         return os.getenv("SARVAM_CHAT_MODEL_REASONING", "sarvam-105b").strip() or "sarvam-105b"
-    return os.getenv("SARVAM_CHAT_MODEL", "sarvam-30b").strip() or "sarvam-30b"
+    return os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b").strip() or "sarvam-105b"
 
 
 def estimate_sarvam_chat_cost(model: str, input_tokens: int, output_tokens: int) -> float:

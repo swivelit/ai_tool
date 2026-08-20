@@ -226,6 +226,16 @@ def test_profile_settings_are_owner_scoped_and_validated(client):
         assert session.get(type(owner), int(owner.id)).name == "Hari S"
 
 
+@pytest.mark.parametrize("language", ["en", "ta", "tanglish", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"])
+def test_profile_settings_accept_all_supported_web_reply_languages(client, language):
+    create_test_user("profile-language", "profile-language@example.com")
+    headers = auth_headers("profile-language", "profile-language@example.com")
+    response = client.patch("/api/web/settings/profile", headers=headers, json={"reply_language": language})
+    assert response.status_code == 200
+    assert response.json()["reply_language"] == language
+    assert client.get("/api/web/settings/profile", headers=headers).json()["reply_language"] == language
+
+
 def test_assistant_tier_defaults_persists_and_does_not_change_value_limits(
     client, monkeypatch,
 ):

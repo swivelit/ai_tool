@@ -6,7 +6,7 @@ import os
 import re
 from typing import Mapping
 
-from ..ai.language import resolve_web_reply_language
+from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
 
 
 SWICO_PUBLIC_PROFILE_VERSION = "2026-07-v1"
@@ -413,6 +413,8 @@ def swico_brand_response(
         "tanglish": _TANGLISH_RESPONSES,
     }.get(language, _ENGLISH_RESPONSES)
     text = templates.get(selected) or templates[SwicoBrandSubintent.GENERAL]
+    if language not in {"en", "ta", "tanglish"}:
+        text = localized_web_deterministic_text(language, "swico_brand", text)
     return validate_swico_public_response(text)
 
 

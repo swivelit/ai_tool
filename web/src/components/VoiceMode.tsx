@@ -3,6 +3,7 @@ import { RefreshCw, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import type { CreditBucket, VoiceTuning } from '../types'
 import { useRealtimeVoice, type VoiceTurnDone } from '../hooks/useRealtimeVoice'
+import { replyLanguageLabel } from '../language'
 
 export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tuning, internalDiagnostics = false }: {
   user: User; threadId: string | null; close: () => void;
@@ -76,7 +77,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
       <header className="voice-mode-header">
         <div className="voice-mode-identity">
           <strong id="voice-mode-title">Voice</strong>
-          <span>{voice.ticketInfo?.tier_label ?? 'Swico'} · {voice.ticketInfo?.language === 'ta' ? 'Tamil' : voice.ticketInfo?.language === 'tanglish' ? 'Tanglish' : 'English'}</span>
+          <span>{voice.ticketInfo?.tier_label ?? 'Swico'} · {replyLanguageLabel(voice.ticketInfo?.language)}</span>
         </div>
         <button ref={closeRef} className="voice-close" aria-label="Close Voice Mode" aria-busy={finishing} disabled={finishing} onClick={() => void finish()}><X /></button>
       </header>
