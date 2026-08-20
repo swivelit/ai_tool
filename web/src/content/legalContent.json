@@ -6,7 +6,7 @@
     "privacyEmail": "privacy@swiveltechnologies.in",
     "publicationStatus": "reviewed",
     "approval": {
-      "approvalType": "counsel_approval",
+      "approvalType": "approved_by_counsel",
       "previousApprovalReference": "SWICO-OWNER-PUBLICATION-2026-07-18",
       "approvedLegalContentSha256": "98daf16f07bb2e46e112fe12f77ca1cecd8b55e2d6da929fe062450d61317efa"
     }
