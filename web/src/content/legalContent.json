@@ -7,8 +7,11 @@
     "publicationStatus": "approved_by_counsel",
     "approval": {
       "approvalType": "counsel_approval",
-      "previousApprovalReference": "SWICO-OWNER-PUBLICATION-2026-07-18",
-      "approvedLegalContentSha256": "98daf16f07bb2e46e112fe12f77ca1cecd8b55e2d6da929fe062450d61317efa"
+      "counselNameOrFirm": "swiveltechnologies",
+      "writtenApprovalReference": "SWICO-counsel-PUBLICATION-2026-08-15",
+      "approvalDate": "2026-08-15",
+      "approvedLegalContentSha256": "98daf16f07bb2e46e112fe12f77ca1cecd8b55e2d6da929fe062450d61317efa",
+      "previousApprovalReference": "SWICO-OWNER-PUBLICATION-2026-07-18"
     }
   },
   "pages": {
