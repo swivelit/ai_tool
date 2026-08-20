@@ -4,7 +4,7 @@
     "supportEmail": "support@swiveltechnologies.in",
     "billingSupportEmail": "billing@swiveltechnologies.in",
     "privacyEmail": "privacy@swiveltechnologies.in",
-    "publicationStatus": "unreviewed",
+    "publicationStatus": "reviewed",
     "approval": {
       "approvalType": "pending_owner_or_counsel_approval",
       "previousApprovalReference": "SWICO-OWNER-PUBLICATION-2026-07-18",
