@@ -21,7 +21,7 @@ from ..ai.language import localized_web_deterministic_text, resolve_web_reply_la
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
-from ..ai.providers.sarvam_provider import SarvamProvider
+from ..ai.providers.sarvam_provider import SarvamProvider, sarvam_provider_output_budget
 from ..ai.providers.swico_free_provider import SwicoFreeProvider
 from ..ai.providers.base import (
     GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
@@ -2752,7 +2752,10 @@ def prepare_web_turn(
             ai_request.metadata["coordinator_metadata"] = coordinator_decision.sanitized_metadata
         reserve = reserve_price(
             route.provider, route.model or "", input_tokens,
-            route.max_output_tokens,
+            sarvam_provider_output_budget(
+                route.provider, route.intent, route.max_output_tokens,
+                model=route.model or "",
+            ),
         )
         if (
             _env_bool("WEB_MODEL_LADDER_DOWNGRADE_ENABLED", False)
@@ -2764,7 +2767,10 @@ def prepare_web_turn(
                     route.provider,
                     model,
                     input_tokens,
-                    route.max_output_tokens,
+                    sarvam_provider_output_budget(
+                        route.provider, route.intent, route.max_output_tokens,
+                        model=model,
+                    ),
                 )
                 for model in route.model_candidates[:2]
             ]
@@ -4092,7 +4098,10 @@ def _expand_phase3_reservation(
                 list(request.metadata.get("provider_messages") or [])
             )
         ),
-        route.max_output_tokens,
+        sarvam_provider_output_budget(
+            route.provider, route.intent, route.max_output_tokens,
+            model=route.model or "",
+        ),
     )
     if prepared.billing_exempt or prepared.route.provider == "swico_free":
         return estimate.micros
@@ -6530,6 +6539,7 @@ def execute_web_turn(
                         "cache_compatibility_hash"
                     ) or ""
                 ) or None,
+                reply_language=prepared.reply_language,
             )
 
         _run_post_turn_operation(

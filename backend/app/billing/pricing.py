@@ -115,9 +115,18 @@ def sarvam_price(
 ) -> PriceResult:
     large = "105" in str(model).lower()
     prefix = "105B" if large else "30B"
-    input_rate = env_decimal(f"SARVAM_PRICE_{prefix}_INPUT_INR_PER_1M", "4.0" if large else "2.5")
-    cached_rate = env_decimal(f"SARVAM_PRICE_{prefix}_CACHED_INPUT_INR_PER_1M", "2.5" if large else "1.5")
-    output_rate = env_decimal(f"SARVAM_PRICE_{prefix}_OUTPUT_INR_PER_1M", "16.0" if large else "10.0")
+    input_rate = env_decimal(
+        f"SARVAM_PRICE_{prefix}_INPUT_INR_PER_1M",
+        "29.28" if large else "2.5",
+    )
+    cached_rate = env_decimal(
+        f"SARVAM_PRICE_{prefix}_CACHED_INPUT_INR_PER_1M",
+        "10.98" if large else "1.5",
+    )
+    output_rate = env_decimal(
+        f"SARVAM_PRICE_{prefix}_OUTPUT_INR_PER_1M",
+        "73.2" if large else "10.0",
+    )
     total_input = max(
         0,
         int(input_tokens),

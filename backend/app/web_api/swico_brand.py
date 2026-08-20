@@ -6,7 +6,7 @@ import os
 import re
 from typing import Mapping
 
-from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
+from ..ai.language import resolve_web_reply_language
 
 
 SWICO_PUBLIC_PROFILE_VERSION = "2026-07-v1"
@@ -297,6 +297,138 @@ _TANGLISH_RESPONSES: Mapping[SwicoBrandSubintent, str] = {
     SwicoBrandSubintent.GENERAL: "Swico, CEO Jeyanth leadership-la uruvaakkappatta Swivel Technologies-oda mukkiya AI assistant.",
 }
 
+# Bounded deterministic answers for the expanded web language set. These are
+# deliberately keyed by sub-intent so selecting Hindi, Bengali, etc. does not
+# collapse a billing, voice, privacy, or leadership question into identity.
+_LOCALIZED_SUBINTENT_RESPONSES: dict[str, dict[SwicoBrandSubintent, str]] = {
+    "hi": {
+        SwicoBrandSubintent.COMPANY: "Swico, Swivel Technologies द्वारा विकसित AI उत्पाद है।",
+        SwicoBrandSubintent.LEADERSHIP: "Swico का निर्माण CEO Jeyanth के नेतृत्व में हुआ है।",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice और text बातचीत, बहुभाषी सहायता, दस्तावेज़ विश्लेषण, लेखन, योजना और शोध में मदद करता है।",
+        SwicoBrandSubintent.DOCUMENTS: "Swico अपलोड की गई फ़ाइलों और समर्थित दस्तावेज़ों का विश्लेषण कर सकता है।",
+        SwicoBrandSubintent.VOICE: "Swico प्राकृतिक voice बातचीत को support करता है और आपके बोलना पूरा करने के बाद जवाब देता है।",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico कई भाषाओं में voice और text बातचीत को support करता है।",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits और स्पष्ट usage tracking देता है।",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security और responsible AI Swico के विकास के महत्वपूर्ण सिद्धांत हैं।",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication और cloud infrastructure का उपयोग करता है, जिसमें security और privacy महत्वपूर्ण हैं।",
+        SwicoBrandSubintent.PURPOSE: "Swico का उद्देश्य AI को व्यावहारिक, भरोसेमंद, सुलभ और किफायती बनाना है।",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "उपलब्ध सार्वजनिक जानकारी Swico को Swivel Technologies का उत्पाद बताती है और अलग legal ownership statement नहीं देती।",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis और contextual assistance वाला practical AI assistant है।",
+    },
+    "bn": {
+        SwicoBrandSubintent.COMPANY: "Swico হলো Swivel Technologies-এর তৈরি AI পণ্য।",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth-এর নেতৃত্বে Swico তৈরি হয়েছে।",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice ও text কথোপকথন, বহু-ভাষা সহায়তা, নথি বিশ্লেষণ, লেখা, পরিকল্পনা ও গবেষণায় সাহায্য করে।",
+        SwicoBrandSubintent.DOCUMENTS: "Swico আপলোড করা ফাইল ও সমর্থিত নথি বিশ্লেষণ করতে পারে।",
+        SwicoBrandSubintent.VOICE: "Swico স্বাভাবিক voice কথোপকথন সমর্থন করে এবং আপনার কথা শেষ হলে উত্তর দেয়।",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico বহু ভাষায় voice ও text কথোপকথন সমর্থন করে।",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits এবং স্বচ্ছ usage tracking দেয়।",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security এবং responsible AI Swico-র গুরুত্বপূর্ণ নীতি।",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication ও cloud infrastructure ব্যবহার করে; security এবং privacy গুরুত্বপূর্ণ।",
+        SwicoBrandSubintent.PURPOSE: "Swico-র লক্ষ্য AI-কে ব্যবহারিক, বিশ্বাসযোগ্য, সহজলভ্য ও সাশ্রয়ী করা।",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "প্রকাশ্য তথ্য Swico-কে Swivel Technologies-এর পণ্য বলে; আলাদা legal ownership statement নেই।",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis ও contextual assistance-সহ একটি practical AI assistant।",
+    },
+    "te": {
+        SwicoBrandSubintent.COMPANY: "Swico అనేది Swivel Technologies రూపొందించిన AI ఉత్పత్తి.",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth నాయకత్వంలో Swico రూపొందించబడింది.",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice మరియు text సంభాషణలు, బహుభాషా సహాయం, డాక్యుమెంట్ విశ్లేషణ, రచన, ప్రణాళిక మరియు పరిశోధనలో సహాయపడుతుంది.",
+        SwicoBrandSubintent.DOCUMENTS: "Swico అప్‌లోడ్ చేసిన ఫైళ్లు మరియు మద్దతు ఉన్న డాక్యుమెంట్లను విశ్లేషించగలదు.",
+        SwicoBrandSubintent.VOICE: "Swico సహజమైన voice సంభాషణలను మద్దతు ఇస్తుంది మరియు మీరు మాట్లాడటం పూర్తయ్యాక సమాధానం ఇస్తుంది.",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico అనేక భాషల్లో voice మరియు text సంభాషణలను మద్దతు ఇస్తుంది.",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits మరియు స్పష్టమైన usage tracking అందిస్తుంది.",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security మరియు responsible AI Swico అభివృద్ధిలో ముఖ్యమైన సూత్రాలు.",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication మరియు cloud infrastructure ఉపయోగిస్తుంది; security మరియు privacy ముఖ్యమైనవి.",
+        SwicoBrandSubintent.PURPOSE: "AIని ఆచరణాత్మకంగా, నమ్మదగినదిగా, అందుబాటులో మరియు సరసమైనదిగా చేయడం Swico లక్ష్యం.",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "బహిరంగ సమాచారం Swicoను Swivel Technologies ఉత్పత్తిగా చెబుతుంది; ప్రత్యేక legal ownership statement లేదు.",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis మరియు contextual assistance కలిగిన practical AI assistant.",
+    },
+    "kn": {
+        SwicoBrandSubintent.COMPANY: "Swico, Swivel Technologies ಅಭಿವೃದ್ಧಿಪಡಿಸಿದ AI ಉತ್ಪನ್ನವಾಗಿದೆ.",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth ಅವರ ನಾಯಕತ್ವದಲ್ಲಿ Swico ರೂಪುಗೊಂಡಿದೆ.",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice ಮತ್ತು text ಸಂಭಾಷಣೆ, ಬಹುಭಾಷಾ ಸಹಾಯ, ದಾಖಲೆ ವಿಶ್ಲೇಷಣೆ, ಬರವಣಿಗೆ, ಯೋಜನೆ ಮತ್ತು ಸಂಶೋಧನೆಯಲ್ಲಿ ಸಹಾಯ ಮಾಡುತ್ತದೆ.",
+        SwicoBrandSubintent.DOCUMENTS: "Swico ಅಪ್‌ಲೋಡ್ ಮಾಡಿದ ಫೈಲ್‌ಗಳು ಮತ್ತು ಬೆಂಬಲಿತ ದಾಖಲೆಗಳನ್ನು ವಿಶ್ಲೇಷಿಸಬಹುದು.",
+        SwicoBrandSubintent.VOICE: "Swico ಸಹಜ voice ಸಂಭಾಷಣೆಯನ್ನು ಬೆಂಬಲಿಸುತ್ತದೆ ಮತ್ತು ನೀವು ಮಾತನಾಡಿ ಮುಗಿಸಿದ ನಂತರ ಉತ್ತರಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico ಹಲವು ಭಾಷೆಗಳಲ್ಲಿ voice ಮತ್ತು text ಸಂಭಾಷಣೆಯನ್ನು ಬೆಂಬಲಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits ಮತ್ತು ಸ್ಪಷ್ಟ usage tracking ಒದಗಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security ಮತ್ತು responsible AI Swico ಅಭಿವೃದ್ಧಿಯ ಪ್ರಮುಖ ತತ್ವಗಳು.",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication ಮತ್ತು cloud infrastructure ಬಳಸುತ್ತದೆ; security ಮತ್ತು privacy ಮುಖ್ಯ.",
+        SwicoBrandSubintent.PURPOSE: "AIಯನ್ನು ಪ್ರಾಯೋಗಿಕ, ನಂಬಿಕಸ್ಥ, ಸುಲಭವಾಗಿ ಲಭ್ಯ ಮತ್ತು ಕೈಗೆಟುಕುವಂತೆ ಮಾಡುವುದು Swico ಉದ್ದೇಶ.",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "ಸಾರ್ವಜನಿಕ ಮಾಹಿತಿ Swico ಅನ್ನು Swivel Technologies ಉತ್ಪನ್ನವೆಂದು ಹೇಳುತ್ತದೆ; ಪ್ರತ್ಯೇಕ legal ownership statement ಇಲ್ಲ.",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis ಮತ್ತು contextual assistance ಹೊಂದಿರುವ practical AI assistant.",
+    },
+    "ml": {
+        SwicoBrandSubintent.COMPANY: "Swico, Swivel Technologies വികസിപ്പിച്ച AI ഉൽപ്പന്നമാണ്.",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth-ന്റെ നേതൃത്വത്തിലാണ് Swico രൂപപ്പെട്ടത്.",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice, text സംഭാഷണം, പലഭാഷാ സഹായം, document analysis, എഴുത്ത്, planning, research എന്നിവയിൽ സഹായിക്കുന്നു.",
+        SwicoBrandSubintent.DOCUMENTS: "Swico upload ചെയ്യുന്ന files-ഉം supported documents-ഉം analyse ചെയ്യാം.",
+        SwicoBrandSubintent.VOICE: "Swico സ്വാഭാവിക voice സംഭാഷണം support ചെയ്യുകയും നിങ്ങൾ സംസാരിച്ച് തീർന്ന ശേഷം മറുപടി നൽകുകയും ചെയ്യുന്നു.",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico പല ഭാഷകളിലെ voice, text സംഭാഷണങ്ങൾ support ചെയ്യുന്നു.",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits-ഉം വ്യക്തമായ usage tracking-ഉം നൽകുന്നു.",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security, responsible AI എന്നിവ Swico വികസനത്തിലെ പ്രധാന തത്വങ്ങളാണ്.",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication, cloud infrastructure എന്നിവ ഉപയോഗിക്കുന്നു; security-യും privacy-യും പ്രധാനമാണ്.",
+        SwicoBrandSubintent.PURPOSE: "AI പ്രായോഗികവും വിശ്വസനീയവും എല്ലാവർക്കും ലഭ്യവും ചെലവുകുറഞ്ഞതുമാക്കുകയാണ് Swico-യുടെ ലക്ഷ്യം.",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "പൊതു വിവരമനുസരിച്ച് Swico, Swivel Technologies-ന്റെ ഉൽപ്പന്നമാണ്; വേറിട്ട legal ownership statement ഇല്ല.",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis, contextual assistance എന്നിവയുള്ള practical AI assistant ആണ്.",
+    },
+    "mr": {
+        SwicoBrandSubintent.COMPANY: "Swico हे Swivel Technologies ने विकसित केलेले AI उत्पादन आहे.",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth यांच्या नेतृत्वाखाली Swico तयार झाले आहे.",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice आणि text संभाषण, बहुभाषिक मदत, दस्तऐवज विश्लेषण, लेखन, नियोजन आणि संशोधनात मदत करते.",
+        SwicoBrandSubintent.DOCUMENTS: "Swico अपलोड केलेल्या फाइल्स आणि समर्थित दस्तऐवजांचे विश्लेषण करू शकते.",
+        SwicoBrandSubintent.VOICE: "Swico नैसर्गिक voice संभाषणाला support करते आणि तुम्ही बोलून झाल्यावर उत्तर देते.",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico अनेक भाषांमधील voice आणि text संभाषणांना support करते.",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits आणि पारदर्शक usage tracking देते.",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security आणि responsible AI ही Swico विकासाची महत्त्वाची तत्त्वे आहेत.",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication आणि cloud infrastructure वापरते; security आणि privacy महत्त्वाचे आहेत.",
+        SwicoBrandSubintent.PURPOSE: "AI व्यावहारिक, विश्वासार्ह, सुलभ आणि परवडणारे बनवणे हे Swico चे उद्दिष्ट आहे.",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "सार्वजनिक माहितीनुसार Swico हे Swivel Technologies चे उत्पादन आहे; स्वतंत्र legal ownership statement नाही.",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis आणि contextual assistance असलेला practical AI assistant आहे.",
+    },
+    "gu": {
+        SwicoBrandSubintent.COMPANY: "Swico એ Swivel Technologies દ્વારા વિકસિત AI પ્રોડક્ટ છે.",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanthના નેતૃત્વ હેઠળ Swico બનાવવામાં આવ્યું છે.",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice અને text વાતચીત, બહુભાષી મદદ, દસ્તાવેજ વિશ્લેષણ, લેખન, આયોજન અને સંશોધનમાં મદદ કરે છે.",
+        SwicoBrandSubintent.DOCUMENTS: "Swico અપલોડ કરેલી ફાઇલો અને સપોર્ટેડ દસ્તાવેજોનું વિશ્લેષણ કરી શકે છે.",
+        SwicoBrandSubintent.VOICE: "Swico કુદરતી voice વાતચીતને support કરે છે અને તમે બોલી પૂર્ણ કરો પછી જવાબ આપે છે.",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico ઘણી ભાષાઓમાં voice અને text વાતચીતને support કરે છે.",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits અને સ્પષ્ટ usage tracking આપે છે.",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security અને responsible AI Swicoના મહત્વના વિકાસ સિદ્ધાંતો છે.",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication અને cloud infrastructure વાપરે છે; security અને privacy મહત્વપૂર્ણ છે.",
+        SwicoBrandSubintent.PURPOSE: "AIને વ્યવહારુ, વિશ્વસનીય, સુલભ અને સસ્તું બનાવવું Swicoનું ધ્યેય છે.",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "જાહેર માહિતી Swicoને Swivel Technologiesની પ્રોડક્ટ કહે છે; અલગ legal ownership statement નથી.",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis અને contextual assistance ધરાવતું practical AI assistant છે.",
+    },
+    "pa": {
+        SwicoBrandSubintent.COMPANY: "Swico, Swivel Technologies ਵੱਲੋਂ ਵਿਕਸਿਤ AI ਉਤਪਾਦ ਹੈ।",
+        SwicoBrandSubintent.LEADERSHIP: "Swico CEO Jeyanth ਦੀ ਅਗਵਾਈ ਹੇਠ ਬਣਾਇਆ ਗਿਆ ਹੈ।",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice ਅਤੇ text ਗੱਲਬਾਤ, ਬਹੁਭਾਸ਼ੀ ਮਦਦ, ਦਸਤਾਵੇਜ਼ ਵਿਸ਼ਲੇਸ਼ਣ, ਲਿਖਤ, ਯੋਜਨਾ ਅਤੇ ਖੋਜ ਵਿੱਚ ਮਦਦ ਕਰਦਾ ਹੈ।",
+        SwicoBrandSubintent.DOCUMENTS: "Swico ਅਪਲੋਡ ਕੀਤੀਆਂ ਫਾਈਲਾਂ ਅਤੇ supported documents ਦਾ ਵਿਸ਼ਲੇਸ਼ਣ ਕਰ ਸਕਦਾ ਹੈ।",
+        SwicoBrandSubintent.VOICE: "Swico ਕੁਦਰਤੀ voice ਗੱਲਬਾਤ ਨੂੰ support ਕਰਦਾ ਹੈ ਅਤੇ ਤੁਹਾਡੇ ਬੋਲਣਾ ਮੁਕਾਉਣ ਤੋਂ ਬਾਅਦ ਜਵਾਬ ਦਿੰਦਾ ਹੈ।",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico ਕਈ ਭਾਸ਼ਾਵਾਂ ਵਿੱਚ voice ਅਤੇ text ਗੱਲਬਾਤ ਨੂੰ support ਕਰਦਾ ਹੈ।",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits ਅਤੇ ਸਾਫ਼ usage tracking ਦਿੰਦਾ ਹੈ।",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security ਅਤੇ responsible AI Swico ਦੇ ਮਹੱਤਵਪੂਰਨ ਸਿਧਾਂਤ ਹਨ।",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication ਅਤੇ cloud infrastructure ਵਰਤਦਾ ਹੈ; security ਅਤੇ privacy ਮਹੱਤਵਪੂਰਨ ਹਨ।",
+        SwicoBrandSubintent.PURPOSE: "AI ਨੂੰ ਵਿਹਾਰਕ, ਭਰੋਸੇਯੋਗ, ਪਹੁੰਚਯੋਗ ਅਤੇ ਕਿਫਾਇਤੀ ਬਣਾਉਣਾ Swico ਦਾ ਮਕਸਦ ਹੈ।",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "ਜਨਤਕ ਜਾਣਕਾਰੀ Swico ਨੂੰ Swivel Technologies ਦਾ ਉਤਪਾਦ ਦੱਸਦੀ ਹੈ; ਵੱਖਰਾ legal ownership statement ਨਹੀਂ ਹੈ।",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis ਅਤੇ contextual assistance ਵਾਲਾ practical AI assistant ਹੈ।",
+    },
+    "od": {
+        SwicoBrandSubintent.COMPANY: "Swico ହେଉଛି Swivel Technologies ଦ୍ୱାରା ବିକଶିତ AI ଉତ୍ପାଦ।",
+        SwicoBrandSubintent.LEADERSHIP: "CEO Jeyanth ଙ୍କ ନେତୃତ୍ୱରେ Swico ବିକଶିତ ହୋଇଛି।",
+        SwicoBrandSubintent.CAPABILITIES: "Swico voice ଏବଂ text କଥାବାର୍ତ୍ତା, ବହୁଭାଷୀ ସହାୟତା, ଦଲିଲ ବିଶ୍ଳେଷଣ, ଲେଖା, ଯୋଜନା ଏବଂ ଗବେଷଣାରେ ସାହାଯ୍ୟ କରେ।",
+        SwicoBrandSubintent.DOCUMENTS: "Swico ଅପଲୋଡ୍ କରାଯାଇଥିବା ଫାଇଲ୍ ଏବଂ ସମର୍ଥିତ ଦଲିଲଗୁଡ଼ିକୁ ବିଶ୍ଳେଷଣ କରିପାରେ।",
+        SwicoBrandSubintent.VOICE: "Swico ସ୍ୱାଭାବିକ voice କଥାବାର୍ତ୍ତାକୁ ସମର୍ଥନ କରେ ଏବଂ ଆପଣ କଥା ଶେଷ କରିବା ପରେ ଉତ୍ତର ଦିଏ।",
+        SwicoBrandSubintent.MULTILINGUAL: "Swico ଅନେକ ଭାଷାରେ voice ଏବଂ text କଥାବାର୍ତ୍ତାକୁ ସମର୍ଥନ କରେ।",
+        SwicoBrandSubintent.BILLING: "Swico wallet-based AI usage credits ଏବଂ ସ୍ପଷ୍ଟ usage tracking ପ୍ରଦାନ କରେ।",
+        SwicoBrandSubintent.PRIVACY: "Privacy, security ଏବଂ responsible AI Swico ବିକାଶର ମୁଖ୍ୟ ନୀତି।",
+        SwicoBrandSubintent.SECURITY: "Swico secure authentication ଏବଂ cloud infrastructure ବ୍ୟବହାର କରେ; security ଏବଂ privacy ଗୁରୁତ୍ୱପୂର୍ଣ୍ଣ।",
+        SwicoBrandSubintent.PURPOSE: "AIକୁ ବ୍ୟବହାରିକ, ବିଶ୍ୱସନୀୟ, ସୁଲଭ ଏବଂ ସାଧ୍ୟ କରିବା Swicoର ଉଦ୍ଦେଶ୍ୟ।",
+        SwicoBrandSubintent.OWNERSHIP_UNKNOWN: "ସାର୍ବଜନୀନ ସୂଚନା Swicoକୁ Swivel Technologiesର ଉତ୍ପାଦ କହେ; ଅଲଗା legal ownership statement ନାହିଁ।",
+        SwicoBrandSubintent.COMPARISON: "Swico voice, text, multilingual help, document analysis ଏବଂ contextual assistance ଥିବା practical AI assistant।",
+    },
+}
+
 
 _PRODUCT_REFERENCE_RE = re.compile(
     r"(?:\bswico\b|\bswivel\s+technologies\b|\bjeyanth\b|ஸ்விகோ|சுவிகோ|ஸ்விவல்)", re.I
@@ -413,8 +545,8 @@ def swico_brand_response(
         "tanglish": _TANGLISH_RESPONSES,
     }.get(language, _ENGLISH_RESPONSES)
     text = templates.get(selected) or templates[SwicoBrandSubintent.GENERAL]
-    if language not in {"en", "ta", "tanglish"}:
-        text = localized_web_deterministic_text(language, "swico_brand", text)
+    if language in _LOCALIZED_SUBINTENT_RESPONSES:
+        text = _LOCALIZED_SUBINTENT_RESPONSES[language].get(selected, text)
     return validate_swico_public_response(text)
 
 

@@ -14,7 +14,7 @@ from sqlmodel import Session
 from .budget import enforce_free_text_quota, enforce_provider_budget
 from .agent_runtime import AgentRuntime, agentic_mode_enabled
 from .intent import classify_contextual_followup
-from .language import normalize_web_reply_language, web_reply_language_name
+from .language import localized_web_deterministic_text, normalize_web_reply_language, web_reply_language_name
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
@@ -289,11 +289,10 @@ def _provider_unavailable_response(
     error_type: str,
     error_metadata: Optional[dict[str, Any]] = None,
 ) -> AIProviderResponse:
-    text = "The selected AI provider is temporarily unavailable. Please try again shortly."
-    if route.provider == "openai" and route.intent in {"coding", "complex_reasoning"}:
+    language = normalize_web_reply_language(route.language) or "en"
+    text = localized_web_deterministic_text(language, "provider_unavailable")
+    if route.provider == "openai" and route.intent in {"coding", "complex_reasoning"} and language == "en":
         text = "The reasoning provider is temporarily unavailable. Please try again shortly."
-    if normalize_web_reply_language(route.language) not in {None, "en"} or route.intent.startswith("contextual_"):
-        text = "மன்னிக்கவும், இப்போது பதில் உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்."
     return AIProviderResponse(
         text=text,
         provider="blocked",

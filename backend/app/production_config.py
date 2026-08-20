@@ -247,6 +247,9 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     if _value(env, "WEB_STT_MODE", "translit").lower() not in {"transcribe", "translit"}:
         errors.append("WEB_STT_MODE is unsupported")
     for name, default in (
+        ("SARVAM_PRICE_105B_INPUT_INR_PER_1M", "29.28"),
+        ("SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M", "10.98"),
+        ("SARVAM_PRICE_105B_OUTPUT_INR_PER_1M", "73.2"),
         ("SARVAM_PRICE_STT_INR_PER_HOUR", "30"),
         ("SARVAM_PRICE_TTS_V2_INR_PER_10K_CHARS", "15"),
         ("SARVAM_PRICE_TTS_V3_INR_PER_10K_CHARS", "30"),

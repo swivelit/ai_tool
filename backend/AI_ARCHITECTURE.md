@@ -111,6 +111,12 @@ Sarvam defaults: `SARVAM_CHAT_MODEL`, `SARVAM_CHAT_MODEL_REASONING`,
 `SARVAM_TTS_MODEL_PREMIUM`, `SARVAM_TTS_SPEAKER`,
 `SARVAM_DAILY_BUDGET_INR`.
 
+New runtime chat requests use `sarvam-105b`. Its current billing rates are
+`SARVAM_PRICE_105B_INPUT_INR_PER_1M=29.28`,
+`SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M=10.98`, and
+`SARVAM_PRICE_105B_OUTPUT_INR_PER_1M=73.2`. The 30B rates remain available
+only for historical model and pricing snapshots.
+
 ## Cost Controls
 
 - Free non-admin users are limited by `ai_usage_events` daily text and voice totals.

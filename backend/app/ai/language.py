@@ -33,6 +33,24 @@ WEB_REPLY_LANGUAGE_SCRIPT_LABELS = {
     "gu": "Gujarati script", "pa": "Gurmukhi script", "od": "Odia script",
 }
 
+# Provider failures are deterministic product copy, not translation jobs. Keep
+# one safe message per supported web reply language so an outage never causes a
+# provider call or an unrelated Tamil fallback.
+WEB_PROVIDER_UNAVAILABLE_RESPONSES = {
+    "en": "The selected AI service is temporarily unavailable. Please try again shortly.",
+    "ta": "மன்னிக்கவும், இப்போது பதில் உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்.",
+    "tanglish": "Mannikkavum, ippodhu reply create panna mudiyala. Konjam neram kazhichu try pannunga.",
+    "hi": "चयनित AI सेवा अभी अस्थायी रूप से उपलब्ध नहीं है। कृपया थोड़ी देर बाद फिर प्रयास करें।",
+    "bn": "নির্বাচিত AI পরিষেবাটি এখন সাময়িকভাবে unavailable। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।",
+    "te": "ఎంచుకున్న AI సేవ ప్రస్తుతం తాత్కాలికంగా అందుబాటులో లేదు. కొద్దిసేపటి తర్వాత మళ్లీ ప్రయత్నించండి.",
+    "kn": "ಆಯ್ಕೆ ಮಾಡಿದ AI ಸೇವೆ ಈಗ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+    "ml": "തിരഞ്ഞെടുത്ത AI സേവനം ഇപ്പോൾ താൽക്കാലികമായി ലഭ്യമല്ല. കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക.",
+    "mr": "निवडलेली AI सेवा सध्या तात्पुरती उपलब्ध नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.",
+    "gu": "પસંદ કરેલી AI સેવા હાલમાં અસ્થાયી રીતે ઉપલબ્ધ નથી. કૃપા કરીને થોડી વાર પછી ફરી પ્રયાસ કરો.",
+    "pa": "ਚੁਣੀ ਹੋਈ AI ਸੇਵਾ ਇਸ ਵੇਲੇ ਅਸਥਾਈ ਤੌਰ 'ਤੇ ਉਪਲਬਧ ਨਹੀਂ ਹੈ। ਕੁਝ ਦੇਰ ਬਾਅਦ ਮੁੜ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+    "od": "ଚୟନ କରାଯାଇଥିବା AI ସେବା ବର୍ତ୍ତମାନ ସାମୟିକ ଭାବେ ଉପଲବ୍ଧ ନାହିଁ। କିଛି ସମୟ ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।",
+}
+
 WEB_DETERMINISTIC_RESPONSES: dict[str, dict[str, str]] = {
     "en": {
         "greeting": "Hi! How can I help you today?",
@@ -178,6 +196,8 @@ WEB_DETERMINISTIC_RESPONSES: dict[str, dict[str, str]] = {
 
 def localized_web_deterministic_text(language: Optional[str], key: str, fallback: str = "") -> str:
     normalized = normalize_web_reply_language(language) or "en"
+    if key == "provider_unavailable":
+        return WEB_PROVIDER_UNAVAILABLE_RESPONSES.get(normalized, WEB_PROVIDER_UNAVAILABLE_RESPONSES["en"])
     return WEB_DETERMINISTIC_RESPONSES.get(normalized, {}).get(key, fallback)
 
 _SCRIPT_RANGES: tuple[tuple[str, str, str], ...] = (

@@ -3,6 +3,7 @@ import pytest
 from app.ai.intent import classify_intent, normalize_voice_query_for_intent
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest
+from app.ai.tools import _requested_reply_language
 
 
 COLAB_CHATBOT_PROMPT = """Create a simple chatbot that runs in Google Colab.
@@ -52,6 +53,16 @@ def test_direct_remember_this_stays_a_note_command():
 
         assert decision.intent == "note"
         assert decision.route == "backend_tool"
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("hi", None),
+    ("ML is useful for classification", None),
+    ("set reply language to ml", "ml"),
+    ("reply in hi", "hi"),
+])
+def test_short_reply_language_codes_require_explicit_setting_intent(message, expected):
+    assert _requested_reply_language(message) == expected
 
 
 def test_live_data_is_not_general_chat():

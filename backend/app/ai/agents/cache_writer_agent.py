@@ -41,6 +41,7 @@ class CacheWriterAgent:
         model_used: Optional[str],
         request_id: Optional[str] = None,
         cache_compatibility_hash: Optional[str] = None,
+        reply_language: Optional[str] = None,
     ) -> dict:
         from ...global_qa_cache import _record_backend_openai_answer_impl
 
@@ -55,4 +56,5 @@ class CacheWriterAgent:
             model_used,
             request_id=request_id,
             cache_compatibility_hash=cache_compatibility_hash,
+            reply_language=reply_language,
         )

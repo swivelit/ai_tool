@@ -106,6 +106,26 @@ def _extract_chat_usage(raw: Any) -> dict[str, int]:
         "cached_input_tokens": value("cached_input_tokens", "cached_tokens"),
         "cache_write_tokens": value("cache_write_tokens", "cache_creation_input_tokens"),
     }
+    details = usage.get("completion_tokens_details") if isinstance(usage, dict) else getattr(usage, "completion_tokens_details", None)
+    reasoning = 0
+    if isinstance(details, dict):
+        reasoning = value_from_details = details.get("reasoning_tokens") or details.get("reasoning_token_count") or 0
+    else:
+        value_from_details = getattr(details, "reasoning_tokens", None) or getattr(details, "reasoning_token_count", None) or 0
+    try:
+        reasoning = max(0, int(value_from_details))
+    except (TypeError, ValueError):
+        reasoning = 0
+    if reasoning:
+        # completion_tokens is the provider's billable total when present;
+        # only add the detail field when the provider reports output_tokens
+        # without a completion total.
+        has_completion_total = (
+            isinstance(usage, dict) and usage.get("completion_tokens") is not None
+        ) or getattr(usage, "completion_tokens", None) is not None
+        if not has_completion_total:
+            result["output_tokens"] += reasoning
+        result["reasoning_tokens"] = reasoning
     return result if result["input_tokens"] or result["output_tokens"] else {}
 
 
@@ -135,6 +155,42 @@ def _sarvam_finish_metadata(raw: Any) -> dict[str, Any]:
         "truncated": normalized == "length",
         "completion_status": completion_status,
     }
+
+
+_SARVAM_REASONING_INTENTS = frozenset({"coding", "complex_reasoning"})
+
+
+def sarvam_generation_policy(
+    intent: str,
+    visible_output_tokens: int,
+    *,
+    model: str = "sarvam-105b",
+) -> dict[str, Any]:
+    """Resolve the provider budget without changing Swico's visible-answer budget.
+
+    Sarvam 105B counts reasoning inside its completion budget.  Ordinary turns
+    explicitly disable reasoning; only the bounded reasoning intents receive
+    extra provider headroom, which is also used by the reservation path.
+    """
+    visible = max(1, int(visible_output_tokens or 1))
+    if "105" in str(model or "").lower() and str(intent or "").strip().lower() in _SARVAM_REASONING_INTENTS:
+        return {
+            "reasoning_effort": "medium",
+            "max_tokens": max(visible + 512, visible * 2),
+        }
+    return {"reasoning_effort": None, "max_tokens": visible}
+
+
+def sarvam_provider_output_budget(
+    provider: str,
+    intent: str,
+    visible_output_tokens: int,
+    *,
+    model: str = "sarvam-105b",
+) -> int:
+    if str(provider or "").strip().lower() != "sarvam":
+        return max(1, int(visible_output_tokens or 1))
+    return int(sarvam_generation_policy(intent, visible_output_tokens, model=model)["max_tokens"])
 
 
 def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
@@ -296,7 +352,13 @@ class SarvamProvider(AIProvider):
     def complete(self, request: AIRequest, route: AIRoute) -> AIProviderResponse:
         client = self._client_or_create()
         messages = build_provider_messages(request, route, provider="sarvam")
-        raw = self._call_chat(client, route.model or chat_model_for_intent(route.intent), messages, route.max_output_tokens)
+        raw = self._call_chat(
+            client,
+            route.model or chat_model_for_intent(route.intent),
+            messages,
+            route.intent,
+            route.max_output_tokens,
+        )
         text = _extract_chat_text(raw)
         if not text.strip():
             exc = HTTPException(status_code=502, detail="Sarvam chat returned empty text.")
@@ -334,6 +396,7 @@ class SarvamProvider(AIProvider):
                 "usage_actual": bool(usage),
                 "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
                 "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
+                "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
                 "provider_attempts": 1,
                 "provider_calls_with_usage": 1 if usage else 0,
                 **_sarvam_finish_metadata(raw),
@@ -363,7 +426,11 @@ class SarvamProvider(AIProvider):
         try:
             stream = caller(
                 model=route.model or chat_model_for_intent(route.intent), messages=messages,
-                max_tokens=route.max_output_tokens, temperature=0.2, stream=True,
+                **sarvam_generation_policy(
+                    route.intent, route.max_output_tokens,
+                    model=route.model or chat_model_for_intent(route.intent),
+                ),
+                temperature=0.2, stream=True,
             )
         except TypeError:
             if cancellation and cancellation.cancelled:
@@ -397,7 +464,7 @@ class SarvamProvider(AIProvider):
                             input_tokens=input_tokens, output_tokens=output_tokens, characters=len(text),
                             estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
                             estimated_cost_currency="INR",
-                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "cancelled": True, "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, "finish_reason": "cancelled", "truncated": False, "completion_status": "cancelled"},
+                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "reasoning_tokens": int(final_usage.get("reasoning_tokens") or 0), "cancelled": True, "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, "finish_reason": "cancelled", "truncated": False, "completion_status": "cancelled"},
                         )
                     raise GenerationCancelled(response)
                 final_usage = _extract_chat_usage(chunk) or final_usage
@@ -435,17 +502,25 @@ class SarvamProvider(AIProvider):
             text=text, provider="sarvam", model=route.model, route=route.route, reason=route.reason,
             language=route.language, intent=route.intent, input_tokens=input_tokens, output_tokens=output_tokens,
             characters=len(text), estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
-            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, **finish_metadata},
+            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "reasoning_tokens": int(final_usage.get("reasoning_tokens") or 0), "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, **finish_metadata},
         )
 
 
-    def _call_chat(self, client: Any, model: str, messages: list[dict[str, str]], max_tokens: int) -> Any:
+    def _call_chat(
+        self,
+        client: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        intent: str,
+        visible_output_tokens: int,
+    ) -> Any:
+        policy = sarvam_generation_policy(intent, visible_output_tokens, model=model)
         completions = getattr(getattr(client, "chat", None), "completions", None)
         if callable(completions):
-            return completions(model=model, messages=messages, max_tokens=max_tokens, temperature=0.2)
+            return completions(model=model, messages=messages, **policy, temperature=0.2)
         create = getattr(completions, "create", None)
         if callable(create):
-            return create(model=model, messages=messages, max_tokens=max_tokens, temperature=0.2)
+            return create(model=model, messages=messages, **policy, temperature=0.2)
         raise HTTPException(status_code=503, detail="Sarvam chat client does not expose chat.completions.")
 
     def stt_file(
@@ -690,8 +765,8 @@ def chat_model_for_intent(intent: str) -> str:
 def estimate_sarvam_chat_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     normalized = str(model or "").lower()
     if "105" in normalized:
-        input_rate = _env_float("SARVAM_PRICE_105B_INPUT_INR_PER_1M", 4.0)
-        output_rate = _env_float("SARVAM_PRICE_105B_OUTPUT_INR_PER_1M", 16.0)
+        input_rate = _env_float("SARVAM_PRICE_105B_INPUT_INR_PER_1M", 29.28)
+        output_rate = _env_float("SARVAM_PRICE_105B_OUTPUT_INR_PER_1M", 73.2)
     else:
         input_rate = _env_float("SARVAM_PRICE_30B_INPUT_INR_PER_1M", 2.5)
         output_rate = _env_float("SARVAM_PRICE_30B_OUTPUT_INR_PER_1M", 10.0)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import app.main as main_module
 from app.database import SessionLocal, engine
 from app.global_qa_cache import (
@@ -14,7 +16,23 @@ from app.global_qa_cache import (
     normalize_question,
     record_backend_openai_answer,
     record_global_qa_tombstone,
+    _infer_answer_language,
+    _row_lookup_safe,
 )
+
+
+@pytest.mark.parametrize("language", ["hi", "bn", "te", "ml", "mr", "tanglish", "en"])
+def test_requested_cache_language_is_preserved_without_script_inference(language):
+    assert _infer_answer_language("An English answer", language) == language
+
+
+def test_english_cache_row_does_not_satisfy_known_indic_language():
+    row = GlobalQACache(
+        status="approved", confidence=0.9, answer="English answer",
+        answer_language="en", safety_label="general", expires_at=None,
+        scope="global",
+    )
+    assert not _row_lookup_safe(row, "same question", "hi", utc_now(), user_hash=None)
 from app.job_queue import enqueue_global_qa_embedding_backfill
 from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, Job
 from app.ai.agents.aggregator_reflection_agent import AggregatorReflectionAgent

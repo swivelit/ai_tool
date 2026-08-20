@@ -675,6 +675,7 @@ likely scanned, and `.doc` uploads instruct the user to save as DOCX.
 - Set API variable `BILLING_ENFORCE_TOPUP_PACKAGES=false`.
 - Set API variable `BILLING_MIN_TOPUP_PAISE=1500`.
 - Set API variable `BILLING_MAX_TOPUP_PAISE=50000`.
+- Set backend Sarvam chat pricing to `SARVAM_PRICE_105B_INPUT_INR_PER_1M=29.28`, `SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M=10.98`, and `SARVAM_PRICE_105B_OUTPUT_INR_PER_1M=73.2`; keep `SARVAM_CHAT_MODEL` and `SARVAM_CHAT_MODEL_REASONING` on `sarvam-105b`.
 - Add backend-only `SWICO_DEFAULT_TIER=lite`, `SWICO_TIER_SELECTION_ENABLED=true`, and `SWICO_PRO_ENABLED=false`.
 - Add backend-only `SWICO_LITE_MODEL_PRIMARY`, `SWICO_LITE_MODEL_FALLBACKS`, `SWICO_STANDARD_MODEL_PRIMARY`, `SWICO_STANDARD_MODEL_FALLBACKS`, `SWICO_PRO_MODEL_PRIMARY`, and `SWICO_PRO_MODEL_FALLBACKS`. Production validation requires explicit allowlisted values; use the reviewed production mappings and pricing overrides.
 - Add `OPENAI_PRICING_AS_OF=2026-07-17` and every explicit input, cached-input, and output price variable used by the enabled Swico ladders.

@@ -363,7 +363,7 @@ def _hot_lookup_languages(language: Optional[str]) -> List[str]:
     languages = []
     if language:
         languages.append(language)
-    languages.extend(["en", "*"])
+    languages.append("*")
     deduped_languages: List[str] = []
     seen_langs = set()
     for lang in languages:
@@ -1161,7 +1161,7 @@ def _row_lookup_safe(
         return False
     if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
         return False
-    if language and row.answer_language not in {language, "en"}:
+    if language and (str(row.answer_language or "").strip().lower() or "en") != language:
         return False
     if (
         cache_compatibility_hash
@@ -1590,7 +1590,10 @@ def _source_hashes(row: GlobalQACache) -> List[str]:
     return [str(item) for item in parsed if str(item).strip()]
 
 
-def _infer_answer_language(answer: str) -> str:
+def _infer_answer_language(answer: str, requested_language: Optional[str] = None) -> str:
+    requested = _answer_language(requested_language)
+    if requested:
+        return requested
     if re.search(r"[\u0B80-\u0BFF]", str(answer or "")):
         return "ta"
     return "en"
@@ -1683,6 +1686,7 @@ def _upsert_user_scoped_cache_row(
     embedding_bundle: Dict[str, Any],
     now: datetime,
     expires_at: datetime,
+    answer_language: Optional[str] = None,
 ) -> Optional[GlobalQACache]:
     row = _find_user_scoped_row(
         session,
@@ -1699,7 +1703,7 @@ def _upsert_user_scoped_cache_row(
             canonical_question=canonical_question,
             normalized_question=normalized,
             answer=redacted_answer,
-            answer_language=_infer_answer_language(answer),
+            answer_language=_infer_answer_language(answer, answer_language),
             topic=_topic_from_question(canonical_question),
             status="approved",
             hit_count=1,
@@ -1744,7 +1748,7 @@ def _upsert_user_scoped_cache_row(
         row.normalized_question = row.normalized_question or normalized
         row.answer = redacted_answer
         row.answer_hash = a_hash
-        row.answer_language = _infer_answer_language(answer)
+        row.answer_language = _infer_answer_language(answer, answer_language)
         row.status = "approved"
         row.hit_count = int(row.hit_count or 0) + 1
         row.distinct_user_count = 1
@@ -1775,6 +1779,7 @@ def _record_backend_openai_answer_impl(
     model_used: Optional[str],
     request_id: Optional[str] = None,
     cache_compatibility_hash: Optional[str] = None,
+    reply_language: Optional[str] = None,
 ) -> dict:
     if not _enabled():
         return {"ok": False, "skipped": True, "reason": "disabled"}
@@ -1858,6 +1863,7 @@ def _record_backend_openai_answer_impl(
             embedding_bundle=embedding_bundle,
             now=now,
             expires_at=expires_at,
+            answer_language=_answer_language(reply_language),
         )
 
     candidate, similarity = _find_candidate(session, normalized, embedding_bundle)
@@ -1868,7 +1874,7 @@ def _record_backend_openai_answer_impl(
             canonical_question=canonical_question,
             normalized_question=normalized,
             answer=redact_sensitive_text(answer),
-            answer_language=_infer_answer_language(answer),
+            answer_language=_infer_answer_language(answer, reply_language),
             topic=_topic_from_question(question),
             status="candidate",
             hit_count=1,
@@ -1929,7 +1935,7 @@ def _record_backend_openai_answer_impl(
         if not answer_conflict and (not candidate.answer or candidate.status == "candidate"):
             candidate.answer = redact_sensitive_text(answer)
             candidate.answer_hash = a_hash
-            candidate.answer_language = _infer_answer_language(answer)
+            candidate.answer_language = _infer_answer_language(answer, reply_language)
             candidate.model_used = model_used or candidate.model_used
         if answer_conflict:
             existing_notes = str(candidate.review_notes or "").strip()
@@ -2021,6 +2027,7 @@ def record_backend_openai_answer(
     model_used: Optional[str],
     request_id: Optional[str] = None,
     cache_compatibility_hash: Optional[str] = None,
+    reply_language: Optional[str] = None,
 ) -> dict:
     try:
         from .ai.agents.cache_writer_agent import CacheWriterAgent
@@ -2033,6 +2040,7 @@ def record_backend_openai_answer(
             model_used=model_used,
             request_id=request_id,
             cache_compatibility_hash=cache_compatibility_hash,
+            reply_language=reply_language,
         )
     except ImportError:
         return _record_backend_openai_answer_impl(
@@ -2043,6 +2051,7 @@ def record_backend_openai_answer(
             model_used,
             request_id=request_id,
             cache_compatibility_hash=cache_compatibility_hash,
+            reply_language=reply_language,
         )
 
 

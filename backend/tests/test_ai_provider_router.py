@@ -5,10 +5,11 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import select
 
-from app.ai.orchestrator import run_text_turn
+from app.ai.orchestrator import _provider_unavailable_response, run_text_turn
 from app.ai.intent import classify_intent_with_metadata, is_unsafe_or_sensitive
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIProviderResponse, AIRequest
+from app.ai.types import AIRoute
 from app.database import SessionLocal
 from app.models import AIUsageEvent
 
@@ -47,6 +48,18 @@ def test_sarvam_runtime_default_is_current_model(monkeypatch):
     route = AIProviderRouter().select_route(_request("தமிழில் விளக்குங்கள்", None))
     assert route.provider == "sarvam"
     assert route.model == "sarvam-105b"
+
+
+@pytest.mark.parametrize("language", ["en", "ta", "tanglish", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"])
+def test_provider_unavailable_response_is_localized_without_provider_call(language):
+    route = AIRoute(
+        "sarvam", "sarvam-105b", "sarvam_general", "test", language,
+        "general", 220,
+    )
+    response = _provider_unavailable_response(route, "connection_error")
+    assert response.provider == "blocked"
+    assert response.text
+    assert response.text != "மன்னிக்கவும், இப்போது பதில் உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்." or language == "ta"
 
 
 def test_web_openai_only_mode_never_routes_to_sarvam(monkeypatch):

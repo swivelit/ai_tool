@@ -513,16 +513,30 @@ def _user_timezone(user: Optional[User]) -> ZoneInfo:
 
 
 def _requested_reply_language(message: str) -> Optional[str]:
+    text = str(message or "")
     language_terms = {
-        "english": "en", "en": "en", "tamil": "ta", "ta": "ta", "தமிழ்": "ta",
-        "tanglish": "tanglish", "hindi": "hi", "hi": "hi", "bengali": "bn", "bn": "bn",
-        "telugu": "te", "te": "te", "kannada": "kn", "kn": "kn", "malayalam": "ml", "ml": "ml",
-        "marathi": "mr", "mr": "mr", "gujarati": "gu", "gu": "gu", "punjabi": "pa", "pa": "pa",
-        "odia": "od", "oriya": "od", "od": "od",
+        "english": "en", "tamil": "ta", "தமிழ்": "ta", "tanglish": "tanglish",
+        "hindi": "hi", "हिन्दी": "hi", "bengali": "bn", "বাংলা": "bn",
+        "telugu": "te", "తెలుగు": "te", "kannada": "kn", "ಕನ್ನಡ": "kn",
+        "malayalam": "ml", "മലയാളം": "ml", "marathi": "mr", "मराठी": "mr",
+        "gujarati": "gu", "ગુજરાતી": "gu", "punjabi": "pa", "ਪੰਜਾਬੀ": "pa",
+        "odia": "od", "oriya": "od", "ଓଡ଼ିଆ": "od",
     }
     for term, language in language_terms.items():
-        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", message, flags=re.I):
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, flags=re.I):
             return language
+    # Two-letter codes are ambiguous in ordinary conversation ("hi" is a
+    # greeting and "ML" commonly means machine learning). Require explicit
+    # settings intent before accepting them.
+    code_pattern = r"\b(en|ta|hi|bn|te|kn|ml|mr|gu|pa|od)\b"
+    explicit = re.search(
+        rf"\b(?:set|change|switch|use)\s+(?:my\s+)?(?:reply\s+)?language\s+(?:to|as)\s*{code_pattern}"
+        rf"|\breply\s+in\s+{code_pattern}",
+        text,
+        flags=re.I,
+    )
+    if explicit:
+        return (explicit.group(1) or explicit.group(2)).lower()
     return None
 
 

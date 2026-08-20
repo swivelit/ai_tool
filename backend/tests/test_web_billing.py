@@ -353,7 +353,20 @@ def test_current_sarvam_cached_input_prices(monkeypatch):
     monkeypatch.delenv("SARVAM_PRICE_30B_CACHED_INPUT_INR_PER_1M", raising=False)
     monkeypatch.delenv("SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M", raising=False)
     assert sarvam_price("sarvam-30b", 1_000_000, 0, 1_000_000).micros == 1_500_000
-    assert sarvam_price("sarvam-105b", 1_000_000, 0, 1_000_000).micros == 2_500_000
+    assert sarvam_price("sarvam-105b", 1_000_000, 0, 1_000_000).micros == 10_980_000
+
+
+def test_current_sarvam_105b_public_prices(monkeypatch):
+    for name in (
+        "SARVAM_PRICE_105B_INPUT_INR_PER_1M",
+        "SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M",
+        "SARVAM_PRICE_105B_OUTPUT_INR_PER_1M",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    result = sarvam_price("sarvam-105b", 1_000_000, 1_000_000, 0)
+    assert result.micros == 102_480_000
+    assert result.snapshot["input_inr_per_1m"] == "29.28"
+    assert result.snapshot["output_inr_per_1m"] == "73.2"
 
 
 def test_full_and_partial_refund_reclaim_credit_without_negative_balance():

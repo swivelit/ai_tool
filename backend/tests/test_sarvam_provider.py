@@ -10,6 +10,8 @@ from app.ai.providers.sarvam_provider import (
     SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
     SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
     SarvamProvider,
+    sarvam_generation_policy,
+    sarvam_provider_output_budget,
     normalize_sarvam_stt_mode, normalize_sarvam_tts_language_code,
     resolve_sarvam_tts_voice,
 )
@@ -69,6 +71,46 @@ def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):
     assert response.provider == "sarvam"
     assert completions.calls[0]["model"] == "sarvam-30b"
     assert completions.calls[0]["messages"][1]["content"] == "வணக்கம்"
+
+
+@pytest.mark.parametrize("intent, expected_effort, expected_budget", [
+    ("simple", None, 220),
+    ("general", None, 420),
+    ("coding", "medium", 932),
+    ("complex_reasoning", "medium", 932),
+])
+def test_sarvam_105b_generation_policy_keeps_visible_budget_and_reasoning_headroom(
+    intent, expected_effort, expected_budget,
+):
+    policy = sarvam_generation_policy(intent, 220 if intent == "simple" else 420)
+    assert policy["reasoning_effort"] == expected_effort
+    assert policy["max_tokens"] == expected_budget
+    assert sarvam_provider_output_budget("sarvam", intent, 220 if intent == "simple" else 420) == expected_budget
+
+
+def test_sarvam_completion_sends_reasoning_policy(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    completions = _FakeCompletions()
+    provider = SarvamProvider(client=SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    provider.complete(
+        AIRequest(1, "Explain this algorithm", "en", "text", "sarvam-policy", {}),
+        AIRoute("sarvam", "sarvam-105b", "sarvam_coding", "test", "en", "coding", 220),
+    )
+    assert completions.calls[0]["reasoning_effort"] == "medium"
+    assert completions.calls[0]["max_tokens"] == 732
+
+
+def test_sarvam_reasoning_usage_is_retained_for_billing_accounting():
+    usage = sarvam_provider_module._extract_chat_usage({
+        "usage": {
+            "prompt_tokens": 20,
+            "output_tokens": 40,
+            "completion_tokens_details": {"reasoning_tokens": 80},
+        }
+    })
+    assert usage["input_tokens"] == 20
+    assert usage["output_tokens"] == 120
+    assert usage["reasoning_tokens"] == 80
 
 
 def test_direct_sarvam_complete_records_once_through_optional_hook(monkeypatch):

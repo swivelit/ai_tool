@@ -40,7 +40,9 @@ Allowlisted internal capability-test accounts are exempt from prepaid-wallet bil
 
 Reservations include selected-model pricing, provider instructions/messages, estimated input, maximum output, and `BILLING_RESERVE_MULTIPLIER`. Wallet and monthly-period rows are locked; external provider calls happen outside those transactions. Final charges round upward. The ledger remains append-only, corrections/refunds are compensating entries, and cumulative partial-refund reversals floor proportionally. Idempotency, webhook replay protection, stale-reservation recovery, and reconciliation behavior are unchanged.
 
-OpenAI USD costs use `USD_TO_INR_BILLING_RATE` and `OPENAI_FX_BUFFER_PERCENT`. Sarvam uses configured INR-per-million input/cached/output rates. Every `UsageCharge` stores its pricing snapshot and actual/estimated source.
+OpenAI USD costs use `USD_TO_INR_BILLING_RATE` and `OPENAI_FX_BUFFER_PERCENT`. Current Sarvam-105B requests use `SARVAM_PRICE_105B_INPUT_INR_PER_1M=29.28`, `SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M=10.98`, and `SARVAM_PRICE_105B_OUTPUT_INR_PER_1M=73.2`. Historical Sarvam-30B pricing remains available for existing model/snapshot rows and is not rewritten. Every `UsageCharge` stores its pricing snapshot and actual/estimated source.
+
+Sarvam-105B ordinary turns explicitly disable provider reasoning while retaining Swico's visible-answer budget. Coding and complex-reasoning turns use a bounded provider completion headroom for reasoning; that same provider budget is included in their reservation estimate. Reasoning content is never exposed in the public response.
 
 ## Razorpay
 
