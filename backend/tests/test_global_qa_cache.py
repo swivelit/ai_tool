@@ -33,6 +33,50 @@ def test_english_cache_row_does_not_satisfy_known_indic_language():
         scope="global",
     )
     assert not _row_lookup_safe(row, "same question", "hi", utc_now(), user_hash=None)
+
+
+@pytest.mark.parametrize("language, answer", [
+    ("en", "Photosynthesis is how plants convert light, water, and carbon dioxide into food."),
+    ("hi", "प्रकाश संश्लेषण में पौधे प्रकाश, पानी और कार्बन डाइऑक्साइड से भोजन बनाते हैं।"),
+    ("ml", "പ്രകാശസംശ്ലേഷണത്തിൽ സസ്യങ്ങൾ പ്രകാശവും വെള്ളവും കാർബൺ ഡയോക്സൈഡും ഉപയോഗിച്ച് ഭക്ഷണം നിർമ്മിക്കുന്നു."),
+    ("bn", "সালোকসংশ্লেষণে উদ্ভিদ আলো, জল ও কার্বন ডাই-অক্সাইড ব্যবহার করে খাদ্য তৈরি করে।"),
+    ("tanglish", "Photosynthesis-la plants light, water, carbon dioxide use panni food create pannum."),
+])
+def test_global_candidates_are_partitioned_by_requested_answer_language(language, answer):
+    question = "What is photosynthesis in a language-isolated cache?"
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session, 901, question, answer, "test-model", reply_language=language
+        )
+        rows = list(session.exec(select(GlobalQACache).where(
+            GlobalQACache.scope == "global",
+            GlobalQACache.canonical_question == question,
+        )).all())
+        assert len(rows) == 1
+        assert rows[0].answer_language == language
+
+
+def test_hindi_observation_does_not_mutate_english_candidate():
+    question = "What is photosynthesis in a language-isolated observation?"
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session, 902, question,
+            "Photosynthesis is how plants convert light, water, and carbon dioxide into food.",
+            "test-model", reply_language="en"
+        )
+        record_backend_openai_answer(
+            session, 903, question,
+            "प्रकाश संश्लेषण में पौधे प्रकाश, पानी और कार्बन डाइऑक्साइड से भोजन बनाते हैं।",
+            "test-model", reply_language="hi"
+        )
+        rows = list(session.exec(select(GlobalQACache).where(
+            GlobalQACache.scope == "global",
+            GlobalQACache.canonical_question == question,
+        ).order_by(GlobalQACache.answer_language)).all())
+        assert [(row.answer_language, row.answer) for row in rows] == [
+            ("en", "Photosynthesis is how plants convert light, water, and carbon dioxide into food."),
+            ("hi", "प्रकाश संश्लेषण में पौधे प्रकाश, पानी और कार्बन डाइऑक्साइड से भोजन बनाते हैं।"),
+        ]
 from app.job_queue import enqueue_global_qa_embedding_backfill
 from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, Job
 from app.ai.agents.aggregator_reflection_agent import AggregatorReflectionAgent

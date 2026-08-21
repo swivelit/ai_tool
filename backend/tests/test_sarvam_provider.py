@@ -15,6 +15,7 @@ from app.ai.providers.sarvam_provider import (
     normalize_sarvam_stt_mode, normalize_sarvam_tts_language_code,
     resolve_sarvam_tts_voice,
 )
+from app.ai.language import resolve_web_stt_mode
 from app.ai.types import AIRequest, AIRoute
 
 
@@ -34,6 +35,19 @@ class _BlankCompletions:
 
 def test_tanglish_uses_tamil_compatible_tts_language():
     assert normalize_sarvam_tts_language_code("tanglish") == "ta-IN"
+
+
+@pytest.mark.parametrize("reply_language, expected", [
+    ("tanglish", "translit"), ("ta", "transcribe"), ("hi", "transcribe"),
+    ("ml", "transcribe"), ("en", "transcribe"),
+])
+def test_website_stt_mode_follows_reply_output_without_locking_input_language(reply_language, expected):
+    assert resolve_web_stt_mode(reply_language, "translit") == expected
+
+
+def test_website_stt_mode_keeps_auto_detect_fallback_config_only_without_language():
+    assert resolve_web_stt_mode(None, "translit") == "translit"
+    assert resolve_web_stt_mode(None, "invalid") == "transcribe"
 
 
 @pytest.mark.parametrize("reply_language, expected", [
@@ -98,6 +112,23 @@ def test_sarvam_completion_sends_reasoning_policy(monkeypatch):
     )
     assert completions.calls[0]["reasoning_effort"] == "medium"
     assert completions.calls[0]["max_tokens"] == 732
+
+
+@pytest.mark.parametrize("intent, visible", [
+    ("simple", 220), ("general", 420), ("coding", 4000),
+    ("complex_reasoning", 5000),
+])
+def test_sarvam_105b_provider_budget_respects_specific_cap(monkeypatch, intent, visible):
+    monkeypatch.setenv("SARVAM_CHAT_MAX_TOKENS", "4096")
+    policy = sarvam_generation_policy(intent, visible, model="sarvam-105b")
+    assert 1 <= policy["max_tokens"] <= 4096
+    assert sarvam_provider_output_budget("sarvam", intent, visible, model="sarvam-105b") == policy["max_tokens"]
+
+
+def test_sarvam_reasoning_degrades_when_cap_leaves_no_headroom(monkeypatch):
+    monkeypatch.setenv("SARVAM_CHAT_MAX_TOKENS", "4096")
+    policy = sarvam_generation_policy("coding", 4090, model="sarvam-105b")
+    assert policy == {"reasoning_effort": None, "max_tokens": 4096}
 
 
 def test_sarvam_reasoning_usage_is_retained_for_billing_accounting():

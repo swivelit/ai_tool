@@ -158,6 +158,20 @@ def _sarvam_finish_metadata(raw: Any) -> dict[str, Any]:
 
 
 _SARVAM_REASONING_INTENTS = frozenset({"coding", "complex_reasoning"})
+SARVAM_CHAT_MAX_TOKENS_DEFAULT = 4096
+
+
+def sarvam_chat_max_tokens() -> int:
+    """Return the bounded Sarvam provider-plan ceiling.
+
+    Invalid runtime overrides fail safe to the Starter ceiling. Production
+    configuration validation reports the bad variable before startup.
+    """
+    try:
+        configured = int(str(os.getenv("SARVAM_CHAT_MAX_TOKENS", "4096")).strip())
+    except (TypeError, ValueError):
+        configured = SARVAM_CHAT_MAX_TOKENS_DEFAULT
+    return max(1, min(128_000, configured))
 
 
 def sarvam_generation_policy(
@@ -172,11 +186,20 @@ def sarvam_generation_policy(
     explicitly disable reasoning; only the bounded reasoning intents receive
     extra provider headroom, which is also used by the reservation path.
     """
-    visible = max(1, int(visible_output_tokens or 1))
+    cap = sarvam_chat_max_tokens() if "105" in str(model or "").lower() else max(
+        1, int(visible_output_tokens or 1)
+    )
+    visible = min(cap, max(1, int(visible_output_tokens or 1)))
     if "105" in str(model or "").lower() and str(intent or "").strip().lower() in _SARVAM_REASONING_INTENTS:
+        requested = max(visible + 512, visible * 2)
+        provider_budget = min(cap, requested)
+        # If the plan ceiling leaves no meaningful reasoning headroom, turn
+        # reasoning off and preserve the largest valid visible-answer budget.
+        if provider_budget <= visible + 128:
+            return {"reasoning_effort": None, "max_tokens": provider_budget}
         return {
             "reasoning_effort": "medium",
-            "max_tokens": max(visible + 512, visible * 2),
+            "max_tokens": provider_budget,
         }
     return {"reasoning_effort": None, "max_tokens": visible}
 

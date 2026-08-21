@@ -107,6 +107,7 @@ Embedding controls: `AI_EMBEDDINGS_ON_EVERY_TURN`,
 `AI_EMBED_POST_RESPONSE_ASYNC`, `AI_EMBED_POST_RESPONSE_BATCH`.
 
 Sarvam defaults: `SARVAM_CHAT_MODEL`, `SARVAM_CHAT_MODEL_REASONING`,
+`SARVAM_CHAT_MAX_TOKENS` (Starter 4096; Pro 16384; Business 128000),
 `SARVAM_STT_MODEL`, `SARVAM_STT_MODE`, `SARVAM_TTS_MODEL`,
 `SARVAM_TTS_MODEL_PREMIUM`, `SARVAM_TTS_SPEAKER`,
 `SARVAM_DAILY_BUDGET_INR`.
@@ -116,6 +117,11 @@ New runtime chat requests use `sarvam-105b`. Its current billing rates are
 `SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M=10.98`, and
 `SARVAM_PRICE_105B_OUTPUT_INR_PER_1M=73.2`. The 30B rates remain available
 only for historical model and pricing snapshots.
+
+Website microphone input remains provider auto-detected. `WEB_STT_MODE` is a
+validated fallback: the website resolver uses `translit` only for a saved
+Tanglish reply preference and uses `transcribe` for every other supported web
+reply language. It never uses the reply preference as an input-language lock.
 
 ## Cost Controls
 

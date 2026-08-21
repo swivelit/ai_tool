@@ -317,6 +317,11 @@ The default tests, CI, startup, and deployment never run a live provider call.
 An operator may deliberately run this billable interoperability check from
 `backend/`:
 
+The `--language` choices are the website reply-language set: `en`, `ta`,
+`tanglish`, `hi`, `bn`, `te`, `kn`, `ml`, `mr`, `gu`, `pa`, and `od`. STT
+probes always request provider auto-detection; the language selects only the
+TTS probe text and output voice path.
+
 ```bash
 ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode stt --language en
 ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode tts --language en --output-codec mp3 --sample-rate 24000 --validate-audio

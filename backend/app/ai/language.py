@@ -33,6 +33,23 @@ WEB_REPLY_LANGUAGE_SCRIPT_LABELS = {
     "gu": "Gujarati script", "pa": "Gurmukhi script", "od": "Odia script",
 }
 
+
+def resolve_web_stt_mode(reply_language: Optional[str], configured_mode: Optional[str] = None) -> str:
+    """Choose the website STT representation without locking input language.
+
+    The reply preference controls output.  Only Tanglish asks Sarvam for a
+    Romanized transcript; every native-script reply language keeps the
+    provider's normal transcription output.  The configured mode is retained
+    only as a compatibility fallback when no valid reply preference exists.
+    """
+    language = normalize_web_reply_language(reply_language)
+    if language == "tanglish":
+        return "translit"
+    if language in WEB_REPLY_LANGUAGES:
+        return "transcribe"
+    configured = str(configured_mode or "transcribe").strip().lower()
+    return configured if configured in {"transcribe", "translit"} else "transcribe"
+
 # Provider failures are deterministic product copy, not translation jobs. Keep
 # one safe message per supported web reply language so an outage never causes a
 # provider call or an unrelated Tamil fallback.

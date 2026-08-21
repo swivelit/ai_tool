@@ -155,6 +155,8 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
         ({"WEB_TTS_MAX_CHARACTERS": "0"}, "WEB_TTS_MAX_CHARACTERS"),
         ({"WEB_AUDIO_MAX_SECONDS": "31"}, "WEB_AUDIO_MAX_SECONDS"),
         ({"WEB_STT_MODE": "unsupported"}, "WEB_STT_MODE"),
+        ({"SARVAM_CHAT_MAX_TOKENS": "0"}, "SARVAM_CHAT_MAX_TOKENS"),
+        ({"SARVAM_CHAT_MAX_TOKENS": "128001"}, "SARVAM_CHAT_MAX_TOKENS"),
         ({"WEB_STT_RATE_LIMIT_PER_MINUTE": "many"}, "WEB_STT_RATE_LIMIT_PER_MINUTE"),
         ({"WEB_REALTIME_VOICE_ENABLED": "sometimes"}, "WEB_REALTIME_VOICE_ENABLED"),
         ({"WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED": "sometimes"}, "WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED"),

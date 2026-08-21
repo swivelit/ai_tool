@@ -109,7 +109,13 @@ def transcript_appears_unfinished(transcript: str, language: str) -> bool:
         return False
     if str(language).lower().startswith("ta") or str(language).lower() == "tanglish":
         return bool(_TA_CONTINUATIONS.search(cleaned))
-    return bool(_EN_CONTINUATIONS.search(cleaned))
+    if str(language).lower().startswith("en"):
+        return bool(_EN_CONTINUATIONS.search(cleaned))
+    # For languages without a maintained continuation lexicon, rely on the
+    # provider's final state, VAD, punctuation/stability, and the bounded
+    # endpoint timer.  Applying English conjunctions to another script can
+    # keep a completed utterance open indefinitely.
+    return False
 
 
 def endpoint_delay_ms(transcript: str, language: str, config: VoiceEndpointConfig) -> int:

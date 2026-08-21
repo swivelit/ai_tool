@@ -42,7 +42,7 @@ Reservations include selected-model pricing, provider instructions/messages, est
 
 OpenAI USD costs use `USD_TO_INR_BILLING_RATE` and `OPENAI_FX_BUFFER_PERCENT`. Current Sarvam-105B requests use `SARVAM_PRICE_105B_INPUT_INR_PER_1M=29.28`, `SARVAM_PRICE_105B_CACHED_INPUT_INR_PER_1M=10.98`, and `SARVAM_PRICE_105B_OUTPUT_INR_PER_1M=73.2`. Historical Sarvam-30B pricing remains available for existing model/snapshot rows and is not rewritten. Every `UsageCharge` stores its pricing snapshot and actual/estimated source.
 
-Sarvam-105B ordinary turns explicitly disable provider reasoning while retaining Swico's visible-answer budget. Coding and complex-reasoning turns use a bounded provider completion headroom for reasoning; that same provider budget is included in their reservation estimate. Reasoning content is never exposed in the public response.
+Sarvam-105B ordinary turns explicitly disable provider reasoning while retaining Swico's visible-answer budget. Coding and complex-reasoning turns use a bounded provider completion headroom for reasoning; that same provider budget is included in their reservation estimate. `SARVAM_CHAT_MAX_TOKENS` is the Sarvam-specific plan ceiling: Starter 4096, Pro 16384, and Business 128000; the production default is 4096. Reasoning content is never exposed in the public response.
 
 ## Razorpay
 

@@ -76,7 +76,7 @@ def test_web_stt_uses_translit_mode_and_does_not_use_reply_language_as_input_lan
     )
     assert response.status_code == 200
     assert calls and calls[0][0][2] is None
-    assert calls[0][1]["mode"] == "translit"
+    assert calls[0][1]["mode"] == "transcribe"
 
 
 def test_raw_audio_is_removed_after_success(client, monkeypatch):

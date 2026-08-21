@@ -6,7 +6,11 @@ import os
 import re
 from typing import Mapping
 
-from ..ai.language import resolve_web_reply_language
+from ..ai.language import (
+    WEB_REPLY_LANGUAGE_CODES,
+    localized_web_deterministic_text,
+    resolve_web_reply_language,
+)
 
 
 SWICO_PUBLIC_PROFILE_VERSION = "2026-07-v1"
@@ -430,6 +434,32 @@ _LOCALIZED_SUBINTENT_RESPONSES: dict[str, dict[SwicoBrandSubintent, str]] = {
 }
 
 
+def _complete_localized_subintent_templates() -> None:
+    """Ensure every supported output language has a safe deterministic entry.
+
+    Some sub-intents intentionally share the short public-profile wording in
+    the language pack.  They remain separate classifier outcomes, and this
+    bounded fill prevents a missing translation from silently selecting the
+    English template.
+    """
+    for language in WEB_REPLY_LANGUAGE_CODES:
+        if language in {"en", "ta", "tanglish"}:
+            continue
+        templates = _LOCALIZED_SUBINTENT_RESPONSES.setdefault(language, {})
+        for subintent in SwicoBrandSubintent:
+            templates.setdefault(
+                subintent,
+                localized_web_deterministic_text(
+                    language,
+                    "swico_brand",
+                    "Swico es un asistente de IA de Swivel Technologies.",
+                ),
+            )
+
+
+_complete_localized_subintent_templates()
+
+
 _PRODUCT_REFERENCE_RE = re.compile(
     r"(?:\bswico\b|\bswivel\s+technologies\b|\bjeyanth\b|ஸ்விகோ|சுவிகோ|ஸ்விவல்)", re.I
 )
@@ -481,6 +511,53 @@ _BRAND_QUESTION_FRAME_RE = re.compile(
     r")",
     re.I,
 )
+_NATIVE_BRAND_QUESTION_RE = re.compile(
+    r"(?:क्या\s+(?:है|होता\s+है)|क्यों|কী|কি|"
+    r"అంటే\s+ఏమిటి|ఏమిటి|ఎవరు|"
+    r"ಎಂದರೇನು|ಏನು|"
+    r"എന്താണ്|എന്ത്|"
+    r"म्हणजे\s+काय|काय\s+आहे|"
+    r"શું\s+છે|શું|"
+    r"ਕੀ\s+ਹੈ|ਕੀ|"
+    r"କଣ|କଣ\s+ଅଟେ)",
+    re.IGNORECASE,
+)
+_NATIVE_BRAND_SUBINTENT_PATTERNS: tuple[tuple[SwicoBrandSubintent, re.Pattern[str]], ...] = (
+    (SwicoBrandSubintent.COMPANY, re.compile(
+        r"कंपनी|संस्था|কোম্পানি|প্রতিষ্ঠান|కంపెనీ|సంస్థ|ಕಂಪನಿ|ಸಂಸ್ಥೆ|കമ്പനി|സ്ഥാപനം|"
+        r"कंपनी|संस्था|કંપની|ਸੰਸਥਾ|କମ୍ପାନୀ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.LEADERSHIP, re.compile(
+        r"नेतृत्व|नेता|নেতৃত্ব|నాయకత్వం|నాయకుడు|ನಾಯಕತ್ವ|നേതൃത്വം|नेतृत्व|નેતૃત્વ|ਨੇਤ੍ਰਿਤਵ|ନେତୃତ୍ୱ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.CAPABILITIES, re.compile(
+        r"क्षमता|सुविधा|ক্ষমতা|সুবিধা|సామర్థ్య|సౌకర్య|ಸಾಮರ್ಥ್ಯ|ಸೌಲಭ್ಯ|കഴിവ്|സൗകര്യം|क्षमता|સુવિધા|ਸਮਰੱਥਾ|ସାମର୍ଥ୍ୟ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.DOCUMENTS, re.compile(
+        r"दस्तावेज|फ़ाइल|নথি|ফাইল|పత్ర|ఫైల్|ದಾಖಲೆ|ಫೈಲ್|രേഖ|ഫയൽ|दस्तऐवज|ફાઇલ|ਦਸਤਾਵੇਜ਼|ଦଲିଲ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.VOICE, re.compile(
+        r"आवाज़|वॉइस|ভয়েস|কণ্ঠ|వాయిస్|ధ్వని|ವಾಯ್ಸ್|ಧ್ವನಿ|ശബ്ദം|आवाज|आવाज़|ਆਵਾਜ਼|ସ୍ୱର", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.MULTILINGUAL, re.compile(
+        r"बहुभाषी|भाषाओं|বহুভাষা|ভাষায়|బహుభాషా|భాషల్లో|ಬಹುಭಾಷಾ|ಭಾಷೆಗಳಲ್ಲಿ|പലഭാഷ|ഭാഷകളിൽ|बहुभाषिक|બહુભાષી|ਬਹੁਭਾਸ਼ੀ|ବହୁଭାଷୀ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.BILLING, re.compile(
+        r"बिलिंग|क्रेडिट|भुगतान|বিলিং|ক্রেডিট|পেমেন্ট|బిల్లింగ్|క్రెడిట్|చెల్లింపు|ಬಿಲ್ಲಿಂಗ್|ಕ್ರೆಡಿಟ್|പണമടയ്ക്ക|ബില്ലിംഗ്|क्रेडिट|बिलिंग|ક્રેડિટ|ਬਿਲਿੰਗ|କ୍ରେଡିଟ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.PRIVACY, re.compile(
+        r"गोपनीयता|निजता|গোপনীয়তা|গোপনীয়তা|గోప్యత|ಗೌಪ್ಯತೆ|സ്വകാര്യത|गोपनीयता|ગોપનીયતા|ਗੋਪਨੀਯਤਾ|ଗୋପନୀୟତା", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.SECURITY, re.compile(
+        r"सुरक्षा|নিরাপত্তা|భద్రత|ಭದ್ರತೆ|സുരക്ഷ|सुरक्षित|સુરક્ષા|ਸੁਰੱਖਿਆ|ସୁରକ୍ଷା", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.PURPOSE, re.compile(
+        r"उद्देश्य|मकसद|লক্ষ্য|উদ্দেশ্য|లక్ష్యం|ఉద్దేశ్యం|ಉದ್ದೇಶ|ലക്ഷ്യം|ध्येय|હેતુ|ਮਕਸਦ|ଉଦ୍ଦେଶ୍ୟ", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.COMPARISON, re.compile(
+        r"तुलना|বনাম|তুলনা|తులన|ಹೋಲಿಕೆ|താരതമ്യം|तुलना|સરખામણી|ਤੁਲਨਾ|ତୁଳନା", re.IGNORECASE,
+    )),
+)
 
 
 def swico_brand_guard_enabled() -> bool:
@@ -518,7 +595,11 @@ def classify_swico_brand_query(
     self_reference = bool(_SELF_REFERENCE_RE.search(classified_text))
     product_reference = bool(_PRODUCT_REFERENCE_RE.search(payload_free) or vocative)
     frame_text = f"swico {payload_free}" if vocative else payload_free
-    aboutness = bool(_BRAND_QUESTION_FRAME_RE.search(frame_text))
+    aboutness = bool(
+        _BRAND_QUESTION_FRAME_RE.search(frame_text)
+        or _NATIVE_BRAND_QUESTION_RE.search(frame_text)
+        or any(pattern.search(frame_text) for _, pattern in _NATIVE_BRAND_SUBINTENT_PATTERNS)
+    )
     explicit = bool(self_reference or (product_reference and aboutness))
     if validation_payload and not product_reference and not self_reference:
         explicit = False
@@ -552,7 +633,17 @@ def swico_brand_response(
 
 def public_swico_response_templates() -> tuple[str, ...]:
     """Return the bounded public templates for repository regression checks."""
-    return tuple(_ENGLISH_RESPONSES.values()) + tuple(_TAMIL_RESPONSES.values()) + tuple(_TANGLISH_RESPONSES.values())
+    localized = tuple(
+        text
+        for templates in _LOCALIZED_SUBINTENT_RESPONSES.values()
+        for text in templates.values()
+    )
+    return (
+        tuple(_ENGLISH_RESPONSES.values())
+        + tuple(_TAMIL_RESPONSES.values())
+        + tuple(_TANGLISH_RESPONSES.values())
+        + localized
+    )
 
 
 def validate_swico_public_response(text: str) -> str:
@@ -564,6 +655,11 @@ def validate_swico_public_response(text: str) -> str:
 
 def _select_subintent(text: str) -> SwicoBrandSubintent:
     lowered = text.casefold()
+    for subintent, pattern in _NATIVE_BRAND_SUBINTENT_PATTERNS:
+        if pattern.search(text):
+            return subintent
+    if _NATIVE_BRAND_QUESTION_RE.search(text):
+        return SwicoBrandSubintent.ABOUT
     public_profile_parts = sum((
         bool(
             re.search(r"\b(?:what is|who are you|what are you|identity)\b", lowered)

@@ -73,7 +73,7 @@ from ..ai.providers.sarvam_provider import (
 )
 from ..ai.language import (
     WEB_REPLY_LANGUAGES, is_supported_web_reply_language,
-    normalize_web_reply_language,
+    normalize_web_reply_language, resolve_web_stt_mode,
 )
 from ..ai.providers.sarvam_streaming_provider import (
     SarvamStreamingError, SarvamStreamingProvider, sarvam_tts_output_codec,
@@ -799,9 +799,9 @@ def _resolved_reply_language(user) -> str:
     return normalized
 
 
-def _web_stt_mode() -> str:
+def _web_stt_mode(reply_language: str | None = None) -> str:
     value = str(os.getenv("WEB_STT_MODE", "translit") or "translit").strip().lower()
-    return value if value in {"transcribe", "translit"} else "translit"
+    return resolve_web_stt_mode(reply_language, value)
 
 
 def _owned_thread(session: Session, user_id: int, thread_id: str) -> WebChatThread:
@@ -1128,7 +1128,7 @@ def create_voice_session(
         playback_mode=playback["playback_mode"], output_codec=playback["output_codec"],
         sample_rate=playback["sample_rate"],
         media_source_allowed=playback["media_source_allowed"],
-        stt_language="unknown", stt_mode=_web_stt_mode(),
+        stt_language="unknown", stt_mode=_web_stt_mode(language),
     )
     try:
         ticket = _tickets().mint(metadata, ttl, max_session)
@@ -1159,7 +1159,7 @@ def create_voice_session(
         "tier_label": SWICO_TIER_LABELS[tier],
         "language": language,
         "stt_language": "unknown",
-        "stt_mode": _web_stt_mode(),
+        "stt_mode": _web_stt_mode(language),
         "playback_mode": playback["playback_mode"],
         "selected_codec": playback["output_codec"],
         "provider_sample_rate": playback["sample_rate"] if playback["output_codec"] == "linear16" else None,
@@ -3611,7 +3611,7 @@ async def transcribe_web_audio(
             None,
             content_type=content_type,
             filename=f"recording{extension}",
-            mode=_web_stt_mode(),
+            mode=_web_stt_mode(_resolved_reply_language(user)),
         )
         if billing_exempt:
             charge = settle_billing_exempt_usage(

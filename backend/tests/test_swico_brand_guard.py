@@ -490,6 +490,17 @@ def test_brand_log_metadata_contains_no_raw_question_or_profile(caplog, client):
 
 def test_all_brand_templates_validate_without_restricted_terms():
     for subintent in SwicoBrandSubintent:
-        for language in ("en", "ta"):
+        for language in ("en", "ta", "tanglish", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"):
             text = swico_brand_response(subintent, reply_language=language)
             assert text == validate_swico_public_response(text)
+
+
+@pytest.mark.parametrize("question", [
+    "Swico क्या है?", "Swico কী?", "Swico అంటే ఏమిటి?", "Swico ಎಂದರೇನು?",
+    "Swico എന്താണ്?", "Swico म्हणजे काय?", "Swico શું છે?", "Swico ਕੀ ਹੈ?",
+    "Swico କଣ?",
+])
+def test_native_language_swico_identity_questions_use_deterministic_brand_route(question):
+    match = classify_swico_brand_query(question)
+    assert match is not None
+    assert match.subintent == SwicoBrandSubintent.ABOUT

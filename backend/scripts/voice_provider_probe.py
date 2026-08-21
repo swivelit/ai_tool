@@ -30,10 +30,27 @@ from app.ai.providers.sarvam_streaming_provider import (
     SarvamStreamingProvider,
     sarvam_stt_message_encoding,
 )
+from app.ai.language import WEB_REPLY_LANGUAGE_CODES
+from app.ai.providers.sarvam_provider import normalize_sarvam_tts_language_code
 
 FRAME_SAMPLES = 512
 FRAME_BYTES = FRAME_SAMPLES * 2
 MAX_AUDIO_SECONDS = 5
+VOICE_PROBE_LANGUAGES = tuple(WEB_REPLY_LANGUAGE_CODES)
+_PROBE_SENTENCES = {
+    "en": "This is a fixed Swico voice readiness test.",
+    "ta": "இது Swico குரல் சோதனை.",
+    "tanglish": "Idhu Swico voice test.",
+    "hi": "यह Swico की आवाज़ जाँच है।",
+    "bn": "এটি Swico কণ্ঠস্বর পরীক্ষা।",
+    "te": "ఇది Swico వాయిస్ పరీక్ష.",
+    "kn": "ಇದು Swico ಧ್ವನಿ ಪರೀಕ್ಷೆ.",
+    "ml": "ഇത് Swico ശബ്ദ പരിശോധനയാണ്.",
+    "mr": "ही Swico आवाज चाचणी आहे.",
+    "gu": "આ Swico અવાજ પરીક્ષણ છે.",
+    "pa": "ਇਹ Swico ਆਵਾਜ਼ ਜਾਂਚ ਹੈ।",
+    "od": "ଏହା Swico ସ୍ୱର ପରୀକ୍ଷା।",
+}
 
 
 @dataclass(frozen=True)
@@ -55,7 +72,7 @@ def _allowed() -> bool:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Opt-in Sarvam voice protocol probe")
     parser.add_argument("--mode", required=True, choices=("stt", "tts", "both"))
-    parser.add_argument("--language", required=True, choices=("en", "ta"))
+    parser.add_argument("--language", required=True, choices=VOICE_PROBE_LANGUAGES)
     parser.add_argument("--payload-encoding", choices=("audio/wav", "pcm_s16le"))
     parser.add_argument("--audio-file", type=Path)
     parser.add_argument("--output-codec", choices=("mp3", "linear16"), default="mp3")
@@ -155,7 +172,9 @@ async def _probe_stt(provider: SarvamStreamingProvider, options: ProbeOptions) -
         "provider_close_code": None, "classification": "not_started",
     }
     try:
-        await provider.connect_stt(options.language)
+        # STT is an input-language detection probe; the reply/TTS language
+        # selected for this run must not constrain microphone recognition.
+        await provider.connect_stt("unknown")
         result["handshake_succeeded"] = True
         pcm = _operator_pcm(options.audio_file) if options.audio_file else _synthetic_pcm()
         for frame in _frames(pcm):
@@ -208,11 +227,11 @@ async def _probe_tts(provider: SarvamStreamingProvider, options: ProbeOptions) -
     }
     try:
         await provider.connect_tts(
-            options.language, output_codec=options.output_codec,
+            normalize_sarvam_tts_language_code(options.language), output_codec=options.output_codec,
             sample_rate=options.sample_rate,
         )
         result["config_sent"] = True
-        sentence = "This is a fixed Swico provider readiness test."
+        sentence = _PROBE_SENTENCES[options.language]
         await provider.send_tts_text(sentence)
         result["text_sent"] = True
         await provider.flush_tts()

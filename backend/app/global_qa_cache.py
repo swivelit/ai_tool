@@ -1604,7 +1604,13 @@ def _topic_from_question(question: str) -> Optional[str]:
     return tokens[0] if tokens else None
 
 
-def _find_candidate(session: Session, normalized_question: str, query_bundle: Dict[str, Any]) -> Tuple[Optional[GlobalQACache], float]:
+def _find_candidate(
+    session: Session,
+    normalized_question: str,
+    query_bundle: Dict[str, Any],
+    answer_language: Optional[str] = None,
+) -> Tuple[Optional[GlobalQACache], float]:
+    requested_language = _answer_language(answer_language) or "en"
     rows = list(
         session.exec(
             select(GlobalQACache)
@@ -1617,6 +1623,12 @@ def _find_candidate(session: Session, normalized_question: str, query_bundle: Di
     best_score = 0.0
     for row in rows:
         if not _not_expired(row):
+            continue
+        # Candidate promotion is language-partitioned.  Legacy rows without
+        # an answer language are treated as English by _row_lookup_safe's
+        # compatibility rule and therefore cannot absorb a non-English turn.
+        row_language = _answer_language(getattr(row, "answer_language", None)) or "en"
+        if row_language != requested_language:
             continue
         score = _score_row_against_query(row, normalized_question, query_bundle)
         if score > best_score:
@@ -1866,7 +1878,10 @@ def _record_backend_openai_answer_impl(
             answer_language=_answer_language(reply_language),
         )
 
-    candidate, similarity = _find_candidate(session, normalized, embedding_bundle)
+    answer_language = _infer_answer_language(answer, reply_language)
+    candidate, similarity = _find_candidate(
+        session, normalized, embedding_bundle, answer_language
+    )
     if candidate is None:
         candidate = GlobalQACache(
             scope=_GLOBAL_SCOPE,
@@ -1874,7 +1889,7 @@ def _record_backend_openai_answer_impl(
             canonical_question=canonical_question,
             normalized_question=normalized,
             answer=redact_sensitive_text(answer),
-            answer_language=_infer_answer_language(answer, reply_language),
+            answer_language=answer_language,
             topic=_topic_from_question(question),
             status="candidate",
             hit_count=1,
@@ -1935,7 +1950,7 @@ def _record_backend_openai_answer_impl(
         if not answer_conflict and (not candidate.answer or candidate.status == "candidate"):
             candidate.answer = redact_sensitive_text(answer)
             candidate.answer_hash = a_hash
-            candidate.answer_language = _infer_answer_language(answer, reply_language)
+            candidate.answer_language = answer_language
             candidate.model_used = model_used or candidate.model_used
         if answer_conflict:
             existing_notes = str(candidate.review_notes or "").strip()

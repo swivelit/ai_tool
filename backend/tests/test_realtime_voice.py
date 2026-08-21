@@ -84,7 +84,7 @@ def test_voice_session_requires_auth_and_uses_saved_tier_language(client, monkey
     assert "user" not in body["websocket_url"]
     assert "ticket" not in body["websocket_url"]
     assert body["stt_language"] == "unknown"
-    assert body["stt_mode"] == "translit"
+    assert body["stt_mode"] == "transcribe"
 
 
 def test_auto_session_accepts_only_bounded_capabilities(client, monkeypatch):
@@ -589,6 +589,8 @@ def test_pause_aware_endpointing_english_tamil_punctuation_and_segments():
     assert endpoint_delay_ms("நான் நினைத்தேன் ஆனால்", "ta", config) == 1550
     assert transcript_appears_unfinished("Finished?", "en") is False
     assert transcript_appears_unfinished("இது முடிந்தது.", "ta") is False
+    assert transcript_appears_unfinished("यह पूरा है और", "hi") is False
+    assert transcript_appears_unfinished("ഇത് പൂർത്തിയായി and", "ml") is False
     assert join_final_segments(["one", "two words", ""]) == "one two words"
     assert min(300, endpoint_delay_ms("brief pause", "en", config)) == 300
 

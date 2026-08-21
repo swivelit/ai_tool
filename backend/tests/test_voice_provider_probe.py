@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from scripts import voice_provider_probe
+from app.ai.language import WEB_REPLY_LANGUAGE_CODES
 
 
 def test_live_voice_probe_refuses_to_run_without_explicit_opt_in(monkeypatch, capsys):
@@ -26,6 +27,15 @@ def test_live_voice_probe_requires_provider_key_after_opt_in(monkeypatch, capsys
     monkeypatch.delenv("SARVAM_API_KEY", raising=False)
     assert voice_provider_probe.main(["--mode", "stt", "--language", "en"]) == 2
     assert "SARVAM_API_KEY" in capsys.readouterr().err
+
+
+def test_probe_accepts_all_supported_web_languages_and_uses_safe_tts_mapping():
+    assert tuple(voice_provider_probe._parser().parse_args(
+        ["--mode", "tts", "--language", "ml"]
+    ).language for _ in [0]) == ("ml",)
+    assert voice_provider_probe.VOICE_PROBE_LANGUAGES == WEB_REPLY_LANGUAGE_CODES
+    assert voice_provider_probe.normalize_sarvam_tts_language_code("tanglish") == "ta-IN"
+    assert voice_provider_probe.normalize_sarvam_tts_language_code("hi") == "hi-IN"
 
 
 class FakeProvider:
