@@ -8,7 +8,6 @@ from typing import Mapping
 
 from ..ai.language import (
     WEB_REPLY_LANGUAGE_CODES,
-    localized_web_deterministic_text,
     resolve_web_reply_language,
 )
 
@@ -434,30 +433,197 @@ _LOCALIZED_SUBINTENT_RESPONSES: dict[str, dict[SwicoBrandSubintent, str]] = {
 }
 
 
-def _complete_localized_subintent_templates() -> None:
-    """Ensure every supported output language has a safe deterministic entry.
+_LOCALIZED_SUBINTENT_COMPLETIONS: dict[str, dict[SwicoBrandSubintent, str]] = {
+    "hi": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico, Swivel Technologies का AI सहायक है, जिसे CEO Jeyanth के नेतृत्व में बनाया गया है।",
+        SwicoBrandSubintent.IDENTITY: "मैं Swico हूँ, Swivel Technologies का AI सहायक।",
+        SwicoBrandSubintent.ABOUT: "Swico voice और text बातचीत, multilingual सहायता और document analysis वाला AI सहायक है।",
+        SwicoBrandSubintent.CREATOR: "Swico को CEO Jeyanth के नेतृत्व में बनाया गया और Swivel Technologies ने विकसित किया।",
+        SwicoBrandSubintent.TEXT: "Swico text बातचीत में सवालों, लेखन, summaries, planning और research में मदद करता है।",
+        SwicoBrandSubintent.CONTEXT: "Swico बातचीत का context बनाए रखकर आगे के जवाबों को अधिक relevant बनाता है।",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context और intelligent routing का उपयोग करता है।",
+        SwicoBrandSubintent.AGENTS: "Swico के agents relevant context चुनकर requests को व्यवस्थित ढंग से संभालते हैं।",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context और routing से अनावश्यक token usage कम करने की कोशिश करता है।",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language और speech processing, secure cloud infrastructure और agent-based processing को जोड़ता है।",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing और intelligent routing का उपयोग करता है; सार्वजनिक जवाबों में किसी internal provider का नाम आवश्यक नहीं है।",
+        SwicoBrandSubintent.CREDITS: "Swico में AI usage credits खरीदे और उपयोग के अनुसार track किए जा सकते हैं।",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking से इस्तेमाल और उपलब्ध usage capacity को समझना आसान होता है।",
+        SwicoBrandSubintent.SCALABILITY: "Swico scalable cloud deployment के लिए बनाया गया है ताकि बढ़ते उपयोग को संभाला जा सके।",
+        SwicoBrandSubintent.UPDATES: "Swico को नई capabilities और improvements के साथ नियमित रूप से update किया जाता है।",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologies का AI सहायक है, जिसका उद्देश्य उपयोगी AI को practical और accessible बनाना है।",
+    },
+    "bn": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico হলো Swivel Technologies-এর AI সহকারী, যা CEO Jeyanth-এর নেতৃত্বে তৈরি হয়েছে।",
+        SwicoBrandSubintent.IDENTITY: "আমি Swico, Swivel Technologies-এর AI সহকারী।",
+        SwicoBrandSubintent.ABOUT: "Swico voice ও text কথোপকথন, বহু-ভাষা সহায়তা এবং নথি বিশ্লেষণ করে।",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth-এর নেতৃত্বে Swico তৈরি হয়েছে এবং Swivel Technologies এটি বিকশিত করেছে।",
+        SwicoBrandSubintent.TEXT: "Swico text কথোপকথনে প্রশ্ন, লেখা, summary, planning ও research-এ সাহায্য করে।",
+        SwicoBrandSubintent.CONTEXT: "Swico কথোপকথনের context ধরে রেখে পরের উত্তরকে আরও প্রাসঙ্গিক করে।",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context এবং intelligent routing ব্যবহার করে।",
+        SwicoBrandSubintent.AGENTS: "Swico-এর agents প্রয়োজনীয় context বেছে নিয়ে request গুছিয়ে পরিচালনা করে।",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context এবং routing ব্যবহার করে অপ্রয়োজনীয় token usage কমায়।",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language ও speech processing, secure cloud infrastructure এবং agent-based processing একত্র করে।",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing এবং intelligent routing ব্যবহার করে; public response-এ internal provider-এর নাম প্রকাশ করা হয় না।",
+        SwicoBrandSubintent.CREDITS: "Swico-তে AI usage credits কেনা যায় এবং ব্যবহারের সঙ্গে তা track করা যায়।",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ব্যবহার ও অবশিষ্ট usage capacity বোঝাতে সাহায্য করে।",
+        SwicoBrandSubintent.SCALABILITY: "বাড়তে থাকা ব্যবহার নির্ভরযোগ্যভাবে সামলাতে Swico scalable cloud deployment-এর জন্য তৈরি।",
+        SwicoBrandSubintent.UPDATES: "নতুন capability ও উন্নতির সঙ্গে Swico নিয়মিত update হয়।",
+        SwicoBrandSubintent.GENERAL: "Swico হলো Swivel Technologies-এর AI সহকারী, যার লক্ষ্য ব্যবহারযোগ্য AI-কে practical ও accessible করা।",
+    },
+    "te": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico అనేది Swivel Technologies యొక్క AI సహాయకుడు; దీనిని CEO Jeyanth నాయకత్వంలో రూపొందించారు.",
+        SwicoBrandSubintent.IDENTITY: "నేను Swico, Swivel Technologies రూపొందించిన AI సహాయకుడిని.",
+        SwicoBrandSubintent.ABOUT: "Swico voice మరియు text సంభాషణలు, బహుభాషా సహాయం మరియు డాక్యుమెంట్ విశ్లేషణ అందిస్తుంది.",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth నాయకత్వంలో Swico రూపొందించబడింది మరియు Swivel Technologies అభివృద్ధి చేసింది.",
+        SwicoBrandSubintent.TEXT: "Swico text సంభాషణల్లో ప్రశ్నలు, రచన, summaries, planning మరియు researchలో సహాయపడుతుంది.",
+        SwicoBrandSubintent.CONTEXT: "Swico సంభాషణ contextను గుర్తుంచుకుని తదుపరి సమాధానాలను మరింత సందర్భోచితంగా చేస్తుంది.",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context మరియు intelligent routingను ఉపయోగిస్తుంది.",
+        SwicoBrandSubintent.AGENTS: "Swico agents అవసరమైన contextను ఎంచుకుని requestsను క్రమబద్ధంగా నిర్వహిస్తారు.",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context మరియు routing ద్వారా అవసరం లేని token usageను తగ్గిస్తుంది.",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language మరియు speech processing, secure cloud infrastructure మరియు agent-based processingను కలుపుతుంది.",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing మరియు intelligent routingను ఉపయోగిస్తుంది; public responseలో internal provider పేర్లు చూపించబడవు.",
+        SwicoBrandSubintent.CREDITS: "Swicoలో AI usage credits కొనుగోలు చేసి, వినియోగానికి అనుగుణంగా track చేయవచ్చు.",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking వినియోగం మరియు మిగిలిన usage capacityను అర్థం చేసుకోవడానికి సహాయపడుతుంది.",
+        SwicoBrandSubintent.SCALABILITY: "పెరుగుతున్న వినియోగాన్ని నమ్మకంగా నిర్వహించేందుకు Swico scalable cloud deployment కోసం రూపొందించబడింది.",
+        SwicoBrandSubintent.UPDATES: "కొత్త capabilities మరియు improvementsతో Swico క్రమం తప్పకుండా update అవుతుంది.",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologies యొక్క AI సహాయకుడు; ఉపయోగకరమైన AIను practical మరియు accessible చేయడం దీని లక్ష్యం.",
+    },
+    "kn": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico, Swivel Technologies ಅಭಿವೃದ್ಧಿಪಡಿಸಿದ AI ಸಹಾಯಕ; CEO Jeyanth ಅವರ ನಾಯಕತ್ವದಲ್ಲಿ ಇದು ರೂಪುಗೊಂಡಿದೆ.",
+        SwicoBrandSubintent.IDENTITY: "ನಾನು Swico, Swivel Technologies ಅಭಿವೃದ್ಧಿಪಡಿಸಿದ AI ಸಹಾಯಕ.",
+        SwicoBrandSubintent.ABOUT: "Swico voice ಮತ್ತು text ಸಂಭಾಷಣೆ, ಬಹುಭಾಷಾ ಸಹಾಯ ಮತ್ತು ದಾಖಲೆ ವಿಶ್ಲೇಷಣೆಯನ್ನು ಒದಗಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth ಅವರ ನಾಯಕತ್ವದಲ್ಲಿ Swico ರೂಪುಗೊಂಡಿದ್ದು, Swivel Technologies ಇದನ್ನು ಅಭಿವೃದ್ಧಿಪಡಿಸಿದೆ.",
+        SwicoBrandSubintent.TEXT: "Swico text ಸಂಭಾಷಣೆಯಲ್ಲಿ ಪ್ರಶ್ನೆಗಳು, ಬರವಣಿಗೆ, summaries, planning ಮತ್ತು researchಗೆ ಸಹಾಯ ಮಾಡುತ್ತದೆ.",
+        SwicoBrandSubintent.CONTEXT: "Swico ಸಂಭಾಷಣೆಯ context ಉಳಿಸಿಕೊಂಡು ಮುಂದಿನ ಉತ್ತರಗಳನ್ನು ಹೆಚ್ಚು ಸಂಬಂಧಿತವಾಗಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context ಮತ್ತು intelligent routing ಬಳಸುತ್ತದೆ.",
+        SwicoBrandSubintent.AGENTS: "Swico agents ಅಗತ್ಯವಾದ context ಆಯ್ಕೆ ಮಾಡಿ requests ಅನ್ನು ಕ್ರಮಬದ್ಧವಾಗಿ ನಿರ್ವಹಿಸುತ್ತಾರೆ.",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context ಮತ್ತು routing ಮೂಲಕ ಅನಗತ್ಯ token usage ಕಡಿಮೆ ಮಾಡುತ್ತದೆ.",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language ಮತ್ತು speech processing, secure cloud infrastructure ಮತ್ತು agent-based processing ಅನ್ನು ಜೋಡಿಸುತ್ತದೆ.",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing ಮತ್ತು intelligent routing ಬಳಸುತ್ತದೆ; public responseಗಳಲ್ಲಿ internal provider ಹೆಸರುಗಳನ್ನು ತೋರಿಸಲಾಗುವುದಿಲ್ಲ.",
+        SwicoBrandSubintent.CREDITS: "Swicoನಲ್ಲಿ AI usage credits ಖರೀದಿಸಿ, ಬಳಕೆಯೊಂದಿಗೆ track ಮಾಡಬಹುದು.",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ಬಳಕೆ ಮತ್ತು ಉಳಿದ usage capacity ಅರ್ಥಮಾಡಿಕೊಳ್ಳಲು ಸಹಾಯ ಮಾಡುತ್ತದೆ.",
+        SwicoBrandSubintent.SCALABILITY: "ಹೆಚ್ಚುತ್ತಿರುವ ಬಳಕೆಯನ್ನು ನಂಬಿಕೆಯಿಂದ ನಿರ್ವಹಿಸಲು Swico scalable cloud deploymentಗಾಗಿ ರೂಪಿಸಲಾಗಿದೆ.",
+        SwicoBrandSubintent.UPDATES: "ಹೊಸ capabilities ಮತ್ತು improvements ಜೊತೆಗೆ Swico ನಿಯಮಿತವಾಗಿ update ಆಗುತ್ತದೆ.",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologies ಅಭಿವೃದ್ಧಿಪಡಿಸಿದ AI ಸಹಾಯಕ; ಉಪಯುಕ್ತ AIಯನ್ನು practical ಮತ್ತು accessible ಮಾಡುವುದು ಇದರ ಉದ್ದೇಶ.",
+    },
+    "ml": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico, Swivel Technologies വികസിപ്പിച്ച AI സഹായിയാണ്; CEO Jeyanth-ന്റെ നേതൃത്വത്തിലാണ് ഇത് രൂപപ്പെട്ടത്.",
+        SwicoBrandSubintent.IDENTITY: "ഞാൻ Swico, Swivel Technologies വികസിപ്പിച്ച AI സഹായിയാണ്.",
+        SwicoBrandSubintent.ABOUT: "Swico voice, text സംഭാഷണം, പലഭാഷാ സഹായം, document analysis എന്നിവ നൽകുന്നു.",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth-ന്റെ നേതൃത്വത്തിൽ Swico രൂപപ്പെട്ടു; Swivel Technologies ആണ് ഇത് വികസിപ്പിച്ചത്.",
+        SwicoBrandSubintent.TEXT: "Swico text സംഭാഷണത്തിൽ ചോദ്യങ്ങൾ, എഴുത്ത്, summaries, planning, research എന്നിവയിൽ സഹായിക്കുന്നു.",
+        SwicoBrandSubintent.CONTEXT: "Swico സംഭാഷണ context നിലനിർത്തി അടുത്ത മറുപടികൾ കൂടുതൽ പ്രസക്തമാക്കുന്നു.",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context, intelligent routing എന്നിവ ഉപയോഗിക്കുന്നു.",
+        SwicoBrandSubintent.AGENTS: "Swico agents ആവശ്യമായ context തിരഞ്ഞെടുത്ത് requests ക്രമമായി കൈകാര്യം ചെയ്യുന്നു.",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context, routing എന്നിവ വഴി ആവശ്യമില്ലാത്ത token usage കുറയ്ക്കുന്നു.",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language, speech processing, secure cloud infrastructure, agent-based processing എന്നിവ ചേർക്കുന്നു.",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing, intelligent routing എന്നിവ ഉപയോഗിക്കുന്നു; public response-ൽ internal provider പേരുകൾ കാണിക്കില്ല.",
+        SwicoBrandSubintent.CREDITS: "Swicoയിൽ AI usage credits വാങ്ങുകയും ഉപയോഗത്തിനനുസരിച്ച് track ചെയ്യുകയും ചെയ്യാം.",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ഉപയോഗവും ശേഷിക്കുന്ന usage capacityയും മനസ്സിലാക്കാൻ സഹായിക്കുന്നു.",
+        SwicoBrandSubintent.SCALABILITY: "വർധിക്കുന്ന ഉപയോഗം വിശ്വസനീയമായി കൈകാര്യം ചെയ്യാൻ Swico scalable cloud deploymentനായി രൂപകൽപ്പന ചെയ്തതാണ്.",
+        SwicoBrandSubintent.UPDATES: "പുതിയ capabilities, improvements എന്നിവയോടെ Swico പതിവായി update ചെയ്യുന്നു.",
+        SwicoBrandSubintent.GENERAL: "Swico, Swivel Technologies വികസിപ്പിച്ച AI സഹായിയാണ്; പ്രായോഗികവും ലഭ്യവുമായ AI നൽകുകയാണ് ലക്ഷ്യം.",
+    },
+    "mr": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico हे Swivel Technologies ने विकसित केलेले AI सहाय्यक आहे; CEO Jeyanth यांच्या नेतृत्वाखाली ते तयार झाले.",
+        SwicoBrandSubintent.IDENTITY: "मी Swico, Swivel Technologies ने विकसित केलेला AI सहाय्यक आहे.",
+        SwicoBrandSubintent.ABOUT: "Swico voice आणि text संभाषण, बहुभाषिक मदत आणि दस्तऐवज विश्लेषण देते.",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth यांच्या नेतृत्वाखाली Swico तयार झाले आणि Swivel Technologies ने ते विकसित केले.",
+        SwicoBrandSubintent.TEXT: "Swico text संभाषणात प्रश्न, लेखन, summaries, planning आणि researchमध्ये मदत करते.",
+        SwicoBrandSubintent.CONTEXT: "Swico संभाषणाचा context लक्षात ठेवून पुढील उत्तरे अधिक संबंधित बनवते.",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context आणि intelligent routing वापरते.",
+        SwicoBrandSubintent.AGENTS: "Swico agents आवश्यक context निवडून requests शिस्तबद्धपणे हाताळतात.",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context आणि routingमुळे अनावश्यक token usage कमी करते.",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language आणि speech processing, secure cloud infrastructure आणि agent-based processing जोडते.",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing आणि intelligent routing वापरते; public responseमध्ये internal provider नावे दाखवली जात नाहीत.",
+        SwicoBrandSubintent.CREDITS: "Swicoमध्ये AI usage credits खरेदी करून वापरानुसार track करता येतात.",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage trackingमुळे वापर आणि उरलेली usage capacity समजते.",
+        SwicoBrandSubintent.SCALABILITY: "वाढता वापर विश्वासाने हाताळण्यासाठी Swico scalable cloud deploymentसाठी तयार केले आहे.",
+        SwicoBrandSubintent.UPDATES: "नवीन capabilities आणि improvementsसह Swico नियमितपणे update होते.",
+        SwicoBrandSubintent.GENERAL: "Swico हे Swivel Technologies चे AI सहाय्यक आहे; उपयुक्त AI practical आणि accessible करणे हे त्याचे उद्दिष्ट आहे.",
+    },
+    "gu": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico એ Swivel Technologies દ્વારા વિકસિત AI સહાયક છે; CEO Jeyanthના નેતૃત્વ હેઠળ તે બનાવવામાં આવ્યું છે.",
+        SwicoBrandSubintent.IDENTITY: "હું Swico છું, Swivel Technologies દ્વારા વિકસિત AI સહાયક.",
+        SwicoBrandSubintent.ABOUT: "Swico voice અને text વાતચીત, બહુભાષી મદદ અને દસ્તાવેજ વિશ્લેષણ આપે છે.",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanthના નેતૃત્વ હેઠળ Swico બનાવાયું અને Swivel Technologiesએ તેને વિકસાવ્યું.",
+        SwicoBrandSubintent.TEXT: "Swico text વાતચીતમાં પ્રશ્નો, લેખન, summaries, planning અને researchમાં મદદ કરે છે.",
+        SwicoBrandSubintent.CONTEXT: "Swico વાતચીતનો context જાળવીને આગળના જવાબોને વધુ સંબંધિત બનાવે છે.",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context અને intelligent routing વાપરે છે.",
+        SwicoBrandSubintent.AGENTS: "Swico agents જરૂરી context પસંદ કરીને requestsને વ્યવસ્થિત રીતે સંભાળે છે.",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context અને routingથી બિનજરૂરી token usage ઘટાડે છે.",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language અને speech processing, secure cloud infrastructure અને agent-based processingને જોડે છે.",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing અને intelligent routing વાપરે છે; public responseમાં internal providerનાં નામ બતાવવામાં આવતાં નથી.",
+        SwicoBrandSubintent.CREDITS: "Swicoમાં AI usage credits ખરીદી શકાય છે અને ઉપયોગ પ્રમાણે track કરી શકાય છે.",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ઉપયોગ અને બાકી usage capacity સમજવામાં મદદ કરે છે.",
+        SwicoBrandSubintent.SCALABILITY: "વધતા ઉપયોગને વિશ્વસનીય રીતે સંભાળવા Swico scalable cloud deployment માટે બનાવાયું છે.",
+        SwicoBrandSubintent.UPDATES: "નવી capabilities અને improvements સાથે Swico નિયમિત રીતે update થાય છે.",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologiesનું AI સહાયક છે; ઉપયોગી AIને practical અને accessible બનાવવાનું તેનું ધ્યેય છે.",
+    },
+    "pa": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico, Swivel Technologies ਵੱਲੋਂ ਵਿਕਸਿਤ AI ਸਹਾਇਕ ਹੈ, ਜੋ CEO Jeyanth ਦੀ ਅਗਵਾਈ ਹੇਠ ਬਣਾਇਆ ਗਿਆ।",
+        SwicoBrandSubintent.IDENTITY: "ਮੈਂ Swico ਹਾਂ, Swivel Technologies ਵੱਲੋਂ ਵਿਕਸਿਤ AI ਸਹਾਇਕ।",
+        SwicoBrandSubintent.ABOUT: "Swico voice ਅਤੇ text ਗੱਲਬਾਤ, ਬਹੁਭਾਸ਼ੀ ਮਦਦ ਅਤੇ ਦਸਤਾਵੇਜ਼ ਵਿਸ਼ਲੇਸ਼ਣ ਦਿੰਦਾ ਹੈ।",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth ਦੀ ਅਗਵਾਈ ਹੇਠ Swico ਬਣਾਇਆ ਗਿਆ ਅਤੇ Swivel Technologies ਨੇ ਇਸਨੂੰ ਵਿਕਸਿਤ ਕੀਤਾ।",
+        SwicoBrandSubintent.TEXT: "Swico text ਗੱਲਬਾਤ ਵਿੱਚ ਸਵਾਲਾਂ, ਲਿਖਤ, summaries, planning ਅਤੇ research ਵਿੱਚ ਮਦਦ ਕਰਦਾ ਹੈ।",
+        SwicoBrandSubintent.CONTEXT: "Swico ਗੱਲਬਾਤ ਦਾ context ਸੰਭਾਲ ਕੇ ਅਗਲੇ ਜਵਾਬਾਂ ਨੂੰ ਹੋਰ relevant ਬਣਾਉਂਦਾ ਹੈ।",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context ਅਤੇ intelligent routing ਵਰਤਦਾ ਹੈ।",
+        SwicoBrandSubintent.AGENTS: "Swico agents ਲੋੜੀਂਦਾ context ਚੁਣ ਕੇ requests ਨੂੰ ਵਿਵਸਥਿਤ ਢੰਗ ਨਾਲ ਸੰਭਾਲਦੇ ਹਨ।",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context ਅਤੇ routing ਰਾਹੀਂ ਬੇਲੋੜੀ token usage ਘਟਾਉਂਦਾ ਹੈ।",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language ਅਤੇ speech processing, secure cloud infrastructure ਅਤੇ agent-based processing ਨੂੰ ਜੋੜਦਾ ਹੈ।",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing ਅਤੇ intelligent routing ਵਰਤਦਾ ਹੈ; public response ਵਿੱਚ internal provider ਦੇ ਨਾਂ ਨਹੀਂ ਦਿਖਾਏ ਜਾਂਦੇ।",
+        SwicoBrandSubintent.CREDITS: "Swico ਵਿੱਚ AI usage credits ਖਰੀਦੇ ਜਾ ਸਕਦੇ ਹਨ ਅਤੇ ਵਰਤੋਂ ਮੁਤਾਬਕ track ਕੀਤੇ ਜਾ ਸਕਦੇ ਹਨ।",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ਵਰਤੋਂ ਅਤੇ ਬਾਕੀ usage capacity ਸਮਝਣ ਵਿੱਚ ਮਦਦ ਕਰਦੀ ਹੈ।",
+        SwicoBrandSubintent.SCALABILITY: "ਵਧਦੀ ਵਰਤੋਂ ਨੂੰ ਭਰੋਸੇਯੋਗ ਤਰੀਕੇ ਨਾਲ ਸੰਭਾਲਣ ਲਈ Swico scalable cloud deployment ਵਾਸਤੇ ਬਣਾਇਆ ਗਿਆ ਹੈ।",
+        SwicoBrandSubintent.UPDATES: "ਨਵੀਆਂ capabilities ਅਤੇ improvements ਨਾਲ Swico ਨਿਯਮਿਤ ਤੌਰ 'ਤੇ update ਹੁੰਦਾ ਹੈ।",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologies ਦਾ AI ਸਹਾਇਕ ਹੈ; ਲਾਭਦਾਇਕ AI ਨੂੰ practical ਅਤੇ accessible ਬਣਾਉਣਾ ਇਸਦਾ ਮਕਸਦ ਹੈ।",
+    },
+    "od": {
+        SwicoBrandSubintent.PUBLIC_PROFILE: "Swico ହେଉଛି Swivel Technologies ଦ୍ୱାରା ବିକଶିତ AI ସହାୟକ; CEO Jeyanth ଙ୍କ ନେତୃତ୍ୱରେ ଏହା ତିଆରି ହୋଇଛି।",
+        SwicoBrandSubintent.IDENTITY: "ମୁଁ Swico, Swivel Technologies ଦ୍ୱାରା ବିକଶିତ AI ସହାୟକ।",
+        SwicoBrandSubintent.ABOUT: "Swico voice ଏବଂ text କଥାବାର୍ତ୍ତା, ବହୁଭାଷୀ ସହାୟତା ଏବଂ ଦଲିଲ ବିଶ୍ଳେଷଣ ଦିଏ।",
+        SwicoBrandSubintent.CREATOR: "CEO Jeyanth ଙ୍କ ନେତୃତ୍ୱରେ Swico ତିଆରି ହୋଇଛି ଏବଂ Swivel Technologies ଏହାକୁ ବିକଶିତ କରିଛି।",
+        SwicoBrandSubintent.TEXT: "Swico text କଥାବାର୍ତ୍ତାରେ ପ୍ରଶ୍ନ, ଲେଖା, summaries, planning ଏବଂ researchରେ ସାହାଯ୍ୟ କରେ।",
+        SwicoBrandSubintent.CONTEXT: "Swico କଥାବାର୍ତ୍ତାର context ରଖି ପରବର୍ତ୍ତୀ ଉତ୍ତରକୁ ଅଧିକ ପ୍ରାସଙ୍ଗିକ କରେ।",
+        SwicoBrandSubintent.ARCHITECTURE: "Swico agent-based architecture, selective context ଏବଂ intelligent routing ବ୍ୟବହାର କରେ।",
+        SwicoBrandSubintent.AGENTS: "Swico agents ଆବଶ୍ୟକ context ବାଛି requestsକୁ ସୁସଂଗଠିତ ଭାବେ ପରିଚାଳନା କରନ୍ତି।",
+        SwicoBrandSubintent.TOKEN_EFFICIENCY: "Swico selective context ଏବଂ routing ଦ୍ୱାରା ଅନାବଶ୍ୟକ token usage କମାଏ।",
+        SwicoBrandSubintent.TECHNOLOGY: "Swico language ଏବଂ speech processing, secure cloud infrastructure ଏବଂ agent-based processingକୁ ଯୋଡ଼େ।",
+        SwicoBrandSubintent.MODEL_OR_PROVIDER: "Swico advanced language processing ଏବଂ intelligent routing ବ୍ୟବହାର କରେ; public responseରେ internal provider ନାମ ଦେଖାଯାଏ ନାହିଁ।",
+        SwicoBrandSubintent.CREDITS: "Swicoରେ AI usage credits କିଣି ବ୍ୟବହାର ଅନୁସାରେ track କରାଯାଇପାରେ।",
+        SwicoBrandSubintent.USAGE_TRACKING: "Swico usage tracking ବ୍ୟବହାର ଏବଂ ବାକି usage capacity ବୁଝିବାରେ ସାହାଯ୍ୟ କରେ।",
+        SwicoBrandSubintent.SCALABILITY: "ବଢୁଥିବା ବ୍ୟବହାରକୁ ଭରସାଯୋଗ୍ୟ ଭାବେ ସମ୍ଭାଳିବା ପାଇଁ Swico scalable cloud deployment ନିମନ୍ତେ ତିଆରି।",
+        SwicoBrandSubintent.UPDATES: "ନୂଆ capabilities ଏବଂ improvements ସହିତ Swico ନିୟମିତ ଭାବେ update ହୁଏ।",
+        SwicoBrandSubintent.GENERAL: "Swico Swivel Technologiesର AI ସହାୟକ; ଉପଯୋଗୀ AIକୁ practical ଏବଂ accessible କରିବା ଏହାର ଉଦ୍ଦେଶ୍ୟ।",
+    },
+}
 
-    Some sub-intents intentionally share the short public-profile wording in
-    the language pack.  They remain separate classifier outcomes, and this
-    bounded fill prevents a missing translation from silently selecting the
-    English template.
-    """
-    for language in WEB_REPLY_LANGUAGE_CODES:
-        if language in {"en", "ta", "tanglish"}:
-            continue
-        templates = _LOCALIZED_SUBINTENT_RESPONSES.setdefault(language, {})
-        for subintent in SwicoBrandSubintent:
-            templates.setdefault(
-                subintent,
-                localized_web_deterministic_text(
-                    language,
-                    "swico_brand",
-                    "Swico es un asistente de IA de Swivel Technologies.",
-                ),
-            )
+for _language, _templates in _LOCALIZED_SUBINTENT_COMPLETIONS.items():
+    _LOCALIZED_SUBINTENT_RESPONSES[_language].update(_templates)
 
 
-_complete_localized_subintent_templates()
+def _assert_complete_brand_templates() -> None:
+    expected = set(SwicoBrandSubintent)
+    response_maps = {
+        "en": _ENGLISH_RESPONSES,
+        "ta": _TAMIL_RESPONSES,
+        "tanglish": _TANGLISH_RESPONSES,
+        **_LOCALIZED_SUBINTENT_RESPONSES,
+    }
+    missing = {
+        language: sorted(item.value for item in expected - set(templates))
+        for language, templates in response_maps.items()
+        if expected - set(templates)
+    }
+    missing_languages = sorted(set(WEB_REPLY_LANGUAGE_CODES) - set(response_maps))
+    if missing_languages or missing:
+        raise RuntimeError(
+            "Incomplete deterministic Swico brand templates: "
+            + repr({"languages": missing_languages, "subintents": missing})
+        )
+
+
+_assert_complete_brand_templates()
 
 
 _PRODUCT_REFERENCE_RE = re.compile(
@@ -523,6 +689,33 @@ _NATIVE_BRAND_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 _NATIVE_BRAND_SUBINTENT_PATTERNS: tuple[tuple[SwicoBrandSubintent, re.Pattern[str]], ...] = (
+    (SwicoBrandSubintent.CREATOR, re.compile(
+        r"किसने\s+(?:बनाया|बनाई)|किसने\s+तैयार|কে\s+(?:বানিয়েছে|তৈরি)|কে\s+তৈরি\s+করেছে|"
+        r"ఎవరు\s+(?:రూపొందించారు|తయారు\s+చేశారు)|ಯಾರು\s+(?:ನಿರ್ಮಿಸಿದರು|ಮಾಡಿದರು)|"
+        r"ആരാണ്\s+(?:നിർമ്മിച്ചത്|ഉണ്ടാക്കിയത്)|कोणी\s+(?:बनवले|तयार केले)|"
+        r"કોણે\s+(?:બનાવ્યું|તૈયાર\s+કર્યું)|ਕਿਸਨੇ\s+(?:ਬਣਾਇਆ|ਤਿਆਰ\s+ਕੀਤਾ)|"
+        r"କିଏ\s+(?:ତିଆରି\s+କଲା|ବନାଇଲା)", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.ARCHITECTURE, re.compile(
+        r"\barchitecture\b|वास्तुकला|স্থাপত্য|ఆర్కిటెక్చర్|ವಾಸ್ತುಶಿಲ್ಪ|ആർക്കിടെക്ചർ|"
+        r"वास्तुरचना|આર્કિટેક્ચર|ਆਰਕੀਟੈਕਚਰ|ଆର୍କିଟେକ୍ଚର", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.CREDITS, re.compile(
+        r"\bcredits?\b|क्रेडिट्स?|ক্রেডিট|క్రెడిట్స్?|ಕ್ರೆಡಿಟ್ಸ್?|ക്രെഡിറ്റ്സ്?|"
+        r"क्रेडिट्स?|ક્રેડિટ્સ?|ਕ੍ਰੈਡਿਟਸ?|କ୍ରେଡିଟ୍", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.USAGE_TRACKING, re.compile(
+        r"\busage\s+tracking\b|\btracking\s+(?:usage|credits?)\b|"
+        r"उपयोग\s+(?:ट्रैकिंग|निगरानी)|ব্যবহার\s+(?:ট্র্যাকিং|নজরদারি)|"
+        r"వినియోగం\s+(?:ట్రాకింగ్|పర్యవేక్షణ)|ಬಳಕೆ\s+(?:ಟ್ರ್ಯಾಕಿಂಗ್|ಮೇಲ್ವಿಚಾರಣೆ)|"
+        r"ഉപയോഗ\s+(?:ട്രാക്കിംഗ്|നിരീക്ഷണം)|वापर\s+(?:ट्रॅकिंग|निगराणी)|"
+        r"ઉપયોગ\s+(?:ટ્રેકિંગ|નિરીક્ષણ)|ਵਰਤੋਂ\s+(?:ਟਰੈਕਿੰਗ|ਨਿਗਰਾਨੀ)|"
+        r"ବ୍ୟବହାର\s+(?:ଟ୍ରାକିଂ|ନଜରଦାରୀ)", re.IGNORECASE,
+    )),
+    (SwicoBrandSubintent.UPDATES, re.compile(
+        r"\bupdates?\b|\bupdate\b|\brefresh\b|अपडेट|নতুন\s+(?:আপডেট|পরিবর্তন)|"
+        r"నవీకరణ|ಅಪ್‌ಡೇಟ್|അപ്ഡേറ്റ്|अद्यतन|અપડેટ|ਅੱਪਡੇਟ|ଅପଡେଟ", re.IGNORECASE,
+    )),
     (SwicoBrandSubintent.COMPANY, re.compile(
         r"कंपनी|संस्था|কোম্পানি|প্রতিষ্ঠান|కంపెనీ|సంస్థ|ಕಂಪನಿ|ಸಂಸ್ಥೆ|കമ്പനി|സ്ഥാപനം|"
         r"कंपनी|संस्था|કંપની|ਸੰਸਥਾ|କମ୍ପାନୀ", re.IGNORECASE,

@@ -20,6 +20,7 @@ from app.web_api.swico_brand import (
     swico_brand_response,
     validate_swico_public_response,
 )
+from app.ai.language import WEB_REPLY_LANGUAGE_CODES
 from app.web_api.deterministic_answers import try_deterministic_answer
 from app.web_api.turn_optimizer import optimize_web_turn
 from tests.conftest import auth_headers, create_test_user
@@ -45,6 +46,62 @@ def _metadata(request_id: str) -> dict:
             WebChatMessage.role == "assistant",
         )).one()
         return json.loads(row.metadata_json)
+
+
+def test_every_supported_language_has_distinct_template_for_every_brand_subintent():
+    templates = public_swico_response_templates()
+    assert templates
+    # The runtime completeness assertion is deliberately backed by a test that
+    # checks the public matrix itself, rather than relying on an auto-fill path.
+    from app.web_api import swico_brand as brand
+
+    response_maps = {
+        "en": brand._ENGLISH_RESPONSES,
+        "ta": brand._TAMIL_RESPONSES,
+        "tanglish": brand._TANGLISH_RESPONSES,
+        **brand._LOCALIZED_SUBINTENT_RESPONSES,
+    }
+    expected = set(SwicoBrandSubintent)
+    assert set(response_maps) == set(WEB_REPLY_LANGUAGE_CODES)
+    for language in WEB_REPLY_LANGUAGE_CODES:
+        values = [response_maps[language][subintent] for subintent in expected]
+        assert set(response_maps[language]) == expected
+        assert len(set(values)) == len(expected), language
+
+
+@pytest.mark.parametrize(
+    ("language", "question", "subintent"),
+    [
+        ("hi", "Swico किसने बनाया?", "creator"),
+        ("hi", "Swico का architecture क्या है?", "architecture"),
+        ("hi", "Swico credits कैसे काम करते हैं?", "credits"),
+        ("hi", "Swico का usage tracking कैसे काम करता है?", "usage_tracking"),
+        ("hi", "Swico update कैसे होता है?", "updates"),
+        ("bn", "Swico কে বানিয়েছে?", "creator"),
+        ("bn", "Swico-এর architecture কী?", "architecture"),
+        ("bn", "Swico credits কীভাবে কাজ করে?", "credits"),
+        ("te", "Swico ఎవరు రూపొందించారు?", "creator"),
+        ("te", "Swico ఆర్కిటెక్చర్ ఏమిటి?", "architecture"),
+        ("kn", "Swico ಯಾರು ನಿರ್ಮಿಸಿದರು?", "creator"),
+        ("kn", "Swico ಕ್ರೆಡಿಟ್ಸ್ ಹೇಗೆ ಕೆಲಸ ಮಾಡುತ್ತವೆ?", "credits"),
+        ("ml", "Swico ആരാണ് നിർമ്മിച്ചത്?", "creator"),
+        ("ml", "Swico ഉപയോഗ ട്രാക്കിംഗ് എങ്ങനെ പ്രവർത്തിക്കും?", "usage_tracking"),
+        ("mr", "Swico कोणी बनवले?", "creator"),
+        ("mr", "Swico update कसे होते?", "updates"),
+        ("gu", "Swico કોણે બનાવ્યું?", "creator"),
+        ("gu", "Swico ક્રેડિટ્સ કેવી રીતે કામ કરે છે?", "credits"),
+        ("pa", "Swico ਕਿਸਨੇ ਬਣਾਇਆ?", "creator"),
+        ("pa", "Swico ਆਰਕੀਟੈਕਚਰ ਕੀ ਹੈ?", "architecture"),
+        ("od", "Swico କିଏ ତିଆରି କଲା?", "creator"),
+        ("od", "Swico ବ୍ୟବହାର ଟ୍ରାକିଂ କିପରି କାମ କରେ?", "usage_tracking"),
+    ],
+)
+def test_native_brand_questions_select_bounded_subintent(language, question, subintent):
+    match = classify_swico_brand_query(question)
+    assert match is not None
+    assert match.subintent.value == subintent
+    answer = swico_brand_response(match.subintent, reply_language=language, message=question)
+    assert answer
 
 
 @pytest.mark.parametrize(

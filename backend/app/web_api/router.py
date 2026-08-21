@@ -800,7 +800,7 @@ def _resolved_reply_language(user) -> str:
 
 
 def _web_stt_mode(reply_language: str | None = None) -> str:
-    value = str(os.getenv("WEB_STT_MODE", "translit") or "translit").strip().lower()
+    value = str(os.getenv("WEB_STT_MODE", "transcribe") or "transcribe").strip().lower()
     return resolve_web_stt_mode(reply_language, value)
 
 
@@ -3524,7 +3524,8 @@ async def transcribe_web_audio(
 ):
     user = get_owned_user(session, auth)
     # Keep the optional field for legacy clients, but never use it as a web
-    # STT restriction. The website path always auto-detects and transliterates.
+    # STT restriction. The website path always auto-detects; only a saved
+    # Tanglish reply preference selects transliteration.
     if selected_swico_tier(session, int(user.id)) == "free":
         await file.close()
         return _temporary_error(

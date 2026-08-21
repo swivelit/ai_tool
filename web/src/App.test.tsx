@@ -17,9 +17,9 @@ const legalRoutes = [
   ['/pricing', 'Pricing and Token Credits'],
 ] as const
 
-it.each(legalRoutes)('renders the proposed policy at %s without claiming publication', async (route, heading) => {
+it.each(legalRoutes)('renders the approved policy at %s', async (route, heading) => {
   render(<MemoryRouter initialEntries={[route]}><App /></MemoryRouter>)
   expect(await screen.findByRole('heading', { level:1, name:heading })).toBeInTheDocument()
   expect(screen.getByText('Version 1.0 · Effective date: 2026-07-17')).toBeInTheDocument()
-  expect(screen.getByText('Policy text is not published')).toBeInTheDocument()
+  expect(screen.queryByText('Policy text is not published')).not.toBeInTheDocument()
 })

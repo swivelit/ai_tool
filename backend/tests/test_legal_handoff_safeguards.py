@@ -151,15 +151,22 @@ Refund window: TBD
     assert ("Refunds", "the refund window is unresolved") in findings
 
 
-def test_revised_publication_remains_blocked_until_new_approval(capsys):
+def test_checked_in_publication_has_current_counsel_approval(capsys):
     data = _publication_data()
-    assert data["publication"]["publicationStatus"] == "unreviewed"
+    assert data["publication"]["publicationStatus"] == "approved_by_counsel"
     blockers = PUBLICATION_CHECKER.findings()
-    assert blockers == ["publicationStatus=unreviewed is not publishable"]
-    assert PUBLICATION_CHECKER.main() == 1
+    assert blockers == []
+    assert PUBLICATION_CHECKER.main() == 0
     output = capsys.readouterr().out
-    assert all(blocker in output for blocker in blockers)
-    assert "legal publication check failed: 1 blocker(s)" in output
+    assert "legal publication check passed" in output
+
+
+def test_unreviewed_publication_is_still_blocked(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["publicationStatus"] = "unreviewed"
+    assert "publicationStatus=unreviewed is not publishable" in _publication_findings(
+        tmp_path, monkeypatch, data
+    )
 
 
 def test_legal_content_fingerprint_changes_for_material_page_edits():
@@ -266,7 +273,7 @@ def test_publication_status_and_approval_type_must_match(tmp_path: Path, monkeyp
     assert "owner-approved publication requires approvalType=owner_attestation" in blockers
 
     data = _publication_data()
-    data["publication"]["publicationStatus"] = "approved_by_counsel"
+    data["publication"]["approval"]["approvalType"] = "owner_attestation"
     blockers = _publication_findings(tmp_path, monkeypatch, data)
     assert "counsel-approved publication requires approvalType=counsel_approval" in blockers
 

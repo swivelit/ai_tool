@@ -33,7 +33,7 @@ class VoiceTicket:
     # STT is deliberately independent and defaults safely for tickets minted
     # before these fields existed.
     stt_language: str = "unknown"
-    stt_mode: str = "translit"
+    stt_mode: str = "transcribe"
 
 
 class VoiceSessionConflict(RuntimeError):

@@ -46,7 +46,7 @@ def test_repository_mode_blocks_stale_approved_pricing_and_checks_custom_topups(
     module = _module()
     monkeypatch.setattr(module, "_idempotency_tests_pass", lambda: True)
     checks = dict(module.repository_checks())
-    assert checks["legal publication approved and complete"] is False
+    assert checks["legal publication approved and complete"] is True
     assert checks["canonical Razorpay webhook endpoint is implemented"] is True
     assert checks["one Alembic head is known"] is True
     assert checks["configured packages are exactly INR 15 and INR 299"] is True

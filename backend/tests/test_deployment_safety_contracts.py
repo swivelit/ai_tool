@@ -150,7 +150,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_UPLOAD_MAX_EXTRACTED_CHARS": "100000",
         "WEB_ATTACHMENT_PROMPT_MAX_CHARS": "6000",
         "WEB_AUDIO_MAX_SECONDS": "30",
-        "WEB_STT_MODE": "translit",
+        "WEB_STT_MODE": "transcribe",
         "WEB_TTS_MAX_CHARACTERS": "5000",
         "WEB_UPLOAD_RATE_LIMIT_PER_MINUTE": "10",
         "WEB_STT_RATE_LIMIT_PER_MINUTE": "10",

@@ -153,7 +153,7 @@ SARVAM_CHAT_MODEL_REASONING = _env_str("SARVAM_CHAT_MODEL_REASONING", "sarvam-10
 SARVAM_CHAT_MAX_TOKENS = _env_int("SARVAM_CHAT_MAX_TOKENS", 4096, minimum=1)
 SARVAM_STT_MODEL = _env_str("SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_STT_MODE = _env_str("SARVAM_STT_MODE", "transcribe")
-WEB_STT_MODE = _env_str("WEB_STT_MODE", "translit")
+WEB_STT_MODE = _env_str("WEB_STT_MODE", "transcribe")
 SARVAM_TTS_MODEL = _env_str("SARVAM_TTS_MODEL", "bulbul:v2")
 SARVAM_TTS_MODEL_PREMIUM = _env_str("SARVAM_TTS_MODEL_PREMIUM", "bulbul:v3")
 SARVAM_TTS_SPEAKER = _env_str("SARVAM_TTS_SPEAKER", "anushka")

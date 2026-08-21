@@ -244,7 +244,7 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         configured = _integer(env, name, default)
         if configured is None or configured <= 0 or (name == "WEB_AUDIO_MAX_SECONDS" and configured > 30):
             errors.append(f"{name} must be a positive integer")
-    if _value(env, "WEB_STT_MODE", "translit").lower() not in {"transcribe", "translit"}:
+    if _value(env, "WEB_STT_MODE", "transcribe").lower() not in {"transcribe", "translit"}:
         errors.append("WEB_STT_MODE is unsupported")
     sarvam_chat_cap = _integer(env, "SARVAM_CHAT_MAX_TOKENS", "4096")
     if sarvam_chat_cap is None or sarvam_chat_cap <= 0 or sarvam_chat_cap > 128_000:
