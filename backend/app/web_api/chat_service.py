@@ -2177,6 +2177,9 @@ def prepare_web_turn(
                 route = AIProviderRouter().select_route(ai_request)
                 if (
                     preliminary.local_intent in _WEB_UNSUPPORTED_INTENTS
+                    and str(preliminary.metrics.get("intent_reason") or "").endswith(
+                        "_tool_intent"
+                    )
                     and route.provider in {"openai", "sarvam", "swico_free"}
                 ):
                     route = AIRoute(

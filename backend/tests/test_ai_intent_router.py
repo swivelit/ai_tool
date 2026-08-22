@@ -31,6 +31,48 @@ def test_backend_tool_intents_route_to_backend_tool():
     assert classify_intent("Change reply language setting").route == "backend_tool"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "give me healthy habits for elderly people",
+        "suggest a morning routine for students",
+        "list good habits for better sleep",
+        "recommend a study schedule for exams",
+        "design a workout routine",
+        "create a task list for a wedding",
+        "suggest a simple bedtime routine",
+        "give me a healthy daily schedule",
+        "list tasks for planning a birthday party",
+        "recommend habits for better focus",
+        "மாணவர்களுக்கு நல்ல morning routine பரிந்துரைக்கவும்",
+        "students-ku healthy habits suggest pannu",
+    ],
+)
+def test_content_imperatives_are_not_tool_actions(message):
+    decision = classify_intent(message)
+    assert decision.intent == "general"
+    assert decision.route == "general"
+
+
+@pytest.mark.parametrize(
+    ("message", "intent"),
+    [
+        ("remind me to call Ravi at 6pm", "reminder"),
+        ("save this to my notes", "note"),
+        ("what do you know about me", "profile"),
+        ("set a reminder for tomorrow", "reminder"),
+        ("open my profile", "profile"),
+        ("change my reply language to Tamil", "settings"),
+        ("நேத்து business notes open பண்ணு", "file_retrieval"),
+        ("my notes save pannu", "note"),
+    ],
+)
+def test_assistant_directed_requests_remain_tool_actions(message, intent):
+    decision = classify_intent(message)
+    assert decision.intent == intent
+    assert decision.route == "backend_tool"
+
+
 def test_coding_and_complex_reasoning_are_rules_first():
     assert classify_intent("Debug this React Native architecture").intent == "coding"
     assert classify_intent("Give me a multi-step migration plan").intent == "complex_reasoning"

@@ -142,9 +142,9 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "evidence_token_cap": 1_200,
         "query_variant_limit": 1,
         "retrieval_round_limit": 1,
-        "dense_retrieval_allowed": False,
+        "dense_retrieval_allowed": True,
         "corrective_retrieval_allowed": False,
-        "claim_verifier_allowed": False,
+        "claim_verifier_allowed": True,
         "repository_retrieval_allowed": True,
         "repository_validation_allowed": False,
         "repository_contract_token_cap": 900,
@@ -154,6 +154,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "hierarchical_retrieval_allowed": False,
         "knowledge_token_cap": 0,
         "hierarchy_summary_token_cap": 0,
+        "max_provider_calls": 3,
     },
     "standard": {
         "max_prompt_tokens": 6_500,
@@ -179,6 +180,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "hierarchical_retrieval_allowed": True,
         "knowledge_token_cap": 2_400,
         "hierarchy_summary_token_cap": 512,
+        "max_provider_calls": 3,
     },
     "pro": {
         "max_prompt_tokens": 12_000,
@@ -207,6 +209,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "hierarchical_retrieval_allowed": True,
         "knowledge_token_cap": 4_800,
         "hierarchy_summary_token_cap": 1_200,
+        "max_provider_calls": 3,
     },
 }
 

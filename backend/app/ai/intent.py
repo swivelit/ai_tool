@@ -170,6 +170,53 @@ _ASSISTANT_DIRECTED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A content verb is not enough to invoke a device tool. This second, narrow
+# positive signal requires the verb to name a user-owned/stored object. In
+# particular, ``create a task list`` remains ordinary content generation,
+# while ``create a task`` remains a task command.
+_EXPLICIT_TOOL_OBJECT_ACTION_RE = re.compile(
+    r"\b(?:set|add|save|create|delete|update|open|show|find|remind|change)\b"
+    r".{0,80}\b(?:"
+    r"(?:my|our|this|that|these|those)\s+(?:"
+    r"routine|notes?|reminders?|alarms?|profiles?|settings?|tasks?(?!\s+list)|"
+    r"documents?|files?|folders?|preferences?|reply\s+language"
+    r")|"
+    r"(?:a|an|the)\s+(?:"
+    r"reminder|alarm|note|routine|profile|setting|task(?!\s+list)|"
+    r"(?:microsoft\s+word|word|excel|powerpoint)\s+(?:file|document|sheet)|"
+    r"file|document"
+    r")\b)",
+    re.IGNORECASE,
+)
+
+# Existing website clients use a small set of Tamil/Tanglish imperative
+# forms. Keep them bounded to stored/tool objects so content imperatives such
+# as ``morning routine suggest pannu`` remain general conversation.
+_NATIVE_TOOL_OBJECT_ACTION_RE = re.compile(
+    r"(?:\b(?:save|add|create|open|show|remind|change)\b|"
+    r"(?:ஆக்கி|வை|பண்ணு|பண்ண|pannu|pannunga))"
+    r".{0,80}\b(?:pdf|docx?|xlsx?|pptx?|document|file|sheet|notes?|"
+    r"task(?!\s+list)|todo|remind(?:er)?|medicine)\b|"
+    r"\b(?:pdf|docx?|xlsx?|pptx?|document|file|sheet|notes?|task(?!\s+list)|todo|"
+    r"remind(?:er)?|medicine)\b.{0,80}"
+    r"(?:ஆக்கி|வை|பண்ணு|பண்ண|pannu|pannunga)",
+    re.IGNORECASE,
+)
+_LEGACY_REMEMBER_ACTION_RE = re.compile(
+    r"^\s*remember\s+(?!me\b).{3,}$", re.IGNORECASE
+)
+_EXPLICIT_SETTINGS_ACTION_RE = re.compile(
+    r"\bchange\b.{0,40}\breply\s+language\b", re.IGNORECASE
+)
+_EXPLICIT_CREATIVE_ACTION_RE = re.compile(
+    r"\b(?:create|make|edit|generate|clean\s+up|cleanup)\b.{0,90}"
+    r"\b(?:(?:this|that|my|the)\s+)?(?:poster|image|photo|video|audio|"
+    r"song|thumbnail|recording)\b(?:.{0,30}\bfor\s+my\b)?|"
+    r"\b(?:poster|image|photo|video|audio|song|thumbnail|recording)\b"
+    r".{0,30}\bfor\s+my\b",
+    re.IGNORECASE,
+)
+
 
 def is_tool_action_request(text: str) -> bool:
     t = str(text or "").strip()
@@ -183,7 +230,13 @@ def is_tool_action_request(text: str) -> bool:
         return False
     if t.rstrip().endswith("?"):
         return False
-    return True
+    return bool(
+        _EXPLICIT_TOOL_OBJECT_ACTION_RE.search(t)
+        or _NATIVE_TOOL_OBJECT_ACTION_RE.search(t)
+        or _LEGACY_REMEMBER_ACTION_RE.search(t)
+        or _EXPLICIT_SETTINGS_ACTION_RE.search(t)
+        or _EXPLICIT_CREATIVE_ACTION_RE.search(t)
+    )
 
 
 _CONVERSATIONAL_LOCAL = {"greeting", "thanks", "capabilities"}

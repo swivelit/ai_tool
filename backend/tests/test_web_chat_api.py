@@ -404,6 +404,7 @@ def test_topic_questions_reach_a_provider(client, monkeypatch):
     )
     for index, message in enumerate([
         "What healthy habits can help me maintain my energy as I get older?",
+        "give me healthy habits for elderly people",
         "How do I make a PDF smaller?",
         "What settings should I use for night photography?",
     ], start=1):

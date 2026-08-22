@@ -169,6 +169,7 @@ def optimize_web_turn(
     metrics = {
         "optimization_route": route,
         "answer_class": answer_class,
+        "intent_reason": decision.reason,
         "context_turns_sent": len(selected),
         "context_chars_sent": len(formatted),
         "profile_chars_sent": len(profile_prompt),

@@ -107,6 +107,16 @@ def test_tier_policies_and_allocations_never_exceed_ceiling():
         assert allocation.document_tokens <= policy.max_document_tokens
 
 
+def test_lite_policy_lifts_triag_ceiling_without_changing_runtime_flags():
+    lite = tier_policy_for("lite")
+    assert lite.dense_retrieval_allowed is True
+    assert lite.claim_verifier_allowed is True
+    assert {
+        tier_policy_for(tier).max_provider_calls
+        for tier in ("lite", "standard", "pro")
+    } == {3}
+
+
 def test_irrelevant_or_empty_sources_receive_zero_tokens():
     policy = tier_policy_for("standard")
     allocation = DynamicTokenAllocator(policy).allocate(
