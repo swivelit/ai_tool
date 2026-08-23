@@ -170,22 +170,37 @@ _ASSISTANT_DIRECTED_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A content verb is not enough to invoke a device tool. This second, narrow
-# positive signal requires the verb to name a user-owned/stored object. In
-# particular, ``create a task list`` remains ordinary content generation,
+# A content verb is not enough to invoke a device tool. This shared lookahead
+# rejects deliverable-shaped continuations after every tool object.
+_CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD = (
+    r"(?!\s+(?:(?:[A-Za-z0-9_-]+\s+){0,2}(?:"
+    r"list|outline|template|guide|structure|script|caption|brief|idea|ideas|"
+    r"plan|checklist|layout|tracker|convention|prompt|prompts|description|"
+    r"wording|strategy|strategies|example|examples)\b))"
+)
+
+# This positive signal requires the verb to name a user-owned/stored object.
+# In particular, ``create a task list`` remains ordinary content generation,
 # while ``create a task`` remains a task command.
 _EXPLICIT_TOOL_OBJECT_ACTION_RE = re.compile(
     r"\b(?:set|add|save|create|delete|update|open|show|find|remind|change)\b"
-    r".{0,80}\b(?:"
+    r"\s+(?:"
     r"(?:my|our|this|that|these|those)\s+(?:"
-    r"routine|notes?|reminders?|alarms?|profiles?|settings?|tasks?(?!\s+list)|"
+    r"routine|notes?|reminders?|alarms?|profiles?|settings?|tasks?|"
     r"documents?|files?|folders?|preferences?|reply\s+language"
-    r")|"
+    r")\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
+    + r"|"
     r"(?:a|an|the)\s+(?:"
-    r"reminder|alarm|note|routine|profile|setting|task(?!\s+list)|"
-    r"(?:microsoft\s+word|word|excel|powerpoint)\s+(?:file|document|sheet)|"
-    r"file|document"
-    r")\b)",
+    r"reminder|alarm|note|routine|profile|setting|task|"
+    r"(?:microsoft\s+word|word|excel|powerpoint)\s+(?:file|document|sheet)"
+    r")\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
+    + r"|"
+    r"(?:a|an|the)\s+(?:file|document)\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
+    + r"(?!\s+(?:about|regarding|that|which)\b)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -208,13 +223,23 @@ _LEGACY_REMEMBER_ACTION_RE = re.compile(
 _EXPLICIT_SETTINGS_ACTION_RE = re.compile(
     r"\bchange\b.{0,40}\breply\s+language\b", re.IGNORECASE
 )
+_EXPLICIT_RETRIEVAL_ACTION_RE = re.compile(
+    r"\b(?:open|find|show)\s+the\s+(?:business|work|home)\s+"
+    r"(?:notes?|files?|documents?)\b", re.IGNORECASE
+)
 _EXPLICIT_CREATIVE_ACTION_RE = re.compile(
-    r"\b(?:create|make|edit|generate|clean\s+up|cleanup)\b.{0,90}"
-    r"\b(?:(?:this|that|my|the)\s+)?(?:poster|image|photo|video|audio|"
-    r"song|thumbnail|recording)\b(?:.{0,30}\bfor\s+my\b)?|"
-    r"\b(?:poster|image|photo|video|audio|song|thumbnail|recording)\b"
-    r".{0,30}\bfor\s+my\b",
+    r"\b(?:create|make|edit|generate|clean\s+up|cleanup)\b\s+"
+    r"(?:my|our|this|that|these|those|a|an|the)\s+"
+    r"(?:poster|image|photo|video|audio|song|thumbnail|recording)\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD,
     re.IGNORECASE,
+)
+_EXPLICIT_FILE_FORMAT_ACTION_RE = re.compile(
+    r"\b(?:create|generate|make)\s+(?:a|an|the)\s+"
+    r"(?:pdf|docx?|xlsx?|pptx?)\b", re.IGNORECASE
+)
+_NATIVE_TOOL_LANGUAGE_SIGNAL_RE = re.compile(
+    r"[\u0b80-\u0bff]|\b(?:pannu|pannunga)\b", re.IGNORECASE
 )
 
 
@@ -230,11 +255,17 @@ def is_tool_action_request(text: str) -> bool:
         return False
     if t.rstrip().endswith("?"):
         return False
+    native_tool_action = bool(
+        _NATIVE_TOOL_LANGUAGE_SIGNAL_RE.search(t)
+        and _NATIVE_TOOL_OBJECT_ACTION_RE.search(t)
+    )
     return bool(
         _EXPLICIT_TOOL_OBJECT_ACTION_RE.search(t)
-        or _NATIVE_TOOL_OBJECT_ACTION_RE.search(t)
+        or native_tool_action
         or _LEGACY_REMEMBER_ACTION_RE.search(t)
         or _EXPLICIT_SETTINGS_ACTION_RE.search(t)
+        or _EXPLICIT_RETRIEVAL_ACTION_RE.search(t)
+        or _EXPLICIT_FILE_FORMAT_ACTION_RE.search(t)
         or _EXPLICIT_CREATIVE_ACTION_RE.search(t)
     )
 
@@ -343,9 +374,9 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"\b(?:ஆக்கி|aakki|akki|make|create|generate)\b.{0,80}\b(?:document|file)\b",
         re.I,
     )),
-    ("reminder", re.compile(r"\b(remind|reminder|alarm|appointment|calendar)\b|நினைவூட்ட|நினைவு|remind\s*(?:பண்ணு|pannu|panna)|reminder\s*(?:save|வை|pannu)|நாளைக்கு.*remind|(?:tomorrow|naalaikku|nalai|நாளைக்கு|நாளை).*\breminder\b", re.I)),
+    ("reminder", re.compile(r"\b(remind|reminders?|alarms?|appointments?|calendar)\b|நினைவூட்ட|நினைவு|remind\s*(?:பண்ணு|pannu|panna)|reminder\s*(?:save|வை|pannu)|நாளைக்கு.*remind|(?:tomorrow|naalaikku|nalai|நாளைக்கு|நாளை).*\breminder\b", re.I)),
     ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|^\s*remember\s+(?!me\b).{3,}|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
-    ("task", re.compile(r"\b(?:add|create|save|set)\s+(?:a\s+)?(?:task|todo|to-do)\b|\b(?:task|todo|to-do)\b.*\b(?:add|save|வை|pannu|பண்ணு)\b|\b(task|todo|to-do|follow up|follow-up)\b|பணி", re.I)),
+    ("task", re.compile(r"\b(?:add|create|save|set)\s+(?:a\s+)?(?:tasks?|todos?|to-dos?)\b|\b(?:tasks?|todos?|to-dos?)\b.*\b(?:add|save|வை|pannu|பண்ணு)\b|\b(tasks?|todos?|to-dos?|follow up|follow-up)\b|பணி", re.I)),
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
     ("settings", re.compile(

@@ -40,6 +40,20 @@ def test_backend_tool_intents_route_to_backend_tool():
         "recommend a study schedule for exams",
         "design a workout routine",
         "create a task list for a wedding",
+        "create a document outline for my thesis",
+        "create a document about safety rules",
+        "create a file naming convention guide",
+        "create the document structure for a report",
+        "create a task tracker spreadsheet layout",
+        "make a video script about climate change",
+        "create an image caption for instagram",
+        "make a poster idea list for diwali",
+        "generate image prompt ideas",
+        "edit this photo description",
+        "clean up this audio transcript wording",
+        "make a poster design brief for a college fest",
+        "find the document that started this debate",
+        "show the difference between a note and a memo",
         "suggest a simple bedtime routine",
         "give me a healthy daily schedule",
         "list tasks for planning a birthday party",
@@ -55,22 +69,37 @@ def test_content_imperatives_are_not_tool_actions(message):
 
 
 @pytest.mark.parametrize(
-    ("message", "intent"),
+    ("message", "intent", "route"),
     [
-        ("remind me to call Ravi at 6pm", "reminder"),
-        ("save this to my notes", "note"),
-        ("what do you know about me", "profile"),
-        ("set a reminder for tomorrow", "reminder"),
-        ("open my profile", "profile"),
-        ("change my reply language to Tamil", "settings"),
-        ("நேத்து business notes open பண்ணு", "file_retrieval"),
-        ("my notes save pannu", "note"),
+        ("remind me to call Ravi at 6pm", "reminder", "backend_tool"),
+        ("save this to my notes", "note", "backend_tool"),
+        ("what do you know about me", "profile", "backend_tool"),
+        ("set a reminder for tomorrow", "reminder", "backend_tool"),
+        ("open my profile", "profile", "backend_tool"),
+        ("change my reply language to Tamil", "settings", "backend_tool"),
+        ("நேத்து business notes open பண்ணு", "file_retrieval", "backend_tool"),
+        ("my notes save pannu", "note", "backend_tool"),
+        ("make a poster for my shop", "creative_tool", "backend_tool"),
+        ("edit this photo", "creative_tool", "backend_tool"),
+        ("create a reminder for the dentist", "reminder", "backend_tool"),
+        ("add a task to buy milk", "task", "backend_tool"),
+        ("save this note in my work folder", "note", "backend_tool"),
+        ("find my document about insurance", "file_retrieval", "backend_tool"),
+        ("delete my reminder", "reminder", "backend_tool"),
+        ("update my settings", "settings", "backend_tool"),
+        ("remember this: gate code is 4417", "note", "backend_tool"),
+        ("read aloud this paragraph", "tts", "tts"),
+        ("transcribe this audio", "stt", "stt"),
+        ("naalaikku remind pannu", "reminder", "backend_tool"),
+        ("indha notes save pannu", "note", "backend_tool"),
+        ("show my tasks", "task", "backend_tool"),
+        ("show my reminders", "reminder", "backend_tool"),
     ],
 )
-def test_assistant_directed_requests_remain_tool_actions(message, intent):
+def test_assistant_directed_requests_remain_tool_actions(message, intent, route):
     decision = classify_intent(message)
     assert decision.intent == intent
-    assert decision.route == "backend_tool"
+    assert decision.route == route
 
 
 def test_coding_and_complex_reasoning_are_rules_first():
