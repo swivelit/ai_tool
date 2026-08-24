@@ -184,23 +184,35 @@ _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD = (
 # while ``create a task`` remains a task command.
 _EXPLICIT_TOOL_OBJECT_ACTION_RE = re.compile(
     r"\b(?:set|add|save|create|delete|update|open|show|find|remind|change)\b"
-    r"\s+(?:"
+    r"(?:\s+[A-Za-z0-9_-]+){0,2}\s+(?:"
     r"(?:my|our|this|that|these|those)\s+(?:"
-    r"routine|notes?|reminders?|alarms?|profiles?|settings?|tasks?|"
-    r"documents?|files?|folders?|preferences?|reply\s+language"
+    r"(?:[A-Za-z0-9_-]+\s+)?routine|(?:[A-Za-z0-9_-]+\s+)?notes?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?reminders?|(?:[A-Za-z0-9_-]+\s+)?alarms?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?profiles?|(?:[A-Za-z0-9_-]+\s+)?settings?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?tasks?|(?:[A-Za-z0-9_-]+\s+)?todos?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?to-dos?|(?:[A-Za-z0-9_-]+\s+)?documents?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?files?|(?:[A-Za-z0-9_-]+\s+)?folders?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?preferences?|reply\s+language"
     r")\b"
     + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
     + r"|"
     r"(?:a|an|the)\s+(?:"
-    r"reminder|alarm|note|routine|profile|setting|task|"
+    r"(?:[A-Za-z0-9_-]+\s+)?reminder|(?:[A-Za-z0-9_-]+\s+)?alarm|"
+    r"(?:[A-Za-z0-9_-]+\s+)?note|(?:[A-Za-z0-9_-]+\s+)?routine|"
+    r"(?:[A-Za-z0-9_-]+\s+)?profile|(?:[A-Za-z0-9_-]+\s+)?settings?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?tasks?|(?:[A-Za-z0-9_-]+\s+)?todos?|"
+    r"(?:[A-Za-z0-9_-]+\s+)?to-dos?|"
     r"(?:microsoft\s+word|word|excel|powerpoint)\s+(?:file|document|sheet)"
     r")\b"
     + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
     + r"|"
-    r"(?:a|an|the)\s+(?:file|document)\b"
+    r"(?:a|an|the)\s+(?:[A-Za-z0-9_-]+\s+)?(?:file|document)\b"
     + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
     + r"(?!\s+(?:about|regarding|that|which)\b)"
-    r")",
+    + r"|"
+    r"(?:notes?|reminders?|alarms?|todos?|to-dos?)\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD
+    + r")",
     re.IGNORECASE,
 )
 
@@ -235,11 +247,18 @@ _EXPLICIT_CREATIVE_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 _EXPLICIT_FILE_FORMAT_ACTION_RE = re.compile(
-    r"\b(?:create|generate|make)\s+(?:a|an|the)\s+"
-    r"(?:pdf|docx?|xlsx?|pptx?)\b", re.IGNORECASE
+    r"\b(?:create|generate|make|save|open|find|delete)\b"
+    r"(?:\s+[A-Za-z0-9_-]+){0,2}\s+(?:a|an|the|my|this|that)\s+"
+    r"(?:pdf|docx?|xlsx?|pptx?)\b"
+    + _CONTENT_DELIVERABLE_NOUN_NEGATIVE_LOOKAHEAD,
+    re.IGNORECASE,
 )
 _NATIVE_TOOL_LANGUAGE_SIGNAL_RE = re.compile(
     r"[\u0b80-\u0bff]|\b(?:pannu|pannunga)\b", re.IGNORECASE
+)
+_CONTENT_OBJECT_CONTEXT_RE = re.compile(
+    r"\b(?:task|tasks?)\s+(?:prioritisation|prioritization)\b",
+    re.IGNORECASE,
 )
 
 
@@ -254,6 +273,8 @@ def is_tool_action_request(text: str) -> bool:
     if _TOPIC_FRAME_RE.search(t):
         return False
     if t.rstrip().endswith("?"):
+        return False
+    if _CONTENT_OBJECT_CONTEXT_RE.search(t):
         return False
     native_tool_action = bool(
         _NATIVE_TOOL_LANGUAGE_SIGNAL_RE.search(t)
@@ -375,7 +396,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.I,
     )),
     ("reminder", re.compile(r"\b(remind|reminders?|alarms?|appointments?|calendar)\b|நினைவூட்ட|நினைவு|remind\s*(?:பண்ணு|pannu|panna)|reminder\s*(?:save|வை|pannu)|நாளைக்கு.*remind|(?:tomorrow|naalaikku|nalai|நாளைக்கு|நாளை).*\breminder\b", re.I)),
-    ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|^\s*remember\s+(?!me\b).{3,}|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
+    ("note", re.compile(r"\b(?:save|remember|add|create|take)\s+(?:this\s+)?notes?\b|\b(?:save|add|put)\s+it\s+to\s+notes?\b|^\s*remember\s+(?!me\b).{3,}|\bnotes?\b.*\b(?:business|work|home)\s+folder\b|\bnotes?\b.*(?:folder\s+ல|folder\s+la|ல\s*வை|save\s*பண்ணு|save\s*pannu)|\b(?:note|notes?)\s+(?:save|வை|pannu|பண்ணு)\b|\bsave this\b|\bremember this\b|குறிப்பு|\b(?:folder|business|work|home)\s+(?:ல|la)\s+(?:வை|save|put)?\b", re.I)),
     ("task", re.compile(r"\b(?:add|create|save|set)\s+(?:a\s+)?(?:tasks?|todos?|to-dos?)\b|\b(?:tasks?|todos?|to-dos?)\b.*\b(?:add|save|வை|pannu|பண்ணு)\b|\b(tasks?|todos?|to-dos?|follow up|follow-up)\b|பணி", re.I)),
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
