@@ -65,18 +65,23 @@ def configured_provider_aliases(
     environ: dict[str, str] | None = None,
     *,
     require_all: bool = True,
+    require_explicit: bool = False,
 ) -> dict[str, ProviderAlias]:
     env = os.environ if environ is None else environ
     aliases: dict[str, ProviderAlias] = {}
     errors: list[str] = []
     for name, default in ALIAS_DEFAULTS.items():
-        value = str(env.get(f"SWICO_MODEL_ALIAS_{name.upper()}", default) or "").strip()
+        variable = f"SWICO_MODEL_ALIAS_{name.upper()}"
+        if require_explicit and variable not in env:
+            errors.append(variable)
+            continue
+        value = str(env.get(variable, default) or "").strip()
         if not value and not require_all:
             continue
         try:
             aliases[name] = parse_provider_alias(name, value)
         except ValueError:
-            errors.append(f"SWICO_MODEL_ALIAS_{name.upper()}")
+            errors.append(variable)
     if errors:
         raise ValueError("invalid provider alias configuration: " + ", ".join(errors))
     return aliases
@@ -98,8 +103,13 @@ class ProviderCapabilityRegistry:
 class ProviderHealthRegistry:
     """Small request-local health view, extensible from existing health data."""
 
-    def __init__(self, unhealthy: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        unhealthy: set[str] | None = None,
+        telemetry: dict[object, dict[str, float]] | None = None,
+    ) -> None:
         self._unhealthy = set(unhealthy or ())
+        self._telemetry = dict(telemetry or {})
 
     def is_healthy(self, provider: str, model: str = "") -> bool:
         if provider in self._unhealthy:
@@ -119,16 +129,62 @@ class ProviderHealthRegistry:
                 pass
         return True
 
+    def metrics(self, provider: str, model: str = "") -> dict[str, float]:
+        """Return local, already-observed telemetry without network calls."""
+
+        raw = self._telemetry.get((provider, model))
+        if raw is None:
+            raw = self._telemetry.get(provider, {})
+        allowed = {"cost_score", "latency_score", "error_rate"}
+        return {
+            str(key): float(value)
+            for key, value in dict(raw or {}).items()
+            if str(key) in allowed and isinstance(value, (int, float))
+        }
+
 
 class ProviderCostEstimator:
-    """Stable relative scores used only to break suitable-provider ties."""
+    """Stable local scores for suitable providers.
 
-    def score(self, provider: str, *, task: str, language: str) -> float:
-        if language != "en" and provider == "sarvam":
-            return 0.9
-        if task == "simple" and provider == "openai":
-            return 0.9
-        return 0.7
+    These are ranking signals, not billing prices.  Optional telemetry is
+    supplied by the existing health registry; routing never calls a provider
+    to obtain it.
+    """
+
+    _DEFAULT_COST_SCORE = {"openai": 0.35, "sarvam": 0.55}
+
+    def score(
+        self,
+        provider: str,
+        *,
+        task: str,
+        language: str,
+        code_mixed: bool = False,
+        capability: str = "text",
+        cost_score: float | None = None,
+        latency_score: float = 0.5,
+        error_rate: float = 0.0,
+        previous_failure: bool = False,
+    ) -> float:
+        score = 0.5
+        is_indic = language != "en"
+        if provider == "sarvam" and (is_indic or code_mixed):
+            score += 0.45
+        if provider == "openai" and task == "simple":
+            score += 0.28
+        if provider == "openai" and task == "complex":
+            score += 0.30
+        if provider == "sarvam" and task == "normal" and is_indic:
+            score += 0.18
+        score += 0.12 * (1.0 - max(0.0, min(1.0, float(
+            self._DEFAULT_COST_SCORE.get(provider, 0.5)
+            if cost_score is None else cost_score
+        ))))
+        score += 0.08 * max(0.0, min(1.0, float(latency_score)))
+        score -= 0.5 * max(0.0, min(1.0, float(error_rate)))
+        if previous_failure:
+            score -= 0.55
+        return score
 
 
 @dataclass(frozen=True)
@@ -168,6 +224,10 @@ class ProviderTriagPlanner:
             or request.metadata.get("image_uploads")
         )
         capability = "vision" if has_vision else "text"
+        previous_failures = request.metadata.get("previous_provider_failures", ())
+        if isinstance(previous_failures, str):
+            previous_failures = (previous_failures,)
+        previous_failures = {str(item).lower() for item in previous_failures}
         if has_vision:
             primary_name = "vision_primary"
         elif normalized_tier == "lite":
@@ -195,14 +255,40 @@ class ProviderTriagPlanner:
         alternate = self.aliases.get(alternate_name) if alternate_name else None
         if alternate and alternate.provider == primary.provider:
             alternate = None
-        if (
-            not self.capabilities.supports(primary.provider, capability)
-            and alternate
-            and self.capabilities.supports(alternate.provider, capability)
-        ):
-            primary, alternate = alternate, primary
-        if not self.health.is_healthy(primary.provider, primary.model) and alternate:
-            primary, alternate = alternate, primary
+        candidates = [item for item in (primary, alternate) if item is not None]
+        candidates = [
+            item for item in candidates
+            if self.capabilities.supports(item.provider, capability)
+            and self.health.is_healthy(item.provider, item.model)
+        ]
+        if not candidates:
+            # Preserve the existing failure semantics when no suitable
+            # provider is healthy; callers still receive a deterministic plan
+            # and can surface the normal unavailable error.
+            candidates = [
+                item for item in (primary, alternate) if item is not None
+                and self.capabilities.supports(item.provider, capability)
+            ]
+        if not candidates:
+            raise ValueError(f"no provider supports capability {capability}")
+        ranked = sorted(
+            candidates,
+            key=lambda item: self.cost.score(
+                item.provider,
+                task=task,
+                language=language.reply_language,
+                code_mixed=language.code_mixed,
+                capability=capability,
+                **self.health.metrics(item.provider, item.model),
+                previous_failure=item.provider in previous_failures,
+            ),
+            reverse=True,
+        )
+        primary = ranked[0]
+        alternate = next(
+            (item for item in ranked[1:] if item.provider != primary.provider),
+            None,
+        )
         calls = {"lite": 2, "standard": 3, "pro": 3}.get(normalized_tier, 1)
         return ProviderExecutionPlan(primary, alternate, capability, calls)
 

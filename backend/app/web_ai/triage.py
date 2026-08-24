@@ -8,6 +8,7 @@ from ..billing.pricing import estimate_tokens
 from ..web_api.conversation_continuity import SameThreadContinuityDecision
 from ..web_api.turn_optimizer import optimize_web_turn
 from .execution_plan import ExecutionPlan
+from .planners import RequestTriagPlanner, RetrievalTriagPlanner
 from .settings import TriagSettings
 from .telemetry.metadata import sanitize_metadata
 from .tier_policy import tier_policy_for
@@ -116,8 +117,13 @@ def build_execution_plan(
         previous_topic=triage_input.previous_topic,
         continuity=triage_input.continuity,
     )
+    request_plan = RequestTriagPlanner().from_existing(
+        triage_input.message,
+        decision=intent_decision,
+        optimization=optimization,
+    )
     task_requirements = extract_task_requirements(triage_input.message)
-    deterministic = bool(optimization.local_intent)
+    deterministic = request_plan.route == "deterministic"
     repository_task = bool(
         re.search(
             r"\b(?:repository|repo|codebase|source|file|module|class|function|"
@@ -132,14 +138,14 @@ def build_execution_plan(
             re.IGNORECASE,
         )
     )
-    blocked = optimization.optimization_route == "safety_block"
+    blocked = request_plan.route == "blocked"
     route = (
         "blocked"
         if blocked
         else "deterministic"
         if deterministic
         else "cache_candidate"
-        if optimization.cache_eligible
+        if request_plan.route == "cache"
         else "provider_backed"
     )
     profile_relevant = bool(
@@ -255,6 +261,12 @@ def build_execution_plan(
         and config.dense_runtime_enabled
         and policy.dense_retrieval_allowed
     )
+    evidence_plan = RetrievalTriagPlanner().plan(
+        request_plan,
+        policy=policy,
+        settings=config,
+    )
+    dense_planned = bool(dense_planned and evidence_plan.dense_allowed)
     guard_planned = bool(
         not deterministic
         and not blocked
@@ -295,8 +307,8 @@ def build_execution_plan(
         policy_version=config.policy_version,
         tier_id=policy.tier_id,
         route=route,
-        intent=intent_decision.intent,
-        answer_class=optimization.answer_class,
+        intent=request_plan.intent,
+        answer_class=request_plan.answer_class,
         reason_codes=tuple(reason for reason in reasons if reason),
         retrieval_sources=retrieval_sources,
         token_allocation=allocation,
@@ -304,7 +316,7 @@ def build_execution_plan(
             policy.max_output_tokens, optimization.max_output_tokens
         ),
         expected_provider_calls=expected_calls,
-        cache_eligible=optimization.cache_eligible and not knowledge_planned,
+        cache_eligible=request_plan.route == "cache" and not knowledge_planned,
         deterministic=deterministic or blocked,
         streaming_mode=(
             "none"

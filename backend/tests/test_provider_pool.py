@@ -88,6 +88,30 @@ def test_pool_switches_away_from_marked_unhealthy_primary():
     assert route.provider == "sarvam"
 
 
+def test_provider_scoring_uses_language_task_cost_and_local_health_telemetry():
+    planner = ProviderTriagPlanner(
+        health=ProviderHealthRegistry(
+            telemetry={
+                "openai": {"cost_score": 0.2, "latency_score": 0.9},
+                "sarvam": {"cost_score": 0.8, "latency_score": 0.1},
+            }
+        )
+    )
+    english = planner.route(
+        _request("What is 2 + 2?", "en"), "lite", max_output_tokens=420
+    )
+    indic = planner.route(
+        _request("समझाइए", "hi"), "lite", max_output_tokens=420
+    )
+    assert english.metadata["provider_pool_alias"] == "lite_fast"
+    assert indic.metadata["provider_pool_alias"] == "lite_multilingual"
+
+
+def test_explicit_aliases_can_be_required_for_production_rollout():
+    with pytest.raises(ValueError, match="SWICO_MODEL_ALIAS_LITE_FAST"):
+        configured_provider_aliases({}, require_explicit=True)
+
+
 def test_embedding_router_keeps_free_local_and_paid_alias_separate():
     assert EmbeddingProviderRouter().route("free").provider == "swico_free"
     paid = EmbeddingProviderRouter().route("lite")

@@ -32,6 +32,34 @@ class RequestPlan:
 
 
 class RequestTriagPlanner:
+    def from_existing(
+        self,
+        message: str,
+        *,
+        decision: object,
+        optimization: object,
+    ) -> RequestPlan:
+        """Adapt the existing optimizer result into the planner contract.
+
+        The website already computes these decisions with attachment and
+        continuity context.  Keeping this adapter avoids a second optimizer
+        with subtly different routing semantics.
+        """
+
+        route: RequestKind = (
+            "blocked" if optimization.optimization_route == "safety_block"
+            else "deterministic" if optimization.local_intent
+            else "cache" if optimization.cache_eligible
+            else "provider"
+        )
+        return RequestPlan(
+            intent=decision.intent,
+            answer_class=optimization.answer_class,
+            route=route,
+            query_variants=(message[:2_000],),
+            reason=optimization.optimization_route or decision.reason,
+        )
+
     def plan(
         self,
         message: str,
@@ -45,18 +73,10 @@ class RequestTriagPlanner:
             reply_language=reply_language,
             previous_topic=previous_topic,
         )
-        route: RequestKind = (
-            "blocked" if optimization.optimization_route == "safety_block"
-            else "deterministic" if optimization.local_intent
-            else "cache" if optimization.cache_eligible
-            else "provider"
-        )
-        return RequestPlan(
-            intent=decision.intent,
-            answer_class=optimization.answer_class,
-            route=route,
-            query_variants=(message[:2_000],),
-            reason=optimization.optimization_route or decision.reason,
+        return self.from_existing(
+            message,
+            decision=decision,
+            optimization=optimization,
         )
 
 

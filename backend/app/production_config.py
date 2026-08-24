@@ -128,8 +128,15 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     multi_provider = _bool(env, "WEB_MULTI_PROVIDER_ROUTING_ENABLED", False)
     if multi_provider is None:
         errors.append("WEB_MULTI_PROVIDER_ROUTING_ENABLED must be a boolean")
+    require_explicit_aliases = (
+        multi_provider is True
+        and _value(env, "APP_ENV").lower() in {"prod", "production"}
+    )
     try:
-        aliases = configured_provider_aliases(env)
+        aliases = configured_provider_aliases(
+            env,
+            require_explicit=require_explicit_aliases,
+        )
     except ValueError as exc:
         # The exception contains alias variable names only.
         errors.append(str(exc))

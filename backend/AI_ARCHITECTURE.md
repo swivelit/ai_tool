@@ -36,9 +36,12 @@ flowchart TD
 
 - `AIProviderRouter`: deterministic route selection from language and intent.
 - `RequestTriagPlanner` / `RequestPlan`: provider-neutral request intent and
-  deterministic/cache/provider decision.
+  deterministic/cache/provider decision, adapted from the live optimizer so
+  the website has one authoritative request decision path.
 - `RetrievalTriagPlanner` / `EvidencePlan`: bounded evidence confidence,
-  lexical-first Lite retrieval, and tier corrective-round limits.
+  lexical-first Lite retrieval, query-variant limits, and tier corrective-round
+  limits. The runtime re-evaluates and fuses after each bounded round; Pro may
+  run two rounds and stops as soon as evidence is sufficient.
 - `ProviderTriagPlanner` / `ProviderExecutionPlan`: selects environment-backed
   aliases using language, capability, health, cost, and tier requirements.
 - `MultiProviderBroker`: exposes one primary and one opposite-provider

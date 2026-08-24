@@ -131,8 +131,16 @@ def _validator_capability(settings: TriagSettings) -> str:
 
 def _provider_pool_check(environ: Mapping[str, str]) -> dict[str, object]:
     enabled = multi_provider_routing_enabled(dict(environ))
+    require_explicit_aliases = (
+        enabled
+        and str(environ.get("APP_ENV", "")).strip().lower()
+        in {"prod", "production"}
+    )
     try:
-        aliases = configured_provider_aliases(dict(environ))
+        aliases = configured_provider_aliases(
+            dict(environ),
+            require_explicit=require_explicit_aliases,
+        )
     except ValueError:
         return _check(
             "multi_provider_routing",

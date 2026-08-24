@@ -10,6 +10,7 @@ from ..evidence.models import EvidencePack
 from ..evidence.pack_builder import build_evidence_pack
 from ..evidence.compressor import compress_runtime_text
 from ..execution_plan import ExecutionPlan
+from ..planners import RequestPlan, RetrievalTriagPlanner
 from ..settings import TriagSettings
 from ..tier_policy import TierPolicy
 from .corrective import CorrectiveRetrievalController
@@ -147,35 +148,37 @@ def execute_hybrid_retrieval(
     selected = _cap_knowledge_candidates(
         selected, token_cap=policy.knowledge_token_cap
     )
-    if settings.retrieval_evaluator_enabled:
-        status, contradictions = evaluate_retrieval(selected)
-    else:
-        basic_support = max(
-            (
-                max(
-                    item.lexical_score,
-                    item.semantic_score,
-                    item.metadata_score,
-                )
-                for item in selected
-            ),
-            default=0.0,
-        )
-        status, contradictions = (
-            ("sufficient", ()) if basic_support >= 0.08
-            else ("insufficient", ())
-        )
+    status, contradictions = _evaluate_selected(selected, settings)
+    request_plan = RequestPlan(
+        intent=plan.intent,
+        answer_class=plan.answer_class,
+        route=(
+            "deterministic" if plan.route == "deterministic"
+            else "blocked" if plan.route == "blocked"
+            else "cache" if plan.route == "cache_candidate"
+            else "provider"
+        ),
+        query_variants=(query[:2_000],),
+        reason="runtime_execution_plan",
+    )
+    evidence_plan = RetrievalTriagPlanner().plan(
+        request_plan,
+        policy=policy,
+        settings=settings,
+    )
     corrective = CorrectiveRetrievalController(
         policy=policy,
-        configured_max_rounds=settings.max_corrective_rounds,
-    )
-    corrective_query = (
-        corrective.next_query(query=query, status=status)
-        if settings.retrieval_evaluator_enabled
-        else None
+        configured_max_rounds=evidence_plan.corrective_round_limit,
     )
     status_codes = list(initial_statuses) + list(run.status_codes)
-    if corrective_query is not None:
+    # Corrective retrieval is deliberately evaluator-gated, as in the
+    # existing path.  The controller supplies the tier bound: Standard can
+    # perform one round and Pro can perform two, while Free/Lite are capped at
+    # zero by policy.
+    while settings.retrieval_evaluator_enabled:
+        corrective_query = corrective.next_query(query=query, status=status)
+        if corrective_query is None:
+            break
         correction = RetrievalRegistry(
             (LexicalAttachmentRetriever(),),
             max_concurrency=1,
@@ -187,8 +190,12 @@ def execute_hybrid_retrieval(
             candidate_limit=policy.candidate_limit,
             cancellation_signal=cancellation_signal,
         )
-        fused = reciprocal_rank_fusion(
+        run = RetrievalRun(
             (*run.result_sets, *correction.result_sets),
+            tuple(dict.fromkeys((*run.status_codes, *correction.status_codes))),
+        )
+        fused = reciprocal_rank_fusion(
+            run.result_sets,
             limit=policy.candidate_limit,
         )
         deduplicated = deduplicate_candidates(fused)
@@ -200,7 +207,7 @@ def execute_hybrid_retrieval(
         selected = _cap_knowledge_candidates(
             selected, token_cap=policy.knowledge_token_cap
         )
-        status, contradictions = evaluate_retrieval(selected)
+        status, contradictions = _evaluate_selected(selected, settings)
         status_codes.extend(("corrective_round", *correction.status_codes))
     pack = build_evidence_pack(
         owner_user_id=owner_user_id,
@@ -215,6 +222,29 @@ def execute_hybrid_retrieval(
         pack=pack,
         candidate_count=len(deduplicated),
         corrective_rounds=corrective.completed_rounds,
+    )
+
+
+def _evaluate_selected(
+    selected: tuple[RetrievalCandidate, ...],
+    settings: TriagSettings,
+) -> tuple[str, tuple[str, ...]]:
+    if settings.retrieval_evaluator_enabled:
+        return evaluate_retrieval(selected)
+    basic_support = max(
+        (
+            max(
+                item.lexical_score,
+                item.semantic_score,
+                item.metadata_score,
+            )
+            for item in selected
+        ),
+        default=0.0,
+    )
+    return (
+        ("sufficient", ()) if basic_support >= 0.08
+        else ("insufficient", ())
     )
 
 

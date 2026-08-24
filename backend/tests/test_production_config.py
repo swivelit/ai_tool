@@ -7,6 +7,7 @@ from app.production_config import (
     production_configuration_errors,
     validate_production_configuration,
 )
+from app.ai.provider_pool import ALIAS_DEFAULTS
 
 
 def valid_environment() -> dict[str, str]:
@@ -76,6 +77,29 @@ def valid_environment() -> dict[str, str]:
 def test_valid_test_mode_production_configuration_passes() -> None:
     assert production_configuration_errors(valid_environment()) == []
     validate_production_configuration(valid_environment())
+
+
+def test_enabled_production_provider_pool_requires_explicit_aliases() -> None:
+    errors = production_configuration_errors({
+        **valid_environment(),
+        "WEB_MULTI_PROVIDER_ROUTING_ENABLED": "true",
+    })
+    assert any(
+        "SWICO_MODEL_ALIAS_LITE_FAST" in error
+        for error in errors
+    )
+
+
+def test_enabled_production_provider_pool_accepts_all_explicit_aliases() -> None:
+    env = {
+        **valid_environment(),
+        "WEB_MULTI_PROVIDER_ROUTING_ENABLED": "true",
+        **{
+            f"SWICO_MODEL_ALIAS_{name.upper()}": value
+            for name, value in ALIAS_DEFAULTS.items()
+        },
+    }
+    assert production_configuration_errors(env) == []
 
 
 def test_production_requires_checkout_switch_to_be_explicit() -> None:

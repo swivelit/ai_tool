@@ -344,6 +344,10 @@ and controlled acceptance evidence have been reviewed. When enabling the
 pool, configure the eight `SWICO_MODEL_ALIAS_*` values from
 `backend/.env.example` on the API service only; they are server-side routing
 configuration and must never be copied to the static web app or SSE payloads.
+In production, enabling the pool requires all eight variables to be explicitly
+present; code defaults are for development and tests only. Keep
+`WEB_RAG_MAX_CORRECTIVE_ROUNDS=2` so the validated effective limits remain
+Standard 1 and Pro 2.
 Swico Free remains local-only regardless of this flag. The effective tier
 ceilings are Free 1, Lite 2, Standard 3, and Pro 3 generation/verifier/repair
 calls; embeddings are accounted separately. `WEB_RAG_MAX_CORRECTIVE_ROUNDS`

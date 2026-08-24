@@ -32,6 +32,7 @@ from app.web_ai.retrieval.fusion import reciprocal_rank_fusion
 from app.web_ai.retrieval.lexical import LexicalAttachmentRetriever
 from app.web_ai.retrieval.models import RetrievalCandidate
 from app.web_ai.retrieval.runtime import execute_hybrid_retrieval
+from app.web_ai.retrieval.registry import RetrievalRun
 from app.web_ai.settings import TriagSettings
 from app.web_ai.telemetry.metadata import sanitize_metadata
 from app.web_ai.tier_policy import tier_policy_for
@@ -469,6 +470,129 @@ def test_corrective_round_is_bounded_to_one():
     assert controller.next_query(query="query", status="insufficient") == "query"
     assert controller.next_query(query="query", status="insufficient") is None
     assert controller.completed_rounds == 1
+
+
+@pytest.mark.parametrize(
+    ("tier", "configured", "expected_rounds"),
+    [("free", 2, 0), ("lite", 2, 0), ("standard", 2, 1)],
+)
+def test_runtime_respects_non_pro_corrective_round_limits(
+    monkeypatch, tier, configured, expected_rounds
+):
+    import app.web_ai.retrieval.runtime as runtime_module
+
+    calls = 0
+
+    class FakeRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def execute(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return RetrievalRun(
+                ((_candidate(f"candidate-{calls}", "weak evidence", score=0.01),),),
+                (),
+            )
+
+    monkeypatch.setattr(runtime_module, "RetrievalRegistry", FakeRegistry)
+    plan = replace(_plan(), tier_id=tier)
+    result = execute_hybrid_retrieval(
+        plan=plan,
+        policy=tier_policy_for(tier),
+        settings=TriagSettings(
+            retrieval_evaluator_enabled=True,
+            max_corrective_rounds=configured,
+        ),
+        owner_user_id=1,
+        request_id=f"request-{tier}",
+        query="weak query",
+        uploads=[],
+        store=InProcessEphemeralUploadStore(),
+    )
+    assert result.corrective_rounds == expected_rounds
+    assert calls == 1 + expected_rounds
+
+
+def test_pro_runtime_executes_two_corrective_rounds_and_fuses_each_round(
+    monkeypatch,
+):
+    import app.web_ai.retrieval.runtime as runtime_module
+
+    calls = 0
+
+    class FakeRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def execute(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            scores = (0.01, 0.20, 0.80)
+            return RetrievalRun(
+                ((_candidate(
+                    f"candidate-{calls}",
+                    f"distinct weak evidence {calls}",
+                    score=scores[calls - 1],
+                ),),),
+                (),
+            )
+
+    monkeypatch.setattr(runtime_module, "RetrievalRegistry", FakeRegistry)
+    result = execute_hybrid_retrieval(
+        plan=replace(_plan(), tier_id="pro"),
+        policy=tier_policy_for("pro"),
+        settings=TriagSettings(
+            retrieval_evaluator_enabled=True,
+            max_corrective_rounds=2,
+        ),
+        owner_user_id=1,
+        request_id="pro-corrective-two",
+        query="weak query",
+        uploads=[],
+        store=InProcessEphemeralUploadStore(),
+    )
+    assert calls == 3
+    assert result.corrective_rounds == 2
+    assert result.pack.retrieval_status == "sufficient"
+
+
+def test_pro_runtime_stops_after_first_corrective_round_when_sufficient(
+    monkeypatch,
+):
+    import app.web_ai.retrieval.runtime as runtime_module
+
+    calls = 0
+
+    class FakeRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def execute(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            score = 0.01 if calls == 1 else 0.80
+            return RetrievalRun(
+                ((_candidate(f"candidate-{calls}", "evidence", score=score),),),
+                (),
+            )
+
+    monkeypatch.setattr(runtime_module, "RetrievalRegistry", FakeRegistry)
+    result = execute_hybrid_retrieval(
+        plan=replace(_plan(), tier_id="pro"),
+        policy=tier_policy_for("pro"),
+        settings=TriagSettings(
+            retrieval_evaluator_enabled=True,
+            max_corrective_rounds=2,
+        ),
+        owner_user_id=1,
+        request_id="pro-corrective-stop",
+        query="weak query",
+        uploads=[],
+        store=InProcessEphemeralUploadStore(),
+    )
+    assert calls == 2
+    assert result.corrective_rounds == 1
 
 
 def test_evidence_cap_real_source_map_and_document_prompt_injection_boundary():

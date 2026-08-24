@@ -64,7 +64,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "WEB_RAG_HYBRID_ENABLED": "false",
         "WEB_RAG_DENSE_ENABLED": "false",
         "WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED": "false",
-        "WEB_RAG_MAX_CORRECTIVE_ROUNDS": "1",
+        "WEB_RAG_MAX_CORRECTIVE_ROUNDS": "2",
         "WEB_RAG_QUERY_EMBEDDING_CACHE_TTL_SECONDS": "86400",
         "WEB_RAG_EMBEDDING_MODEL": "text-embedding-3-small",
         "WEB_RAG_EMBEDDING_DIMENSIONS": "1536",
