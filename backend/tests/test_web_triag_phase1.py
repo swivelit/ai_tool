@@ -111,10 +111,9 @@ def test_lite_policy_lifts_triag_ceiling_without_changing_runtime_flags():
     lite = tier_policy_for("lite")
     assert lite.dense_retrieval_allowed is True
     assert lite.claim_verifier_allowed is True
-    assert {
-        tier_policy_for(tier).max_provider_calls
-        for tier in ("lite", "standard", "pro")
-    } == {3}
+    assert tier_policy_for("lite").max_provider_calls == 2
+    assert tier_policy_for("standard").max_provider_calls == 3
+    assert tier_policy_for("pro").max_provider_calls == 3
 
 
 def test_irrelevant_or_empty_sources_receive_zero_tokens():

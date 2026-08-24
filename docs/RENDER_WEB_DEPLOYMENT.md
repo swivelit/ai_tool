@@ -334,7 +334,21 @@ WEB_ROLLOUT_ANSWER_GUARD_MODE=all_eligible
 WEB_ROLLOUT_ANSWER_GUARD_PERCENT=0
 WEB_TRIAG_ROLLOUT_REPORT_ENABLED=true
 WEB_KNOWLEDGE_WORKER_ENABLED=true
+WEB_MULTI_PROVIDER_ROUTING_ENABLED=false
 ```
+
+The website adaptive provider pool is rollout-gated. Keep
+`WEB_MULTI_PROVIDER_ROUTING_ENABLED=false` until the existing OpenAI and
+Sarvam credentials, aliases, pricing, health checks, verifier/repair budgets,
+and controlled acceptance evidence have been reviewed. When enabling the
+pool, configure the eight `SWICO_MODEL_ALIAS_*` values from
+`backend/.env.example` on the API service only; they are server-side routing
+configuration and must never be copied to the static web app or SSE payloads.
+Swico Free remains local-only regardless of this flag. The effective tier
+ceilings are Free 1, Lite 2, Standard 3, and Pro 3 generation/verifier/repair
+calls; embeddings are accounted separately. `WEB_RAG_MAX_CORRECTIVE_ROUNDS`
+accepts `0..2`, with Standard capped at one corrective round and Pro capped at
+two.
 
 Keep all four percentages `0`. Any optional global feature left false must keep
 its rollout mode `disabled`; do not use `internal_accounts` or `percentage` in
@@ -505,7 +519,7 @@ WEB_TRIAG_ROLLOUT_ACCEPTANCE_MIN_SAMPLE=20
 WEB_RAG_HYBRID_ENABLED=false
 WEB_RAG_DENSE_ENABLED=false
 WEB_RAG_RETRIEVAL_EVALUATOR_ENABLED=false
-WEB_RAG_MAX_CORRECTIVE_ROUNDS=1
+WEB_RAG_MAX_CORRECTIVE_ROUNDS=2
 WEB_RAG_QUERY_EMBEDDING_CACHE_TTL_SECONDS=86400
 WEB_RAG_EMBEDDING_MODEL=text-embedding-3-small
 WEB_RAG_EMBEDDING_DIMENSIONS=1536

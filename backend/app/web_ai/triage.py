@@ -276,16 +276,15 @@ def build_execution_plan(
         and policy.claim_verifier_allowed
     )
     repair_planned = bool(
-        guard_planned and config.answer_repair_enabled
+        guard_planned
+        and config.answer_repair_enabled
+        and policy.max_provider_calls > 1 + int(verifier_planned)
     )
     expected_calls = (
         0
         if deterministic or blocked
         else (
-            1
-            + int(dense_planned)
-            + int(verifier_planned)
-            + int(repair_planned)
+            1 + int(verifier_planned) + int(repair_planned)
         )
     )
     reasons = (

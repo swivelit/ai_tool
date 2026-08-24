@@ -340,7 +340,9 @@ def test_live_plan_lists_only_enabled_phase3_provider_stages():
         ),
     )
     assert plan.streaming_mode == "verified_buffered"
-    assert plan.expected_provider_calls == 4
+    # Embedding is separately accounted and is not a generation/verifier/repair
+    # provider call. The three-call ceiling is generation + verifier + repair.
+    assert plan.expected_provider_calls == 3
     assert plan.planned_usage_stages == (
         "embedding", "reservation", "generation", "verifier", "repair",
         "settlement",
@@ -609,12 +611,16 @@ def _execute_contract_turn(
     task_repair_second_attempt_enabled=False,
 ):
     monkeypatch.setenv("APP_ENV", "test")
+    # Contract-repair scenarios exercise the Standard three-call ceiling;
+    # Lite intentionally has only two generation/verifier/repair calls.
+    monkeypatch.setenv("SWICO_DEFAULT_TIER", "standard")
     monkeypatch.setattr(
         "app.web_api.chat_service._cache_response",
         lambda *args, **kwargs: None,
     )
     user = create_test_user(slug, f"{slug}@example.com")
     _fund(int(user.id))
+    _fund(int(user.id), suffix="-phase3-extra")
     calls = 0
 
     class Provider:
@@ -630,6 +636,7 @@ def _execute_contract_turn(
         user_id=int(user.id), message=prompt,
         request_id=f"{slug}-request", thread_id=None, reply_language="en",
     )
+    prepared.swico_tier = "standard"
     prepared.triag_settings = TriagSettings(
         enabled=True,
         shadow_mode=False,

@@ -21,7 +21,7 @@ from .lexical import LexicalAttachmentRetriever
 from .hierarchical import HierarchicalRetriever
 from .models import RetrievalCandidate
 from .persistent_knowledge import PersistentKnowledgeRetriever
-from .registry import RetrievalRegistry
+from .registry import RetrievalRegistry, RetrievalRun
 from .reranker import select_by_marginal_value
 from .triplet import TripletRetriever
 
@@ -50,6 +50,7 @@ def execute_hybrid_retrieval(
     cancellation_signal: object | None = None,
 ) -> HybridRetrievalResult:
     retrievers: list[object] = [LexicalAttachmentRetriever()]
+    deferred_dense: object | None = None
     initial_statuses: list[str] = []
     if (
         settings.rag_dense_enabled
@@ -57,8 +58,7 @@ def execute_hybrid_retrieval(
         and dense_accounted
         and embed is not None
     ):
-        retrievers.append(
-            TemporaryDenseRetriever(
+        dense_retriever = TemporaryDenseRetriever(
                 store=store,
                 embed=embed,
                 query_embed=query_embed,
@@ -68,7 +68,12 @@ def execute_hybrid_retrieval(
                     settings.query_embedding_cache_ttl_seconds
                 ),
             )
-        )
+        if policy.tier_id == "lite":
+            # Lite is lexical-first. Dense is an explicit fallback only when
+            # lexical retrieval did not produce useful support.
+            deferred_dense = dense_retriever
+        else:
+            retrievers.append(dense_retriever)
     elif settings.rag_dense_enabled and policy.dense_retrieval_allowed:
         initial_statuses.extend(
             ("embedding_budget_unavailable", "lexical_fallback")
@@ -117,6 +122,19 @@ def execute_hybrid_retrieval(
         candidate_limit=policy.candidate_limit,
         cancellation_signal=cancellation_signal,
     )
+    if deferred_dense is not None and not _lexical_support_sufficient(run):
+        dense_run = RetrievalRegistry((deferred_dense,), max_concurrency=1).execute(
+            plan=plan,
+            query=query,
+            uploads=uploads,
+            owner_user_id=owner_user_id,
+            candidate_limit=policy.candidate_limit,
+            cancellation_signal=cancellation_signal,
+        )
+        run = RetrievalRun(
+            (*run.result_sets, *dense_run.result_sets),
+            tuple(dict.fromkeys((*run.status_codes, *dense_run.status_codes))),
+        )
     fused = reciprocal_rank_fusion(
         run.result_sets, limit=policy.candidate_limit
     )
@@ -232,3 +250,16 @@ def _cap_knowledge_candidates(
         )
         remaining -= tokens
     return tuple(output)
+
+
+def _lexical_support_sufficient(run: RetrievalRun) -> bool:
+    """Return true when lexical evidence is strong enough to skip dense search."""
+
+    return any(
+        max(
+            float(getattr(item, "lexical_score", 0.0) or 0.0),
+            float(getattr(item, "metadata_score", 0.0) or 0.0),
+        ) >= 0.08
+        for result_set in run.result_sets
+        for item in result_set
+    )

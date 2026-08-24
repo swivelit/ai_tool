@@ -21,13 +21,19 @@ from ..ai.language import localized_web_deterministic_text, resolve_web_reply_la
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
 from ..ai.providers.openai_provider import OpenAIProvider
-from ..ai.providers.sarvam_provider import SarvamProvider, sarvam_provider_output_budget
+from ..ai.providers.sarvam_provider import (
+    SarvamProvider, sarvam_chat_max_tokens, sarvam_provider_output_budget,
+)
 from ..ai.providers.swico_free_provider import SwicoFreeProvider
 from ..ai.providers.base import (
     GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
     ProviderStreamInterrupted,
 )
 from ..ai.router import AIProviderRouter
+from ..ai.provider_pool import (
+    CrossProviderVerifier, EmbeddingProviderRouter, TargetedAnswerRepair,
+    multi_provider_routing_enabled,
+)
 from ..ai.swico_tiers import SwicoTierUnavailableError, free_output_token_ceiling
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
@@ -2533,6 +2539,10 @@ def prepare_web_turn(
             context_turns=context_turns,
         )
         route = AIProviderRouter().select_route(ai_request)
+        if route.metadata.get("provider_pool_enabled"):
+            # The pool owns one primary plus one alternate. Do not let an
+            # individual provider replay itself and consume the tier ceiling.
+            ai_request.metadata["max_provider_attempts"] = 1
 
         if image_uploads and route.provider != "openai":
             raise AttachmentRequestError(
@@ -2600,6 +2610,14 @@ def prepare_web_turn(
                     max(0, int(route.max_output_tokens)),
                     tier_policy_for("free").max_output_tokens,
                     free_output_token_ceiling(),
+                ),
+            )
+        elif route.provider == "sarvam":
+            route = replace(
+                route,
+                max_output_tokens=min(
+                    max(1, int(route.max_output_tokens)),
+                    sarvam_chat_max_tokens(),
                 ),
             )
         if route.provider == "openai":
@@ -2683,7 +2701,10 @@ def prepare_web_turn(
 
         # Reorder healthy candidates within the effective tier. The optional
         # simple-turn policy may use Lite without changing the user's saved tier.
-        if enabled and route.provider == "openai" and swico_tier:
+        if (
+            enabled and route.provider == "openai" and swico_tier
+            and not route.metadata.get("provider_pool_enabled")
+        ):
             from ..openai_model_router import (
                 OpenAIModelRouter, vision_capable_selections,
             )
@@ -2828,6 +2849,9 @@ def prepare_web_turn(
         embedding_request_id: str | None = None
         embedding_reserved_micros = 0
         embedding_accounted = False
+        embedding_alias = EmbeddingProviderRouter().route(
+            swico_tier, fallback_model=active_triag_settings.embedding_model
+        )
         attachment_embedding_planned = bool(
             any(not is_image_extension(upload.extension) for upload in uploads)
             and not any(upload.virtual_text_operation for upload in uploads)
@@ -2857,7 +2881,8 @@ def prepare_web_turn(
                     for chunk in upload.chunks
                 )
             embedding_reserve = reserve_price(
-                "openai", active_triag_settings.embedding_model,
+                "openai" if swico_tier == "free" else embedding_alias.provider,
+                active_triag_settings.embedding_model if swico_tier == "free" else embedding_alias.model,
                 embedding_tokens, 0,
             )
             stage = get_or_create_usage_stage(
@@ -2897,8 +2922,8 @@ def prepare_web_turn(
                         request_id=embedding_request_id,
                         user_id=user_id,
                         thread_id=thread.id,
-                        provider="openai",
-                        model=active_triag_settings.embedding_model,
+                        provider=embedding_alias.provider,
+                        model=embedding_alias.model,
                         pricing_snapshot_json=snapshot_json(
                             embedding_reserve.snapshot
                         ),
@@ -2912,8 +2937,8 @@ def prepare_web_turn(
                         request_id=embedding_request_id,
                         user_id=user_id,
                         thread_id=thread.id,
-                        provider="openai",
-                        model=active_triag_settings.embedding_model,
+                        provider=embedding_alias.provider,
+                        model=embedding_alias.model,
                         reserved_micros=embedding_reserve.micros,
                         pricing_snapshot_json=snapshot_json(
                             embedding_reserve.snapshot
@@ -3098,6 +3123,11 @@ def _phase2_embedding_vectors(
             provider = providers.get("swico_free") or SwicoFreeProvider()
             vectors = provider.embed(values, mode=mode)
         else:
+            embedding_alias = EmbeddingProviderRouter().route(
+                prepared.swico_tier, fallback_model=settings.embedding_model
+            )
+            if embedding_alias.provider != "openai":
+                raise RuntimeError("configured_embedding_provider_has_no_web_adapter")
             provider = OpenAIProvider()
             client = provider._client_or_create()
             response = tracked_embedding(
@@ -3108,7 +3138,7 @@ def _phase2_embedding_vectors(
                 request_id=(
                     f"{prepared.request_id}:embed:{counters['attempted_calls']}"
                 ),
-                model=settings.embedding_model,
+                model=embedding_alias.model,
                 dimensions=settings.embedding_dimensions,
                 timeout=2.5,
             )
@@ -3193,8 +3223,11 @@ def _finalize_embedding_stage(
                 {"provider": "swico_free", "zero_charge": True, "embedding_dimensions": 384},
             )
         else:
+            embedding_alias = EmbeddingProviderRouter().route(
+                prepared.swico_tier, fallback_model=settings.embedding_model
+            )
             price = price_usage(
-                "openai", settings.embedding_model, input_tokens, 0
+                embedding_alias.provider, embedding_alias.model, input_tokens, 0
             )
         if prepared.swico_tier == "free":
             settle_swico_free_usage(
@@ -3221,8 +3254,8 @@ def _finalize_embedding_stage(
                 usage_source="estimated",
                 pricing_snapshot_json=snapshot_json(price.snapshot),
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90"),
-                provider="openai",
-                model=settings.embedding_model,
+                provider=embedding_alias.provider,
+                model=embedding_alias.model,
                 usage_kind="chat",
                 swico_tier=prepared.swico_tier,
             )
@@ -3239,8 +3272,8 @@ def _finalize_embedding_stage(
                 usage_source="estimated",
                 pricing_snapshot_json=snapshot_json(price.snapshot),
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90"),
-                provider="openai",
-                model=settings.embedding_model,
+                provider=embedding_alias.provider,
+                model=embedding_alias.model,
                 usage_kind="chat",
                 swico_tier=prepared.swico_tier,
             )
@@ -4533,9 +4566,36 @@ def execute_web_turn(
             def generate_draft(
                 visible_delta: Callable[[str], None] | None,
             ) -> AIProviderResponse:
+                nonlocal provider
                 nonlocal streamed_by_provider, guard_context, fence_autoclosed
                 nonlocal latest_generated_response, completed_provider_response
                 nonlocal finalize_stage
+                visible_output_emitted = False
+
+                def emit_delta(value: str) -> None:
+                    nonlocal visible_output_emitted
+                    if str(value or ""):
+                        visible_output_emitted = True
+                    if visible_delta:
+                        visible_delta(value)
+
+                def invoke_generation(
+                    generation_provider: Any,
+                    generation_route: AIRoute,
+                ) -> AIProviderResponse:
+                    if visible_delta and hasattr(generation_provider, "stream_complete"):
+                        nonlocal streamed_by_provider
+                        streamed_by_provider = True
+                        return generation_provider.stream_complete(
+                            prepared.ai_request, generation_route, emit_delta
+                        )
+                    draft_response = generation_provider.complete(
+                        prepared.ai_request, generation_route
+                    )
+                    if visible_delta:
+                        emit_delta(draft_response.text)
+                    return draft_response
+
                 _phase3_stage(
                     prepared,
                     stage_name="generation",
@@ -4545,20 +4605,45 @@ def execute_web_turn(
                     reserved_micros=prepared.reserved_micros,
                     lifecycle_stage="provider_started",
                 )
+                def invoke_with_pool_fallback() -> AIProviderResponse:
+                    nonlocal provider
+                    try:
+                        return invoke_generation(provider, prepared.route)
+                    except (GenerationIncomplete, GenerationCancelled, ProviderSafetyRejected):
+                        raise
+                    except Exception:
+                        # A pool alternate is safe only before any visible
+                        # output. Once SSE emits text, never replay the answer.
+                        alternate = None
+                        if (
+                            not visible_output_emitted
+                            and multi_provider_routing_enabled()
+                            and prepared.route.metadata.get("provider_pool_enabled")
+                        ):
+                            alternate = CrossProviderVerifier().planner.alternate_route(
+                                prepared.route,
+                                max_output_tokens=prepared.route.max_output_tokens,
+                            )
+                        if alternate is None:
+                            raise
+                        alternate_provider = provider_map.get(alternate.provider) or (
+                            OpenAIProvider()
+                            if alternate.provider == "openai" else SarvamProvider()
+                        )
+                        # Make the fallback the effective generation route so
+                        # verification and repair select its opposite provider.
+                        prepared.route = alternate
+                        provider = alternate_provider
+                        _expand_phase3_reservation(
+                            prepared,
+                            stage_name="generation_fallback",
+                            request=prepared.ai_request,
+                            route=alternate,
+                        )
+                        return invoke_generation(alternate_provider, alternate)
+
                 try:
-                    if visible_delta and hasattr(provider, "stream_complete"):
-                        streamed_by_provider = True
-                        draft = provider.stream_complete(
-                            prepared.ai_request,
-                            prepared.route,
-                            visible_delta,
-                        )
-                    else:
-                        draft = provider.complete(
-                            prepared.ai_request, prepared.route
-                        )
-                        if visible_delta:
-                            visible_delta(draft.text)
+                    draft = invoke_with_pool_fallback()
                     latest_generated_response = draft
                     finalize_stage = "provider_response_received"
                 except GenerationIncomplete as exc:
@@ -4799,9 +4884,23 @@ def execute_web_turn(
                         "answer_class": "simple",
                     },
                 )
-                verifier_route = replace(
-                    prepared.route, max_output_tokens=96
-                )
+                verifier_route = replace(prepared.route, max_output_tokens=96)
+                if (
+                    multi_provider_routing_enabled()
+                    and prepared.route.metadata.get("provider_pool_enabled")
+                ):
+                    opposite = CrossProviderVerifier().route_for(
+                        prepared.route, max_output_tokens=96
+                    )
+                    if opposite is not None:
+                        verifier_route = opposite
+                        verifier_provider = provider_map.get(
+                            opposite.provider
+                        ) or (
+                            OpenAIProvider()
+                            if opposite.provider == "openai"
+                            else SarvamProvider()
+                        )
                 try:
                     reserved = _expand_phase3_reservation(
                         prepared,
@@ -4814,16 +4913,16 @@ def execute_web_turn(
                         prepared,
                         stage_name="verifier",
                         status="skipped",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
+                        provider=verifier_route.provider,
+                        model=verifier_route.model or "",
                     )
                     raise
                 _phase3_stage(
                     prepared,
                     stage_name="verifier",
                     status="running",
-                    provider=prepared.route.provider,
-                    model=prepared.route.model or "",
+                    provider=verifier_route.provider,
+                    model=verifier_route.model or "",
                     reserved_micros=reserved,
                 )
                 try:
@@ -4871,8 +4970,8 @@ def execute_web_turn(
                             prepared,
                             stage_name="verifier",
                             status="failed",
-                            provider=prepared.route.provider,
-                            model=prepared.route.model or "",
+                            provider=verifier_route.provider,
+                            model=verifier_route.model or "",
                             reserved_micros=reserved,
                         )
                     raise ValueError("verifier_unavailable") from exc
@@ -4881,8 +4980,8 @@ def execute_web_turn(
                         prepared,
                         stage_name="verifier",
                         status="released",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
+                        provider=verifier_route.provider,
+                        model=verifier_route.model or "",
                         reserved_micros=reserved,
                     )
                     raise
@@ -4891,8 +4990,8 @@ def execute_web_turn(
                         prepared,
                         stage_name="verifier",
                         status="failed",
-                        provider=prepared.route.provider,
-                        model=prepared.route.model or "",
+                        provider=verifier_route.provider,
+                        model=verifier_route.model or "",
                         reserved_micros=reserved,
                     )
                     raise
@@ -5178,6 +5277,34 @@ def execute_web_turn(
                         model=prepared.route.model or "",
                     )
                     return None
+                verifier_planned = int(
+                    phase3_settings.model_claim_verifier_enabled
+                    and tier_policy_for(prepared.swico_tier).claim_verifier_allowed
+                    and prepared.retrieval_context is not None
+                )
+                if tier_policy_for(prepared.swico_tier).max_provider_calls <= 1 + verifier_planned:
+                    _phase3_stage(
+                        prepared,
+                        stage_name="repair",
+                        status="skipped",
+                        provider=prepared.route.provider,
+                        model=prepared.route.model or "",
+                    )
+                    return None
+                if (
+                    attempt_number > 1
+                    and tier_policy_for(prepared.swico_tier).max_provider_calls
+                    <= 1 + verifier_planned + 1
+                ):
+                    _phase3_stage(
+                        prepared,
+                        stage_name="repair",
+                        status="skipped",
+                        provider=prepared.route.provider,
+                        model=prepared.route.model or "",
+                        attempt_number=attempt_number,
+                    )
+                    return None
                 contract = build_repair_request(
                     user_id=prepared.user_id,
                     request_id=prepared.request_id,
@@ -5225,6 +5352,24 @@ def execute_web_turn(
                         ).max_output_tokens,
                     ),
                 )
+                repair_provider = provider
+                if (
+                    multi_provider_routing_enabled()
+                    and prepared.route.metadata.get("provider_pool_enabled")
+                ):
+                    opposite = TargetedAnswerRepair().route_for(
+                        prepared.route,
+                        max_output_tokens=repair_route.max_output_tokens,
+                    )
+                    if opposite is not None:
+                        repair_route = opposite
+                        repair_provider = provider_map.get(
+                            opposite.provider
+                        ) or (
+                            OpenAIProvider()
+                            if opposite.provider == "openai"
+                            else SarvamProvider()
+                        )
                 try:
                     reserved = _expand_phase3_reservation(
                         prepared,
@@ -5236,8 +5381,8 @@ def execute_web_turn(
                 except BillingError:
                     settle_repair_stage(
                         status="settled" if repair_prices else "skipped",
-                        provider_name=prepared.route.provider,
-                        model_name=prepared.route.model or "",
+                        provider_name=repair_route.provider,
+                        model_name=repair_route.model or "",
                         attempt_number=attempt_number,
                     )
                     return None
@@ -5246,13 +5391,13 @@ def execute_web_turn(
                     prepared,
                     stage_name="repair",
                     status="running",
-                    provider=prepared.route.provider,
-                    model=prepared.route.model or "",
+                    provider=repair_route.provider,
+                    model=repair_route.model or "",
                     attempt_number=attempt_number,
                     reserved_micros=repair_reserved_total,
                 )
                 try:
-                    repaired = provider.complete(
+                    repaired = repair_provider.complete(
                         contract.request, repair_route
                     )
                 except GenerationIncomplete as exc:
@@ -5263,8 +5408,8 @@ def execute_web_turn(
                     if usage.get("provider_usage_received"):
                         incomplete = AIProviderResponse(
                             text="",
-                            provider=prepared.route.provider,
-                            model=prepared.route.model,
+                            provider=repair_route.provider,
+                            model=repair_route.model,
                             route=repair_route.route,
                             reason=repair_route.reason,
                             language=repair_route.language,
@@ -5296,24 +5441,24 @@ def execute_web_turn(
                     else:
                         settle_repair_stage(
                             status="settled" if repair_prices else "failed",
-                            provider_name=prepared.route.provider,
-                            model_name=prepared.route.model or "",
+                            provider_name=repair_route.provider,
+                            model_name=repair_route.model or "",
                             attempt_number=attempt_number,
                         )
                     return None
                 except GenerationCancelled:
                     settle_repair_stage(
                         status="settled" if repair_prices else "released",
-                        provider_name=prepared.route.provider,
-                        model_name=prepared.route.model or "",
+                        provider_name=repair_route.provider,
+                        model_name=repair_route.model or "",
                         attempt_number=attempt_number,
                     )
                     raise
                 except Exception:
                     settle_repair_stage(
                         status="settled" if repair_prices else "failed",
-                        provider_name=prepared.route.provider,
-                        model_name=prepared.route.model or "",
+                        provider_name=repair_route.provider,
+                        model_name=repair_route.model or "",
                         attempt_number=attempt_number,
                     )
                     return None

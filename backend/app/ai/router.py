@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 
 from ..openai_model_router import OpenAIModelRouter
+from .provider_pool import MultiProviderBroker, multi_provider_routing_enabled
 from .swico_tiers import SwicoTierUnavailableError, free_enabled, free_output_token_ceiling
 from .intent import IntentDecision, classify_intent_with_metadata, normalize_voice_query_for_intent
 from .language import detect_language
@@ -141,6 +143,23 @@ class AIProviderRouter:
                         free_output_token_ceiling(),
                     ),
                     metadata={**intent_metadata, "swico_tier": "free"},
+                )
+            if multi_provider_routing_enabled() and swico_tier in {
+                "lite", "standard", "pro",
+            }:
+                route = MultiProviderBroker().plan(
+                    replace(request, metadata={**request.metadata, **intent_metadata}),
+                    swico_tier,
+                    max_output_tokens=max_output_tokens,
+                )
+                return replace(
+                    route,
+                    metadata={
+                        **route.metadata,
+                        "swico_tier": swico_tier,
+                        "intent_before_cleanup": intent_metadata.get("intent_before_cleanup"),
+                        "intent_after_cleanup": intent_metadata.get("intent_after_cleanup"),
+                    },
                 )
             permission_tier = str(request.metadata.get("user_tier") or "paid")
             model_router = OpenAIModelRouter()

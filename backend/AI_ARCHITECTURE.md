@@ -1,4 +1,8 @@
-# Backend AI Architecture
+# Swico Website — Updated Target AI Architecture
+
+This document describes the website target architecture. Mobile and legacy
+routes retain compatibility behaviour; the rollout-gated provider pool is
+website-only.
 
 ## Workflow
 
@@ -11,13 +15,19 @@ flowchart TD
   Intent --> Tool[Backend tools: reminders, routine, profile, settings]
   Intent --> Context[Contextual follow-up rewrite/translate/explain]
   Intent --> Cache[Approved global cache and local RAG for safe normal turns]
-  Intent --> Sarvam[Sarvam AI: Indic chat, STT, TTS, translation]
-  Intent --> OpenAILadder[OpenAI model ladder: Responses or Chat per model]
-  Sarvam --> Fallback[One controlled fallback on provider error only]
-  OpenAILadder --> Fallback
+  Intent --> RequestTriag[Request TRIAG]
+  RequestTriag --> RetrievalTriag[Retrieval/RAG TRIAG]
+  RetrievalTriag --> ProviderTriag[Provider TRIAG]
+  ProviderTriag --> Pool[Adaptive OpenAI/Sarvam pool]
+  Pool --> Generation[Generation]
+  Generation --> Guard[Deterministic Answer Guard]
+  Guard --> Verify[Conditional opposite-provider verification]
+  Verify --> Repair[Targeted repair]
+  Repair --> Usage[Independent usage settlement]
+  Intent --> Sarvam[Swico Free local route only]
   Tool --> Usage[ai_usage_events]
   Sarvam --> Usage
-  OpenAILadder --> Usage
+  Pool --> Usage
   Block --> Usage
   Usage --> Contract[Existing response: ok, item, assistant, pipeline, meta]
 ```
@@ -25,6 +35,21 @@ flowchart TD
 ## Agents
 
 - `AIProviderRouter`: deterministic route selection from language and intent.
+- `RequestTriagPlanner` / `RequestPlan`: provider-neutral request intent and
+  deterministic/cache/provider decision.
+- `RetrievalTriagPlanner` / `EvidencePlan`: bounded evidence confidence,
+  lexical-first Lite retrieval, and tier corrective-round limits.
+- `ProviderTriagPlanner` / `ProviderExecutionPlan`: selects environment-backed
+  aliases using language, capability, health, cost, and tier requirements.
+- `MultiProviderBroker`: exposes one primary and one opposite-provider
+  alternate; it never performs dual generation by default.
+- `ProviderCapabilityRegistry`, `ProviderHealthRegistry`, and
+  `ProviderCostEstimator`: bounded selection inputs with no public model data.
+- `EmbeddingProviderRouter`: routes paid embeddings through
+  `embedding_primary`; Swico Free continues to use local E5.
+- `ContextBudgetManager`, `CrossProviderVerifier`, `TargetedAnswerRepair`,
+  and `ProviderUsageSettlement`: contracts around the existing prompt,
+  guard/repair, usage-stage, and billing implementations.
 - `SarvamProvider`: Sarvam chat, STT, and TTS with redacted provider errors.
 - `OpenAIProvider`: tracked OpenAI Responses or Chat Completions calls using
   the catalog-driven `OpenAIModelRouter` candidate ladder.
@@ -38,12 +63,17 @@ flowchart TD
 
 ## Routing Table
 
-| Request type | Provider/model |
+| Request type | Website provider alias |
 | --- | --- |
-| Tamil, Tanglish, or supported Indic-language script (Hindi, Bengali, Telugu, Kannada, Malayalam, Marathi, Gujarati, Punjabi, Odia) | Sarvam `sarvam-105b` |
-| Complex Indic reasoning | Sarvam `sarvam-105b` |
-| English general chat | OpenAI ladder: `gpt-5-nano` Responses, then `gpt-4.1-nano`, then `gpt-4o-mini` |
-| Coding, architecture, debugging | OpenAI ladder: `gpt-5-mini` Responses, then `gpt-4.1-mini`, then `gpt-4o-mini` |
+| Lite simple English/general | `lite_fast` |
+| Lite Indic or code-mixed | `lite_multilingual` |
+| Standard simple | `lite_fast` |
+| Standard normal/grounded | `standard_balanced` |
+| Standard Indic or code-mixed | `standard_multilingual` |
+| Pro complex reasoning/coding | `pro_reasoning` |
+| Pro Indic reasoning | `pro_multilingual` |
+| Image request | `vision_primary` |
+| Paid retrieval embeddings | `embedding_primary` |
 | Contextual Tamil/Tanglish explain/translate follow-up | Recent chat context -> Sarvam, then OpenAI cheap fallback preserving Tamil |
 | Contextual English rewrite/shorten follow-up | Recent chat context -> OpenAI cheap ladder |
 | Reminder/routine/profile/settings | Backend tool, no model call |
@@ -128,16 +158,20 @@ reply language. It never uses the reply preference as an input-language lock.
 - Free non-admin users are limited by `ai_usage_events` daily text and voice totals.
 - Provider budgets stop new provider calls with HTTP 503 when configured spend is exhausted.
 - OpenAI flagship/high models stay disabled unless explicitly enabled and allowlisted.
-- OpenAI generation tries the configured in-provider model ladder before returning
-  provider-unavailable. A model that returns access/compatibility 400 is skipped
-  for `OPENAI_MODEL_PROBE_CACHE_TTL_SECONDS`.
+- With `WEB_MULTI_PROVIDER_ROUTING_ENABLED=true`, paid website generation uses
+  the configured alias pool, one primary at a time, with an opposite-provider
+  verifier/repair only when the tier plan permits it. The rollout flag false
+  path retains the existing OpenAI ladder behavior.
+- A model that returns access/compatibility 400 is skipped for
+  `OPENAI_MODEL_PROBE_CACHE_TTL_SECONDS`.
 - OpenAI meta includes `primary_model_candidate`, `selected_model_reason`,
   `skipped_models`, and `model_health_skip_reason` so fallbacks distinguish
   disabled models, health-cache skips, endpoint/access errors, and cost choices.
 - Simple chat does not call semantic/RAG embedding paths by default. Exact/global
   cache lookup remains cheap; RAG embedding lookup is reserved for saved
   docs/memory/reusable knowledge intents or explicit env opt-in.
-- Text turns use at most one provider call by default. Cache/tool/block routes call no model.
+- Text turns use the tier ceiling of one primary plus bounded verifier/repair
+  calls; cache/tool/block routes call no model.
 - Provider fallback is limited by `AI_MAX_PROVIDER_CALLS_PER_TURN_HARD`; it never
   runs for safety blocks, disabled live data, quota, or budget failures.
 - Voice quota is enforced before STT from estimated audio duration and logged in

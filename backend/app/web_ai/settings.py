@@ -102,7 +102,7 @@ class TriagSettings:
     retrieval_evaluator_enabled: bool = False
     semantic_sufficiency_threshold: float = 0.55
     knowledge_metadata_score: float = 0.5
-    max_corrective_rounds: int = 1
+    max_corrective_rounds: int = 2
     query_embedding_cache_ttl_seconds: int = 86_400
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1_536
@@ -131,6 +131,7 @@ class TriagSettings:
     knowledge_worker_enabled: bool = False
     knowledge_worker_poll_seconds: float = 2.0
     knowledge_worker_max_concurrency: int = 1
+    multi_provider_routing_enabled: bool = False
 
     @classmethod
     def from_environ(
@@ -198,10 +199,10 @@ class TriagSettings:
         max_corrective_rounds = _parse_int(
             env,
             "WEB_RAG_MAX_CORRECTIVE_ROUNDS",
-            1,
+            2,
             errors,
             minimum=0,
-            maximum=1,
+            maximum=2,
         )
         query_cache_ttl = _parse_int(
             env,
@@ -258,6 +259,9 @@ class TriagSettings:
         knowledge_worker_max_concurrency = _parse_int(
             env, "WEB_KNOWLEDGE_WORKER_MAX_CONCURRENCY", 1, errors,
             minimum=1, maximum=8,
+        )
+        multi_provider_routing = _parse_bool(
+            env, "WEB_MULTI_PROVIDER_ROUTING_ENABLED", False, errors
         )
         validator_url = str(env.get("WEB_CODE_VALIDATOR_URL", "") or "").strip()
         validator_token = str(
@@ -349,6 +353,7 @@ class TriagSettings:
             knowledge_worker_enabled=knowledge_worker,
             knowledge_worker_poll_seconds=knowledge_worker_poll_seconds,
             knowledge_worker_max_concurrency=knowledge_worker_max_concurrency,
+            multi_provider_routing_enabled=multi_provider_routing,
         )
 
     @property
@@ -489,5 +494,8 @@ class TriagSettings:
             ),
             "knowledge_worker": (
                 "enabled" if self.knowledge_worker_enabled else "disabled"
+            ),
+            "multi_provider_routing": (
+                "enabled" if self.multi_provider_routing_enabled else "disabled"
             ),
         }

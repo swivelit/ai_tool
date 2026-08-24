@@ -113,7 +113,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "max_document_tokens": 1_400,
         "candidate_limit": 6,
         "evidence_item_limit": 4,
-        "evidence_token_cap": 1_400,
+        "evidence_token_cap": 700,
         "query_variant_limit": 1,
         "retrieval_round_limit": 1,
         "dense_retrieval_allowed": True,
@@ -154,7 +154,7 @@ _BASE_POLICY: dict[TierId, dict[str, object]] = {
         "hierarchical_retrieval_allowed": False,
         "knowledge_token_cap": 0,
         "hierarchy_summary_token_cap": 0,
-        "max_provider_calls": 3,
+        "max_provider_calls": 2,
     },
     "standard": {
         "max_prompt_tokens": 6_500,

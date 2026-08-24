@@ -114,10 +114,10 @@ def test_historical_message_without_public_tier_serializes_as_swico(client):
     assert "provider" not in message and "model" not in message
 
 
-def _fund(user_id: int):
+def _fund(user_id: int, *, suffix: str = ""):
     credit, platform = calculate_topup(1000)
     with SessionLocal() as session:
-        order = PaymentOrder(user_id=user_id, receipt=f"fund-{user_id}", provider_order_id=f"fund-order-{user_id}", gross_amount_paise=1000, credited_amount_micros=credit, platform_share_paise=platform, status="captured")
+        order = PaymentOrder(user_id=user_id, receipt=f"fund-{user_id}{suffix}", provider_order_id=f"fund-order-{user_id}{suffix}", gross_amount_paise=1000, credited_amount_micros=credit, platform_share_paise=platform, status="captured")
         session.add(order); session.flush(); credit_payment_once(session, order); session.commit()
 
 

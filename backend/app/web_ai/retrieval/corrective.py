@@ -15,9 +15,9 @@ class CorrectiveRetrievalController:
     def maximum_rounds(self) -> int:
         if not self.policy.corrective_retrieval_allowed:
             return 0
+        tier_limit = 2 if self.policy.tier_id == "pro" else 1
         return min(
-            1,
-            self.policy.retrieval_round_limit - 1,
+            tier_limit,
             max(0, int(self.configured_max_rounds)),
         )
 

@@ -23,6 +23,11 @@ from sqlmodel import select  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models import Job  # noqa: E402
 from app.production_config import production_configuration_errors  # noqa: E402
+from app.ai.provider_pool import (  # noqa: E402
+    ALIAS_DEFAULTS, configured_provider_aliases, multi_provider_routing_enabled,
+)
+from app.web_ai.retrieval.corrective import CorrectiveRetrievalController  # noqa: E402
+from app.web_ai.tier_policy import tier_policy_for  # noqa: E402
 from app.web_ai.knowledge_jobs import KNOWLEDGE_JOB_TYPES  # noqa: E402
 from app.web_ai.rollout import (  # noqa: E402
     RolloutGlobalFlags,
@@ -122,6 +127,57 @@ def _validator_capability(settings: TriagSettings) -> str:
     if isolation == "static_only" and executable is False:
         return "static_only"
     return "unavailable"
+
+
+def _provider_pool_check(environ: Mapping[str, str]) -> dict[str, object]:
+    enabled = multi_provider_routing_enabled(dict(environ))
+    try:
+        aliases = configured_provider_aliases(dict(environ))
+    except ValueError:
+        return _check(
+            "multi_provider_routing",
+            False,
+            enabled=enabled,
+            aliases_ready=False,
+        )
+    ceilings = {
+        tier: tier_policy_for(tier, dict(environ)).max_provider_calls
+        for tier in ("free", "lite", "standard", "pro")
+    }
+    ceilings_ready = ceilings == {"free": 1, "lite": 2, "standard": 3, "pro": 3}
+    provider_ready = all(item.provider in {"openai", "sarvam"} for item in aliases.values())
+    free_cloud_safe = ceilings["free"] == 1
+    embedding_alias = aliases.get("embedding_primary")
+    embedding_safe = embedding_alias is not None and embedding_alias.provider == "openai"
+    try:
+        triag_settings = TriagSettings.from_environ(environ)
+        corrective_rounds = {
+            tier: CorrectiveRetrievalController(
+                policy=tier_policy_for(tier, dict(environ)),
+                configured_max_rounds=triag_settings.max_corrective_rounds,
+            ).maximum_rounds
+            for tier in ("standard", "pro")
+        }
+    except Exception:
+        corrective_rounds = {"standard": -1, "pro": -1}
+    corrective_ready = corrective_rounds == {"standard": 1, "pro": 2}
+    return _check(
+        "multi_provider_routing",
+        (not enabled) or (
+            len(aliases) == len(ALIAS_DEFAULTS)
+            and provider_ready
+            and embedding_safe
+            and ceilings_ready
+            and free_cloud_safe
+            and corrective_ready
+        ),
+        enabled=enabled,
+        aliases_ready=len(aliases) == len(ALIAS_DEFAULTS),
+        tier_provider_call_ceilings=ceilings,
+        free_cloud_providers_forbidden=free_cloud_safe,
+        corrective_round_limits=corrective_rounds,
+        embedding_provider_safe=embedding_safe,
+    )
 
 
 def _database_checks(
@@ -267,6 +323,7 @@ def build_release_report(
             if triag_settings is not None else {"status": "invalid"}
         ),
     ))
+    checks.append(_provider_pool_check(env))
 
     release_state: TriagReleaseState | None = None
     try:

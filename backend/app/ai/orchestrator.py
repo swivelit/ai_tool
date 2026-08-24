@@ -20,6 +20,7 @@ from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
 from .providers.swico_free_provider import SwicoFreeProvider
 from .router import AIProviderRouter
+from .provider_pool import ProviderTriagPlanner, multi_provider_routing_enabled
 from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
 from .usage import record_ai_usage_event
@@ -246,6 +247,8 @@ def _fallback_route(route: AIRoute, request: AIRequest, context: dict[str, Any])
         return None
     if route.intent == "unsafe_or_sensitive" or route.route == "live_data_disabled":
         return None
+    if multi_provider_routing_enabled() and route.metadata.get("provider_pool_enabled"):
+        return ProviderTriagPlanner().alternate_route(route)
     if route.provider == "sarvam":
         model = "gpt-5-mini" if route.intent in {"coding", "complex_reasoning"} else "gpt-5-nano"
         from ..openai_model_router import OpenAIModelRouter

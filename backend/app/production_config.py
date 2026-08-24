@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from .database_url import is_postgres_database_url
 from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
+from .ai.provider_pool import configured_provider_aliases
 from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
 from .web_ai.settings import TriagConfigurationError, TriagSettings
 from .web_ai.rollout import (
@@ -124,6 +125,26 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("WEB_APP_ENABLED must be true")
     if _bool(env, "WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED", False) is None:
         errors.append("WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED must be a boolean")
+    multi_provider = _bool(env, "WEB_MULTI_PROVIDER_ROUTING_ENABLED", False)
+    if multi_provider is None:
+        errors.append("WEB_MULTI_PROVIDER_ROUTING_ENABLED must be a boolean")
+    try:
+        aliases = configured_provider_aliases(env)
+    except ValueError as exc:
+        # The exception contains alias variable names only.
+        errors.append(str(exc))
+        aliases = {}
+    if multi_provider is True:
+        for alias in aliases.values():
+            if alias.provider == "openai" and not _value(env, "OPENAI_API_KEY"):
+                errors.append("OPENAI_API_KEY must be configured for provider aliases")
+            if alias.provider == "sarvam" and not _value(env, "SARVAM_API_KEY"):
+                errors.append("SARVAM_API_KEY must be configured for provider aliases")
+        embedding_alias = aliases.get("embedding_primary")
+        if embedding_alias is not None and embedding_alias.provider != "openai":
+            errors.append(
+                "SWICO_MODEL_ALIAS_EMBEDDING_PRIMARY must use the OpenAI provider"
+            )
     try:
         TriagSettings.from_environ(env)
     except TriagConfigurationError as exc:
