@@ -232,7 +232,9 @@ projects:
               - key: WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE
                 value: "5"
               - key: WEB_UPLOAD_TTL_SECONDS
-                value: "3600"
+                value: "300"
+              - key: WEB_IMAGE_UPLOADS_ENABLED
+                value: "true"
               - key: WEB_UPLOAD_MAX_FILE_BYTES
                 value: "10485760"
               - key: WEB_UPLOAD_MAX_FILES_PER_MESSAGE

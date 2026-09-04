@@ -4,13 +4,16 @@ import json
 import os
 import threading
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 
-DEFAULT_UPLOAD_TTL_SECONDS = 3_600
-MAX_UPLOAD_TTL_SECONDS = 86_400
+# Ordinary chat attachment content is intentionally short-lived.  The hard
+# ceiling is enforced independently of deployment configuration so a stale or
+# oversized environment value cannot retain document/image content longer.
+DEFAULT_UPLOAD_TTL_SECONDS = 300
+MAX_UPLOAD_TTL_SECONDS = 300
 UPLOAD_KEY_PREFIX = "swico:web-upload:"
 UPLOAD_OWNER_KEY_PREFIX = "swico:web-upload-owner:"
 
@@ -87,6 +90,28 @@ def upload_ttl_seconds() -> int:
     return min(MAX_UPLOAD_TTL_SECONDS, max(1, value))
 
 
+def _bounded_upload(upload: EphemeralUpload, max_ttl_seconds: int) -> EphemeralUpload:
+    """Cap stored attachment metadata at the store's ordinary-upload TTL.
+
+    Callers may construct an upload with a longer metadata expiry, so the
+    store also bounds the serialized expiry in addition to Redis SETEX. This
+    keeps in-process/test storage and Redis behavior aligned.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        expires_at = datetime.fromisoformat(upload.expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        expires_at = now
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    expires_at = expires_at.astimezone(timezone.utc)
+    bounded = min(expires_at, now + timedelta(seconds=max(1, int(max_ttl_seconds))))
+    bounded_iso = utc_iso(bounded)
+    if bounded_iso == upload.expires_at:
+        return upload
+    return replace(upload, expires_at=bounded_iso)
+
+
 def _encode(upload: EphemeralUpload) -> str:
     return json.dumps(asdict(upload), ensure_ascii=False, separators=(",", ":"))
 
@@ -127,6 +152,7 @@ class InProcessEphemeralUploadStore:
     def put(self, upload: EphemeralUpload) -> None:
         with self._lock:
             self._purge()
+            upload = _bounded_upload(upload, self.ttl_seconds)
             self._items[upload.id] = upload
             self._items.move_to_end(upload.id)
             while len(self._items) > self.max_entries:
@@ -161,7 +187,9 @@ class InProcessEphemeralUploadStore:
             return item[0] if item else None
 
     def set_auxiliary(self, key: str, value: str, ttl_seconds: int) -> None:
-        bounded_ttl = min(self.ttl_seconds, max(1, int(ttl_seconds)))
+        # Auxiliary data includes repository snapshots and their independent
+        # retrieval caches; do not couple those lifetimes to ordinary uploads.
+        bounded_ttl = max(1, int(ttl_seconds))
         with self._lock:
             self._purge()
             self._auxiliary[key] = (
@@ -202,6 +230,7 @@ class RedisEphemeralUploadStore:
         return f"{UPLOAD_OWNER_KEY_PREFIX}{int(owner_user_id)}:{upload_id}"
 
     def put(self, upload: EphemeralUpload) -> None:
+        upload = _bounded_upload(upload, self.ttl_seconds)
         try:
             self._client.setex(
                 self._key(upload.id), self.ttl_seconds, _encode(upload)

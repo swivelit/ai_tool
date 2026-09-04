@@ -234,6 +234,36 @@ def test_dense_chunk_embeddings_and_query_embedding_are_reused():
     assert calls[2] == ("largest",)
 
 
+def test_attachment_dense_cache_ttl_never_exceeds_source_lifetime():
+    store = InProcessEphemeralUploadStore()
+    upload = _upload(expires_in=600)
+    store.put(upload)
+    writes: list[int] = []
+    original_set_auxiliary = store.set_auxiliary
+
+    def tracked_set_auxiliary(key: str, value: str, ttl_seconds: int) -> None:
+        writes.append(ttl_seconds)
+        original_set_auxiliary(key, value, ttl_seconds)
+
+    store.set_auxiliary = tracked_set_auxiliary  # type: ignore[method-assign]
+    retriever = TemporaryDenseRetriever(
+        store=store,
+        embed=lambda values: [[1.0, 0.0, 0.0] for _ in values],
+        model="embedding-test",
+        dimensions=3,
+        query_cache_ttl_seconds=86_400,
+    )
+    retriever.retrieve(query="rings", uploads=[upload], owner_user_id=1, limit=10)
+    assert writes and all(0 < ttl <= 300 for ttl in writes)
+
+
+def test_auxiliary_repository_ttl_is_independent_of_upload_ttl():
+    store = InProcessEphemeralUploadStore(ttl_seconds=300)
+    store.set_auxiliary("repository-snapshot", "content", 3600)
+    _value, expires_at = store._auxiliary["repository-snapshot"]
+    assert expires_at > datetime.now(timezone.utc) + timedelta(minutes=5)
+
+
 def _dense_result_for_vectors(
     *, query_vector: list[float], document_vector: list[float]
 ):

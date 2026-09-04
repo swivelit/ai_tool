@@ -74,7 +74,7 @@ it('measures composer height, updates the shared CSS variable, and cleans up in 
   globalThis.ResizeObserver = OriginalResizeObserver
 })
 
-it('selects and drops documents through the attachment control', async () => {
+it('selects documents through the attachment control', async () => {
   const addFiles = vi.fn()
   const { container } = render(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}
     attachmentsEnabled supportedExtensions={['.txt']} addFiles={addFiles} />)
@@ -82,8 +82,7 @@ it('selects and drops documents through the attachment control', async () => {
   const input = container.querySelector('input[type="file"]') as HTMLInputElement
   await userEvent.upload(input, file)
   expect(addFiles).toHaveBeenCalledWith([file])
-  fireEvent.drop(screen.getByTestId('composer').parentElement!, { dataTransfer:{ files:[file] } })
-  expect(addFiles).toHaveBeenCalledTimes(2)
+  expect(addFiles).toHaveBeenCalledTimes(1)
 })
 
 it('accepts configured image extensions and renders an image thumbnail chip', () => {

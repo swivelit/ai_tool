@@ -8,6 +8,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlmodel import select
 
 from app.web_api.document_extraction import DocumentValidationError
 from app.web_api.attachment_context import select_attachment_context
@@ -15,6 +16,8 @@ from app.web_api.upload_store import (
     EphemeralUpload, ExtractedChunk, RedisEphemeralUploadStore, get_upload_store,
     reset_upload_store_for_tests, upload_ttl_seconds, utc_iso,
 )
+from app.database import SessionLocal
+from app.models import WebUsagePreferences
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -138,6 +141,87 @@ def test_image_uploads_are_gated_stored_without_text_extraction_and_bounded(
     oversized = _upload(client, "large.png", png, "image/png")
     assert oversized.status_code == 413
     assert oversized.json()["error"]["code"] == "file_too_large"
+
+
+def test_free_bootstrap_hides_ordinary_and_image_attachments(client, monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "100")
+    monkeypatch.setenv("WEB_IMAGE_UPLOADS_ENABLED", "true")
+    user = create_test_user("free-upload-user", "free-upload-user@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    response = client.get(
+        "/api/web/bootstrap",
+        headers=auth_headers("free-upload-user", "free-upload-user@example.com"),
+    )
+    assert response.status_code == 200
+    assert response.json()["features"]["web_attachments"] is False
+    assert response.json()["features"]["web_image_uploads"] is False
+    with SessionLocal() as session:
+        preferences = session.exec(select(WebUsagePreferences).where(
+            WebUsagePreferences.user_id == int(user.id),
+        )).one()
+        preferences.assistant_tier = "lite"
+        session.add(preferences)
+        session.commit()
+    paid = client.get(
+        "/api/web/bootstrap",
+        headers=auth_headers("free-upload-user", "free-upload-user@example.com"),
+    )
+    assert paid.json()["features"]["web_attachments"] is True
+    assert paid.json()["features"]["web_image_uploads"] is True
+
+
+def test_free_upload_is_rejected_before_rate_limit_or_store_processing(client, monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "100")
+    user = create_test_user("free-upload-user", "free-upload-user@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    import app.web_api.router as router
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("Free upload reached a later processing stage")
+    monkeypatch.setattr(router, "_rate_limit", unexpected)
+    monkeypatch.setattr(router, "_save_temporary_upload", unexpected)
+    monkeypatch.setattr(router, "get_upload_store", unexpected)
+    response = _upload(
+        client, "notes.txt", b"private content", "text/plain",
+        uid="free-upload-user",
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "swico_free_text_only",
+        "message": "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro to attach files or images.",
+    }
+
+
+def test_free_chat_rejects_attachment_ids_before_attachment_loading(client, monkeypatch):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
+    monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "100")
+    user = create_test_user("free-chat-user", "free-chat-user@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    import app.web_api.chat_service as chat_service
+    monkeypatch.setattr(
+        chat_service, "_load_attachments",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Free attachment IDs reached attachment loading")
+        ),
+    )
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("free-chat-user", "free-chat-user@example.com"),
+        json={
+            "request_id": "90000000-0000-4000-8000-000000000099",
+            "message": "Describe this file",
+            "attachment_ids": ["00000000-0000-4000-8000-000000000098"],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "swico_free_text_only"
 
 
 def test_image_count_and_nonvision_tier_fail_before_provider_call(
@@ -348,7 +432,7 @@ def test_one_user_cannot_use_another_users_attachment(client):
     assert response.status_code == 404 and response.json()["error"]["code"] == "attachment_not_found"
 
 
-def test_redis_setex_uses_600_and_reads_do_not_renew(monkeypatch):
+def test_redis_setex_is_capped_at_300_and_reads_do_not_renew(monkeypatch):
     calls: list[tuple] = []
     values: dict[str, str] = {}
 
@@ -371,18 +455,20 @@ def test_redis_setex_uses_600_and_reads_do_not_renew(monkeypatch):
     assert store.is_owned(upload.id, 1) is True
     assert store.is_owned(upload.id, 2) is False
     store.get(upload.id)
-    assert calls[0][0] == "setex" and calls[0][2] == 600
-    assert calls[1][0] == "setex" and calls[1][2] == 600
+    assert calls[0][0] == "setex" and calls[0][2] == 300
+    assert calls[1][0] == "setex" and calls[1][2] == 300
     assert [call[0] for call in calls] == [
         "setex", "setex", "exists", "exists", "get",
     ]
 
 
-def test_upload_ttl_defaults_to_one_hour_and_is_capped_at_24_hours(monkeypatch):
+def test_upload_ttl_defaults_to_five_minutes_and_has_a_hard_cap(monkeypatch):
     monkeypatch.delenv("WEB_UPLOAD_TTL_SECONDS", raising=False)
-    assert upload_ttl_seconds() == 3600
+    assert upload_ttl_seconds() == 300
     monkeypatch.setenv("WEB_UPLOAD_TTL_SECONDS", "999999")
-    assert upload_ttl_seconds() == 86400
+    assert upload_ttl_seconds() == 300
+    monkeypatch.setenv("WEB_UPLOAD_TTL_SECONDS", "120")
+    assert upload_ttl_seconds() == 120
 
 
 @pytest.mark.parametrize("parser_fails", [False, True])
@@ -405,6 +491,25 @@ def test_raw_temporary_file_removed_after_parser_success_or_exception(client, mo
         ))
     response = _upload(client, "notes.txt", b"temporary", "text/plain")
     assert response.status_code == (422 if parser_fails else 201)
+    assert paths and all(not os.path.exists(path) for path in paths)
+
+
+def test_raw_temporary_image_file_removed_after_encoding(client, monkeypatch):
+    create_test_user("upload-user", "upload-user@example.com")
+    import app.web_api.router as router
+
+    original_temp = router.tempfile.NamedTemporaryFile
+    paths: list[str] = []
+
+    def tracked_temp(*args, **kwargs):
+        handle = original_temp(*args, **kwargs)
+        paths.append(handle.name)
+        return handle
+
+    monkeypatch.setattr(router.tempfile, "NamedTemporaryFile", tracked_temp)
+    monkeypatch.setenv("WEB_IMAGE_UPLOADS_ENABLED", "true")
+    response = _upload(client, "sample.png", STILL_PNG, "image/png")
+    assert response.status_code == 201
     assert paths and all(not os.path.exists(path) for path in paths)
 
 

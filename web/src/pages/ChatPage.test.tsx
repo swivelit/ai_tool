@@ -630,16 +630,71 @@ it('rejects unsupported documents before upload', async () => {
   expect(uploadDocument).not.toHaveBeenCalled()
 })
 
-it('supports drag-and-drop and prevents send while an upload is pending', async () => {
+it('accepts a file dropped over the main chat area and prevents send while pending', async () => {
   mockApi(); vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
   render(<ChatPage />)
   const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
-  const dropTarget = screen.getByTestId('composer').parentElement!
-  fireEvent.drop(dropTarget, { dataTransfer:{ files:[new File(['hello'], 'notes.txt', { type:'text/plain' })] } })
+  const dropTarget = screen.getByTestId('conversation')
+  const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
+  fireEvent.dragEnter(dropTarget, { dataTransfer:{ types:['Files'], files:[file] } })
+  expect(screen.getByText('Drop files or images to attach')).toBeInTheDocument()
+  fireEvent.drop(dropTarget, { dataTransfer:{ types:['Files'], files:[file] } })
+  expect(screen.queryByText('Drop files or images to attach')).not.toBeInTheDocument()
   expect(await screen.findByText('Uploading… 0%')).toBeInTheDocument()
   await userEvent.type(textbox, 'question')
   expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
   expect(streamChat).not.toHaveBeenCalled()
+})
+
+it('uploads exactly once when a file is dropped over the composer', async () => {
+  mockApi(); vi.mocked(uploadDocument).mockResolvedValue(uploaded)
+  render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
+  const composer = screen.getByTestId('composer')
+  fireEvent.dragEnter(composer, { dataTransfer:{ types:['Files'], files:[file] } })
+  fireEvent.drop(composer, { dataTransfer:{ types:['Files'], files:[file] } })
+  await waitFor(() => expect(uploadDocument).toHaveBeenCalledTimes(1))
+  expect(screen.queryByText('Drop files or images to attach')).not.toBeInTheDocument()
+})
+
+it('shows no file drop state for text or link drags and clears nested drag depth', async () => {
+  mockApi(); render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const main = screen.getByTestId('conversation').closest('.chat-main')!
+  const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
+  fireEvent.dragEnter(main, { dataTransfer:{ types:['text/plain'], files:[] } })
+  fireEvent.dragEnter(main, { dataTransfer:{ types:['text/uri-list'], files:[] } })
+  expect(screen.queryByText('Drop files or images to attach')).not.toBeInTheDocument()
+  const fileData = { types:['Files'], files:[file] }
+  fireEvent.dragEnter(main, { dataTransfer:fileData })
+  fireEvent.dragEnter(screen.getByTestId('conversation'), { dataTransfer:fileData })
+  fireEvent.dragLeave(screen.getByTestId('conversation'), { dataTransfer:fileData })
+  expect(screen.getByText('Drop files or images to attach')).toBeInTheDocument()
+  fireEvent.dragLeave(main, { dataTransfer:fileData })
+  expect(screen.queryByText('Drop files or images to attach')).not.toBeInTheDocument()
+  expect(uploadDocument).not.toHaveBeenCalled()
+})
+
+it('keeps the ordinary upload control and drop path disabled for Swico Free', async () => {
+  mockApi()
+  const freeBootstrap = {
+    ...bootstrap,
+    assistant:{ ...assistant, tier:'free' as const, tier_label:'Swico Free', tier_selection_enabled:false },
+    features:{ ...bootstrap.features, web_attachments:false, web_image_uploads:false },
+  }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return freeBootstrap as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  expect(screen.queryByRole('button', { name:'Add to prompt' })).not.toBeInTheDocument()
+  fireEvent.drop(screen.getByTestId('conversation'), {
+    dataTransfer:{ types:['Files'], files:[new File(['hello'], 'notes.txt', { type:'text/plain' })] },
+  })
+  expect(uploadDocument).not.toHaveBeenCalled()
 })
 
 it('keeps repository upload hidden when bootstrap capability is disabled', async () => {

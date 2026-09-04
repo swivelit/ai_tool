@@ -897,9 +897,14 @@ def bootstrap(
         "features": {
             "web_chat": True,
             "prepaid_billing": True,
-            "web_attachments": _env_enabled("WEB_ATTACHMENTS_ENABLED") and bool(uploads["available"]),
+            "web_attachments": (
+                swico_tier != "free"
+                and _env_enabled("WEB_ATTACHMENTS_ENABLED")
+                and bool(uploads["available"])
+            ),
             "web_image_uploads": bool(
-                uploads["available"] and uploads["image_uploads_enabled"]
+                swico_tier != "free"
+                and uploads["available"] and uploads["image_uploads_enabled"]
             ),
             "web_voice_recording": _env_enabled("WEB_VOICE_RECORDING_ENABLED"),
             "web_voice_reply": _env_enabled("WEB_VOICE_REPLY_ENABLED"),
@@ -3297,6 +3302,19 @@ async def upload_document(
     auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    billing_exempt = is_internal_test_user(auth, user)
+    swico_tier = selected_swico_tier(session, int(user.id))
+    free_available = swico_free_eligible(
+        int(user.id), internal_account=billing_exempt,
+    )
+    if swico_tier == "free" and not free_available:
+        swico_tier = "lite"
+    if swico_tier == "free":
+        await file.close()
+        return _temporary_error(
+            422, "swico_free_text_only",
+            "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro to attach files or images.",
+        )
     if not _env_enabled("WEB_ATTACHMENTS_ENABLED"):
         return _temporary_error(503, "web_attachments_disabled", "Temporary document attachments are unavailable.")
     _rate_limit(

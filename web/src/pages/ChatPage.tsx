@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState, type DragEvent } from 'react'
 import { X } from 'lucide-react'
 import type { AssistantSettings, ComposerAttachment, ComposerRepository, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, RepositorySnapshot, SearchResult, SwicoTier, Thread, Wallet, Wallets } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteRepository, deleteUpload, streamChat, uploadDocument, uploadRepository, uploadVirtualText } from '../api/client'
@@ -73,6 +73,7 @@ export function ChatPage() {
   const [cancellationReady, setCancellationReady] = useState(false)
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
   const [tierSaving, setTierSaving] = useState(false)
+  const [fileDragActive, setFileDragActive] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
   const removedRepositoryUploads = useRef(new Set<string>())
@@ -94,6 +95,7 @@ export function ChatPage() {
     from: string | null
     to: string
   } | null>(null)
+  const fileDragDepthRef = useRef(0)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
@@ -731,6 +733,43 @@ export function ChatPage() {
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
   }
+
+  const hasFileDragData = (event: DragEvent<HTMLElement>) => (
+    Array.from(event.dataTransfer?.types ?? []).includes('Files')
+  )
+  const resetFileDrag = () => {
+    fileDragDepthRef.current = 0
+    setFileDragActive(false)
+  }
+  const handleChatDragEnter = (event: DragEvent<HTMLElement>) => {
+    if (!hasFileDragData(event)) return
+    event.preventDefault()
+    if (!bootstrap?.features.web_attachments) {
+      event.dataTransfer.dropEffect = 'none'
+      return
+    }
+    event.dataTransfer.dropEffect = 'copy'
+    fileDragDepthRef.current += 1
+    setFileDragActive(true)
+  }
+  const handleChatDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!hasFileDragData(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = bootstrap?.features.web_attachments ? 'copy' : 'none'
+  }
+  const handleChatDragLeave = (event: DragEvent<HTMLElement>) => {
+    if (!hasFileDragData(event) || !bootstrap?.features.web_attachments) return
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+    if (fileDragDepthRef.current === 0) setFileDragActive(false)
+  }
+  const handleChatDrop = (event: DragEvent<HTMLElement>) => {
+    if (!hasFileDragData(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const files = Array.from(event.dataTransfer.files ?? [])
+    resetFileDrag()
+    if (bootstrap?.features.web_attachments && files.length) addFiles(files)
+  }
   const addRepository = (file: File) => {
     if (
       !user || !bootstrap?.features.web_repository_upload
@@ -862,7 +901,9 @@ export function ChatPage() {
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
+    <section className="chat-main" onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
+      <header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
+      {fileDragActive && <div className="chat-drop-overlay" aria-hidden="true"><span>Drop files or images to attach</span></div>}
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}

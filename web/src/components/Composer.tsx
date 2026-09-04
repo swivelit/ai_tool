@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { ArrowUp, AudioLines, FileArchive, FileText, Mic, Plus, Square, Upload, X } from 'lucide-react'
 import type { AssistantSettings, ComposerAttachment, ComposerRepository, LongInputMode, SwicoTier, Wallet } from '../types'
@@ -98,7 +98,6 @@ export function Composer({
   const menuRef = useRef<HTMLDivElement>(null)
   const valueRef = useRef(value)
   const composing = useRef(false)
-  const [dragging, setDragging] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => { valueRef.current = value }, [value])
@@ -179,11 +178,6 @@ export function Composer({
     if (file) addRepository(file)
     if (repositoryFileRef.current) repositoryFileRef.current.value = ''
   }
-  const drop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault(); setDragging(false)
-    if (attachmentsEnabled && !disabled && !streaming) chooseFiles(event.dataTransfer.files)
-  }
-
   const statusText = recorder.state.error
     ?? (recorder.state.status === 'requesting' ? 'Requesting microphone access…'
       : recorder.state.status === 'recording' ? `Recording ${elapsed(recorder.state.elapsed_seconds)}`
@@ -230,9 +224,7 @@ export function Composer({
   }, [])
 
   return <div className="composer-wrap" ref={wrapRef}>
-    <div className={`composer-shell has-character-count ${dragging ? 'dragging' : ''}`}
-      onDragEnter={event => { event.preventDefault(); if (attachmentsEnabled) setDragging(true) }}
-      onDragOver={event => event.preventDefault()} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false) }} onDrop={drop}>
+    <div className="composer-shell has-character-count">
       {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
         {attachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={'local_id' in attachment ? attachment.local_id : attachment.id}>
           {attachment.media_type.startsWith('image/') && attachment.preview_url
@@ -331,7 +323,6 @@ export function Composer({
               disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
       </div>
       <small id="composer-character-count" className={`character-count${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`}>{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
-      {dragging && <div className="drop-overlay" aria-hidden="true"><Upload size={20} /> Drop documents to attach</div>}
     </div>
     <span className="sr-status" aria-live="polite">{statusText}</span>
     <p>Swico can make mistakes. Check important information.</p>

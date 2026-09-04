@@ -1186,6 +1186,12 @@ def prepare_web_turn(
             raise SwicoTierUnavailableError("Only Swico Free can be forced for this request")
         if swico_tier == "free" and not swico_free_eligible:
             raise SwicoTierUnavailableError("Swico Free is not available for this account")
+        if swico_tier == "free" and attachment_ids:
+            raise AttachmentRequestError(
+                "swico_free_text_only",
+                "Swico Free supports text only. Switch to Swico Lite, Swico, or Swico Pro to attach files or images.",
+                422,
+            )
         existing_charge = session.exec(
             select(UsageCharge).where(UsageCharge.request_id == request_id)
         ).first()
