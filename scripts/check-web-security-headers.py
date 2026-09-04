@@ -21,6 +21,13 @@ def unsafe_headers(headers) -> list[str]:
     for directive in ("default-src", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'", "media-src 'self' blob:"):
         if directive not in csp:
             failures.append(f"Content-Security-Policy missing safe directive: {directive}")
+    csp_directives = {
+        parts[0]: set(parts[1:])
+        for parts in (segment.strip().split() for segment in csp.split(";"))
+        if parts and parts[0]
+    }
+    if "img-src" not in csp_directives or "blob:" not in csp_directives["img-src"]:
+        failures.append("Content-Security-Policy img-src must permit blob: image previews")
     if str(headers.get("X-Content-Type-Options") or "").lower() != "nosniff":
         failures.append("X-Content-Type-Options must be nosniff")
     if str(headers.get("X-Frame-Options") or "").upper() not in {"DENY", "SAMEORIGIN"}:

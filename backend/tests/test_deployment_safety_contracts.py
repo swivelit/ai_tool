@@ -300,7 +300,25 @@ def test_public_headers_preserve_voice_csp_and_nonduplicated_permissions_policy(
     assert "Permissions-Policy: camera=(), geolocation=(), microphone=(self)" in source
     assert "Permissions-Policy: Permissions-Policy:" not in source
     assert "connect-src 'self' https: wss:" in source
+    assert "img-src 'self' data: blob: https:" in source
     assert "media-src 'self' blob:" in source
+
+
+def test_web_meta_csp_allows_blob_image_previews_without_broadening_scripts():
+    source = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    match = re.search(
+        r'<meta[^>]+http-equiv="Content-Security-Policy"[^>]+content="([^"]+)"',
+        source,
+    )
+    assert match
+    directives = {
+        parts[0]: set(parts[1:])
+        for parts in (segment.strip().lower().split() for segment in match.group(1).split(";"))
+        if parts and parts[0]
+    }
+    assert directives["img-src"] >= {"'self'", "data:", "blob:", "https:"}
+    assert directives["media-src"] >= {"'self'", "blob:"}
+    assert "blob:" not in directives["script-src"]
 
 
 def test_workflow_selects_exact_test_file_for_each_mode():

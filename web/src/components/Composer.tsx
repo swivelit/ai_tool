@@ -30,6 +30,7 @@ function elapsed(seconds: number): string {
 function AttachmentVisual({ attachment }: { attachment: ComposerAttachment }) {
   const [imageFailed, setImageFailed] = useState(false)
   const isImage = attachment.media_type.startsWith('image/')
+  useEffect(() => { setImageFailed(false) }, [attachment.preview_url])
   if (isImage && attachment.preview_url && !imageFailed) {
     return <img className="attachment-thumbnail" src={attachment.preview_url} alt="" onError={() => setImageFailed(true)} />
   }
@@ -294,43 +295,49 @@ export function Composer({
       {overLimit && <div className="composer-error" role="alert">Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.</div>}
       {value.length > inlineThreshold && !overLimit && <label className="long-input-mode">Large text action<select value={longInputMode} onChange={event => setLongInputMode(event.target.value as LongInputMode)}><option value="summarize">Summarize</option><option value="analyze">Analyze</option><option value="ask_questions">Ask questions</option><option value="rewrite">Rewrite</option><option value="translate">Translate</option></select></label>}
       <div className="composer" data-testid="composer">
-        <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
-          onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
-          onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
-          placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
+        <div className="composer-input-surface">
+          <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
+            onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
+            onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
+            placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
+        </div>
         <div className="composer-toolbar">
-        {(attachmentsEnabled || repositoryUploadEnabled) && <div className="composer-plus-wrap">
-          <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
-            onChange={event => chooseFiles(event.target.files)} />
-          <input ref={repositoryFileRef} className="hidden-file-input" type="file"
-            aria-label="Upload code repository" accept=".zip"
-            onChange={event => chooseRepository(event.target.files)} />
-          <button ref={plusRef} className="composer-tool composer-plus" type="button" aria-label="Add to prompt" title="Add to prompt"
-            aria-haspopup="menu" aria-expanded={menuOpen}
-            disabled={disabled || streaming || audioBusy || repositoryUploadBusy || (!attachmentsEnabled && !repositoryUploadEnabled)}
-            onClick={() => setMenuOpen(value => !value)}><Plus size={20} /></button>
-          {menuOpen && <div ref={menuRef} className="composer-add-menu" role="menu" aria-label="Add to prompt options">
-            {attachmentsEnabled && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); fileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}><Upload size={18} /><span><strong>Upload files</strong><small>Add documents from this device</small></span></button>}
-            {repositoryUploadEnabled && <button type="button" role="menuitem"
-              onClick={() => { setMenuOpen(false); repositoryFileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}>
-              <FileArchive size={18} /><span><strong>Upload code repository</strong><small>Add one temporary ZIP snapshot</small></span>
-            </button>}
-          </div>}
-        </div>}
-        {showTierSelector
-          ? <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
-          : <span className="guest-tier-label" aria-label="Swico Free">Swico Free</span>}
-        {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || repositoryUploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
-        {streaming
-          ? <button className="send stop" type="button" aria-label="Stop generation"
-            title="Stop generation" data-testid="stop-generation-button"
-            data-cancellation-ready={cancellationReady ? 'true' : 'false'}
-            onClick={stop}><Square size={15} fill="currentColor" /></button>
-          : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
-          : showRealtimeVoiceControls && <button className="voice-mode-button" type="button"
-              aria-label="Start real-time Voice Mode"
-              title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
-              disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
+          <div className="composer-toolbar-left">
+            {(attachmentsEnabled || repositoryUploadEnabled) && <div className="composer-plus-wrap">
+              <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
+                onChange={event => chooseFiles(event.target.files)} />
+              <input ref={repositoryFileRef} className="hidden-file-input" type="file"
+                aria-label="Upload code repository" accept=".zip"
+                onChange={event => chooseRepository(event.target.files)} />
+              <button ref={plusRef} className="composer-tool composer-plus" type="button" aria-label="Add to prompt" title="Add to prompt"
+                aria-haspopup="menu" aria-expanded={menuOpen}
+                disabled={disabled || streaming || audioBusy || repositoryUploadBusy || (!attachmentsEnabled && !repositoryUploadEnabled)}
+                onClick={() => setMenuOpen(value => !value)}><Plus size={20} /></button>
+              {menuOpen && <div ref={menuRef} className="composer-add-menu" role="menu" aria-label="Add to prompt options">
+                {attachmentsEnabled && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); fileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}><Upload size={18} /><span><strong>Upload files</strong><small>Add documents from this device</small></span></button>}
+                {repositoryUploadEnabled && <button type="button" role="menuitem"
+                  onClick={() => { setMenuOpen(false); repositoryFileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}>
+                  <FileArchive size={18} /><span><strong>Upload code repository</strong><small>Add one temporary ZIP snapshot</small></span>
+                </button>}
+              </div>}
+            </div>}
+          </div>
+          <div className="composer-toolbar-right">
+            {showTierSelector
+              ? <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
+              : <span className="guest-tier-label" aria-label="Swico Free">Swico Free</span>}
+            {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || repositoryUploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
+            {streaming
+              ? <button className="send stop" type="button" aria-label="Stop generation"
+                title="Stop generation" data-testid="stop-generation-button"
+                data-cancellation-ready={cancellationReady ? 'true' : 'false'}
+                onClick={stop}><Square size={15} fill="currentColor" /></button>
+              : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
+              : showRealtimeVoiceControls && <button className="voice-mode-button" type="button"
+                  aria-label="Start real-time Voice Mode"
+                  title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
+                  disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
+          </div>
         </div>
       </div>
       <small id="composer-character-count" className={`character-count sr-only${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>

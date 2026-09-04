@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { Composer } from './Composer'
@@ -26,12 +26,15 @@ it('sends on Enter, preserves Shift+Enter, and exposes stop state', async () => 
   await userEvent.click(screen.getByRole('button', { name: 'Stop generation' })); expect(stop).toHaveBeenCalledOnce()
 })
 
-it('auto-resizes for multiline and resets after clearing', () => {
+it('auto-resizes for multiline, caps long input, and resets after clearing', () => {
   const { rerender } = render(<Composer value={'one\ntwo\nthree'} setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />)
   const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
   Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 120 })
   rerender(<Composer value={'one\ntwo\nthree\nfour'} setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />)
   expect(textarea.style.height).toBe('120px')
+  Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 260 })
+  rerender(<Composer value={'one\ntwo\nthree\nfour\nfive'} setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />)
+  expect(textarea.style.height).toBe('200px')
   Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 28 })
   rerender(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false} />)
   expect(textarea.style.height).toBe('28px')
@@ -99,6 +102,32 @@ it('accepts configured image extensions and renders an image thumbnail chip', ()
   expect(container.querySelector('img.attachment-thumbnail')).toHaveAttribute(
     'src', 'blob:synthetic-preview',
   )
+})
+
+it('falls back when an image fails, then recovers when its preview URL changes', async () => {
+  const first = ready({ name:'first.png', media_type:'image/png', preview_url:'blob:first-preview' })
+  const { container, rerender } = render(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachmentsEnabled attachments={[first]}
+  />)
+  const image = container.querySelector('img.attachment-thumbnail')!
+  fireEvent.error(image)
+  expect(screen.getByLabelText('Image preview unavailable')).toBeInTheDocument()
+
+  rerender(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachmentsEnabled attachments={[{ ...first, preview_url:'blob:second-preview' }]}
+  />)
+  await waitFor(() => expect(container.querySelector('img.attachment-thumbnail')).toHaveAttribute('src', 'blob:second-preview'))
+})
+
+it('uses the file fallback for a non-image attachment', () => {
+  const { container } = render(<Composer
+    value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()}
+    streaming={false} attachments={[ready()]}
+  />)
+  expect(container.querySelector('img.attachment-thumbnail')).not.toBeInTheDocument()
+  expect(container.querySelector('.attachment-visual svg')).toBeInTheDocument()
 })
 
 it('opens the Plus menu accessibly, uploads, restores focus, and hosts the tier selector', async () => {
@@ -232,6 +261,18 @@ it('sends an attachment-only message on Enter', () => {
   const send = vi.fn()
   render(<Composer value="" setValue={vi.fn()} send={send} stop={vi.fn()} streaming={false} attachments={[ready()]} />)
   fireEvent.keyDown(screen.getByRole('textbox'), { key:'Enter' })
+  expect(send).toHaveBeenCalledOnce()
+})
+
+it('does not send while an IME composition is active', () => {
+  const send = vi.fn()
+  render(<Composer value="draft" setValue={vi.fn()} send={send} stop={vi.fn()} streaming={false} />)
+  const textarea = screen.getByRole('textbox')
+  fireEvent.compositionStart(textarea)
+  fireEvent.keyDown(textarea, { key:'Enter', nativeEvent:{ isComposing:false } })
+  expect(send).not.toHaveBeenCalled()
+  fireEvent.compositionEnd(textarea)
+  fireEvent.keyDown(textarea, { key:'Enter' })
   expect(send).toHaveBeenCalledOnce()
 })
 

@@ -109,7 +109,7 @@ export function ChatPage() {
   } | null>(null)
   const fileDragDepthRef = useRef(0)
   const revokeAttachmentPreview = useCallback((attachment: ComposerAttachment) => {
-    if (!attachment.preview_url || revokedAttachmentPreviews.current.has(attachment.preview_url)) return
+    if (!attachment.preview_url?.startsWith('blob:') || revokedAttachmentPreviews.current.has(attachment.preview_url)) return
     revokedAttachmentPreviews.current.add(attachment.preview_url)
     URL.revokeObjectURL(attachment.preview_url)
   }, [])
@@ -205,9 +205,19 @@ export function ChatPage() {
     if (activeRef.current !== threadId) return false
     setMessages(unique)
     const restored = new Map<string, MessageAttachment>()
+    const localPreviews = new Map(
+      attachmentsRef.current.flatMap(item => (
+        'id' in item && item.preview_url?.startsWith('blob:')
+          ? [[item.id, item.preview_url] as const]
+          : []
+      )),
+    )
     for (const message of unique) {
       for (const attachment of message.attachments ?? []) {
-        if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment)
+        if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) {
+          const preview_url = localPreviews.get(attachment.id) ?? attachment.preview_url
+          restored.set(attachment.id, preview_url ? { ...attachment, preview_url } : attachment)
+        }
       }
     }
     replaceActiveAttachments(Array.from(restored.values()).slice(-5))
@@ -368,16 +378,12 @@ export function ChatPage() {
         .filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
         .map(item => 'local_id' in item ? item.local_id : item.id))
       if (!expiredKeys.size) return
-      attachments.forEach(item => {
-        const key = 'local_id' in item ? item.local_id : item.id
-        if (expiredKeys.has(key)) revokeAttachmentPreview(item)
-      })
-      setAttachments(value => value.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
+      replaceActiveAttachments(attachments.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
     }
     removeExpiredAttachments()
     const timer = window.setInterval(removeExpiredAttachments, 1000)
     return () => window.clearInterval(timer)
-  }, [attachments, revokeAttachmentPreview])
+  }, [attachments, replaceActiveAttachments])
   useEffect(() => {
     if (repository?.status !== 'ready' || !repository.expires_at) return
     const updateExpiry = () => {
@@ -764,7 +770,7 @@ export function ChatPage() {
             return
           }
           setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
-            ? { ...upload, preview_url:item.preview_url } : item))
+            ? { ...upload, preview_url:item.preview_url ?? upload.preview_url } : item))
         })
         .catch(caught => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
           ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item)))

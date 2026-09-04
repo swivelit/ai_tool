@@ -12,7 +12,7 @@ SPEC.loader.exec_module(MODULE)
 
 def _safe_headers() -> Message:
     headers = Message()
-    headers["Content-Security-Policy"] = "default-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     headers["X-Content-Type-Options"] = "nosniff"
     headers["X-Frame-Options"] = "DENY"
@@ -32,3 +32,13 @@ def test_missing_or_unsafe_headers_fail_without_network():
     failures = MODULE.unsafe_headers(headers)
     assert "X-Frame-Options" in failures
     assert any("max-age" in item for item in failures)
+
+
+def test_img_src_must_explicitly_permit_blob_previews():
+    headers = _safe_headers()
+    headers.replace_header(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data: https:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+    )
+    failures = MODULE.unsafe_headers(headers)
+    assert any("img-src" in item and "blob" in item for item in failures)

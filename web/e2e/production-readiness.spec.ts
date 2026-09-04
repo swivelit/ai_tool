@@ -196,6 +196,41 @@ async function signIn(page: Page) {
   await expect(page.getByRole('button', { name: 'Start real-time Voice Mode' })).toBeVisible()
 }
 
+test('long prompts keep the native textarea scrollbar at the composer edge', async ({ page }) => {
+  await installBackend(page, { wallet:5_000_000 })
+  await signIn(page)
+  const textarea = page.getByLabel('Message Swico')
+  await textarea.fill(Array.from({ length:24 }, (_, index) => `Prompt line ${index + 1}`).join('\n'))
+
+  await expect.poll(() => textarea.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+  const geometry = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>('.composer-shell')!
+    const input = document.querySelector<HTMLTextAreaElement>('.composer textarea')!
+    const toolbar = document.querySelector<HTMLElement>('.composer-toolbar')!
+    const shellRect = shell.getBoundingClientRect()
+    const inputRect = input.getBoundingClientRect()
+    const toolbarRect = toolbar.getBoundingClientRect()
+    return {
+      shellRight:shellRect.right, inputRight:inputRect.right,
+      inputTop:inputRect.top, toolbarTop:toolbarRect.top, toolbarBottom:toolbarRect.bottom,
+      shellBottom:shellRect.bottom, scrollHeight:input.scrollHeight, clientHeight:input.clientHeight,
+      overflowY:getComputedStyle(input).overflowY,
+      documentOverflow:document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }
+  })
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight)
+  expect(['auto', 'scroll']).toContain(geometry.overflowY)
+  expect(geometry.shellRight - geometry.inputRight).toBeLessThanOrEqual(14)
+  expect(geometry.inputRight).toBeGreaterThanOrEqual(geometry.shellRight - 14)
+  expect(geometry.toolbarTop).toBeGreaterThanOrEqual(geometry.inputTop)
+  expect(geometry.toolbarBottom).toBeLessThanOrEqual(geometry.shellBottom)
+  expect(geometry.documentOverflow).toBeLessThanOrEqual(1)
+
+  await textarea.fill('short')
+  await expect.poll(() => textarea.evaluate(element => parseFloat(element.style.height))).toBeLessThanOrEqual(40)
+  expect(await textarea.evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true)
+})
+
 test('authentication, OTP state, password visibility, and direct legal routes', async ({ page }) => {
   await page.route('**/auth/email-otp/signup/request', route => json(route, { status: 'otp_sent' }))
   await page.goto('/login')
