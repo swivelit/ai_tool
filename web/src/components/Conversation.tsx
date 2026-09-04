@@ -11,7 +11,7 @@ import { ResponseQualityPanel } from './ResponseQualityPanel'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, continuationAvailable = true, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null, emptyTitle = 'How can I help?' }: {
+export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, continuationAvailable = true, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null, emptyTitle = 'How can I help?', showEmptyState = true }: {
   messages: Message[]; phase?: string; queuePosition?: number | null; estimatedWaitSeconds?: number | null; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
   continuingMessageId?: string | null;
@@ -23,7 +23,7 @@ export function Conversation({ messages, phase, queuePosition = null, estimatedW
   pauseVoice?: (messageId: string) => void; retryVoice?: (messageId: string, voiceTurnId: string) => void;
   addCredits?: () => void;
   feedbackEnabled?: boolean; submitFeedback?: (message: Message, rating: 'up' | 'down') => Promise<void>;
-  highlightMessageId?: string | null; emptyTitle?: string;
+  highlightMessageId?: string | null; emptyTitle?: string; showEmptyState?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -155,7 +155,7 @@ export function Conversation({ messages, phase, queuePosition = null, estimatedW
   return <div className="conversation-frame">
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
       <div className="conversation-content" ref={contentRef}>
-        {!logicalMessages.length && <EmptyState suggest={suggest} title={emptyTitle} />}
+    {!logicalMessages.length && showEmptyState && <EmptyState suggest={suggest} title={emptyTitle} />}
         {logicalMessages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse}
           continuationActive={message.id === continuingMessageId}
           canEdit={editingAvailable && message.role === 'user' && message.id === latestVisibleUserId}

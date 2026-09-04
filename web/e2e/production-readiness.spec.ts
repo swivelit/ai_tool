@@ -189,7 +189,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
 }
 
 async function signIn(page: Page) {
-  await page.goto('/')
+  await page.goto('/login')
   await page.getByLabel('Email address').fill('e2e@example.test')
   await page.getByLabel('Password', { exact: true }).fill('local-only-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
@@ -198,7 +198,7 @@ async function signIn(page: Page) {
 
 test('authentication, OTP state, password visibility, and direct legal routes', async ({ page }) => {
   await page.route('**/auth/email-otp/signup/request', route => json(route, { status: 'otp_sent' }))
-  await page.goto('/')
+  await page.goto('/login')
   await page.getByLabel('Email address').fill('wrong@example.test')
   await page.getByLabel('Password', { exact: true }).fill('wrong-password')
   await page.getByRole('button', { name: 'Show password' }).click()
@@ -423,7 +423,7 @@ test('rapid Markdown streaming stays pinned, yields to manual scrolling, and com
   expect(composerGeometry.innerBorder).toBe('0px')
   expect(composerGeometry.innerShadow).toBe('none')
   await expect(page.locator('#composer-character-count')).toHaveClass(/character-count/)
-  await expect(page.locator('#composer-character-count')).toBeVisible()
+  await expect(page.locator('#composer-character-count')).toHaveClass(/sr-only/)
 
   await testInfo.attach('streaming-render-diagnostic', { body:await page.screenshot(), contentType:'image/png' })
 })

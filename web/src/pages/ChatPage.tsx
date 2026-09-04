@@ -48,6 +48,12 @@ function repositoryUploadError(error: unknown): string {
   return 'Repository upload failed. Please try again.'
 }
 
+function firstMeaningfulNameToken(name: string | null | undefined): string {
+  return String(name ?? '').trim().split(/\s+/)
+    .map(token => token.replace(/[^\p{L}\p{N}'-]/gu, ''))
+    .find(Boolean) ?? ''
+}
+
 export function ChatPage() {
   const { user, signOut } = useAuth()
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null)
@@ -67,6 +73,7 @@ export function ChatPage() {
   const [billingBucket, setBillingBucket] = useState<'chat' | 'voice'>('chat')
   const [pendingReferralCode, setPendingReferralCode] = useState('')
   const [voiceMode, setVoiceMode] = useState(false)
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
@@ -77,6 +84,7 @@ export function ChatPage() {
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
   const removedRepositoryUploads = useRef(new Set<string>())
+  const revokedAttachmentPreviews = useRef(new Set<string>())
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
   const activeRef = useRef<string | null>(active)
@@ -327,11 +335,23 @@ export function ChatPage() {
   }, [active, loadMessages, messages, streaming, user])
   useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
-    const timer = window.setInterval(() => {
+    const removeExpiredAttachments = () => {
       const now = Date.now()
-      setAttachments(value => value.map(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now
-        ? { ...item, status: 'expired' as const } : item))
-    }, 1000)
+      const expiredKeys = new Set(attachments
+        .filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
+        .map(item => 'local_id' in item ? item.local_id : item.id))
+      if (!expiredKeys.size) return
+      attachments.forEach(item => {
+        const key = 'local_id' in item ? item.local_id : item.id
+        if (expiredKeys.has(key) && item.preview_url && !revokedAttachmentPreviews.current.has(item.preview_url)) {
+          revokedAttachmentPreviews.current.add(item.preview_url)
+          URL.revokeObjectURL(item.preview_url)
+        }
+      })
+      setAttachments(value => value.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
+    }
+    removeExpiredAttachments()
+    const timer = window.setInterval(removeExpiredAttachments, 1000)
     return () => window.clearInterval(timer)
   }, [attachments])
   useEffect(() => {
@@ -729,7 +749,10 @@ export function ChatPage() {
   const removeAttachment = (attachment: ComposerAttachment) => {
     const key = 'local_id' in attachment ? attachment.local_id : attachment.id
     if ('local_id' in attachment && attachment.status === 'uploading') removedLocalUploads.current.add(attachment.local_id)
-    if (attachment.preview_url) URL.revokeObjectURL(attachment.preview_url)
+    if (attachment.preview_url && !revokedAttachmentPreviews.current.has(attachment.preview_url)) {
+      revokedAttachmentPreviews.current.add(attachment.preview_url)
+      URL.revokeObjectURL(attachment.preview_url)
+    }
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
   }
@@ -896,22 +919,31 @@ export function ChatPage() {
   const voiceReady = bootstrap ? voiceAvailability(bootstrap, frontendRelease) : { enabled:false, reason:'Voice Mode is loading.' }
   const voiceUnavailableReason = voiceReady.reason
   const realtimeVoiceEnabled = voiceReady.enabled
+  const emptyChat = !messages.some(message => !message.is_continuation_control)
+  const greetingName = firstMeaningfulNameToken(bootstrap?.user.name)
+  const emptyGreeting = greetingName ? `Hey, ${greetingName}. Ready to dive in?` : 'Ready to dive in?'
+
+  useEffect(() => {
+    if (!emptyChat) setWorkspaceExpanded(false)
+  }, [emptyChat])
 
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className="chat-main" onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
+    <section className={`chat-main${emptyChat ? ' empty-chat' : ''}${emptyChat && workspaceExpanded ? ' composer-expanded' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
       <header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {fileDragActive && <div className="chat-drop-overlay" aria-hidden="true"><span>Drop files or images to attach</span></div>}
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+      {emptyChat && <div className="empty-chat-welcome"><h1>{emptyGreeting}</h1></div>}
+      <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} showEmptyState={!emptyChat}
         voiceReplyEnabled={Boolean(bootstrap.features.web_voice_reply && bootstrap.features.web_voice_billing)} voiceStates={voiceReply.states} generateVoice={(messageId, voiceTurnId) => void voiceReply.generate(messageId, voiceTurnId)} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}
         highlightMessageId={highlightMessageId} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
+        workspace={emptyChat} expanded={emptyChat && workspaceExpanded} onToggleExpand={() => setWorkspaceExpanded(value => !value)}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}

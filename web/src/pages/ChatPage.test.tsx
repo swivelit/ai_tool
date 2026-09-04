@@ -103,6 +103,36 @@ const repositorySnapshot = (id: string, displayName = 'swico.zip') => ({
   frameworks:[],
 })
 
+it('renders the authenticated empty chat as a personalized workspace', async () => {
+  mockApi()
+  render(<ChatPage />)
+  expect(await screen.findByRole('heading', { name:'Hey, Hari. Ready to dive in?' })).toBeInTheDocument()
+  expect(screen.getByTestId('composer')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
+  expect(screen.queryByText('How can I help?')).not.toBeInTheDocument()
+  expect(screen.queryByText('Help me plan a focused week')).not.toBeInTheDocument()
+  expect(document.querySelector('.empty-state .swico-mark')).not.toBeInTheDocument()
+  expect(document.querySelector('.chat-main')).toHaveClass('empty-chat')
+  expect(document.querySelector('.workspace-composer-shell')).toBeInTheDocument()
+  expect(document.querySelector('#composer-character-count')).toHaveClass('sr-only')
+})
+
+it('restores the compact composer after the first visible message and preserves expanded drafts', async () => {
+  mockApi()
+  render(<ChatPage />)
+  const textarea = await screen.findByRole('textbox', { name:'Message Swico' })
+  fireEvent.change(textarea, { target:{ value:'Keep this draft' } })
+  await userEvent.click(screen.getByRole('button', { name:'Expand composer' }))
+  expect(screen.getByRole('button', { name:'Collapse composer' })).toBeInTheDocument()
+  expect(textarea).toHaveValue('Keep this draft')
+  fireEvent.keyDown(window, { key:'Escape' })
+  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
+  expect(textarea).toHaveValue('Keep this draft')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(document.querySelector('.chat-main')).not.toHaveClass('empty-chat'))
+  expect(document.querySelector('.workspace-composer-shell')).not.toBeInTheDocument()
+})
+
 it('continues without an optimistic control bubble and consumes the parent button', async () => {
   const thread = {
     id:'continue-thread', title:'Long answer', archived:false,
@@ -619,6 +649,29 @@ it('selects and uploads a supported document, then sends its attachment id witho
   expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ message:'', attachment_ids:['upload-1'] })
   expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ input_mode:'text' })
   expect(screen.getByText(/stay active for this chat/i)).toBeInTheDocument()
+})
+
+it('removes an expired active image attachment and revokes its preview URL', async () => {
+  mockApi()
+  const imageBootstrap = { ...bootstrap, uploads:{ ...bootstrap.uploads, supported_extensions:['.txt', '.pdf', '.png'] } }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return imageBootstrap as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:expired-image')
+  vi.mocked(uploadDocument).mockResolvedValue({
+    ...uploaded, name:'expired.png', media_type:'image/png',
+    expires_at:new Date(Date.now() - 1_000).toISOString(),
+    preview_url:'blob:expired-image',
+  })
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['image'], 'expired.png', { type:'image/png' }))
+  await waitFor(() => expect(uploadDocument).toHaveBeenCalledOnce())
+  await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:expired-image'))
+  expect(screen.queryByRole('button', { name:'Remove expired.png' })).not.toBeInTheDocument()
 })
 
 it('rejects unsupported documents before upload', async () => {

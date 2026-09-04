@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
-import { ArrowUp, AudioLines, FileArchive, FileText, Mic, Plus, Square, Upload, X } from 'lucide-react'
+import { ArrowUp, AudioLines, FileArchive, FileText, ImageOff, Maximize2, Mic, Minimize2, Plus, Square, Upload, X } from 'lucide-react'
 import type { AssistantSettings, ComposerAttachment, ComposerRepository, LongInputMode, SwicoTier, Wallet } from '../types'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { SwicoTierSelector } from './SwicoTierSelector'
@@ -27,6 +27,17 @@ function elapsed(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+function AttachmentVisual({ attachment, workspace }: { attachment: ComposerAttachment; workspace: boolean }) {
+  const [imageFailed, setImageFailed] = useState(false)
+  const isImage = attachment.media_type.startsWith('image/')
+  if (isImage && attachment.preview_url && !imageFailed) {
+    return <img className={`attachment-thumbnail${workspace ? ' workspace-attachment-thumbnail' : ''}`} src={attachment.preview_url} alt="" onError={() => setImageFailed(true)} />
+  }
+  return isImage && imageFailed
+    ? <ImageOff size={workspace ? 28 : 18} aria-label="Image preview unavailable" />
+    : <FileText size={workspace ? 28 : 18} aria-hidden="true" />
+}
+
 export function Composer({
   user = null,
   value,
@@ -49,6 +60,9 @@ export function Composer({
   assistant = DEFAULT_ASSISTANT,
   showTierSelector = true,
   showRealtimeVoiceControls = true,
+  workspace = false,
+  expanded = false,
+  onToggleExpand = () => undefined,
   tierDisabled = false,
   tierSaving = false,
   onTierSelect = async () => undefined,
@@ -78,6 +92,7 @@ export function Composer({
   repositoryValidationCapability?: 'static_only' | 'executable';
   realtimeVoiceEnabled?: boolean; realtimeVoiceUnavailableReason?: string; assistant?: AssistantSettings;
   showTierSelector?: boolean; showRealtimeVoiceControls?: boolean;
+  workspace?: boolean; expanded?: boolean; onToggleExpand?: () => void;
   tierDisabled?: boolean; tierSaving?: boolean;
   onTierSelect?: (tier: SwicoTier) => Promise<void>; onRealtimeVoice?: () => void;
   voiceResetKey?: string;
@@ -133,11 +148,25 @@ export function Composer({
   const resize = () => {
     const element = ref.current
     if (!element) return
+    if (workspace) {
+      element.style.height = 'auto'
+      return
+    }
     element.style.height = '0px'
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`
   }
-  useEffect(resize, [value])
+  useEffect(resize, [value, workspace])
   useEffect(() => { ref.current?.focus({ preventScroll: true }) }, [focusKey])
+  useEffect(() => {
+    if (!workspace || !expanded || menuOpen) return
+    const collapse = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onToggleExpand()
+    }
+    window.addEventListener('keydown', collapse)
+    return () => window.removeEventListener('keydown', collapse)
+  }, [expanded, menuOpen, onToggleExpand, workspace])
   useEffect(() => {
     if (!menuOpen) return
     const outside = (event: PointerEvent) => {
@@ -223,13 +252,12 @@ export function Composer({
     }
   }, [])
 
-  return <div className="composer-wrap" ref={wrapRef}>
-    <div className="composer-shell has-character-count">
-      {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
-        {attachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={'local_id' in attachment ? attachment.local_id : attachment.id}>
-          {attachment.media_type.startsWith('image/') && attachment.preview_url
-            ? <img className="attachment-thumbnail" src={attachment.preview_url} alt="" />
-            : <FileText size={18} aria-hidden="true" />}
+  return <div className={`composer-wrap${workspace ? ' workspace-composer-wrap' : ''}${expanded ? ' workspace-composer-expanded' : ''}`} ref={wrapRef}>
+    <div className={`composer-shell${workspace ? ' workspace-composer-shell' : ''}`}>
+      {workspace && <button className="workspace-expand-button" type="button" aria-label={expanded ? 'Collapse composer' : 'Expand composer'} title={expanded ? 'Collapse composer' : 'Expand composer'} onClick={onToggleExpand}><span className="sr-only">{expanded ? 'Collapse composer' : 'Expand composer'}</span>{expanded ? <Minimize2 size={18} aria-hidden="true" /> : <Maximize2 size={18} aria-hidden="true" />}</button>}
+      {attachments.length > 0 && <div className={`attachment-tray${workspace ? ' workspace-attachment-tray' : ''}`} aria-label="Active attachments">
+        {attachments.map(attachment => <div className={`attachment-chip ${attachment.status}${workspace ? ' workspace-attachment-chip' : ''}${workspace && attachment.media_type.startsWith('image/') ? ' workspace-image-attachment' : ''}`} key={'local_id' in attachment ? attachment.local_id : attachment.id}>
+          <span className={`attachment-visual${workspace ? ' workspace-attachment-visual' : ''}`}><AttachmentVisual attachment={attachment} workspace={workspace} /></span>
           <span className="attachment-copy"><strong title={attachment.name}>{attachment.name}</strong>
             <small>{attachment.media_type || attachment.name.split('.').pop()?.toUpperCase()} · {humanSize(attachment.size_bytes)}</small>
             <small>{attachment.status === 'uploading' ? `Uploading… ${attachment.progress}%`
@@ -241,8 +269,8 @@ export function Composer({
           <button type="button" aria-label={`Remove ${attachment.name}`} title={`Remove ${attachment.name}`} onClick={() => removeAttachment(attachment)}><X size={15} /></button>
         </div>)}
       </div>}
-      {repository && <div className="attachment-tray repository-tray" aria-label="Active code repository">
-        <div className={`attachment-chip repository-chip ${repository.status}`}>
+      {repository && <div className={`attachment-tray repository-tray${workspace ? ' workspace-attachment-tray' : ''}`} aria-label="Active code repository">
+        <div className={`attachment-chip repository-chip ${repository.status}${workspace ? ' workspace-attachment-chip' : ''}`}>
           <FileArchive size={18} aria-hidden="true" />
           <span className="attachment-copy">
             <strong title={repository.display_name}>{repository.display_name}</strong>
@@ -284,7 +312,12 @@ export function Composer({
       {recorder.state.error && <div className="composer-error" role="alert"><span>{recorder.state.error}</span><button type="button" onClick={recorder.resetError}>Dismiss</button></div>}
       {overLimit && <div className="composer-error" role="alert">Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.</div>}
       {value.length > inlineThreshold && !overLimit && <label className="long-input-mode">Large text action<select value={longInputMode} onChange={event => setLongInputMode(event.target.value as LongInputMode)}><option value="summarize">Summarize</option><option value="analyze">Analyze</option><option value="ask_questions">Ask questions</option><option value="rewrite">Rewrite</option><option value="translate">Translate</option></select></label>}
-      <div className="composer" data-testid="composer">
+      <div className={`composer${workspace ? ' workspace-composer' : ''}`} data-testid="composer">
+        <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
+          onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
+          onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
+          placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
+        <div className="composer-toolbar">
         {(attachmentsEnabled || repositoryUploadEnabled) && <div className="composer-plus-wrap">
           <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
             onChange={event => chooseFiles(event.target.files)} />
@@ -303,10 +336,7 @@ export function Composer({
             </button>}
           </div>}
         </div>}
-        <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
-          onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
-          onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
-          placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
+        {workspace && <span className="workspace-toolbar-spacer" aria-hidden="true" />}
         {showTierSelector
           ? <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
           : <span className="guest-tier-label" aria-label="Swico Free">Swico Free</span>}
@@ -321,8 +351,9 @@ export function Composer({
               aria-label="Start real-time Voice Mode"
               title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
               disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
+        </div>
       </div>
-      <small id="composer-character-count" className={`character-count${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`}>{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
+      <small id="composer-character-count" className={`character-count sr-only${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
     </div>
     <span className="sr-status" aria-live="polite">{statusText}</span>
     <p>Swico can make mistakes. Check important information.</p>

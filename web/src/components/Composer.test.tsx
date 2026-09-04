@@ -235,13 +235,13 @@ it('sends an attachment-only message on Enter', () => {
   expect(send).toHaveBeenCalledOnce()
 })
 
-it('keeps the character count visible from zero through over-limit states', () => {
+it('keeps the character limit status screen-reader-only while enforcing the limit', () => {
   const props = { setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, maxCharacters:100, inlineThreshold:90 }
   const { container, rerender } = render(<Composer {...props} value="" />)
   const count = () => container.querySelector<HTMLElement>('#composer-character-count')!
   expect(count()).toHaveTextContent('0 / 100 characters')
-  expect(count()).toHaveClass('character-count')
-  expect(count()).not.toHaveClass('sr-only')
+  expect(count()).toHaveClass('character-count', 'sr-only')
+  expect(count()).toHaveAttribute('aria-live', 'polite')
   expect(screen.getByRole('textbox')).toHaveAttribute('aria-describedby', 'composer-character-count')
 
   rerender(<Composer {...props} value="short" />)
@@ -249,8 +249,8 @@ it('keeps the character count visible from zero through over-limit states', () =
   expect(count()).not.toHaveClass('near-limit')
   rerender(<Composer {...props} value={'x'.repeat(80)} />)
   expect(count()).toHaveClass('character-count', 'near-limit')
-  expect(count()).not.toHaveClass('sr-only')
-  expect(container.querySelector('.composer-shell')).toHaveClass('has-character-count')
+  expect(count()).toHaveClass('sr-only')
+  expect(container.querySelector('.composer-shell')).not.toHaveClass('has-character-count')
 
   rerender(<Composer {...props} inlineThreshold={30} value={'x'.repeat(30)} />)
   expect(count()).toHaveClass('character-count')
@@ -260,7 +260,21 @@ it('keeps the character count visible from zero through over-limit states', () =
   rerender(<Composer {...props} value={'x'.repeat(101)} />)
   expect(count()).toHaveClass('character-count', 'over-limit')
   expect(screen.getByRole('alert')).toHaveTextContent('exceeds the 100-character limit')
-  expect(count()).not.toHaveAttribute('aria-live')
+  expect(count()).toHaveAttribute('aria-live', 'polite')
+})
+
+it('supports an expandable workspace without losing the draft', async () => {
+  const onToggleExpand = vi.fn()
+  const props = { value:'keep this draft', setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, workspace:true, onToggleExpand }
+  const { rerender } = render(<Composer {...props} />)
+  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:'Expand composer' }))
+  expect(onToggleExpand).toHaveBeenCalledOnce()
+  rerender(<Composer {...props} expanded />)
+  expect(screen.getByRole('button', { name:'Collapse composer' })).toBeInTheDocument()
+  expect(screen.getByRole('textbox')).toHaveValue('keep this draft')
+  fireEvent.keyDown(window, { key:'Escape' })
+  expect(onToggleExpand).toHaveBeenCalledTimes(2)
 })
 
 it('keeps keyboard focus inside the single outer composer shell', () => {

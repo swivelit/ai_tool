@@ -201,8 +201,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .composer-shell { position: relative; width: min(var(--chat-column-max), 100%); max-width: 100%; min-width: 0; margin: 0 auto; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 24px; background: var(--composer); box-shadow: 0 2px 10px rgb(0 0 0 / 8%) }
 .composer-shell:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus) }
 .composer { display: flex; width: 100%; align-items: flex-end; gap: 8px; margin: 0 auto; padding: 9px 10px; border: 0; border-radius: 24px; outline: 0; background: transparent; box-shadow: none }
-.composer-shell.has-character-count .composer { padding-bottom: 25px }
+.composer-toolbar { display: contents }
 .composer textarea { width: 100%; min-width: 52px; min-height: 28px; max-height: 200px; resize: none; overflow-y: auto; padding: 4px 0; border: 0; outline: 0; background: transparent; line-height: 1.45 }
+.composer textarea { scrollbar-width: thin; scrollbar-color: var(--subtle) transparent }
+.composer textarea::-webkit-scrollbar { width: 6px; height: 6px }
+.composer textarea::-webkit-scrollbar-track { background: transparent }
+.composer textarea::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--muted) 65%, transparent) }
 .composer textarea::placeholder { color: var(--subtle) }
 .composer-tools { display: flex; flex: none; align-items: center; gap: 1px }
 .composer-tool { display: grid; width: 34px; height: 34px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer }
@@ -229,6 +233,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .attachment-chip.expired, .attachment-chip.unavailable { opacity: .68 }
 .attachment-chip.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)) }
 .attachment-chip > svg { color: var(--muted) }
+.attachment-visual { display: grid; flex: none; place-items: center; color: var(--muted) }
 .attachment-thumbnail { width: 34px; height: 34px; border-radius: 7px; object-fit: cover; background: var(--hover) }
 .attachment-copy { display: grid; min-width: 0; gap: 1px }
 .attachment-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px }
@@ -242,6 +247,33 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .character-count { position: absolute; right: 15px; bottom: 7px; min-width: 140px; max-width: calc(100% - 30px); color: var(--subtle); text-align: right; font-size: 10px; line-height: 1.25; overflow-wrap: anywhere; pointer-events: none }
 .character-count.near-limit { color: var(--muted) }
 .character-count.over-limit { color: var(--danger) }
+.workspace-expand-button { position: absolute; z-index: 2; top: 12px; right: 14px; display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer }
+.workspace-expand-button:hover { background: var(--hover); color: var(--text) }
+.workspace-composer-wrap { display: flex; flex-direction: column }
+.workspace-composer-shell { display: flex; height: clamp(360px, 55dvh, 520px); flex-direction: column; overflow: hidden; border-radius: 26px; box-shadow: none }
+.workspace-composer-shell:focus-within { box-shadow: 0 0 0 1px var(--focus) }
+.workspace-composer { display: flex; min-height: 0; flex: 1; flex-direction: column; align-items: stretch; gap: 0; padding: 52px 18px 13px }
+.workspace-composer textarea { min-height: 0; height: auto !important; max-height: none; flex: 1; padding: 12px 8px; line-height: 1.65 }
+.workspace-composer .composer-toolbar { display: flex; width: 100%; min-height: 40px; flex: none; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent) }
+.workspace-toolbar-spacer { min-width: 0; flex: 1 }
+.workspace-attachment-tray { flex-wrap: wrap; max-height: 154px; padding: 16px 18px 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--subtle) transparent }
+.workspace-attachment-tray::-webkit-scrollbar { width: 6px; height: 6px }
+.workspace-attachment-tray::-webkit-scrollbar-track { background: transparent }
+.workspace-attachment-tray::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--muted) 65%, transparent) }
+.workspace-attachment-chip { flex: 0 1 145px; min-height: 58px }
+.workspace-image-attachment { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 96px auto; align-items: center; padding: 0 7px 7px }
+.workspace-image-attachment .workspace-attachment-visual { width: 100%; height: 96px; grid-column: 1 / -1; overflow: hidden; border-radius: 10px 10px 7px 7px }
+.workspace-image-attachment .workspace-attachment-thumbnail { width: 100%; height: 100%; border-radius: 0 }
+.workspace-image-attachment .attachment-copy { grid-column: 1; min-width: 0; padding-left: 3px }
+.workspace-image-attachment > button { grid-column: 2; grid-row: 2 }
+.workspace-composer-expanded { flex: 1 }
+.workspace-composer-expanded .workspace-composer-shell { height: auto; min-height: 0; flex: 1 }
+.empty-chat-welcome { position: absolute; z-index: 2; top: clamp(84px, 13dvh, 128px); right: var(--chat-inline-gap); left: var(--chat-inline-gap); pointer-events: none; text-align: center }
+.empty-chat-welcome h1 { margin: 0; color: var(--text); font-size: clamp(26px, 3vw, 34px); font-weight: 600; letter-spacing: -.035em }
+.empty-chat .composer-wrap.workspace-composer-wrap { top: clamp(156px, 22dvh, 190px); bottom: 10px; padding-inline: calc(var(--chat-inline-gap) + var(--chat-scrollbar-inline-reserve)); padding-top: 0 }
+.empty-chat .composer-wrap.workspace-composer-wrap .composer-shell { width: min(820px, 100%) }
+.empty-chat .composer-wrap.workspace-composer-expanded { top: 68px; bottom: 10px }
+.empty-chat.composer-expanded .empty-chat-welcome { opacity: 0 }
 .recording-row { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 7px 11px 2px; color: var(--muted); font-size: 12px }
 .recording-row strong { color: var(--text) }
 .recording-row button, .composer-error button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 0; border-radius: 7px; background: var(--surface-2); cursor: pointer }
@@ -549,7 +581,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .response-editor textarea, .response-editor-preview { padding: 14px }
   .composer-wrap { padding-top: 24px; padding-bottom: 8px }
   .composer { padding-inline: 8px }
-  .composer-shell.has-character-count .composer { padding-bottom: 32px }
+  .empty-chat .composer-wrap.workspace-composer-wrap { top: clamp(132px, 18dvh, 164px); padding-inline: 10px }
+  .empty-chat .composer-wrap.workspace-composer-expanded { top: 58px; bottom: 8px }
+  .workspace-composer-shell { height: clamp(360px, 58dvh, 520px); border-radius: 22px }
+  .workspace-composer { padding: 48px 12px 10px }
+  .workspace-attachment-tray { max-height: 132px; padding-inline: 12px }
+  .workspace-attachment-chip { flex-basis: min(145px, calc(50vw - 24px)) }
+  .workspace-image-attachment { grid-template-rows: 80px auto }
+  .workspace-image-attachment .workspace-attachment-visual { height: 80px }
+  .workspace-composer .composer-toolbar { gap: 4px }
   .tier-selector-composer .product-selector { max-width: 92px; overflow: hidden; font-size: 11px; text-overflow: ellipsis }
   .attachment-chip { flex-basis: min(225px, 82vw) }
   .recording-row { flex-wrap: wrap }
