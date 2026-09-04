@@ -250,7 +250,6 @@ it('keeps the character limit status screen-reader-only while enforcing the limi
   rerender(<Composer {...props} value={'x'.repeat(80)} />)
   expect(count()).toHaveClass('character-count', 'near-limit')
   expect(count()).toHaveClass('sr-only')
-  expect(container.querySelector('.composer-shell')).not.toHaveClass('has-character-count')
 
   rerender(<Composer {...props} inlineThreshold={30} value={'x'.repeat(30)} />)
   expect(count()).toHaveClass('character-count')
@@ -261,20 +260,6 @@ it('keeps the character limit status screen-reader-only while enforcing the limi
   expect(count()).toHaveClass('character-count', 'over-limit')
   expect(screen.getByRole('alert')).toHaveTextContent('exceeds the 100-character limit')
   expect(count()).toHaveAttribute('aria-live', 'polite')
-})
-
-it('supports an expandable workspace without losing the draft', async () => {
-  const onToggleExpand = vi.fn()
-  const props = { value:'keep this draft', setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, workspace:true, onToggleExpand }
-  const { rerender } = render(<Composer {...props} />)
-  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('button', { name:'Expand composer' }))
-  expect(onToggleExpand).toHaveBeenCalledOnce()
-  rerender(<Composer {...props} expanded />)
-  expect(screen.getByRole('button', { name:'Collapse composer' })).toBeInTheDocument()
-  expect(screen.getByRole('textbox')).toHaveValue('keep this draft')
-  fireEvent.keyDown(window, { key:'Escape' })
-  expect(onToggleExpand).toHaveBeenCalledTimes(2)
 })
 
 it('keeps keyboard focus inside the single outer composer shell', () => {

@@ -54,6 +54,10 @@ function firstMeaningfulNameToken(name: string | null | undefined): string {
     .find(Boolean) ?? ''
 }
 
+function attachmentKey(attachment: ComposerAttachment): string {
+  return 'local_id' in attachment ? attachment.local_id : attachment.id
+}
+
 export function ChatPage() {
   const { user, signOut } = useAuth()
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null)
@@ -73,7 +77,6 @@ export function ChatPage() {
   const [billingBucket, setBillingBucket] = useState<'chat' | 'voice'>('chat')
   const [pendingReferralCode, setPendingReferralCode] = useState('')
   const [voiceMode, setVoiceMode] = useState(false)
-  const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
@@ -85,6 +88,7 @@ export function ChatPage() {
   const removedLocalUploads = useRef(new Set<string>())
   const removedRepositoryUploads = useRef(new Set<string>())
   const revokedAttachmentPreviews = useRef(new Set<string>())
+  const attachmentsRef = useRef<ComposerAttachment[]>([])
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
   const activeRef = useRef<string | null>(active)
@@ -104,6 +108,29 @@ export function ChatPage() {
     to: string
   } | null>(null)
   const fileDragDepthRef = useRef(0)
+  const revokeAttachmentPreview = useCallback((attachment: ComposerAttachment) => {
+    if (!attachment.preview_url || revokedAttachmentPreviews.current.has(attachment.preview_url)) return
+    revokedAttachmentPreviews.current.add(attachment.preview_url)
+    URL.revokeObjectURL(attachment.preview_url)
+  }, [])
+  const replaceActiveAttachments = useCallback((next: ComposerAttachment[]) => {
+    const nextKeys = new Set(next.map(attachmentKey))
+    const nextPreviewUrls = new Set(next.map(item => item.preview_url).filter((url): url is string => Boolean(url)))
+    attachmentsRef.current.forEach(item => {
+      if (!nextKeys.has(attachmentKey(item)) || (item.preview_url && !nextPreviewUrls.has(item.preview_url))) {
+        revokeAttachmentPreview(item)
+      }
+    })
+    attachmentsRef.current = next
+    setAttachments(next)
+  }, [revokeAttachmentPreview])
+  const clearActiveAttachments = useCallback(() => {
+    replaceActiveAttachments([])
+  }, [replaceActiveAttachments])
+  useEffect(() => { attachmentsRef.current = attachments }, [attachments])
+  useEffect(() => () => {
+    attachmentsRef.current.forEach(revokeAttachmentPreview)
+  }, [revokeAttachmentPreview])
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
@@ -183,9 +210,9 @@ export function ChatPage() {
         if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment)
       }
     }
-    setAttachments(Array.from(restored.values()).slice(-5))
+    replaceActiveAttachments(Array.from(restored.values()).slice(-5))
     return true
-  }, [user])
+  }, [replaceActiveAttachments, user])
   const applyWallet = useCallback((wallet: Wallet) => {
     setBootstrap(value => value ? { ...value, wallet } : value)
   }, [])
@@ -300,12 +327,12 @@ export function ChatPage() {
     return () => { window.removeEventListener('online', online); window.removeEventListener('offline', off) }
   }, [])
   useEffect(() => {
-    if (!user || !active) { if (!streaming) { setMessages([]); setAttachments([]) }; return }
+    if (!user || !active) { if (!streaming) { setMessages([]); clearActiveAttachments() }; return }
     const streamingThread = streamScopeRef.current?.threadId
       ?? streamState.assistant?.thread_id
     if (streaming && streamingThread === active) return
     void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
-  }, [user, active]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, clearActiveAttachments, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!user || !active || streaming) return
     const pending = [...messages].reverse().find(message => message.role === 'user' && message.status === 'pending' && message.request_id)
@@ -343,17 +370,14 @@ export function ChatPage() {
       if (!expiredKeys.size) return
       attachments.forEach(item => {
         const key = 'local_id' in item ? item.local_id : item.id
-        if (expiredKeys.has(key) && item.preview_url && !revokedAttachmentPreviews.current.has(item.preview_url)) {
-          revokedAttachmentPreviews.current.add(item.preview_url)
-          URL.revokeObjectURL(item.preview_url)
-        }
+        if (expiredKeys.has(key)) revokeAttachmentPreview(item)
       })
       setAttachments(value => value.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
     }
     removeExpiredAttachments()
     const timer = window.setInterval(removeExpiredAttachments, 1000)
     return () => window.clearInterval(timer)
-  }, [attachments])
+  }, [attachments, revokeAttachmentPreview])
   useEffect(() => {
     if (repository?.status !== 'ready' || !repository.expires_at) return
     const updateExpiry = () => {
@@ -440,7 +464,7 @@ export function ChatPage() {
           upload_id: crypto.randomUUID(), text, operation: longInputMode,
         })
         selectedAttachments = [...selectedAttachments, virtual]
-        setAttachments(value => [...value.filter(item => item.status === 'ready'), virtual].slice(-bootstrap.uploads.max_files_per_message))
+        replaceActiveAttachments([...attachmentsRef.current.filter(item => item.status === 'ready'), virtual].slice(-bootstrap.uploads.max_files_per_message))
         const labels: Record<LongInputMode, string> = {
           summarize: 'Summarize', analyze: 'Analyze', ask_questions: 'Answer questions about',
           rewrite: 'Rewrite', translate: 'Translate',
@@ -676,11 +700,11 @@ export function ChatPage() {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
     }, { regenerateMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); setAttachments([]); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
   const selectSearch = (result: SearchResult) => {
     if (!result.thread_id) return
-    setDraftVoiceTurnId(null); setAttachments([]); setRepository(null); activeRef.current = result.thread_id
+    setDraftVoiceTurnId(null); clearActiveAttachments(); setRepository(null); activeRef.current = result.thread_id
     setActive(result.thread_id); setHighlightMessageId(result.message_id)
     setDrawer(false); setError(''); setFocusKey(`search-${result.thread_id}`)
   }
@@ -747,12 +771,10 @@ export function ChatPage() {
     }
   }
   const removeAttachment = (attachment: ComposerAttachment) => {
-    const key = 'local_id' in attachment ? attachment.local_id : attachment.id
+    const key = attachmentKey(attachment)
     if ('local_id' in attachment && attachment.status === 'uploading') removedLocalUploads.current.add(attachment.local_id)
-    if (attachment.preview_url && !revokedAttachmentPreviews.current.has(attachment.preview_url)) {
-      revokedAttachmentPreviews.current.add(attachment.preview_url)
-      URL.revokeObjectURL(attachment.preview_url)
-    }
+    revokeAttachmentPreview(attachment)
+    attachmentsRef.current = attachmentsRef.current.filter(item => attachmentKey(item) !== key)
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
   }
@@ -921,29 +943,25 @@ export function ChatPage() {
   const realtimeVoiceEnabled = voiceReady.enabled
   const emptyChat = !messages.some(message => !message.is_continuation_control)
   const greetingName = firstMeaningfulNameToken(bootstrap?.user.name)
-  const emptyGreeting = greetingName ? `Hey, ${greetingName}. Ready to dive in?` : 'Ready to dive in?'
-
-  useEffect(() => {
-    if (!emptyChat) setWorkspaceExpanded(false)
-  }, [emptyChat])
+  const emptyGreeting = greetingName ? `Hey, ${greetingName}. How can I help you?` : 'How can I help you?'
 
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className={`chat-main${emptyChat ? ' empty-chat' : ''}${emptyChat && workspaceExpanded ? ' composer-expanded' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
+    <section className={`chat-main${emptyChat ? ' empty-chat' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
       <header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {fileDragActive && <div className="chat-drop-overlay" aria-hidden="true"><span>Drop files or images to attach</span></div>}
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      {emptyChat && <div className="empty-chat-welcome"><h1>{emptyGreeting}</h1></div>}
       <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds} retry={retry} continueResponse={continueResponse} continuingMessageId={continuingMessageId} regenerateResponse={regenerateResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} showEmptyState={!emptyChat}
         voiceReplyEnabled={Boolean(bootstrap.features.web_voice_reply && bootstrap.features.web_voice_billing)} voiceStates={voiceReply.states} generateVoice={(messageId, voiceTurnId) => void voiceReply.generate(messageId, voiceTurnId)} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')}
         feedbackEnabled={Boolean(bootstrap.features.web_answer_feedback)} submitFeedback={submitFeedback}
         highlightMessageId={highlightMessageId} />
+      <div className={emptyChat ? 'empty-chat-home' : undefined}>
+        {emptyChat && <div className="empty-chat-welcome"><h1 data-testid="empty-chat-greeting">{emptyGreeting}</h1></div>}
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
-        workspace={emptyChat} expanded={emptyChat && workspaceExpanded} onToggleExpand={() => setWorkspaceExpanded(value => !value)}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}
@@ -959,6 +977,7 @@ export function ChatPage() {
         onVoiceDraft={setDraftVoiceTurnId} onVoiceCancel={() => setDraftVoiceTurnId(null)} onComposerClear={() => setDraftVoiceTurnId(null)} onVoiceWallet={applyWallet}
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment}
         addRepository={addRepository} removeRepository={removeRepository} />
+      </div>
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} initialReferralCode={pendingReferralCode} close={closeBilling} refreshed={() => { void refreshWallet(); void apiJson<Bootstrap>(user, '/api/web/bootstrap').then(setBootstrap).catch(() => undefined) }} /></Suspense>}
     {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}

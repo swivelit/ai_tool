@@ -384,7 +384,7 @@ export type GreetingAuditState = {
 }
 
 export type FreshChatState = {
-  emptyStateHeadingVisible: boolean
+  emptyChatGreetingVisible: boolean
   conversationVisible: boolean
   composerVisible: boolean
   textboxVisible: boolean
@@ -407,7 +407,7 @@ export type FreshChatProbe = {
 export function freshChatStateReason(
   state: FreshChatState,
 ): FreshChatReasonCode | null {
-  if (!state.emptyStateHeadingVisible || !state.conversationVisible) {
+  if (!state.emptyChatGreetingVisible || !state.conversationVisible) {
     return 'fresh_chat_shell_not_ready'
   }
   if (
@@ -439,6 +439,7 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
   }
   const button = page.getByTestId('new-chat-button')
   const conversation = page.getByTestId('conversation')
+  const emptyChatGreeting = page.getByTestId('empty-chat-greeting')
   const composer = page.getByTestId('composer')
   const composerContainer = composer.locator('..')
   const textbox = composer.getByRole('textbox', { name:'Message Swico' })
@@ -490,7 +491,7 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
     },
     async readState() {
       const [
-        emptyStateHeadingVisible,
+        emptyChatGreetingVisible,
         conversationVisible,
         composerVisible,
         textboxVisible,
@@ -500,9 +501,9 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
         attachmentCount,
         repositoryCount,
       ] = await Promise.all([
-        boundedOperation(() => conversation.getByRole('heading', {
-          name:'How can I help?', exact:true,
-        }).isVisible({ timeout:operationTimeoutMilliseconds })),
+        boundedOperation(() => emptyChatGreeting.isVisible({
+          timeout:operationTimeoutMilliseconds,
+        })),
         boundedOperation(() => conversation.isVisible({
           timeout:operationTimeoutMilliseconds,
         })),
@@ -527,7 +528,7 @@ export function playwrightFreshChatProbe(page: Page): FreshChatProbe {
         ).count()),
       ])
       return {
-        emptyStateHeadingVisible,
+        emptyChatGreetingVisible,
         conversationVisible,
         composerVisible,
         textboxVisible,

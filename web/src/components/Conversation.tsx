@@ -11,7 +11,7 @@ import { ResponseQualityPanel } from './ResponseQualityPanel'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, continuationAvailable = true, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null, emptyTitle = 'How can I help?', showEmptyState = true }: {
+export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, continuationAvailable = true, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null, emptyTitle = 'How can Swico help?', showEmptyState = true }: {
   messages: Message[]; phase?: string; queuePosition?: number | null; estimatedWaitSeconds?: number | null; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
   continuingMessageId?: string | null;

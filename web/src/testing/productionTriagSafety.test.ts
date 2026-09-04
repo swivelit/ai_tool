@@ -288,7 +288,7 @@ test.each([
 })
 
 const readyFreshChatState: FreshChatState = {
-  emptyStateHeadingVisible:true,
+  emptyChatGreetingVisible:true,
   conversationVisible:true,
   composerVisible:true,
   textboxVisible:true,
@@ -349,7 +349,7 @@ test('already fresh workspace needs no New chat button or navigation', async () 
 test('fresh chat resets a completed greeting conversation for the next scenario', async () => {
   const existingConversation = {
     ...readyFreshChatState,
-    emptyStateHeadingVisible:false,
+    emptyChatGreetingVisible:false,
     textboxEmpty:false,
     messageCount:2,
     attachmentCount:1,
@@ -397,6 +397,51 @@ test('Playwright uses the unique New chat action and catches visibility errors',
   expect(page.getByTestId).toHaveBeenCalledWith('new-chat-button')
   expect(button.isVisible).toHaveBeenCalledWith({ timeout:5_000 })
   expect(button.click).not.toHaveBeenCalled()
+})
+
+test('Playwright fresh-chat state reads the stable authenticated greeting outside conversation', async () => {
+  const greeting = { isVisible:vi.fn().mockResolvedValue(true) }
+  const articles = { count:vi.fn().mockResolvedValue(0) }
+  const conversation = {
+    isVisible:vi.fn().mockResolvedValue(true),
+    locator:vi.fn(() => articles),
+  }
+  const textbox = {
+    isVisible:vi.fn().mockResolvedValue(true),
+    isEnabled:vi.fn().mockResolvedValue(true),
+    inputValue:vi.fn().mockResolvedValue(''),
+  }
+  const composerContainer = { locator:vi.fn(() => ({ count:vi.fn().mockResolvedValue(0) })) }
+  const composer = {
+    isVisible:vi.fn().mockResolvedValue(true),
+    locator:vi.fn(() => composerContainer),
+    getByRole:vi.fn(() => textbox),
+  }
+  const page = {
+    getByTestId:vi.fn((testId: string) => {
+      if (testId === 'empty-chat-greeting') return greeting
+      if (testId === 'conversation') return conversation
+      if (testId === 'composer') return composer
+      return { isVisible:vi.fn().mockResolvedValue(false) }
+    }),
+    getByRole:vi.fn(() => ({})),
+    keyboard:{ press:vi.fn() },
+    isClosed:vi.fn(() => false),
+  } as unknown as Page
+
+  const state = await playwrightFreshChatProbe(page).readState()
+  expect(state).toMatchObject({
+    emptyChatGreetingVisible:true,
+    conversationVisible:true,
+    composerVisible:true,
+    textboxVisible:true,
+    textboxEnabled:true,
+    textboxEmpty:true,
+    messageCount:0,
+    attachmentCount:0,
+    repositoryCount:0,
+  })
+  expect(greeting.isVisible).toHaveBeenCalledWith({ timeout:5_000 })
 })
 
 test('Playwright catches sidebar wait and click locator failures', async () => {
@@ -594,7 +639,7 @@ test.each([
 
 test('fresh-chat shell and composer failures remain distinct from payload isolation', () => {
   expect(freshChatStateReason({
-    ...readyFreshChatState, emptyStateHeadingVisible:false,
+    ...readyFreshChatState, emptyChatGreetingVisible:false,
   })).toBe('fresh_chat_shell_not_ready')
   expect(freshChatStateReason({
     ...readyFreshChatState, textboxEnabled:false,
@@ -670,6 +715,7 @@ test('greeting starts fresh and captures its request before rendering waits', ()
     resolve(process.cwd(), 'src/testing/productionTriagSafety.ts'), 'utf8',
   )
   expect(safety).toContain("page.getByTestId('conversation')")
+  expect(safety).toContain("page.getByTestId('empty-chat-greeting')")
   expect(safety).toContain("conversation.locator('article.message')")
   expect(safety).toContain("const composerContainer = composer.locator('..')")
   expect(safety).toContain("page.keyboard.press('Control+Shift+O')")

@@ -103,34 +103,38 @@ const repositorySnapshot = (id: string, displayName = 'swico.zip') => ({
   frameworks:[],
 })
 
-it('renders the authenticated empty chat as a personalized workspace', async () => {
+it('renders the authenticated empty chat as a compact personalized home', async () => {
   mockApi()
   render(<ChatPage />)
-  expect(await screen.findByRole('heading', { name:'Hey, Hari. Ready to dive in?' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name:'Hey, Hari. How can I help you?' })).toBeInTheDocument()
   expect(screen.getByTestId('composer')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
-  expect(screen.queryByText('How can I help?')).not.toBeInTheDocument()
   expect(screen.queryByText('Help me plan a focused week')).not.toBeInTheDocument()
-  expect(document.querySelector('.empty-state .swico-mark')).not.toBeInTheDocument()
+  expect(document.querySelector('.empty-state')).not.toBeInTheDocument()
   expect(document.querySelector('.chat-main')).toHaveClass('empty-chat')
-  expect(document.querySelector('.workspace-composer-shell')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:'Expand composer' })).not.toBeInTheDocument()
   expect(document.querySelector('#composer-character-count')).toHaveClass('sr-only')
 })
 
-it('restores the compact composer after the first visible message and preserves expanded drafts', async () => {
+it('uses a safe fallback when the bootstrap name is not usable', async () => {
+  mockApi()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return { ...bootstrap, user:{ ...bootstrap.user, name:'   ' } } as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  expect(await screen.findByRole('heading', { name:'How can I help you?' })).toBeInTheDocument()
+  expect(screen.queryByText(/^Hey,/u)).not.toBeInTheDocument()
+})
+
+it('keeps the compact composer for a new chat and after the first message', async () => {
   mockApi()
   render(<ChatPage />)
   const textarea = await screen.findByRole('textbox', { name:'Message Swico' })
   fireEvent.change(textarea, { target:{ value:'Keep this draft' } })
-  await userEvent.click(screen.getByRole('button', { name:'Expand composer' }))
-  expect(screen.getByRole('button', { name:'Collapse composer' })).toBeInTheDocument()
-  expect(textarea).toHaveValue('Keep this draft')
-  fireEvent.keyDown(window, { key:'Escape' })
-  expect(screen.getByRole('button', { name:'Expand composer' })).toBeInTheDocument()
   expect(textarea).toHaveValue('Keep this draft')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(document.querySelector('.chat-main')).not.toHaveClass('empty-chat'))
-  expect(document.querySelector('.workspace-composer-shell')).not.toBeInTheDocument()
 })
 
 it('continues without an optimistic control bubble and consumes the parent button', async () => {
@@ -672,6 +676,25 @@ it('removes an expired active image attachment and revokes its preview URL', asy
   await waitFor(() => expect(uploadDocument).toHaveBeenCalledOnce())
   await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:expired-image'))
   expect(screen.queryByRole('button', { name:'Remove expired.png' })).not.toBeInTheDocument()
+})
+
+it('revokes an active image preview when the pending attachment is removed', async () => {
+  mockApi()
+  const imageBootstrap = { ...bootstrap, uploads:{ ...bootstrap.uploads, supported_extensions:['.txt', '.pdf', '.png'] } }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return imageBootstrap as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:removed-image')
+  vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['image'], 'removed.png', { type:'image/png' }))
+  await screen.findByText('Uploading… 0%')
+  await userEvent.click(screen.getByRole('button', { name:'Remove removed.png' }))
+  expect(revoke).toHaveBeenCalledWith('blob:removed-image')
 })
 
 it('rejects unsupported documents before upload', async () => {
