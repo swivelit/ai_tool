@@ -16,7 +16,10 @@ if str(BACKEND_ROOT) not in sys.path:
 from sqlalchemy import func, inspect, text
 from sqlmodel import select
 
-from app.alembic_utils import repository_alembic_head
+from app.alembic_utils import (
+    repository_alembic_head,
+    repository_alembic_revision_is_ancestor,
+)
 from app.database import engine, SessionLocal
 from app.models import (
     PaymentOrder, ReferralAttribution, ReferralReward, SubscriptionEntitlement,
@@ -29,7 +32,7 @@ from app.billing.token_estimates import token_estimate
 from app.billing.topups import topup_packages
 
 
-EXPECTED_HEAD = "b8f2c7d1e4a9"
+REQUIRED_SUBSCRIPTION_REVISION = "b8f2c7d1e4a9"
 EXPECTED_TABLES = {
     "subscription_entitlement", "subscription_usage_window", "subscription_usage_ledger",
     "subscription_preference", "referral_code", "referral_attribution", "referral_reward",
@@ -113,6 +116,58 @@ def _database_head() -> str | None:
     return versions[0] if len(versions) == 1 else None
 
 
+def _migration_readiness(
+    *,
+    repository_head: str | None,
+    database_head: str | None,
+    missing_tables: list[str],
+    constraints_ready: bool,
+) -> tuple[dict[str, Any], int]:
+    """Evaluate independent migration/table blockers without double counting."""
+    repository_head_ready = repository_head is not None
+    database_head_ready = database_head is not None
+    heads_match = bool(
+        repository_head_ready
+        and database_head_ready
+        and repository_head == database_head
+    )
+    subscription_revision_present = bool(
+        repository_head
+        and repository_alembic_revision_is_ancestor(
+            REQUIRED_SUBSCRIPTION_REVISION, repository_head,
+        )
+    )
+    blockers = 0
+    if not repository_head_ready:
+        blockers += 1
+    elif not database_head_ready:
+        blockers += 1
+    elif not heads_match:
+        blockers += 1
+    # When the repository head cannot be established, the single head failure
+    # already prevents ancestry from being determined. Do not double count it.
+    if repository_head_ready and not subscription_revision_present:
+        blockers += 1
+    if missing_tables:
+        blockers += 1
+    if not constraints_ready and not missing_tables:
+        blockers += 1
+    readiness = {
+        "required_subscription_revision": REQUIRED_SUBSCRIPTION_REVISION,
+        "repository_head": repository_head,
+        "database_head": database_head,
+        "repository_database_heads_match": heads_match,
+        "repository_head_ready": repository_head_ready,
+        "database_head_ready": database_head_ready,
+        "subscription_revision_present": subscription_revision_present,
+        "subscription_revision_ready": subscription_revision_present,
+        "head_ready": heads_match,
+        "missing_tables": missing_tables,
+        "constraints_ready": constraints_ready,
+    }
+    return readiness, blockers
+
+
 def _token_estimation_readiness() -> dict[str, Any]:
     checks: dict[str, Any] = {
         "payg_positive_packages_ready": True,
@@ -170,11 +225,14 @@ def build_report() -> dict[str, Any]:
     repository_head = repository_alembic_head()
     report: dict[str, Any] = {
         "status": "ok", "blocker_count": 0,
-        "expected_head": EXPECTED_HEAD,
+        "required_subscription_revision": REQUIRED_SUBSCRIPTION_REVISION,
         "repository_head": repository_head,
         "database_head": None,
-        "repository_head_ready": repository_head == EXPECTED_HEAD,
+        "repository_database_heads_match": False,
+        "repository_head_ready": repository_head is not None,
         "database_head_ready": False,
+        "subscription_revision_present": False,
+        "subscription_revision_ready": False,
         "configuration_valid": config_ok,
         "configuration_errors": config_errors,
         "migration_table_constraint_readiness": {},
@@ -186,7 +244,7 @@ def build_report() -> dict[str, Any]:
         "token_estimation_readiness": {},
         "financial_integrity": {},
     }
-    blockers = len(config_errors) + int(repository_head != EXPECTED_HEAD)
+    blockers = len(config_errors)
     try:
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
@@ -201,25 +259,33 @@ def build_report() -> dict[str, Any]:
             ) if table in tables
         ) if not missing else False
         database_head = _database_head()
-        repository_head_ready = head == EXPECTED_HEAD
-        database_head_ready = database_head == EXPECTED_HEAD
+        migration_readiness, migration_blockers = _migration_readiness(
+            repository_head=head,
+            database_head=database_head,
+            missing_tables=missing,
+            constraints_ready=constraints_ready,
+        )
         report["database_head"] = database_head
-        report["repository_head_ready"] = repository_head_ready
-        report["database_head_ready"] = database_head_ready
-        report["migration_table_constraint_readiness"] = {
-            "repository_head": head, "database_head": database_head, "expected_head": EXPECTED_HEAD,
-            "repository_head_ready": repository_head_ready, "database_head_ready": database_head_ready,
-            "head_ready": repository_head_ready and database_head_ready, "missing_tables": missing,
-            "constraints_ready": constraints_ready,
-        }
-        blockers += int(not repository_head_ready or not database_head_ready or bool(missing) or not constraints_ready)
+        report.update({
+            key: migration_readiness[key]
+            for key in (
+                "repository_database_heads_match", "repository_head_ready",
+                "database_head_ready", "subscription_revision_present",
+                "subscription_revision_ready",
+            )
+        })
+        report["migration_table_constraint_readiness"] = migration_readiness
+        blockers += migration_blockers
     except Exception:
         report["migration_table_constraint_readiness"] = {
-            "expected_head": EXPECTED_HEAD,
+            "required_subscription_revision": REQUIRED_SUBSCRIPTION_REVISION,
             "repository_head": repository_head,
             "database_head": report["database_head"],
+            "repository_database_heads_match": False,
             "repository_head_ready": report["repository_head_ready"],
             "database_head_ready": report["database_head_ready"],
+            "subscription_revision_present": False,
+            "subscription_revision_ready": False,
             "status": "unavailable",
         }
         blockers += 1

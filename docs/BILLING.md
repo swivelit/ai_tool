@@ -10,7 +10,7 @@ Backend configuration (website only): `WEB_SUBSCRIPTIONS_ENABLED`, `WEB_REFERRAL
 
 ## Production website/API deployment check
 
-Before enabling subscriptions or referrals, deploy `ai_tool` and `swico-web` from the same Git commit and verify that the backend release check reports repository and database head `b8f2c7d1e4a9`. If the backend is updated but the website still shows old billing text, deploy `swico-web → Manual Deploy → Clear build cache & deploy`, then verify the frontend release again. This does not add a Render service or environment variable.
+Before enabling subscriptions or referrals, deploy `ai_tool` and `swico-web` from the same Git commit and verify that the backend release check reports matching repository/database heads, with the required subscription schema revision `b8f2c7d1e4a9` present in the current Alembic ancestry. Newer descendant migrations are valid; the production database must be migrated to the current repository Alembic head. If the backend is updated but the website still shows old billing text, deploy `swico-web → Manual Deploy → Clear build cache & deploy`, then verify the frontend release again. This does not add a Render service or environment variable.
 
 ## Units and allocation
 
