@@ -55,6 +55,11 @@ from .auth import (
     validate_auth_configuration,
 )
 from .database import SessionLocal, engine, get_session
+from .cors_config import (
+    DEFAULT_CORS_ORIGINS as _DEFAULT_CORS_ORIGINS,
+    cors_configuration_errors,
+    effective_cors_origins,
+)
 from .email_otp import (
     EmailOtpConfigurationError,
     EmailOtpError,
@@ -363,27 +368,23 @@ JOB_QUEUE: Optional[DBJobQueue] = None
 SWICO_FREE_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
-DEFAULT_CORS_ORIGINS = [
-    "http://localhost",
-    "http://127.0.0.1",
-    "http://localhost:19006",
-    "http://127.0.0.1:19006",
-    "http://localhost:8081",
-    "http://127.0.0.1:8081",
-]
-
-CORS_ALLOW_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
-    if origin.strip()
-] or DEFAULT_CORS_ORIGINS
+CORS_ALLOW_ORIGINS = list(
+    effective_cors_origins(
+        os.environ,
+        production=APP_ENV in {"prod", "production"},
+    )
+)
+# Preserve the existing import-visible development fallback for callers that
+# inspect the application module directly.
+DEFAULT_CORS_ORIGINS = list(_DEFAULT_CORS_ORIGINS)
 
 CORS_CONFIGURATION_ERROR: str | None = None
-if APP_ENV in {"prod", "production"}:
-    if not os.getenv("CORS_ALLOW_ORIGINS", "").strip():
-        CORS_CONFIGURATION_ERROR = "CORS_ALLOW_ORIGINS must list exact approved origins in production."
-    elif any("*" in origin or not origin.startswith("https://") or origin.endswith("/") for origin in CORS_ALLOW_ORIGINS):
-        CORS_CONFIGURATION_ERROR = "Production CORS origins must be exact HTTPS origins without wildcards or trailing slashes."
+cors_errors = cors_configuration_errors(
+    os.environ,
+    require_production_origins=APP_ENV in {"prod", "production"},
+)
+if cors_errors:
+    CORS_CONFIGURATION_ERROR = "; ".join(cors_errors)
 
 app = FastAPI(title="Swico Backend")
 RUNTIME_STATUS: Dict[str, Any] = {

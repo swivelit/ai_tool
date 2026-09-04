@@ -39,7 +39,11 @@ handled with one targeted error and application close code.
 The response contains a short-lived one-use ticket and a WebSocket URL without
 the ticket. The browser adds the query value only when constructing the socket.
 Only a SHA-256 ticket digest and minimal session metadata are held in the
-existing private Valkey. Origin must exactly match `CORS_ALLOW_ORIGINS`; a
+existing private Valkey. Origin must exactly match the effective CORS origin
+list: the HTTPS-only `CORS_ALLOW_ORIGINS` production list plus any explicitly
+configured loopback-only `CORS_ALLOW_LOCAL_DEV_ORIGINS` values. A local Vite
+frontend may use `http://localhost:5173,http://127.0.0.1:5173` in that dedicated
+variable; a
 per-user compare-and-delete lock allows one session. Retry fully closes the old
 socket/media and always calls the ticket endpoint again.
 

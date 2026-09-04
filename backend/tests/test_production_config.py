@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.testclient import TestClient
 
 from app.production_config import (
     ProductionConfigurationError,
@@ -8,6 +11,11 @@ from app.production_config import (
     validate_production_configuration,
 )
 from app.ai.provider_pool import ALIAS_DEFAULTS
+from app.cors_config import (
+    configured_cors_origins,
+    effective_cors_origins,
+    exact_local_dev_origin,
+)
 
 
 def valid_environment() -> dict[str, str]:
@@ -77,6 +85,112 @@ def valid_environment() -> dict[str, str]:
 def test_valid_test_mode_production_configuration_passes() -> None:
     assert production_configuration_errors(valid_environment()) == []
     validate_production_configuration(valid_environment())
+
+
+def test_production_https_origins_and_explicit_local_origins_pass() -> None:
+    environment = {
+        **valid_environment(),
+        "CORS_ALLOW_ORIGINS": (
+            "https://swico-web.onrender.com,https://swico.in,https://www.swico.in"
+        ),
+        "CORS_ALLOW_LOCAL_DEV_ORIGINS": (
+            "http://localhost:5173,http://127.0.0.1:5173"
+        ),
+    }
+    assert production_configuration_errors(environment) == []
+    validate_production_configuration(environment)
+    assert effective_cors_origins(environment, production=True) == (
+        "https://swico-web.onrender.com",
+        "https://swico.in",
+        "https://www.swico.in",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    )
+
+
+def test_http_local_origin_remains_invalid_in_production_cors_allow_origins() -> None:
+    errors = production_configuration_errors({
+        **valid_environment(),
+        "CORS_ALLOW_ORIGINS": "https://swico.in,http://localhost:5173",
+    })
+    assert any("CORS_ALLOW_ORIGINS" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://example.com:5173",
+        "http://localhost.evil.com:5173",
+        "http://127.0.0.1.evil.com:5173",
+        "http://localhost:5173/",
+        "http://localhost:5173/test",
+        "http://localhost:5173?x=1",
+        "http://localhost:5173#fragment",
+        "http://user:password@localhost:5173",
+        "*",
+        "http://localhost",
+        "http://localhost:bad",
+    ],
+)
+def test_local_dev_origin_validation_is_loopback_exact_and_strict(origin: str) -> None:
+    assert not exact_local_dev_origin(origin)
+    errors = production_configuration_errors({
+        **valid_environment(),
+        "CORS_ALLOW_LOCAL_DEV_ORIGINS": origin,
+    })
+    assert any("CORS_ALLOW_LOCAL_DEV_ORIGINS" in error for error in errors)
+
+
+def test_duplicate_cors_origins_are_rejected_and_effective_order_is_deterministic() -> None:
+    environment = {
+        **valid_environment(),
+        "CORS_ALLOW_ORIGINS": "https://swico.in,https://swico.in",
+        "CORS_ALLOW_LOCAL_DEV_ORIGINS": (
+            "http://localhost:5173,http://localhost:5173"
+        ),
+    }
+    errors = production_configuration_errors(environment)
+    assert any("CORS_ALLOW_ORIGINS" in error for error in errors)
+    assert any("CORS_ALLOW_LOCAL_DEV_ORIGINS" in error for error in errors)
+    assert configured_cors_origins(environment).effective == (
+        "https://swico.in", "http://localhost:5173",
+    )
+
+
+@pytest.mark.parametrize(
+    ("origin", "allowed"),
+    [
+        ("http://localhost:5173", True),
+        ("https://swico.in", True),
+        ("http://evil.example:5173", False),
+    ],
+)
+def test_effective_origins_drive_exact_cors_preflight(origin: str, allowed: bool) -> None:
+    environment = {
+        **valid_environment(),
+        "CORS_ALLOW_ORIGINS": "https://swico.in",
+        "CORS_ALLOW_LOCAL_DEV_ORIGINS": "http://localhost:5173",
+    }
+    inner = FastAPI()
+
+    @inner.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    cors_app = CORSMiddleware(
+        inner,
+        allow_origins=list(effective_cors_origins(environment, production=True)),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    with TestClient(cors_app) as test_client:
+        response = test_client.get("/health", headers={"Origin": origin})
+    if allowed:
+        assert response.headers["access-control-allow-origin"] == origin
+        assert response.headers["access-control-allow-credentials"] == "true"
+    else:
+        assert "access-control-allow-origin" not in response.headers
 
 
 def test_production_validates_guest_session_limits() -> None:

@@ -6,6 +6,7 @@ import os
 from urllib.parse import urlsplit
 
 from .database_url import is_postgres_database_url
+from .cors_config import cors_configuration_errors, exact_https_origin
 from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
 from .ai.provider_pool import configured_provider_aliases
 from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
@@ -61,20 +62,7 @@ def _integer(env: Mapping[str, str], name: str, default: str) -> int | None:
         return None
 
 
-def _exact_https_origin(origin: str) -> bool:
-    if not origin or origin.endswith("/") or "*" in origin:
-        return False
-    parsed = urlsplit(origin)
-    return bool(
-        parsed.scheme == "https"
-        and parsed.hostname
-        and not parsed.username
-        and not parsed.password
-        and not parsed.path
-        and not parsed.query
-        and not parsed.fragment
-        and origin == f"https://{parsed.netloc}"
-    )
+_exact_https_origin = exact_https_origin
 
 
 def production_configuration_errors(environ: Mapping[str, str] | None = None) -> list[str]:
@@ -491,11 +479,7 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     if maximum is not None and (maximum < 29900 or maximum % 100 != 0):
         errors.append("BILLING_MAX_TOPUP_PAISE must be a whole-rupee bound allowing ₹299")
 
-    origins = [item.strip() for item in _value(env, "CORS_ALLOW_ORIGINS").split(",") if item.strip()]
-    if not origins:
-        errors.append("CORS_ALLOW_ORIGINS must list approved HTTPS origins")
-    elif len(origins) != len(set(origins)) or any(not _exact_https_origin(item) for item in origins):
-        errors.append("CORS_ALLOW_ORIGINS must contain unique exact HTTPS origins without wildcards or trailing slashes")
+    errors.extend(cors_configuration_errors(env, require_production_origins=True))
 
     real_embeddings = _bool(env, "GLOBAL_QA_REAL_EMBEDDINGS_ENABLED", False)
     embedding_provider = _value(env, "GLOBAL_QA_EMBEDDING_PROVIDER", "token_hash").lower()

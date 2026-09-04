@@ -144,7 +144,10 @@ environment group or copy a production credential.
    `render.staging.yaml`. Review that the plan contains only the six staging
    resource names before applying it.
 3. In the initial Blueprint form, provide every `sync:false` value. On the API,
-   set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; provide a
+   set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; leave
+   `CORS_ALLOW_LOCAL_DEV_ORIGINS` empty unless local Vite -> hosted-backend
+   development is explicitly required. If it is required, use only
+   `http://localhost:5173,http://127.0.0.1:5173`; provide a
    staging OpenAI key, matching Razorpay Test Mode key ID/secret/webhook secret,
    and optional staging Sentry DSN. Never enter a Live key or production value.
 4. On the static site, provide `VITE_API_BASE_URL` with the staging API HTTPS
@@ -206,7 +209,7 @@ created the Blueprint.
 
 The root must remain blank. `backend/config.py` and `backend/app/agentic_service.py` still have repository-root runtime reads involving `mobile/data/`.
 
-Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing and Swico tier variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
+Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, `CORS_ALLOW_ORIGINS=https://<web-domain>`, and leave `CORS_ALLOW_LOCAL_DEV_ORIGINS` empty unless explicitly enabling local Vite -> hosted-backend development. If enabled, set it to exactly `http://localhost:5173,http://127.0.0.1:5173`. Production `CORS_ALLOW_ORIGINS` remains HTTPS-only; do not use wildcard CORS. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing and Swico tier variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
 
 For the website subscription rollout, add these backend variables to the existing API service (never to the static site and never as `VITE_*` values): `WEB_SUBSCRIPTIONS_ENABLED=false`, `WEB_REFERRALS_ENABLED=false`, `WEB_SUBSCRIPTION_1M_PRICE_PAISE=150000`, `WEB_SUBSCRIPTION_6M_PRICE_PAISE=800000`, `WEB_SUBSCRIPTION_1Y_PRICE_PAISE=1200000`, `WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS=125000000`, `WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK=true`, `WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT=false`, `WEB_REFERRAL_REWARD_1M_WEEKS=1`, `WEB_REFERRAL_REWARD_6M_WEEKS=3`, and `WEB_REFERRAL_REWARD_1Y_MONTHS=2`. Enable subscriptions/referrals only after migration, Razorpay test-mode verification, legal publication, and supervised non-production checkout verification. There is no subscription reset cron or additional Render service.
 

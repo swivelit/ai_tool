@@ -21,7 +21,7 @@ from app.billing.service import get_or_create_wallet
 from app.database import SessionLocal
 from app.models import WebUsagePreferences
 from app.web_api.router import (
-    _tickets, _voice_audio_end, _voice_audio_start, _voice_playback_selection,
+    _allowed_websocket_origin, _tickets, _voice_audio_end, _voice_audio_start, _voice_playback_selection,
     _voice_backchannel_due, _voice_llm_preflight_micros, _voice_tts_chunks,
 )
 from app.web_api.adaptive_endpointing import TranscriptClassification
@@ -54,6 +54,19 @@ def _set_balance(user_id: int, bucket: str, amount: int) -> None:
         wallet.balance_micros = amount
         session.add(wallet)
         session.commit()
+
+
+def test_websocket_origin_uses_explicit_local_dev_allow_list(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", ORIGIN)
+    monkeypatch.setenv(
+        "CORS_ALLOW_LOCAL_DEV_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    )
+    assert _allowed_websocket_origin("http://localhost:5173") is True
+    assert _allowed_websocket_origin("http://127.0.0.1:5173") is True
+    assert _allowed_websocket_origin("http://evil.example:5173") is False
+    assert _allowed_websocket_origin(None) is False
 
 
 def test_voice_session_requires_auth_and_uses_saved_tier_language(client, monkeypatch):

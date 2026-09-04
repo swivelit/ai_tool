@@ -8,6 +8,14 @@
   `CORS_ALLOW_ORIGINS` list (HTTPS origins only, no trailing slash), Firebase
   Admin credentials, OpenAI/Sarvam keys, SMTP/OTP values, database URL, and all
   backend-only Razorpay secrets on the backend service.
+- `CORS_ALLOW_ORIGINS` remains the HTTPS-only production website allow-list:
+  `https://swico-web.onrender.com,https://swico.in,https://www.swico.in`.
+  For local Vite frontend development against the hosted backend, add the
+  separate loopback-only setting
+  `CORS_ALLOW_LOCAL_DEV_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`.
+  Never put HTTP localhost origins into `CORS_ALLOW_ORIGINS` or use wildcard
+  CORS. Local frontend -> local backend development may continue using the
+  existing local `CORS_ALLOW_ORIGINS` example.
 - Configure the Render secret file as `firebase-admin.json`, set
   `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json`, and remove
   `FIREBASE_CREDENTIALS_JSON`. Production accepts exactly one Firebase Admin

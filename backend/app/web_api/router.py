@@ -108,6 +108,7 @@ from .swico_free_queue import (
     queue_position,
 )
 from ..database import SessionLocal, get_session
+from ..cors_config import effective_cors_origins
 from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
@@ -1007,9 +1008,10 @@ def voice_diagnostics(
     active_session, remaining_lock_ttl_seconds = (
         session_status(int(user.id)) if callable(session_status) else (False, 0)
     )
-    configured_origins = sorted({
-        value.strip() for value in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if value.strip()
-    })
+    configured_origins = sorted(set(effective_cors_origins(
+        os.environ,
+        production=os.getenv("APP_ENV", "").strip().lower() in {"prod", "production"},
+    )))
     origin = request.headers.get("origin")
     return {
         "ok": True,
@@ -1223,9 +1225,10 @@ def release_voice_session(
 
 
 def _allowed_websocket_origin(origin: str | None) -> bool:
-    configured = {
-        value.strip() for value in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if value.strip()
-    }
+    configured = set(effective_cors_origins(
+        os.environ,
+        production=os.getenv("APP_ENV", "").strip().lower() in {"prod", "production"},
+    ))
     return bool(origin and origin in configured)
 
 
