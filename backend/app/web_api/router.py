@@ -95,6 +95,10 @@ from ..ai.swico_tiers import (
     tier_selection_enabled,
 )
 from .swico_free_access import swico_free_eligible
+from .guest_service import (
+    GUEST_TOKEN_HEADER, GuestIdentity, create_guest_session,
+    resolve_guest_session,
+)
 from .swico_free_queue import (
     cancel_queued_job,
     durable_queue_enabled,
@@ -166,7 +170,7 @@ from .schemas import (
     KnowledgeReindexRequest, MessageFeedbackRequest, UsagePreferencesPatch,
     VirtualTextUploadRequest,
     WebChatRequest, WebTTSRequest,
-    TriagRequestAuditRequest,
+    TriagRequestAuditRequest, GuestChatRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
 from .upload_store import (
@@ -817,6 +821,34 @@ def _owned_thread(session: Session, user_id: int, thread_id: str) -> WebChatThre
 def web_health(session: Session = Depends(get_session)):
     session.exec(text("SELECT 1"))
     return {"ok": True, "api": "web", "database": "reachable"}
+
+
+def require_guest_identity(
+    request: Request, session: Session = Depends(get_session),
+) -> GuestIdentity:
+    return resolve_guest_session(session, request.headers.get(GUEST_TOKEN_HEADER))
+
+
+@router.post("/guest/session")
+def guest_session(request: Request, session: Session = Depends(get_session)):
+    try:
+        raw_token, guest = create_guest_session(session, request)
+    except RateLimitError as exc:
+        raise HTTPException(429, str(exc), headers={"Retry-After": "3600"}) from exc
+    session.commit()
+    return JSONResponse(content={
+        "guest_token": raw_token,
+        "expires_at": guest.expires_at.isoformat(),
+        "assistant": {
+            "tier": "free", "tier_label": "Swico Free",
+        },
+        "limits": {
+            "max_message_characters": 16_000,
+            "daily_message_limit": max(1, _bounded_int_env(
+                "SWICO_FREE_DAILY_MESSAGE_LIMIT", 10, 1, 100_000,
+            )),
+        },
+    }, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/billing/public-config")
@@ -4036,7 +4068,7 @@ async def _stream_durable_swico_free(request: Request, *, prepared: Any, user_id
 async def chat_stream(
     payload: WebChatRequest,
     request: Request,
-    auth: AuthUser = Depends(get_current_user),
+    auth: AuthUser | None = Depends(get_current_user),
 ):
     inline_limit = 16_000
     if _env_enabled("WEB_LONG_INPUT_ENABLED"):
@@ -4049,19 +4081,30 @@ async def chat_stream(
             "Large pasted text must be ingested as a temporary attachment before chat generation.",
         )
     with SessionLocal() as rate_session:
-        user = get_owned_user(rate_session, auth)
-        user_id = int(user.id)
-        resolved_reply_language = _resolved_reply_language(user)
-        billing_exempt = is_internal_test_user(auth, user)
-        free_eligible = swico_free_eligible(
-            user_id, internal_account=billing_exempt,
-        )
-        if selected_swico_tier(rate_session, user_id) == "free" and not free_eligible:
-            return _temporary_error(
-                422, "tier_unavailable",
-                "Swico Free is not available for this account yet.",
+        guest_identity = getattr(request.state, "swico_guest_identity", None)
+        if guest_identity is not None:
+            user_id = int(guest_identity.user_id)
+            resolved_reply_language = "en"
+            billing_exempt = False
+            free_eligible = True
+            rollout_decision = None
+            request_triag_settings = TriagSettings.from_environ()
+        else:
+            if auth is None:
+                raise HTTPException(401, "Missing auth token")
+            user = get_owned_user(rate_session, auth)
+            user_id = int(user.id)
+            resolved_reply_language = _resolved_reply_language(user)
+            billing_exempt = is_internal_test_user(auth, user)
+            free_eligible = swico_free_eligible(
+                user_id, internal_account=billing_exempt,
             )
-        rollout_decision, request_triag_settings = _web_rollout(auth, user)
+            if selected_swico_tier(rate_session, user_id) == "free" and not free_eligible:
+                return _temporary_error(
+                    422, "tier_unavailable",
+                    "Swico Free is not available for this account yet.",
+                )
+            rollout_decision, request_triag_settings = _web_rollout(auth, user)
         web_chat_limit = int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12"))
         if not billing_exempt:
             _rate_limit(
@@ -4099,6 +4142,7 @@ async def chat_stream(
             ),
             billing_credit_bucket="chat",
             swico_free_eligible=free_eligible,
+            forced_swico_tier="free" if guest_identity is not None else None,
             resume_accepted_queue=resume_accepted_queue,
             rollout_decision=rollout_decision,
             triag_settings=request_triag_settings,
@@ -4611,22 +4655,48 @@ async def chat_stream(
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.post("/guest/chat/stream")
+async def guest_chat_stream(
+    payload: GuestChatRequest,
+    request: Request,
+    guest: GuestIdentity = Depends(require_guest_identity),
+):
+    # The dedicated schema has already rejected attachments, repositories,
+    # voice, mutations, and all client-controlled tier/model fields.
+    request.state.swico_guest_identity = guest
+    internal_payload = WebChatRequest(
+        request_id=payload.request_id,
+        message=payload.message,
+        thread_id=payload.thread_id,
+        input_mode="text",
+    )
+    return await chat_stream(payload=internal_payload, request=request, auth=None)
+
+
 @router.post("/chat/requests/{request_id}/cancel")
 async def cancel_chat_request(
     request_id: str, session: Session = Depends(get_session),
-    auth: AuthUser = Depends(get_current_user),
+    auth: AuthUser | None = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ):
-    user = get_owned_user(session, auth)
+    guest_identity = getattr(request.state, "swico_guest_identity", None) if request is not None else None
+    if guest_identity is not None:
+        user_id = int(guest_identity.user_id)
+    else:
+        if auth is None:
+            raise HTTPException(401, "Missing auth token")
+        user = get_owned_user(session, auth)
+        user_id = int(user.id)
     charge = session.exec(select(UsageCharge).where(
-        UsageCharge.request_id == request_id, UsageCharge.user_id == user.id
+        UsageCharge.request_id == request_id, UsageCharge.user_id == user_id
     )).first()
     if charge is None:
         with _active_generations_lock:
-            _pending_generation_cancellations[request_id] = int(user.id)
+            _pending_generation_cancellations[request_id] = user_id
         return {"status": "cancelling", "request_id": request_id}
     if durable_queue_enabled() and charge.provider == "swico_free":
         durable_status = cancel_queued_job(
-            session, user_id=int(user.id), request_id=request_id,
+            session, user_id=user_id, request_id=request_id,
         )
         if durable_status == "stopped":
             return {"status": "stopped", "request_id": request_id}
@@ -4634,7 +4704,7 @@ async def cancel_chat_request(
             return {"status": "cancelling", "request_id": request_id}
         if durable_status is None and charge.status == "free_pending":
             with _active_generations_lock:
-                _pending_generation_cancellations[request_id] = int(user.id)
+                _pending_generation_cancellations[request_id] = user_id
             return {"status": "cancelling", "request_id": request_id}
     queued = False
     with _active_generations_lock:
@@ -4643,11 +4713,11 @@ async def cancel_chat_request(
             active is None
             and charge.status in {"reserving", "reserved", "exempt_pending"}
         ):
-            _pending_generation_cancellations[request_id] = int(user.id)
+            _pending_generation_cancellations[request_id] = user_id
             queued = True
     if queued:
         return {"status": "cancelling", "request_id": request_id}
-    if active and active[0] == int(user.id):
+    if active and active[0] == user_id:
         active[1].cancel()
         deadline = asyncio.get_running_loop().time() + float(os.getenv("WEB_CANCELLATION_WAIT_SECONDS", "10"))
         while asyncio.get_running_loop().time() < deadline:
@@ -4664,7 +4734,7 @@ async def cancel_chat_request(
                             WebChatMessage
                         ).where(
                             WebChatMessage.request_id == request_id,
-                            WebChatMessage.user_id == user.id,
+                            WebChatMessage.user_id == user_id,
                             WebChatMessage.role == "assistant",
                         )).first()
                         stopped = (
@@ -4686,6 +4756,19 @@ async def cancel_chat_request(
     }:
         return {"status": "already_complete", "request_id": request_id}
     return {"status": charge.status, "request_id": request_id}
+
+
+@router.post("/guest/chat/requests/{request_id}/cancel")
+async def guest_cancel_chat_request(
+    request_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    guest: GuestIdentity = Depends(require_guest_identity),
+):
+    request.state.swico_guest_identity = guest
+    return await cancel_chat_request(
+        request_id=str(request_id), request=request, session=session, auth=None,
+    )
 
 
 @router.get("/chat/requests/{request_id}/status")

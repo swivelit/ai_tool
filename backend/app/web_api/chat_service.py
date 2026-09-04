@@ -1164,6 +1164,7 @@ def prepare_web_turn(
     repository_id: str | None = None,
     billing_credit_bucket: Literal["chat", "voice"] = "chat",
     swico_free_eligible: bool = False,
+    forced_swico_tier: str | None = None,
     resume_accepted_queue: bool = False,
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
@@ -1176,7 +1177,13 @@ def prepare_web_turn(
             request_triag_settings = TriagSettings()
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
-        swico_tier = selected_swico_tier(session, user_id)
+        swico_tier = (
+            str(forced_swico_tier).strip().lower()
+            if forced_swico_tier is not None
+            else selected_swico_tier(session, user_id)
+        )
+        if forced_swico_tier is not None and swico_tier != "free":
+            raise SwicoTierUnavailableError("Only Swico Free can be forced for this request")
         if swico_tier == "free" and not swico_free_eligible:
             raise SwicoTierUnavailableError("Swico Free is not available for this account")
         existing_charge = session.exec(
@@ -2539,6 +2546,12 @@ def prepare_web_turn(
             context_turns=context_turns,
         )
         route = AIProviderRouter().select_route(ai_request)
+        if forced_swico_tier == "free" and route.provider not in {"swico_free", "blocked"}:
+            # A guest request must never enter a paid provider or backend-tool
+            # path. The Free runtime owns all guest generation decisions.
+            raise SwicoTierUnavailableError(
+                "Swico Free is temporarily unavailable for guest chat"
+            )
         if route.metadata.get("provider_pool_enabled"):
             # The pool owns one primary plus one alternate. Do not let an
             # individual provider replay itself and consume the tier ceiling.

@@ -3,8 +3,28 @@ import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import { App } from './App'
 
-vi.mock('./auth/useAuth', () => ({ useAuth: () => ({ user:null, loading:false }) }))
+const authState: { user: unknown; loading: boolean } = { user:null, loading:false }
+vi.mock('./auth/useAuth', () => ({ useAuth: () => authState }))
 vi.mock('./pages/ChatPage', () => ({ ChatPage: () => <main>Chat</main> }))
+vi.mock('./pages/GuestChatPage', () => ({ GuestChatPage: () => <main>Guest chat</main> }))
+
+it('renders the guest chat at the unauthenticated root and keeps auth routes explicit', async () => {
+  const { unmount } = render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
+  expect(screen.getByText('Guest chat')).toBeInTheDocument()
+  unmount()
+  render(<MemoryRouter initialEntries={['/login']}><App /></MemoryRouter>)
+  expect(screen.getByRole('heading', { name:'Welcome back' })).toBeInTheDocument()
+  unmount()
+  render(<MemoryRouter initialEntries={['/signup']}><App /></MemoryRouter>)
+  expect(screen.getByRole('heading', { name:'Create your account' })).toBeInTheDocument()
+})
+
+it('keeps the authenticated root on the existing ChatPage', () => {
+  authState.user = { uid:'signed-in-user' }
+  render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
+  expect(screen.getByText('Chat')).toBeInTheDocument()
+  authState.user = null
+})
 
 const legalRoutes = [
   ['/legal/terms', 'Terms and Conditions'],

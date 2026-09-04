@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './auth/useAuth'
 import { ChatPage } from './pages/ChatPage'
+import { GuestChatPage } from './pages/GuestChatPage'
 import { LoginPage } from './pages/LoginPage'
 
 const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ default: module.LegalPage })))
@@ -15,7 +16,9 @@ export function App() {
     <Route path="/privacy" element={<Navigate to="/legal/privacy" replace />} />
     <Route path="/refunds" element={<Navigate to="/legal/refunds" replace />} />
     <Route path="/pricing" element={<Navigate to="/legal/pricing" replace />} />
-    <Route path="/" element={user ? <ChatPage /> : <LoginPage />} />
+    <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage initialMode="login" />} />
+    <Route path="/signup" element={user ? <Navigate to="/" replace /> : <LoginPage initialMode="signup" />} />
+    <Route path="/" element={user ? <ChatPage /> : <GuestChatPage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
 }

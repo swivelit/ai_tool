@@ -460,6 +460,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sr-only, .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0 }
 
 .login-page { display: grid; min-height: 100dvh; place-items: center; padding: 32px 20px; overflow-y: auto; background: var(--bg) }
+.guest-app-shell { grid-template-columns: 220px minmax(0, 1fr) }
+.guest-sidebar { display: flex; flex-direction: column; height: 100dvh; padding: 10px 12px; background: var(--sidebar); border-right: 1px solid var(--line) }
+.guest-new-chat { margin-top: 20px; justify-content: flex-start; }
+.guest-note { margin: auto 8px 20px; color: var(--muted); font-size: 12px; line-height: 1.5 }
+.guest-legal { display: flex; gap: 12px; padding: 0 8px 12px; font-size: 11px }
+.guest-legal a { color: var(--muted); text-decoration: none }
+.guest-header { position: absolute; z-index: 10; top: 0; right: 0; left: 0; display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 8px 20px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px) }
+.guest-mobile-brand { display: none; align-items: center; gap: 8px }
+.guest-auth-actions { display: flex; align-items: center; gap: 14px; margin-left: auto; font-size: 13px }
+.guest-auth-actions a { color: var(--text); text-decoration: none }
+.guest-auth-actions .guest-signup { padding: 8px 12px; border-radius: 8px; color: var(--accent-text) }
+.guest-chat-main .conversation { padding-top: 76px }
+.guest-tier-label { flex: none; padding: 7px 6px; color: var(--muted); font-size: 12px; white-space: nowrap }
+.guest-composer-note { position: absolute; right: 0; bottom: 4px; left: 0; margin: 0; color: var(--subtle); text-align: center; font-size: 10px }
 .auth-card { width: min(360px, 100%) }
 .auth-brand { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 54px; font-size: 20px; font-weight: 650; letter-spacing: -.025em }
 .auth-card h1 { margin: 0; text-align: center; font-size: 28px; letter-spacing: -.04em }
@@ -498,7 +512,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @keyframes spin { to { transform: rotate(360deg) } }
 
 @media (max-width: 900px) {
-  .app-shell, .app-shell.sidebar-collapsed { grid-template-columns: 1fr }
+  .app-shell, .app-shell.sidebar-collapsed, .guest-app-shell { grid-template-columns: 1fr }
+  .guest-sidebar { display: none }
+  .guest-mobile-brand { display: flex }
   .sidebar, .sidebar.collapsed { position: fixed; inset: 0 auto 0 0; width: min(86vw, 300px); transform: translateX(-105%); box-shadow: 18px 0 55px rgb(0 0 0 / 25%) }
   .sidebar.open { transform: translateX(0) }
   .sidebar.collapsed .sidebar-brand { flex-direction: row }

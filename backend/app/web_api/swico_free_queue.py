@@ -231,7 +231,8 @@ def _handle_swico_free_chat(session: Session, payload: dict[str, Any]) -> dict[s
             edit_message_id=payload.get("edit_message_id"),
             regenerate_message_id=payload.get("regenerate_message_id"),
             repository_id=payload.get("repository_id"), billing_credit_bucket="chat",
-            swico_free_eligible=True, resume_accepted_queue=True,
+            swico_free_eligible=True, forced_swico_tier="free",
+            resume_accepted_queue=True,
             triag_settings=TriagSettings.from_environ(),
         )
         if prepared.route.provider != "swico_free":

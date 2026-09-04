@@ -30,6 +30,7 @@ export function chatErrorMessage(error: unknown, offline: boolean): string {
       'edit_not_authorized', 'message_edit_disabled', 'continuation_not_found',
       'continuation_not_allowed', 'long_input_requires_ingestion',
       'swico_free_rate_limited', 'swico_free_daily_limit',
+      'swico_free_unavailable', 'swico_free_busy', 'swico_free_timeout',
     ])
     if (safePayload?.code && specificCodes.has(safePayload.code) && safePayload.message) {
       return safePayload.message

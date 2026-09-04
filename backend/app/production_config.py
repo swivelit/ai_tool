@@ -328,6 +328,17 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     free_max_output = _integer(env, "SWICO_FREE_MAX_OUTPUT_TOKENS", "256")
     if free_max_output is None or not 64 <= free_max_output <= 512:
         errors.append("SWICO_FREE_MAX_OUTPUT_TOKENS must be between 64 and 512")
+    guest_ttl = _integer(env, "SWICO_GUEST_SESSION_TTL_SECONDS", "86400")
+    if guest_ttl is None or not 900 <= guest_ttl <= 2_592_000:
+        errors.append("SWICO_GUEST_SESSION_TTL_SECONDS must be between 900 and 2592000")
+    guest_creation_limit = _integer(
+        env, "SWICO_GUEST_SESSION_CREATION_RATE_LIMIT_PER_HOUR", "10"
+    )
+    if guest_creation_limit is None or not 1 <= guest_creation_limit <= 1000:
+        errors.append("SWICO_GUEST_SESSION_CREATION_RATE_LIMIT_PER_HOUR must be between 1 and 1000")
+    trusted_proxy_hops = _integer(env, "SWICO_TRUSTED_PROXY_HOPS", "0")
+    if trusted_proxy_hops is None or not 0 <= trusted_proxy_hops <= 10:
+        errors.append("SWICO_TRUSTED_PROXY_HOPS must be between 0 and 10")
     free_durable_queue = _bool(env, "SWICO_FREE_DURABLE_QUEUE_ENABLED", False)
     free_queue_worker = _bool(env, "SWICO_FREE_QUEUE_WORKER_ENABLED", False)
     if free_durable_queue is None:

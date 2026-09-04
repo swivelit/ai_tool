@@ -502,6 +502,35 @@ class WebChatThread(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class WebGuestSession(SQLModel, table=True):
+    """Opaque website guest credential bound to a synthetic internal User."""
+
+    __tablename__ = "web_guest_session"
+    __table_args__ = (
+        UniqueConstraint("token_digest", name="uq_web_guest_session_token_digest"),
+        Index("ix_web_guest_session_user_active", "user_id", "expires_at", "revoked_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    token_digest: str = Field(max_length=64, index=True)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    last_seen_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    revoked_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+    )
+
+
 class WebChatMessage(SQLModel, table=True):
     __tablename__ = "web_chat_message"
     __table_args__ = (

@@ -47,6 +47,8 @@ export function Composer({
   realtimeVoiceEnabled = false,
   realtimeVoiceUnavailableReason = 'Voice Mode is not enabled for this account.',
   assistant = DEFAULT_ASSISTANT,
+  showTierSelector = true,
+  showRealtimeVoiceControls = true,
   tierDisabled = false,
   tierSaving = false,
   onTierSelect = async () => undefined,
@@ -75,6 +77,7 @@ export function Composer({
   repositoryChatEnabled?: boolean;
   repositoryValidationCapability?: 'static_only' | 'executable';
   realtimeVoiceEnabled?: boolean; realtimeVoiceUnavailableReason?: string; assistant?: AssistantSettings;
+  showTierSelector?: boolean; showRealtimeVoiceControls?: boolean;
   tierDisabled?: boolean; tierSaving?: boolean;
   onTierSelect?: (tier: SwicoTier) => Promise<void>; onRealtimeVoice?: () => void;
   voiceResetKey?: string;
@@ -290,7 +293,7 @@ export function Composer({
       {overLimit && <div className="composer-error" role="alert">Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.</div>}
       {value.length > inlineThreshold && !overLimit && <label className="long-input-mode">Large text action<select value={longInputMode} onChange={event => setLongInputMode(event.target.value as LongInputMode)}><option value="summarize">Summarize</option><option value="analyze">Analyze</option><option value="ask_questions">Ask questions</option><option value="rewrite">Rewrite</option><option value="translate">Translate</option></select></label>}
       <div className="composer" data-testid="composer">
-        <div className="composer-plus-wrap">
+        {(attachmentsEnabled || repositoryUploadEnabled) && <div className="composer-plus-wrap">
           <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
             onChange={event => chooseFiles(event.target.files)} />
           <input ref={repositoryFileRef} className="hidden-file-input" type="file"
@@ -307,12 +310,14 @@ export function Composer({
               <FileArchive size={18} /><span><strong>Upload code repository</strong><small>Add one temporary ZIP snapshot</small></span>
             </button>}
           </div>}
-        </div>
+        </div>}
         <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
           onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
           onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
           placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
-        <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
+        {showTierSelector
+          ? <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
+          : <span className="guest-tier-label" aria-label="Swico Free">Swico Free</span>}
         {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || repositoryUploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
         {streaming
           ? <button className="send stop" type="button" aria-label="Stop generation"
@@ -320,7 +325,7 @@ export function Composer({
             data-cancellation-ready={cancellationReady ? 'true' : 'false'}
             onClick={stop}><Square size={15} fill="currentColor" /></button>
           : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
-            : <button className="voice-mode-button" type="button"
+          : showRealtimeVoiceControls && <button className="voice-mode-button" type="button"
               aria-label="Start real-time Voice Mode"
               title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
               disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}

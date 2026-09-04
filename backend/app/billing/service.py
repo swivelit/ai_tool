@@ -1031,11 +1031,11 @@ def list_wallet_ledger(session: Session, user_id: int, *, credit_bucket: str | N
     ).all())
 
 
-def enforce_rate_limit(session: Session, *, user_id: int, action: str, limit: int, window_seconds: int = 60) -> None:
+def enforce_rate_limit_scope(session: Session, *, scope_key: str, action: str, limit: int, window_seconds: int = 60) -> None:
     now = utc_now()
     epoch = int(now.timestamp())
     start = datetime.fromtimestamp(epoch - (epoch % window_seconds), tz=timezone.utc)
-    scope = f"{action}:{user_id}"
+    scope = f"{action}:{scope_key}"
     if IS_POSTGRES:
         statement = postgresql_insert(ApiRateLimit).values(
             id=str(uuid4()), scope_key=scope, window_started_at=start,
@@ -1059,3 +1059,10 @@ def enforce_rate_limit(session: Session, *, user_id: int, action: str, limit: in
     row.updated_at = now
     session.add(row)
     session.flush()
+
+
+def enforce_rate_limit(session: Session, *, user_id: int, action: str, limit: int, window_seconds: int = 60) -> None:
+    enforce_rate_limit_scope(
+        session, scope_key=str(int(user_id)), action=action,
+        limit=limit, window_seconds=window_seconds,
+    )

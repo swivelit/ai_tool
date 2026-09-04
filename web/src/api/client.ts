@@ -4,6 +4,14 @@ import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
 export const API_BASE = publicConfig.apiBaseUrl.replace(/\/$/, '')
+export const GUEST_TOKEN_STORAGE_KEY = 'swico:guest-session:v1:token'
+
+export type GuestSession = {
+  guest_token: string
+  expires_at: string
+  assistant: { tier: 'free'; tier_label: 'Swico Free' }
+  limits: { max_message_characters: number; daily_message_limit: number }
+}
 
 function apiDetailMessage(body: unknown): string | null {
   if (!body || typeof body !== 'object') return null
@@ -100,6 +108,83 @@ export async function publicApiJson<T>(path: string, init: RequestInit = {}): Pr
   const body = await response.json().catch(() => ({})) as unknown
   if (!response.ok) throw new ApiError(response.status, body)
   return body as T
+}
+
+export function getStoredGuestToken(): string | null {
+  try { return localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) }
+  catch { return null }
+}
+
+export function storeGuestToken(token: string): void {
+  try { localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token) }
+  catch { /* Private browsing can disable storage; the page still works in memory. */ }
+}
+
+export function clearStoredGuestToken(): void {
+  try { localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY) }
+  catch { /* Best effort. */ }
+}
+
+export async function createGuestSession(): Promise<GuestSession> {
+  const session = await publicApiJson<GuestSession>('/api/web/guest/session', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  })
+  storeGuestToken(session.guest_token)
+  return session
+}
+
+async function guestFetch(token: string, path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('X-Swico-Guest-Token', token)
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  try { return await fetch(`${API_BASE}${path}`, { ...init, headers }) }
+  catch { throw new ApiNetworkError() }
+}
+
+export async function streamGuestChat(
+  token: string,
+  payload: { request_id: string; message: string; thread_id?: string; input_mode: 'text' },
+  onEvent: (event: SSEEvent) => void,
+  signal: AbortSignal,
+  onAccepted?: () => void,
+) {
+  const response = await guestFetch(token, '/api/web/guest/chat/stream', {
+    method: 'POST', body: JSON.stringify(payload), signal,
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as unknown
+    throw new ApiError(response.status, body)
+  }
+  onAccepted?.()
+  let streamError: SSEStreamError | null = null
+  let terminalEventReceived = false
+  await consumeSSE(response, event => {
+    const normalizedEvent = normalizeQualityEvent(normalizeSourcesEvent(event))
+    onEvent(normalizedEvent)
+    if (event.event === 'done') terminalEventReceived = true
+    if (event.event === 'error') {
+      terminalEventReceived = true
+      const data = typeof event.data === 'object' && event.data ? event.data as Record<string, unknown> : {}
+      streamError = new SSEStreamError(
+        String(data.code ?? 'generation_failed'), String(data.message ?? 'Generation failed.'),
+        data.retryable === true, typeof data.retry_at === 'string' ? data.retry_at : null,
+      )
+    }
+  }, signal)
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (streamError) throw streamError
+  if (!terminalEventReceived) {
+    const code = 'stream_interrupted'; const message = 'The connection ended before Swico finished. Retry.'
+    onEvent({ event: 'error', data: { code, message } })
+    throw new SSEStreamError(code, message)
+  }
+}
+
+export async function cancelGuestChatRequest(token: string, requestId: string): Promise<{ status: string }> {
+  const response = await guestFetch(token, `/api/web/guest/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' })
+  const body = await response.json().catch(() => ({})) as unknown
+  if (!response.ok) throw new ApiError(response.status, body)
+  return body as { status: string }
 }
 
 export async function authorizedFetch(user: User, path: string, init: RequestInit = {}, retry = true): Promise<Response> {

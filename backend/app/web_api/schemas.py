@@ -95,6 +95,25 @@ class WebChatRequest(BaseModel):
         return self
 
 
+class GuestChatRequest(BaseModel):
+    """Minimal website-only unauthenticated chat contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    message: str = Field(min_length=1, max_length=16_000)
+    thread_id: UUID | None = None
+    input_mode: Literal["text"] = "text"
+
+    @field_validator("message")
+    @classmethod
+    def clean_guest_message(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("message cannot be blank")
+        return cleaned
+
+
 class VirtualTextUploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

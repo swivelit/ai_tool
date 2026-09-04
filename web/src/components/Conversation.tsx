@@ -11,18 +11,19 @@ import { ResponseQualityPanel } from './ResponseQualityPanel'
 
 const BOTTOM_THRESHOLD_PX = 120
 
-export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null }: {
+export function Conversation({ messages, phase, queuePosition = null, estimatedWaitSeconds = null, retry, suggest, continueResponse = () => undefined, continuingMessageId = null, regenerateResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, continuationAvailable = true, voiceReplyEnabled = true, voiceStates = {}, generateVoice = () => undefined, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined, feedbackEnabled = false, submitFeedback = async () => undefined, highlightMessageId = null, emptyTitle = 'How can I help?' }: {
   messages: Message[]; phase?: string; queuePosition?: number | null; estimatedWaitSeconds?: number | null; retry: (message: Message) => void; suggest: (text: string) => void;
   continueResponse?: (message: Message) => void;
   continuingMessageId?: string | null;
   regenerateResponse?: (message: Message) => void;
   editMessage?: (message: Message, content: string) => void; editingAvailable?: boolean; editingDisabled?: boolean;
+  continuationAvailable?: boolean;
   voiceReplyEnabled?: boolean; voiceStates?: Record<string, VoiceReplyState>; playVoice?: (messageId: string) => void;
   generateVoice?: (messageId: string, voiceTurnId: string) => void;
   pauseVoice?: (messageId: string) => void; retryVoice?: (messageId: string, voiceTurnId: string) => void;
   addCredits?: () => void;
   feedbackEnabled?: boolean; submitFeedback?: (message: Message, rating: 'up' | 'down') => Promise<void>;
-  highlightMessageId?: string | null;
+  highlightMessageId?: string | null; emptyTitle?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -154,11 +155,12 @@ export function Conversation({ messages, phase, queuePosition = null, estimatedW
   return <div className="conversation-frame">
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
       <div className="conversation-content" ref={contentRef}>
-        {!logicalMessages.length && <EmptyState suggest={suggest} />}
+        {!logicalMessages.length && <EmptyState suggest={suggest} title={emptyTitle} />}
         {logicalMessages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse} regenerateResponse={regenerateResponse}
           continuationActive={message.id === continuingMessageId}
           canEdit={editingAvailable && message.role === 'user' && message.id === latestVisibleUserId}
           regenerationAvailable={editingAvailable}
+          continuationAvailable={continuationAvailable}
           editMessage={editMessage} editingDisabled={editingDisabled}
           voiceReplyEnabled={voiceReplyEnabled} voiceState={voiceStates[message.id]} generateVoice={generateVoice} playVoice={playVoice} pauseVoice={pauseVoice}
           retryVoice={retryVoice} addCredits={addCredits} feedbackEnabled={feedbackEnabled}
@@ -184,19 +186,19 @@ export function Conversation({ messages, phase, queuePosition = null, estimatedW
   </div>
 }
 
-function EmptyState({ suggest }: { suggest: (text: string) => void }) {
+function EmptyState({ suggest, title }: { suggest: (text: string) => void; title: string }) {
   const suggestions = ['Help me plan a focused week', 'Explain a complex idea simply', 'Draft a thoughtful message']
-  return <div className="empty-state"><div className="swico-mark" aria-hidden="true">S</div><h1>How can I help?</h1>
+  return <div className="empty-state"><div className="swico-mark" aria-hidden="true">S</div><h1>{title}</h1>
     <div className="prompts">{suggestions.map(item => <button key={item} onClick={() => suggest(item)}>{item}</button>)}</div>
   </div>
 }
 
-function MessageView({ message, retry, continueResponse, continuationActive, regenerateResponse, canEdit, regenerationAvailable, editMessage, editingDisabled, voiceReplyEnabled, voiceState, generateVoice, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
+function MessageView({ message, retry, continueResponse, continuationActive, regenerateResponse, canEdit, regenerationAvailable, continuationAvailable, editMessage, editingDisabled, voiceReplyEnabled, voiceState, generateVoice, playVoice, pauseVoice, retryVoice, addCredits, feedbackEnabled, submitFeedback, highlighted }: {
   message: Message; retry: (message: Message) => void; voiceState?: VoiceReplyState;
   continueResponse: (message: Message) => void;
   continuationActive: boolean;
   regenerateResponse: (message: Message) => void;
-  canEdit: boolean; regenerationAvailable: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean; voiceReplyEnabled: boolean;
+  canEdit: boolean; regenerationAvailable: boolean; continuationAvailable: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean; voiceReplyEnabled: boolean;
   generateVoice: (messageId: string, voiceTurnId: string) => void;
   playVoice: (messageId: string) => void; pauseVoice: (messageId: string) => void;
   retryVoice: (messageId: string, voiceTurnId: string) => void; addCredits: () => void;
@@ -294,7 +296,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
       {voiceState?.status === 'error' && <span className="voice-reply-error" role="status">{voiceState.error}{voiceState.canRetry !== false && <button aria-label="Retry voice reply" onClick={() => message.voice_turn_id && retryVoice(message.id, message.voice_turn_id)}><RefreshCw size={15} /> Retry</button>}{voiceState.insufficientCredits && <button onClick={addCredits}>Top up</button>}</span>}
       {message.status === 'retryable' && <button aria-label="Retry answer" title={retryBlocked ? `Retry available after ${new Date(retryAtMilliseconds).toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' })}` : 'Retry answer'} disabled={retryBlocked} onClick={() => retry(message)}><RefreshCw size={16} /></button>}
       {regenerationAvailable && message.status === 'complete' && <button className="regenerate-answer" aria-label="Regenerate answer" title="Regenerate answer" disabled={editingDisabled} onClick={() => regenerateResponse(message)}><RotateCcw size={16} /> Regenerate</button>}
-      {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" disabled={continuationActive} onClick={() => continueResponse(message)}><RefreshCw size={16} /> {continuationActive ? 'Continuing…' : 'Continue response'}</button>}
+      {continuationAvailable && message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" disabled={continuationActive} onClick={() => continueResponse(message)}><RefreshCw size={16} /> {continuationActive ? 'Continuing…' : 'Continue response'}</button>}
       {Boolean(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
         <span>{message.tier_label || 'Swico'}</span>
         <span>Input {message.input_tokens.toLocaleString()} · Output {message.output_tokens.toLocaleString()} · Total {(message.input_tokens + message.output_tokens).toLocaleString()} tokens</span>

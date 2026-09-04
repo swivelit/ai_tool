@@ -3,9 +3,9 @@ import { Eye, EyeOff } from 'lucide-react'
 import { friendlyAuthError } from '../auth/authError'
 import { useAuth } from '../auth/useAuth'
 
-export function LoginPage() {
+export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | 'signup' } = {}) {
   const auth = useAuth()
-  const [mode, setMode] = useState<'login' | 'signup' | 'reset'>('login')
+  const [mode, setMode] = useState<'login' | 'signup' | 'reset'>(initialMode)
   const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [password, setPassword] = useState('')
   const [otp, setOtp] = useState(''); const [otpSent, setOtpSent] = useState(false)
   const [status, setStatus] = useState(''); const [isError, setIsError] = useState(false)

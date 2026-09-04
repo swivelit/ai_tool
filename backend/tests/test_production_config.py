@@ -79,6 +79,19 @@ def test_valid_test_mode_production_configuration_passes() -> None:
     validate_production_configuration(valid_environment())
 
 
+def test_production_validates_guest_session_limits() -> None:
+    environment = {
+        **valid_environment(),
+        "SWICO_GUEST_SESSION_TTL_SECONDS": "899",
+        "SWICO_GUEST_SESSION_CREATION_RATE_LIMIT_PER_HOUR": "0",
+        "SWICO_TRUSTED_PROXY_HOPS": "11",
+    }
+    errors = production_configuration_errors(environment)
+    assert "SWICO_GUEST_SESSION_TTL_SECONDS must be between 900 and 2592000" in errors
+    assert "SWICO_GUEST_SESSION_CREATION_RATE_LIMIT_PER_HOUR must be between 1 and 1000" in errors
+    assert "SWICO_TRUSTED_PROXY_HOPS must be between 0 and 10" in errors
+
+
 def test_enabled_production_provider_pool_requires_explicit_aliases() -> None:
     errors = production_configuration_errors({
         **valid_environment(),
