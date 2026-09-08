@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
+import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
 import type { SearchResult, Thread, Wallet } from '../types'
 import { compactTokens, estimatedTokenLabel } from '../credits'
 
@@ -23,7 +23,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   threads: Thread[]; activeId: string | null; wallet: Wallet | null; userName: string; open: boolean; collapsed: boolean;
   archived: boolean; hasMore: boolean; query: string; setQuery: (value: string) => void;
   select: (id: string) => void; newChat: () => void; addCredit: () => void; openSettings: () => void;
-  mutate: (thread: Thread, action: 'rename' | 'archive' | 'delete') => void;
+  mutate: (thread: Thread, action: 'rename' | 'archive' | 'delete'| 'pin') => void;
   signOut: () => void; close: () => void; toggleCollapsed: () => void; toggleArchived: () => void;
   loadMore: () => void; toggleTheme: () => void;
   searchResults?: SearchResult[]; selectSearch?: (result: SearchResult) => void;
@@ -77,6 +77,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
         <button className="thread-more icon-button" aria-label={`Actions for ${thread.title}`} aria-expanded={menu === thread.id} onClick={() => setMenu(menu === thread.id ? null : thread.id)}><MoreHorizontal size={17} /></button>
         {menu === thread.id && <div className="thread-menu" role="menu">
           <button role="menuitem" onClick={() => { setMenu(null); mutate(thread, 'rename') }}><Pencil size={15} />Rename</button>
+          <button role="menuitem" onClick={() => { setMenu(null); mutate(thread, 'pin') }}><Pin size={15} />{thread.pinned ? 'Unpin' : 'Pin'}</button>
           <button role="menuitem" onClick={() => { setMenu(null); mutate(thread, 'archive') }}><Archive size={15} />{archived ? 'Unarchive' : 'Archive'}</button>
           <button role="menuitem" className="danger" onClick={() => { setMenu(null); mutate(thread, 'delete') }}><Trash2 size={15} />Delete</button>
         </div>}

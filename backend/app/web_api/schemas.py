@@ -21,7 +21,7 @@ class ThreadCreate(BaseModel):
 class ThreadPatch(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     archived: bool | None = None
-
+    pinned: bool | None = None
     @field_validator("title")
     @classmethod
     def clean_optional_title(cls, value: str | None) -> str | None:

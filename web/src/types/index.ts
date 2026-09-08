@@ -16,7 +16,7 @@ export type AssistantSettings = {
   tier: SwicoTier; tier_label: string; tier_description: string;
   tier_selection_enabled: boolean; tiers: SwicoTierOption[];
 }
-export type Thread = { id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }
+export type Thread = { id: string; title: string; archived_at: string | null; pinned: boolean; created_at: string; updated_at: string }
 export type AttachmentDisplay = {
   id: string; name: string; media_type: string; size_bytes: number;
   created_at: string; expires_at: string; warnings: string[]; warning_codes?: string[];

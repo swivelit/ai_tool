@@ -585,7 +585,7 @@ def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
 
 def _serialize_thread(row: WebChatThread) -> dict[str, Any]:
     return {
-        "id": row.id, "title": row.title, "archived_at": row.archived_at,
+        "id": row.id, "title": row.title, "archived_at": row.archived_at,"pinned": row.pinned,
         "created_at": row.created_at, "updated_at": row.updated_at,
     }
 
@@ -2562,7 +2562,7 @@ def list_threads(
     statement = select(WebChatThread).where(WebChatThread.user_id == user.id, condition)
     if q and q.strip():
         statement = statement.where(WebChatThread.title.ilike(f"%{q.strip()}%"))
-    rows = session.exec(statement.order_by(WebChatThread.updated_at.desc()).offset(offset).limit(limit + 1)).all()
+    rows = session.exec(statement.order_by(WebChatThread.pinned.desc(), WebChatThread.updated_at.desc()).offset(offset).limit(limit + 1)).all()
     return {
         "items": [_serialize_thread(row) for row in rows[:limit]], "limit": limit,
         "offset": offset, "has_more": len(rows) > limit,
@@ -2594,6 +2594,8 @@ def patch_thread(payload: ThreadPatch, thread_id: str, session: Session = Depend
         row.title = payload.title
     if payload.archived is not None:
         row.archived_at = utc_now() if payload.archived else None
+    if payload.pinned is not None:
+        row.pinned = payload.pinned
     row.updated_at = utc_now()
     session.add(row)
     return _serialize_thread(row)

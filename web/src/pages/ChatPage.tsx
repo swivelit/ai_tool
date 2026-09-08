@@ -907,18 +907,19 @@ export function ChatPage() {
       }
     })
   }
-  const runMutation = async (thread: Thread, action: 'rename' | 'archive' | 'delete', title?: string) => {
+  const runMutation = async (thread: Thread, action: 'rename' | 'archive' | 'delete'| 'pin', title?: string) => {
     if (!user) return
-    if (action === 'rename') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ title }) })
-    else if (action === 'archive') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ archived: !archived }) })
-    else await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'DELETE' })
-    if (active === thread.id && action !== 'rename') newChat()
-    await loadThreads(true)
+    if (action === 'rename') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ title }) }) 
+    else if (action === 'archive') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ archived: !archived }) }) 
+    else if (action === 'pin') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ pinned: !thread.pinned }) })
+    else await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'DELETE' }) 
+    if (active === thread.id && action !== 'rename' && action !== 'pin') newChat() 
+    await loadThreads(true) 
   }
-  const mutate = (thread: Thread, action: 'rename' | 'archive' | 'delete') => {
-    if (action === 'archive') { void runMutation(thread, action); return }
-    setDialog({ type: action, thread, value: thread.title })
-  }
+  const mutate = (thread: Thread, action: 'rename' | 'archive' | 'delete' | 'pin') => { 
+    if (action === 'archive' || action === 'pin') { void runMutation(thread, action); return } 
+    setDialog({ type: action, thread, value: thread.title }) 
+}
   const openBilling = (bucket: 'chat' | 'voice' = 'chat') => { billingButtonRef.current = document.activeElement as HTMLElement; setBillingBucket(bucket); setBilling(true) }
   const closeBilling = () => { setBilling(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
   const openSettings = () => { billingButtonRef.current = document.activeElement as HTMLElement; setSettings(true) }
