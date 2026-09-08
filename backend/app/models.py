@@ -498,6 +498,7 @@ class WebChatThread(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
     title: str = Field(default="New chat", max_length=120)
     archived_at: Optional[datetime] = Field(default=None, index=True)
+    pinned: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 
