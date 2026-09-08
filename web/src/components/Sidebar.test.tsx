@@ -3,7 +3,7 @@ import { vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 
 const props = {
-  threads: [{ id:'t1', title:'Tamil ideas', archived_at:null, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }],
+  threads: [{ id:'t1', title:'Tamil ideas', archived_at:null,pinned: false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }],
   activeId: 't1', wallet: { balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1, token_estimate:{ tier:'lite' as const, tier_label:'Swico Lite', pricing_as_of:'2026-07-17T00:00:00Z', estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated for Swico Lite. Actual usage depends on message size, response length, and task complexity.' } },
   userName:'Hari', open:false, collapsed:false, archived:false, hasMore:false, query:'', setQuery:vi.fn(), select:vi.fn(), newChat:vi.fn(), addCredit:vi.fn(), openSettings:vi.fn(), mutate:vi.fn(), signOut:vi.fn(), close:vi.fn(), toggleCollapsed:vi.fn(), toggleArchived:vi.fn(), loadMore:vi.fn(), toggleTheme:vi.fn(),
 }
