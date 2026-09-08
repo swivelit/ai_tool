@@ -73,7 +73,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
         })}
       </div>}
       {groups.map(group => <section className="thread-group" key={group.label}><h2>{group.label}</h2>{group.threads.map(thread => <div className={`thread-row ${thread.id === activeId ? 'active' : ''}`} key={thread.id}>
-        <button className="thread-select" onClick={() => select(thread.id)} title={thread.title}><span>{thread.title}</span></button>
+        <button className="thread-select" onClick={() => select(thread.id)} title={thread.title}><span>{thread.title}</span>{thread.pinned && <Pin size={14} aria-label="Pinned" />}</button>
         <button className="thread-more icon-button" aria-label={`Actions for ${thread.title}`} aria-expanded={menu === thread.id} onClick={() => setMenu(menu === thread.id ? null : thread.id)}><MoreHorizontal size={17} /></button>
         {menu === thread.id && <div className="thread-menu" role="menu">
           <button role="menuitem" onClick={() => { setMenu(null); mutate(thread, 'rename') }}><Pencil size={15} />Rename</button>

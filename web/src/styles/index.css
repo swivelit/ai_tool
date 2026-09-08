@@ -50,8 +50,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .thread-group h2 { margin: 20px 10px 7px; color: var(--subtle); font-size: 12px; font-weight: 500 }
 .thread-row { position: relative; display: flex; align-items: center; min-height: 38px; border-radius: 8px }
 .thread-row:hover, .thread-row.active { background: var(--hover) }
-.thread-select { min-width: 0; flex: 1; padding: 9px 10px; overflow: hidden; border: 0; background: transparent; text-align: left; cursor: pointer }
-.thread-select span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px }
+.thread-select { min-width: 0; flex: 1; padding: 9px 10px; overflow: hidden; border: 0; background: transparent; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px }
+.thread-select span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px }
 .thread-more { width: 30px; height: 30px; margin-right: 3px; border-radius: 7px; opacity: 0 }
 .thread-row:hover .thread-more, .thread-row.active .thread-more, .thread-more[aria-expanded='true'] { opacity: 1 }
 .thread-menu, .account-menu { position: absolute; z-index: 50; display: grid; min-width: 156px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); box-shadow: var(--shadow) }
