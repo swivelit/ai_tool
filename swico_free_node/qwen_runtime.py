@@ -84,8 +84,13 @@ class QwenRuntime:
             from llama_cpp import Llama
         except ImportError as exc:
             raise RuntimeError("llama-cpp-python is required for generation") from exc
+        # Colibrì core technology adaptations for Base Qwen:
+        # 1. use_mmap=True: On-demand NVMe disk streaming (zero-copy virtual memory paging)
+        # 2. use_mlock=False: Prevents pinning all model weights in physical RAM
+        # 3. n_ctx=2048: Compaction of working memory, reducing KV-cache allocation by 50%
         self._llama = Llama(
-            model_path=str(path), n_ctx=4096, n_threads=threads, n_batch=batch_size,
+            model_path=str(path), n_ctx=2048, n_threads=threads, n_batch=batch_size,
+            use_mmap=True, use_mlock=False,
             n_gpu_layers=0, verbose=False,
         )
 
@@ -100,7 +105,10 @@ class QwenRuntime:
                 result = self._chat_completion(messages, max_output_tokens, stream=False)
             else:
                 prompt = "\n\n".join(f"{item['role']}: {item['content']}" for item in messages)
-                result = self._llama(prompt, max_tokens=max_output_tokens, temperature=0.2)
+                result = self._llama(
+                    prompt, max_tokens=max_output_tokens, temperature=0.2,
+                    stop=["<|im_end|>", "<|endoftext|>", "<|im_start|>", "\n\nUser:"],
+                )
             text = self._extract_text(result).strip()
             if not text:
                 raise RuntimeError("generation returned empty text")
@@ -128,7 +136,10 @@ class QwenRuntime:
             stream = self._chat_completion(messages, max_output_tokens, stream=True)
         else:
             prompt = "\n\n".join(f"{item['role']}: {item['content']}" for item in messages)
-            stream = self._llama(prompt, max_tokens=max_output_tokens, temperature=0.2, stream=True)
+            stream = self._llama(
+                prompt, max_tokens=max_output_tokens, temperature=0.2, stream=True,
+                stop=["<|im_end|>", "<|endoftext|>", "<|im_start|>", "\n\nUser:"],
+            )
         parts: list[str] = []
         visible_filter = VisibleTextFilter()
         usage_payload: dict[str, Any] = {}
@@ -191,6 +202,7 @@ class QwenRuntime:
         kwargs = {
             "messages": messages, "max_tokens": max_output_tokens,
             "temperature": 0.2, "stream": stream,
+            "stop": ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "\n\nUser:"],
         }
         if stream:
             # Newer llama-cpp-python releases can include token usage in the
