@@ -43,4 +43,3 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
     <div className="auth-links">{mode !== 'login' ? <button type="button" onClick={() => changeMode('login')}>Back to sign in</button> : <><span>New to Swico? <button type="button" onClick={() => changeMode('signup')}>Create account</button></span><button type="button" onClick={() => changeMode('reset')}>Forgot password?</button></>}</div>
   </section></main>
 }
-
