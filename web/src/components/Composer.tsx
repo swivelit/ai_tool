@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
-import { ArrowUp, AudioLines, FileArchive, FileText, ImageOff, Mic, Plus, Square, Upload, X } from 'lucide-react'
+import { ArrowUp, AudioLines, Camera, FileArchive, FileText, ImageOff, Mic, Plus, Square, Upload, X } from 'lucide-react'
 import type { AssistantSettings, ComposerAttachment, ComposerRepository, LongInputMode, SwicoTier, Wallet } from '../types'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { SwicoTierSelector } from './SwicoTierSelector'
@@ -105,6 +105,10 @@ export function Composer({
   const wrapRef = useRef<HTMLDivElement>(null)
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // Camera input for the "Take a photo" option.
+  const cameraRef = useRef<HTMLInputElement>(null)
+
   const repositoryFileRef = useRef<HTMLInputElement>(null)
   const plusRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -112,7 +116,9 @@ export function Composer({
   const composing = useRef(false)
   const [now, setNow] = useState(Date.now())
   const [menuOpen, setMenuOpen] = useState(false)
+
   useEffect(() => { valueRef.current = value }, [value])
+
   useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -128,10 +134,12 @@ export function Composer({
     onVoiceWallet(wallet)
     window.setTimeout(() => ref.current?.focus(), 0)
   }, [onVoiceDraft, onVoiceWallet, setValue])
+
   const recorder = useAudioRecorder({
     user, enabled: voiceEnabled && !disabled, onTranscript: insertTranscript,
     onRecordingStarted: onVoiceDraft, onCancel: onVoiceCancel, resetKey: voiceResetKey,
   })
+
   const audioBusy = ['requesting', 'recording', 'stopping', 'transcribing'].includes(recorder.state.status)
   const uploadBusy = attachments.some(item => item.status === 'uploading')
   const repositoryUploadBusy = repository?.status === 'uploading'
@@ -139,6 +147,7 @@ export function Composer({
   const hasSendableContent = !!value.trim() || readyAttachments.length > 0
   const overLimit = value.length > maxCharacters
   const nearLimit = value.length >= Math.floor(maxCharacters * 0.8)
+
   const canSend = !disabled && !streaming && !uploadBusy
     && !repositoryUploadBusy && !audioBusy && hasSendableContent && !overLimit
 
@@ -148,48 +157,76 @@ export function Composer({
     element.style.height = '0px'
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`
   }
+
   useEffect(resize, [value])
-  useEffect(() => { ref.current?.focus({ preventScroll: true }) }, [focusKey])
+
+  useEffect(() => {
+    ref.current?.focus({ preventScroll: true })
+  }, [focusKey])
+
   useEffect(() => {
     if (!menuOpen) return
+
     const outside = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node) && !plusRef.current?.contains(event.target as Node)) {
         setMenuOpen(false)
       }
     }
+
     const keyboard = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
-        event.preventDefault(); setMenuOpen(false); plusRef.current?.focus(); return
+        event.preventDefault()
+        setMenuOpen(false)
+        plusRef.current?.focus()
+        return
       }
+
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+
       const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
       if (!items.length) return
+
       event.preventDefault()
+
       const current = items.indexOf(document.activeElement as HTMLButtonElement)
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
         : (current + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length
+
       items[next]?.focus()
     }
+
     document.addEventListener('pointerdown', outside)
     window.addEventListener('keydown', keyboard, true)
-    window.setTimeout(() => menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(), 0)
-    return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', keyboard, true) }
+
+    window.setTimeout(
+      () => menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(),
+      0,
+    )
+
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      window.removeEventListener('keydown', keyboard, true)
+    }
   }, [menuOpen])
+
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing) {
       event.preventDefault()
       if (canSend) send()
     }
   }
+
   const chooseFiles = (files: FileList | null) => {
     if (files?.length) addFiles(Array.from(files))
     if (fileRef.current) fileRef.current.value = ''
   }
+
   const chooseRepository = (files: FileList | null) => {
     const file = files?.item(0)
     if (file) addRepository(file)
     if (repositoryFileRef.current) repositoryFileRef.current.value = ''
   }
+
   const statusText = recorder.state.error
     ?? (recorder.state.status === 'requesting' ? 'Requesting microphone access…'
       : recorder.state.status === 'recording' ? `Recording ${elapsed(recorder.state.elapsed_seconds)}`
@@ -201,21 +238,27 @@ export function Composer({
     const element = wrapRef.current
     const host = element?.closest<HTMLElement>('.chat-main')
     if (!element || !host || typeof ResizeObserver === 'undefined') return
+
     let lastHeight = -1
     let lastScrollbarReserve = -1
+
     const conversation = host.querySelector<HTMLElement>('.conversation')
+
     const update = () => {
       const height = Math.max(0, Math.round(element.getBoundingClientRect().height))
+
       if (height !== lastHeight) {
         lastHeight = height
         host.style.setProperty('--composer-reserved-height', `${height}px`)
       }
+
       const scrollbarReserve = conversation
         ? Math.max(
           0,
           Math.round((conversation.offsetWidth - conversation.clientWidth) / 2),
         )
         : 0
+
       if (scrollbarReserve !== lastScrollbarReserve) {
         lastScrollbarReserve = scrollbarReserve
         host.style.setProperty(
@@ -224,10 +267,14 @@ export function Composer({
         )
       }
     }
+
     update()
+
     const observer = new ResizeObserver(update)
     observer.observe(element)
+
     if (conversation) observer.observe(conversation)
+
     return () => {
       observer.disconnect()
       host.style.removeProperty('--composer-reserved-height')
@@ -237,38 +284,83 @@ export function Composer({
 
   return <div className="composer-wrap" ref={wrapRef}>
     <div className="composer-shell">
+
       {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
-        {attachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={'local_id' in attachment ? attachment.local_id : attachment.id}>
-          <span className="attachment-visual"><AttachmentVisual attachment={attachment} /></span>
-          <span className="attachment-copy"><strong title={attachment.name}>{attachment.name}</strong>
-            <small>{attachment.media_type || attachment.name.split('.').pop()?.toUpperCase()} · {humanSize(attachment.size_bytes)}</small>
-            <small>{attachment.status === 'uploading' ? `Uploading… ${attachment.progress}%`
-              : attachment.status === 'error' ? attachment.error || 'Upload failed'
-                : attachment.status === 'ready' ? remaining(attachment.expires_at, now)
-                  : attachment.status === 'unavailable' ? 'Unavailable' : 'Expired'}</small>
-            {'warnings' in attachment && attachment.warnings.map(warning => <small className="attachment-warning" role="status" key={warning}>{warning}</small>)}
+        {attachments.map(attachment => <div
+          className={`attachment-chip ${attachment.status}`}
+          key={'local_id' in attachment ? attachment.local_id : attachment.id}
+        >
+          <span className="attachment-visual">
+            <AttachmentVisual attachment={attachment} />
           </span>
-          <button type="button" aria-label={`Remove ${attachment.name}`} title={`Remove ${attachment.name}`} onClick={() => removeAttachment(attachment)}><X size={15} /></button>
+
+          <span className="attachment-copy">
+            <strong title={attachment.name}>{attachment.name}</strong>
+
+            <small>
+              {attachment.media_type || attachment.name.split('.').pop()?.toUpperCase()}
+              {' · '}
+              {humanSize(attachment.size_bytes)}
+            </small>
+
+            <small>
+              {attachment.status === 'uploading'
+                ? `Uploading… ${attachment.progress}%`
+                : attachment.status === 'error'
+                  ? attachment.error || 'Upload failed'
+                  : attachment.status === 'ready'
+                    ? remaining(attachment.expires_at, now)
+                    : attachment.status === 'unavailable'
+                      ? 'Unavailable'
+                      : 'Expired'}
+            </small>
+
+            {'warnings' in attachment && attachment.warnings.map(warning =>
+              <small className="attachment-warning" role="status" key={warning}>
+                {warning}
+              </small>,
+            )}
+          </span>
+
+          <button
+            type="button"
+            aria-label={`Remove ${attachment.name}`}
+            title={`Remove ${attachment.name}`}
+            onClick={() => removeAttachment(attachment)}
+          >
+            <X size={15} />
+          </button>
         </div>)}
       </div>}
+
       {repository && <div className="attachment-tray repository-tray" aria-label="Active code repository">
         <div className={`attachment-chip repository-chip ${repository.status}`}>
           <FileArchive size={18} aria-hidden="true" />
+
           <span className="attachment-copy">
             <strong title={repository.display_name}>{repository.display_name}</strong>
-            <small>{repository.languages.length
-              ? repository.languages.slice(0, 3).join(', ')
-              : 'Code repository'}{repository.file_count > 0
+
+            <small>
+              {repository.languages.length
+                ? repository.languages.slice(0, 3).join(', ')
+                : 'Code repository'}
+              {repository.file_count > 0
                 ? ` · ${repository.file_count} files`
                 : repository.symbol_count > 0
-                  ? ` · ${repository.symbol_count} symbols` : ''}</small>
-            <small>{repository.status === 'uploading'
-              ? `Uploading repository… ${Math.min(100, Math.max(0, repository.progress))}%`
-              : repository.status === 'ready'
-                ? 'Repository ready'
-                : repository.status === 'expired'
-                  ? 'Repository expired'
-                  : repository.error || 'Repository upload failed'}</small>
+                  ? ` · ${repository.symbol_count} symbols`
+                  : ''}
+            </small>
+
+            <small>
+              {repository.status === 'uploading'
+                ? `Uploading repository… ${Math.min(100, Math.max(0, repository.progress))}%`
+                : repository.status === 'ready'
+                  ? 'Repository ready'
+                  : repository.status === 'expired'
+                    ? 'Repository expired'
+                    : repository.error || 'Repository upload failed'}
+            </small>
+
             {repository.status === 'ready' && <small>
               {!repositoryChatEnabled
                 ? 'Validation unavailable'
@@ -277,72 +369,321 @@ export function Composer({
                   : 'Executable validation available'}
             </small>}
           </span>
-          <button type="button" aria-label={`Remove ${repository.display_name}`}
-            title={`Remove ${repository.display_name}`} onClick={removeRepository}>
+
+          <button
+            type="button"
+            aria-label={`Remove ${repository.display_name}`}
+            title={`Remove ${repository.display_name}`}
+            onClick={removeRepository}
+          >
             <X size={15} />
           </button>
         </div>
       </div>}
-      {readyAttachments.length > 0 && <div className="attachment-context-note" role="status">These files stay active for this chat until removed or expired.</div>}
-      {repository?.status === 'ready' && <div className="attachment-context-note" role="status">Repository context will be used for this chat.</div>}
-      {recorder.state.status === 'recording' || recorder.state.status === 'stopping' ? <div className="recording-row" role="status">
-        <span className="recording-dot" aria-hidden="true" /><strong>Recording {elapsed(recorder.state.elapsed_seconds)}</strong>
-        <button type="button" onClick={recorder.stop} aria-label="Stop recording"><Square size={14} fill="currentColor" /> Stop</button>
-        <button type="button" onClick={recorder.cancel} aria-label="Cancel recording"><X size={15} /> Cancel</button>
-      </div> : null}
-      {recorder.state.status === 'transcribing' && <div className="recording-row" role="status"><span className="spinner" />Transcribing…</div>}
-      {recorder.state.error && <div className="composer-error" role="alert"><span>{recorder.state.error}</span><button type="button" onClick={recorder.resetError}>Dismiss</button></div>}
-      {overLimit && <div className="composer-error" role="alert">Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.</div>}
-      {value.length > inlineThreshold && !overLimit && <label className="long-input-mode">Large text action<select value={longInputMode} onChange={event => setLongInputMode(event.target.value as LongInputMode)}><option value="summarize">Summarize</option><option value="analyze">Analyze</option><option value="ask_questions">Ask questions</option><option value="rewrite">Rewrite</option><option value="translate">Translate</option></select></label>}
+
+      {readyAttachments.length > 0 &&
+        <div className="attachment-context-note" role="status">
+          These files stay active for this chat until removed or expired.
+        </div>}
+
+      {repository?.status === 'ready' &&
+        <div className="attachment-context-note" role="status">
+          Repository context will be used for this chat.
+        </div>}
+
+      {recorder.state.status === 'recording' || recorder.state.status === 'stopping'
+        ? <div className="recording-row" role="status">
+          <span className="recording-dot" aria-hidden="true" />
+          <strong>Recording {elapsed(recorder.state.elapsed_seconds)}</strong>
+
+          <button type="button" onClick={recorder.stop} aria-label="Stop recording">
+            <Square size={14} fill="currentColor" /> Stop
+          </button>
+
+          <button type="button" onClick={recorder.cancel} aria-label="Cancel recording">
+            <X size={15} /> Cancel
+          </button>
+        </div>
+        : null}
+
+      {recorder.state.status === 'transcribing' &&
+        <div className="recording-row" role="status">
+          <span className="spinner" />Transcribing…
+        </div>}
+
+      {recorder.state.error &&
+        <div className="composer-error" role="alert">
+          <span>{recorder.state.error}</span>
+          <button type="button" onClick={recorder.resetError}>Dismiss</button>
+        </div>}
+
+      {overLimit &&
+        <div className="composer-error" role="alert">
+          Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.
+        </div>}
+
+      {value.length > inlineThreshold && !overLimit &&
+        <label className="long-input-mode">
+          Large text action
+          <select
+            value={longInputMode}
+            onChange={event => setLongInputMode(event.target.value as LongInputMode)}
+          >
+            <option value="summarize">Summarize</option>
+            <option value="analyze">Analyze</option>
+            <option value="ask_questions">Ask questions</option>
+            <option value="rewrite">Rewrite</option>
+            <option value="translate">Translate</option>
+          </select>
+        </label>}
+
       <div className="composer" data-testid="composer">
         <div className="composer-input-surface">
-          <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
-            onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
-            onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
-            placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
+          <textarea
+            ref={ref}
+            aria-label="Message Swico"
+            value={value}
+            disabled={disabled}
+            onChange={event => {
+              setValue(event.target.value)
+              if (!event.target.value) onComposerClear()
+            }}
+            onKeyDown={keyDown}
+            onCompositionStart={() => { composing.current = true }}
+            onCompositionEnd={() => { composing.current = false }}
+            placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'}
+            rows={1}
+            aria-describedby="composer-character-count"
+          />
         </div>
+
         <div className="composer-toolbar">
           <div className="composer-toolbar-left">
-            {(attachmentsEnabled || repositoryUploadEnabled) && <div className="composer-plus-wrap">
-              <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
-                onChange={event => chooseFiles(event.target.files)} />
-              <input ref={repositoryFileRef} className="hidden-file-input" type="file"
-                aria-label="Upload code repository" accept=".zip"
-                onChange={event => chooseRepository(event.target.files)} />
-              <button ref={plusRef} className="composer-tool composer-plus" type="button" aria-label="Add to prompt" title="Add to prompt"
-                aria-haspopup="menu" aria-expanded={menuOpen}
-                disabled={disabled || streaming || audioBusy || repositoryUploadBusy || (!attachmentsEnabled && !repositoryUploadEnabled)}
-                onClick={() => setMenuOpen(value => !value)}><Plus size={20} /></button>
-              {menuOpen && <div ref={menuRef} className="composer-add-menu" role="menu" aria-label="Add to prompt options">
-                {attachmentsEnabled && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); fileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}><Upload size={18} /><span><strong>Upload files</strong><small>Add documents from this device</small></span></button>}
-                {repositoryUploadEnabled && <button type="button" role="menuitem"
-                  onClick={() => { setMenuOpen(false); repositoryFileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}>
-                  <FileArchive size={18} /><span><strong>Upload code repository</strong><small>Add one temporary ZIP snapshot</small></span>
-                </button>}
+
+            {(attachmentsEnabled || repositoryUploadEnabled) &&
+              <div className="composer-plus-wrap">
+
+                {/* Existing file upload input */}
+                <input
+                  ref={fileRef}
+                  className="hidden-file-input"
+                  type="file"
+                  multiple
+                  aria-label="Upload files"
+                  accept={supportedExtensions.join(',')}
+                  onChange={event => chooseFiles(event.target.files)}
+                />
+
+                {/* NEW: Camera input */}
+                <input
+                  ref={cameraRef}
+                  className="hidden-file-input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  aria-label="Take a photo"
+                  onChange={event => chooseFiles(event.target.files)}
+                />
+
+                {/* Existing repository upload input */}
+                <input
+                  ref={repositoryFileRef}
+                  className="hidden-file-input"
+                  type="file"
+                  aria-label="Upload code repository"
+                  accept=".zip"
+                  onChange={event => chooseRepository(event.target.files)}
+                />
+
+                <button
+                  ref={plusRef}
+                  className="composer-tool composer-plus"
+                  type="button"
+                  aria-label="Add to prompt"
+                  title="Add to prompt"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  disabled={
+                    disabled ||
+                    streaming ||
+                    audioBusy ||
+                    repositoryUploadBusy ||
+                    (!attachmentsEnabled && !repositoryUploadEnabled)
+                  }
+                  onClick={() => setMenuOpen(value => !value)}
+                >
+                  <Plus size={20} />
+                </button>
+
+                {menuOpen &&
+                  <div
+                    ref={menuRef}
+                    className="composer-add-menu"
+                    role="menu"
+                    aria-label="Add to prompt options"
+                  >
+
+                    {/* Existing Upload files option */}
+                    {attachmentsEnabled &&
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          fileRef.current?.click()
+                          window.setTimeout(() => plusRef.current?.focus(), 0)
+                        }}
+                      >
+                        <Upload size={18} />
+
+                        <span>
+                          <strong>Upload files</strong>
+                          <small>Add documents from this device</small>
+                        </span>
+                      </button>}
+
+                    {/* NEW: Take a photo option */}
+                    {attachmentsEnabled &&
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          cameraRef.current?.click()
+                          window.setTimeout(() => plusRef.current?.focus(), 0)
+                        }}
+                      >
+                        <Camera size={18} />
+
+                        <span>
+                          <strong>Take a photo</strong>
+                          <small>Use your camera to add a photo</small>
+                        </span>
+                      </button>}
+
+                    {/* Existing repository option */}
+                    {repositoryUploadEnabled &&
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          repositoryFileRef.current?.click()
+                          window.setTimeout(() => plusRef.current?.focus(), 0)
+                        }}
+                      >
+                        <FileArchive size={18} />
+
+                        <span>
+                          <strong>Upload code repository</strong>
+                          <small>Add one temporary ZIP snapshot</small>
+                        </span>
+                      </button>}
+
+                  </div>}
               </div>}
-            </div>}
           </div>
+
           <div className="composer-toolbar-right">
+
             {showTierSelector
-              ? <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
-              : <span className="guest-tier-label" aria-label="Swico Free">Swico Free</span>}
-            {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || repositoryUploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
+              ? <SwicoTierSelector
+                assistant={assistant}
+                disabled={tierDisabled || streaming}
+                saving={tierSaving}
+                onSelect={onTierSelect}
+                context="composer"
+              />
+              : <span className="guest-tier-label" aria-label="Swico Free">
+                Swico Free
+              </span>}
+
+            {voiceEnabled &&
+              recorder.state.status !== 'recording' &&
+              recorder.state.status !== 'stopping' &&
+              <button
+                className="composer-tool"
+                type="button"
+                aria-label="Start voice dictation"
+                title="Start voice dictation"
+                disabled={
+                  disabled ||
+                  streaming ||
+                  uploadBusy ||
+                  repositoryUploadBusy ||
+                  recorder.state.status === 'transcribing'
+                }
+                onClick={() => void recorder.start()}
+              >
+                <Mic size={19} />
+              </button>}
+
             {streaming
-              ? <button className="send stop" type="button" aria-label="Stop generation"
-                title="Stop generation" data-testid="stop-generation-button"
+              ? <button
+                className="send stop"
+                type="button"
+                aria-label="Stop generation"
+                title="Stop generation"
+                data-testid="stop-generation-button"
                 data-cancellation-ready={cancellationReady ? 'true' : 'false'}
-                onClick={stop}><Square size={15} fill="currentColor" /></button>
-              : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
-              : showRealtimeVoiceControls && <button className="voice-mode-button" type="button"
+                onClick={stop}
+              >
+                <Square size={15} fill="currentColor" />
+              </button>
+
+              : hasSendableContent
+                ? <button
+                  className="send"
+                  type="button"
+                  aria-label="Send message"
+                  title="Send message"
+                  disabled={!canSend}
+                  onClick={send}
+                >
+                  <ArrowUp size={20} />
+                </button>
+
+                : showRealtimeVoiceControls &&
+                <button
+                  className="voice-mode-button"
+                  type="button"
                   aria-label="Start real-time Voice Mode"
-                  title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
-                  disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy || repositoryUploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
+                  title={
+                    realtimeVoiceEnabled
+                      ? 'Start real-time Voice Mode'
+                      : realtimeVoiceUnavailableReason
+                  }
+                  disabled={
+                    disabled ||
+                    !realtimeVoiceEnabled ||
+                    audioBusy ||
+                    uploadBusy ||
+                    repositoryUploadBusy
+                  }
+                  onClick={onRealtimeVoice}
+                >
+                  <AudioLines size={21} />
+                </button>}
           </div>
         </div>
       </div>
-      <small id="composer-character-count" className={`character-count sr-only${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
+
+      <small
+        id="composer-character-count"
+        className={`character-count sr-only${nearLimit ? ' near-limit' : ''}${overLimit ? ' over-limit' : ''}`}
+        aria-live="polite"
+      >
+        {value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters
+        {value.length > inlineThreshold && !overLimit
+          ? ' · will be sent as a temporary text attachment'
+          : ''}
+      </small>
     </div>
-    <span className="sr-status" aria-live="polite">{statusText}</span>
+
+    <span className="sr-status" aria-live="polite">
+      {statusText}
+    </span>
+
     <p>Swico can make mistakes. Check important information.</p>
   </div>
 }
