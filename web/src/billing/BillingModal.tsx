@@ -838,5 +838,6 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
         {status && <p className="payment-status billing-redesign-status" role="status" aria-live="polite">{status}</p>}
       </>}
     </section>
+    
   </div>
 }
