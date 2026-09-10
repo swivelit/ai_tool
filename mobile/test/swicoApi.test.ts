@@ -126,6 +126,19 @@ describe("canonical Swico mobile API client", () => {
     expect(source).toContain("message: providerText");
   });
 
+  it("keeps screen-level transport, history, retry, and expiry guards on the production path", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");
+    expect(source).toContain("navigationGenerationRef.current");
+    expect(source).toContain("transportAttemptRef.current");
+    expect(source).toContain("if (!isCurrentTransport()) return;");
+    expect(source).toContain("activeThreadRef.current !== threadId");
+    expect(source).toContain("pendingAttachmentIdsRef");
+    expect(source).toContain("explicitlyRequestsDocument");
+    expect(source).toContain('item.role === "user" && item.request_id === id');
+    expect(source).toContain("onAccepted: () => {");
+  });
+
   it("keeps parity metadata and feature-gated actions in the production screen", async () => {
     const fs = await import("node:fs/promises");
     const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");

@@ -17,7 +17,8 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
-from ..ai.freshness import resolve_freshness
+from ..ai.freshness import resolve_freshness, validate_current_evidence
+from ..ai.agents.web_search_agent import WebSearchAgent
 from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
@@ -66,7 +67,9 @@ from ..models import (
     WebCodeRepository, WebMemoryFact, WebUsageStage,
 )
 from ..web_ai.evidence.models import EvidencePack
-from ..web_ai.evidence.pack_builder import cap_evidence_pack, evidence_prompt
+from ..web_ai.evidence.pack_builder import (
+    build_evidence_pack, cap_evidence_pack, evidence_prompt,
+)
 from ..web_ai.execution_plan import ExecutionPlan
 from ..web_ai.generation.answer_guard import (
     ANSWER_GUARD_VERSION, AnswerGuard, AnswerGuardContext, ProviderCompletion,
@@ -109,6 +112,7 @@ from ..web_ai.persistence import (
     persist_shadow_plan,
 )
 from ..web_ai.retrieval.runtime import execute_hybrid_retrieval
+from ..web_ai.retrieval.models import RetrievalCandidate
 from ..web_ai.retrieval.persistent_knowledge import (
     owner_active_knowledge_tokens,
     owner_knowledge_lexical_relevance,
@@ -1154,6 +1158,74 @@ def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
     return uploads
 
 
+def _freshness_unavailable_response(
+    *, reply_language: str, reason: str, intent: str = "live_data",
+) -> AIProviderResponse:
+    text = localized_web_deterministic_text(reply_language, "live_data_disabled")
+    # Keep the product's localized, no-guessing wording while distinguishing a
+    # retrieval outage from a provider answer in metadata and audit records.
+    return AIProviderResponse(
+        text=text,
+        provider="blocked",
+        model=None,
+        route="freshness_evidence_unavailable",
+        reason=reason,
+        language=reply_language,
+        intent=intent,
+        characters=len(text),
+        raw={
+            "deterministic": True,
+            "zero_charge": True,
+            "freshness_required": True,
+            "freshness_evidence": False,
+            "freshness_failure_reason": reason,
+            "quality": {
+                "status": "insufficient_evidence",
+                "outcome": "insufficient_evidence",
+                "passed": False,
+            },
+            "provider_attempts": 0,
+            "provider_calls_with_usage": 0,
+        },
+    )
+
+
+def _freshness_evidence_pack(
+    *, user_id: int, request_id: str, query: str, evidence: dict[str, object],
+) -> EvidencePack:
+    candidate = RetrievalCandidate(
+        candidate_id=f"freshness:{request_id}",
+        owner_user_id=user_id,
+        source_kind="web_search",
+        source_locator=str(evidence["url"]),
+        runtime_text=(
+            f"{evidence['title']}\n{evidence['snippet']}\n"
+            f"Retrieved at: {evidence['retrieved_at']}"
+        ),
+        token_count=estimate_tokens(str(evidence["snippet"])),
+        lexical_score=1.0,
+        semantic_score=1.0,
+        metadata_score=1.0,
+        fused_score=1.0,
+        bounded_metadata=(
+            ("source_label", str(evidence["title"])[:256]),
+            ("source_kind", "web_search"),
+            ("retrieved_at", str(evidence["retrieved_at"])[:128]),
+            ("provenance", str(evidence["source"])[:128]),
+            ("freshness_query", query[:256]),
+        ),
+        query_coverage=1.0,
+    )
+    return build_evidence_pack(
+        owner_user_id=user_id,
+        request_id=request_id,
+        candidates=(candidate,),
+        status="sufficient",
+        status_codes=("freshness_evidence",),
+        token_cap=4_000,
+    )
+
+
 def prepare_web_turn(
     *, user_id: int, message: str, request_id: str, thread_id: str | None,
     reply_language: str | None, attachment_ids: list[str] | None = None,
@@ -1538,7 +1610,16 @@ def prepare_web_turn(
         # Resolve once, after edit/regenerate/continuation semantics have
         # selected the effective turn text. Every downstream consumer uses
         # this value: contracts, prompts, routing, metadata, and cache keys.
-        reply_language = resolve_web_reply_language(reply_language, model_message)
+        inherited_reply_language: str | None = None
+        inherited_target = continuation_row or regenerate_target
+        if inherited_target is not None:
+            inherited_target_metadata = continuation_metadata_dict(inherited_target)
+            candidate_language = inherited_target_metadata.get("reply_language")
+            if candidate_language:
+                inherited_reply_language = str(candidate_language)
+        reply_language = resolve_web_reply_language(
+            inherited_reply_language or reply_language, model_message
+        )
         freshness = resolve_freshness(model_message)
         output_contract = apply_reply_language_contract(
             extract_output_contract(model_message), reply_language,
@@ -2574,6 +2655,60 @@ def prepare_web_turn(
             context_turns=context_turns,
         )
         route = AIProviderRouter().select_route(ai_request)
+        freshness_precomputed: AIProviderResponse | None = None
+        freshness_pack: EvidencePack | None = None
+        if freshness.requires_fresh_evidence and route.intent == "live_data":
+            # Current factual requests are retrieval-gated in the prepared-turn
+            # path used by both web and mobile. Free remains local-only even if
+            # the legacy flag is enabled; paid requests use the configured,
+            # bounded retrieval provider only when it is explicitly enabled.
+            search_enabled = _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False)
+            if swico_tier == "free" or not search_enabled:
+                freshness_precomputed = _freshness_unavailable_response(
+                    reply_language=str(reply_language or "en"),
+                    reason="retrieval_disabled_for_tier" if swico_tier == "free" else "retrieval_disabled",
+                )
+                route = replace(
+                    route, provider="blocked", model=None,
+                    route="freshness_evidence_unavailable",
+                    reason="freshness_evidence_unavailable",
+                    max_output_tokens=0,
+                )
+            else:
+                search = WebSearchAgent().search(model_message)
+                raw_result = search.results
+                valid, evidence, evidence_reason = validate_current_evidence(
+                    model_message, raw_result,
+                )
+                if not valid or evidence is None:
+                    freshness_precomputed = _freshness_unavailable_response(
+                        reply_language=str(reply_language or "en"),
+                        reason=evidence_reason,
+                    )
+                    route = replace(
+                        route, provider="blocked", model=None,
+                        route="freshness_evidence_unavailable",
+                        reason=evidence_reason,
+                        max_output_tokens=0,
+                    )
+                else:
+                    freshness_pack = _freshness_evidence_pack(
+                        user_id=user_id, request_id=request_id,
+                        query=model_message, evidence=evidence,
+                    )
+                    ai_request.metadata["freshness_evidence"] = evidence
+                    ai_request.metadata["freshness_evidence_prompt"] = evidence_prompt(
+                        freshness_pack
+                    )
+                    ai_request.metadata["attachment_prompt_context"] = "\n\n".join(
+                        value for value in (
+                            str(ai_request.metadata.get("attachment_prompt_context") or "").strip(),
+                            ai_request.metadata["freshness_evidence_prompt"],
+                        ) if value
+                    )
+                    ai_request.metadata["freshness_retrieved_at"] = evidence["retrieved_at"]
+                    ai_request.metadata["freshness_source_url"] = evidence["url"]
+                    ai_request.metadata["freshness_evidence_status"] = "grounded"
         if forced_swico_tier == "free" and route.provider not in {"swico_free", "blocked"}:
             # A guest request must never enter a paid provider or backend-tool
             # path. The Free runtime owns all guest generation decisions.
@@ -2609,6 +2744,7 @@ def prepare_web_turn(
                 swico_tier=swico_tier, input_mode=input_mode,
                 voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
                 billing_exempt=billing_exempt, optimization=optimization,
+                precomputed_response=freshness_precomputed,
                 coordinator_decision=coordinator_decision,
                 continuity_decision=continuity,
                 billing_credit_bucket=authoritative_bucket,
@@ -2730,6 +2866,22 @@ def prepare_web_turn(
         optimization = _rollout_cache_policy(
             optimization, rollout_decision
         )
+        # The coordinator may rebuild optimization after the exact prompt is
+        # known. Fresh/current turns remain cache-ineligible at this final
+        # admission point as well as during preliminary lookup.
+        if freshness.requires_fresh_evidence:
+            optimization = replace(
+                optimization,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason="freshness_requires_retrieval",
+                metrics={
+                    **optimization.metrics,
+                    "cache_eligible": False,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": "freshness_requires_retrieval",
+                },
+            )
         if coordinator_decision is not None and not optimization.cache_eligible:
             coordinator_decision = replace(
                 coordinator_decision,
@@ -3059,7 +3211,8 @@ def prepare_web_turn(
             embedding_request_id=embedding_request_id,
             embedding_reserved_micros=embedding_reserved_micros,
             embedding_accounted=embedding_accounted,
-            retrieval_context=repository_pack,
+            retrieval_context=freshness_pack or repository_pack,
+            precomputed_response=freshness_precomputed,
             repository_snapshot=repository_snapshot,
             repository_contract=repository_contract,
         )

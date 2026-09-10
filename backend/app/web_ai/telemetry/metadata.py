@@ -204,6 +204,7 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
     ),
     "quality_outcome": frozenset(
         {
+            "checked",
             "verified",
             "grounded",
             "best_effort",

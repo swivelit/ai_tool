@@ -15,7 +15,7 @@ from sqlmodel import Session
 from .budget import enforce_free_text_quota, enforce_provider_budget
 from .agent_runtime import AgentRuntime, agentic_mode_enabled
 from .intent import classify_contextual_followup
-from .freshness import resolve_freshness
+from .freshness import resolve_freshness, validate_current_evidence
 from .agents.web_search_agent import WebSearchAgent
 from .language import (
     explicit_web_reply_language, localized_web_deterministic_text,
@@ -85,14 +85,39 @@ def run_text_turn(
     # helper is used only when explicitly enabled; failures become a truthful
     # unavailable response with no provider call.
     freshness = resolve_freshness(ai_request.message)
+    is_free_turn = str(
+        ai_request.metadata.get("swico_tier")
+        or ai_request.metadata.get("user_tier")
+        or ""
+    ).strip().lower() == "free"
+    if freshness.requires_fresh_evidence and is_free_turn:
+        text = localized_web_deterministic_text(
+            ai_request.reply_language, "live_data_disabled",
+        )
+        response = AIProviderResponse(
+            text=text, provider="blocked", model=None,
+            route="live_data_unavailable", reason="free_local_only",
+            language=ai_request.reply_language or "en", intent="live_data",
+            characters=len(text), raw={
+                "web_search_used": False, "freshness": freshness.__dict__,
+                "quality": {
+                    "status": "insufficient_evidence", "retrieval_status": "insufficient",
+                    "checks": [{"type": "freshness_evidence", "status": "failed"}],
+                },
+            },
+        )
+        return _record(session, response, ai_request, started, metadata={"freshness": freshness.__dict__})
     if freshness.requires_fresh_evidence and _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False):
         search = WebSearchAgent().search(ai_request.message)
-        retrieved_at = datetime.now(timezone.utc).isoformat()
-        if search.results:
-            result = search.results[0]
-            url = str(result.get("url") or "").strip()
-            title = str(result.get("title") or "Web source").strip()[:128]
-            snippet = str(result.get("snippet") or "").strip()
+        result = search.results
+        valid, evidence, evidence_reason = validate_current_evidence(
+            ai_request.message, result,
+        )
+        retrieved_at = str(result.get("retrieved_at") or "") if isinstance(result, dict) else ""
+        if valid and evidence is not None:
+            url = str(evidence["url"])
+            title = str(evidence["title"])
+            snippet = str(evidence["snippet"])
             source = {
                 "id": "W1", "label": title, "locator": url[:256],
                 "confidence": 0.7, "source_kind": "web_search",
@@ -107,7 +132,7 @@ def run_text_turn(
                 language=ai_request.reply_language or "en", intent="live_data",
                 characters=len(text), raw={
                     "web_search": True, "web_search_used": True,
-                    "retrieved_at": retrieved_at, "freshness": freshness.__dict__,
+                    "retrieved_at": evidence["retrieved_at"], "freshness": freshness.__dict__,
                     "sources": [source], "quality": {
                         "status": "grounded", "retrieval_status": "sufficient",
                         "checks": [{"type": "freshness_evidence", "status": "passed"}],
@@ -123,12 +148,12 @@ def run_text_turn(
         )
         response = AIProviderResponse(
             text=text, provider="blocked", model=None,
-            route="live_data_unavailable", reason=f"fresh_retrieval_{search.reason}",
+            route="live_data_unavailable", reason=f"fresh_retrieval_{evidence_reason or search.reason}",
             language=ai_request.reply_language or "en", intent="live_data",
             characters=len(text), raw={
                 "web_search": True, "web_search_used": False,
                 "retrieved_at": retrieved_at, "freshness": freshness.__dict__,
-                "retrieval_failure": search.reason,
+                "retrieval_failure": evidence_reason or search.reason,
                 "quality": {
                     "status": "insufficient_evidence", "retrieval_status": "insufficient",
                     "checks": [{"type": "freshness_evidence", "status": "failed"}],

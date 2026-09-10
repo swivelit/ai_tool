@@ -21,7 +21,15 @@ def build_evidence_pack(
 ) -> EvidencePack:
     items: list[EvidenceItem] = []
     remaining = max(0, int(token_cap))
-    truncated = False
+    representative_coverage = any(
+        dict(candidate.bounded_metadata).get("coverage_mode") == "representative"
+        and dict(candidate.bounded_metadata).get("coverage_complete") != "true"
+        for candidate in candidates
+    )
+    truncated = representative_coverage
+    effective_status_codes = list(status_codes)
+    if representative_coverage:
+        effective_status_codes.append("representative_coverage")
     for candidate in candidates:
         if remaining <= 0:
             truncated = True
@@ -57,6 +65,8 @@ def build_evidence_pack(
                     "upload_id", "upload_name", "chunk_index",
                     "document_id", "chunk_id", "raw_chunk_id",
                     "source_version", "extraction_version", "cache_scope",
+                    "coverage_mode", "coverage_complete", "retrieved_at",
+                    "provenance",
                 }
             ),
         )
@@ -73,7 +83,7 @@ def build_evidence_pack(
         retrieval_status=status,
         contradictions=contradictions,
         source_map=build_source_map(immutable_items),
-        status_codes=status_codes,
+        status_codes=tuple(dict.fromkeys(effective_status_codes)),
     )
 
 
@@ -100,8 +110,14 @@ def evidence_prompt(pack: EvidencePack) -> str:
             "support the statement."
         )
     )
+    coverage_instruction = (
+        "Coverage is representative excerpts only; the complete document was not "
+        "processed. State that limitation and do not claim a full-document review."
+        if pack.truncated or "representative_coverage" in pack.status_codes
+        else ""
+    )
     return "\n\n".join(
-        [UNTRUSTED_ATTACHMENT_INSTRUCTION, status_instruction, *blocks]
+        [UNTRUSTED_ATTACHMENT_INSTRUCTION, status_instruction, coverage_instruction, *blocks]
     )
 
 

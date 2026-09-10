@@ -301,6 +301,21 @@ _EXPLICIT_REPLY_LANGUAGE_RE = re.compile(
     r"gujarati|punjabi|odia|oriya)\b(?!\s+nadu\b)",
     re.IGNORECASE,
 )
+_LANGUAGE_NAME_RE = (
+    r"english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|marathi|"
+    r"gujarati|punjabi|odia|oriya"
+)
+_TRANSLATE_REPLY_LANGUAGE_RE = re.compile(
+    rf"\btranslate(?:\s+(?:it|this|that|the\s+answer|the\s+result))?\b"
+    rf"[^\n.!?]{{0,80}}?\b(?:to|into|in)\s+({_LANGUAGE_NAME_RE})\b",
+    re.IGNORECASE,
+)
+_OUTPUT_REPLY_LANGUAGE_RE = re.compile(
+    rf"\b(?:reply|answer|respond|give|provide|show|tell|return|write|output|"
+    rf"result|explain|say)\b[^;\n.!?]{{0,80}}?\b(?:in|using|as)\s+"
+    rf"({_LANGUAGE_NAME_RE})\b(?!\s+nadu\b)",
+    re.IGNORECASE,
+)
 _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE = re.compile(
     r"\b(english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|"
     r"marathi|gujarati|punjabi|odia|oriya)\s+la\b",
@@ -316,13 +331,25 @@ def explicit_web_reply_language(message: str) -> str | None:
     reply-language requests.
     """
     text = str(message or "")
-    match = _EXPLICIT_REPLY_LANGUAGE_RE.search(text)
-    if match:
-        return normalize_web_reply_language(match.group(1))
+    # Quoted examples and attachment text are not instructions from the user.
+    unquoted = re.sub(r"(`[^`]*`|\"[^\"]*\"|'[^']*'|“[^”]*”|‘[^’]*’)" ,
+                      lambda match: " " * len(match.group(0)), text)
+    candidates: list[tuple[int, str]] = []
+    for pattern in (_TRANSLATE_REPLY_LANGUAGE_RE, _OUTPUT_REPLY_LANGUAGE_RE):
+        for match in pattern.finditer(unquoted):
+            before = unquoted[max(0, match.start() - 36):match.start()].lower()
+            before = re.split(r"[;\n]", before)[-1]
+            if re.search(r"\b(?:do\s+not|don['’]?t|never|must\s+not|avoid)\b", before):
+                continue
+            language = normalize_web_reply_language(match.group(1))
+            if language:
+                candidates.append((match.end(), language))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
     # Common Tanglish imperatives are output transformations, not translation
     # commands for the words in the request itself.
-    match = _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE.search(text)
-    if match and re.search(r"\b(?:sollu|sollunga|pannu|pannunga|reply|answer|respond)\b", text, re.I):
+    match = _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE.search(unquoted)
+    if match and re.search(r"\b(?:sollu|sollunga|pannu|pannunga|reply|answer|respond)\b", unquoted, re.I):
         return normalize_web_reply_language(match.group(1))
     return None
 

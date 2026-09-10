@@ -325,7 +325,7 @@ def persist_answer_quality(
     row.assistant_message_id = assistant_message_id
     row.status = (
         "passed"
-        if result.status in {"verified", "grounded", "best_effort"}
+        if result.status in {"checked", "verified", "grounded", "best_effort"}
         else "skipped"
         if result.status == "insufficient_evidence"
         else "failed"

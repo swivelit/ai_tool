@@ -40,11 +40,11 @@ import { VoiceReplyCache, type VoiceReplyState } from "@/lib/swicoVoiceReply";
 import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, responseProvenanceVisible, voiceAvailability } from "@/lib/swicoCapabilities";
 
 function nowIso() { return new Date().toISOString(); }
-function makeUserMessage(text: string, requestId: string, threadId: string) : Message {
+function makeUserMessage(text: string, requestId: string, threadId: string, attachments: Attachment[] = []) : Message {
   return {
     id: `pending-${requestId}`, thread_id: threadId, role: "user", content: text,
     request_id: requestId, tier: null, tier_label: "", input_tokens: 0, output_tokens: 0,
-    usage_source: null, charge_micros: 0, status: "pending", created_at: nowIso(),
+    usage_source: null, charge_micros: 0, status: "pending", created_at: nowIso(), attachments,
     input_mode: "text", voice_turn_id: null, reply_language: null,
   };
 }
@@ -96,6 +96,12 @@ export default function SwicoChatScreen() {
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const activeRequestRef = useRef<string | null>(null);
+  const transportAttemptRef = useRef<string | null>(null);
+  const navigationGenerationRef = useRef(0);
+  const historyGenerationRef = useRef(0);
+  const activeThreadRef = useRef<string | null>(activeThread);
+  const archivedRef = useRef(archived);
+  const pendingAttachmentIdsRef = useRef(new Set<string>());
   const draftRef = useRef(draft);
   const attachmentsRef = useRef(attachments);
   const searchGenerationRef = useRef(0);
@@ -113,10 +119,14 @@ export default function SwicoChatScreen() {
   const realtimeAvailability = useMemo(() => bootstrap ? voiceAvailability(bootstrap, mobileRelease) : { enabled: false, reason: "Voice Mode is unavailable while Swico is loading.", releaseMismatch: false }, [bootstrap, mobileRelease]);
   useEffect(() => { draftRef.current = draft; }, [draft]);
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  useEffect(() => { activeThreadRef.current = activeThread; }, [activeThread]);
+  useEffect(() => { archivedRef.current = archived; }, [archived]);
 
   const reloadThreads = useCallback(async (isArchived = archived) => {
     if (!user) return;
+    const generation = ++historyGenerationRef.current;
     const result = await getThreads(user, isArchived);
+    if (generation !== historyGenerationRef.current || isArchived !== archivedRef.current) return;
     setThreads(result.items);
     setHasMoreThreads(result.has_more);
   }, [archived, user]);
@@ -130,15 +140,22 @@ export default function SwicoChatScreen() {
 
   const reloadMessages = useCallback(async (threadId: string) => {
     if (!user) return;
+    const generation = ++historyGenerationRef.current;
     const result = await getMessages(user, threadId);
+    if (generation !== historyGenerationRef.current || activeThreadRef.current !== threadId) return;
     setMessages(result.items);
     const restored = new Map<string, Attachment>();
     result.items.forEach(message => (message.attachments || []).forEach(attachment => {
       if (attachment.status === "ready" && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment);
     }));
-    const current = attachmentsRef.current.filter(item => item.status === "ready" && new Date(item.expires_at).getTime() > Date.now());
+    const current = attachmentsRef.current.filter(item => (
+      pendingAttachmentIdsRef.current.has(item.id)
+      && item.status === "ready"
+      && new Date(item.expires_at).getTime() > Date.now()
+    ));
     const merged = new Map<string, Attachment>();
     for (const item of [...Array.from(restored.values()), ...current]) if (!merged.has(item.id)) merged.set(item.id, item);
+    if (generation !== historyGenerationRef.current || activeThreadRef.current !== threadId) return;
     setAttachments(Array.from(merged.values()).slice(-5));
     if (!pendingScrollMessageId) setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
   }, [pendingScrollMessageId, user]);
@@ -258,12 +275,22 @@ export default function SwicoChatScreen() {
 
   const requestServerCancellation = useCallback(async (targetRequestId: string, targetController: AbortController) => {
     if (!user || cancellationSentRef.current) return;
+    const navigationGeneration = navigationGenerationRef.current;
+    const transportAttemptId = transportAttemptRef.current;
+    const isCurrent = () => (
+      navigationGenerationRef.current === navigationGeneration
+      && transportAttemptRef.current === transportAttemptId
+      && activeRequestRef.current === targetRequestId
+    );
     cancellationSentRef.current = true;
     try {
       const result = await cancelChatRequest(user, targetRequestId);
+      if (!isCurrent()) return;
       if (result.status === "stopped") {
         stopConfirmedRef.current = true;
-        await getBootstrap(user).then(setBootstrap).catch(() => undefined);
+        const refreshed = await getBootstrap(user).catch(() => null);
+        if (!isCurrent()) return;
+        if (refreshed) setBootstrap(refreshed);
         targetController.abort();
       } else if (result.status === "cancelling") {
         setError("Cancellation was requested. Swico is finishing the usage record safely.");
@@ -271,6 +298,7 @@ export default function SwicoChatScreen() {
         setError("Swico had already completed this response.");
       }
     } catch {
+      if (!isCurrent()) return;
       cancellationSentRef.current = false;
       setError("Cancellation could not be confirmed. The stream will remain open until settlement finishes.");
     }
@@ -280,6 +308,16 @@ export default function SwicoChatScreen() {
     if (!user || streaming || offline) return;
     if (options.editId && bootstrap?.features.web_message_edit !== true) return;
     if (options.editId && options.editId !== latestEditableUserId(messages, streaming)) return;
+    const navigationGeneration = navigationGenerationRef.current;
+    const transportAttemptId = newSwicoRequestId();
+    const id = options.requestId || newSwicoRequestId();
+    const threadId = activeThread || "new-thread";
+    transportAttemptRef.current = transportAttemptId;
+    const isCurrentTransport = () => (
+      transportAttemptRef.current === transportAttemptId
+      && navigationGenerationRef.current === navigationGeneration
+      && activeRequestRef.current === id
+    );
     const rawText = String(override ?? (options.continueId ? "Continue response" : draft));
     const text = rawText.trim();
     const revisionId = options.editId ?? editTarget;
@@ -295,13 +333,15 @@ export default function SwicoChatScreen() {
     if ((options.editId || options.regenerateId) && !selectedAttachments.length) selectedAttachments = originalForRevision?.attachments ?? [];
     const expired = selectedAttachments.filter(item => item.status === "expired" || new Date(item.expires_at).getTime() <= Date.now());
     selectedAttachments = selectedAttachments.filter(item => item.status === "ready" && new Date(item.expires_at).getTime() > Date.now());
-    if (expired.length && !text) {
-      setError("That attachment has expired. Remove it and upload it again before sending.");
+    const explicitlyRequestsDocument = /\b(?:read|review|summari[sz]e|document|pdf|file|attachment|what\s+does|tell\s+me\s+about)\b/i.test(text);
+    if (expired.length && (!text || explicitlyRequestsDocument)) {
+      setError("That attachment has expired. Detach it or upload it again before asking about it.");
       setAttachments(value => value.map(item => expired.some(expiredItem => expiredItem.id === item.id) ? { ...item, status: "expired" as const } : item));
       return;
     }
     const repositoryReady = Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user.uid, activeThread));
     if (!hasSendableContent(text, selectedAttachments, repositoryReady, canChatWithRepository(bootstrap!.features))) return;
+    activeRequestRef.current = id;
     let providerText = text;
     const inlineThreshold = bootstrap?.uploads.long_input_inline_threshold_chars || 16000;
     if (!options.continueId && rawText.length > inlineThreshold) {
@@ -316,16 +356,16 @@ export default function SwicoChatScreen() {
       setUploading(true); setError("Preparing large pasted text…");
       try {
         const virtual = await uploadText(user, rawText, longInputMode) as Attachment;
+        if (!isCurrentTransport()) return;
         selectedAttachments = [...selectedAttachments, virtual];
         setAttachments(selectedAttachments.slice(-bootstrap.uploads.max_files_per_message));
         const labels = { summarize: "Summarize", analyze: "Analyze", ask_questions: "Answer questions about", rewrite: "Rewrite", translate: "Translate" };
         providerText = `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`;
       } catch (caught) {
+        if (!isCurrentTransport()) return;
         setUploading(false); setError((caught as Error).message || "Large text upload failed."); return;
       } finally { setUploading(false); }
     }
-    const id = options.requestId || newSwicoRequestId();
-    const threadId = activeThread || "new-thread";
     const payload = {
       request_id: id, message: providerText, ...(activeThread ? { thread_id: activeThread } : {}),
       attachment_ids: selectedAttachments.map(item => item.id), ...(canChatWithRepository(bootstrap!.features) && repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user.uid, activeThread) ? { repository_id: repositoryId } : {}),
@@ -335,6 +375,9 @@ export default function SwicoChatScreen() {
       ...(revisionId ? { edit_message_id: revisionId } : {}),
       ...(options.regenerateId ? { regenerate_message_id: options.regenerateId } : {}),
     };
+    const submittedPendingIds = new Set(
+      selectedAttachments.map(item => item.id).filter(idValue => pendingAttachmentIdsRef.current.has(idValue)),
+    );
     draftRef.current = "";
     setDraft(""); setDraftVoiceTurnId(null); setEditTarget(null); setError(""); setStreaming(true); setRequestId(id);
     activeRequestRef.current = id;
@@ -350,11 +393,15 @@ export default function SwicoChatScreen() {
       input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "streaming",
       created_at: nowIso(), input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : (originalForRevision?.input_mode ?? "text")), voice_turn_id: options.voiceTurnId === undefined ? (draftVoiceTurnId ?? originalForRevision?.voice_turn_id ?? null) : options.voiceTurnId, reply_language: bootstrap?.user.reply_language || "en",
     }});
-    if (!revisionTarget && !options.continueId) setMessages(value => [...value, { ...makeUserMessage(providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, id, threadId), content: providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, attachments: selectedAttachments, input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : "text"), voice_turn_id: options.voiceTurnId === undefined ? draftVoiceTurnId : options.voiceTurnId, reply_language: bootstrap?.user.reply_language || "en" }]);
+    if (!revisionTarget && !options.continueId) setMessages(value => [
+      ...value.filter(item => !(item.role === "user" && item.request_id === id)),
+      { ...makeUserMessage(providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, id, threadId, selectedAttachments), content: providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : "text"), voice_turn_id: options.voiceTurnId === undefined ? draftVoiceTurnId : options.voiceTurnId, reply_language: bootstrap?.user.reply_language || "en" },
+    ]);
     const controller = new AbortController(); controllerRef.current = controller;
     try {
       await streamChat(user, payload, {
         onAccepted: () => {
+          if (!isCurrentTransport()) return;
           cancellationReadyRef.current = true;
           setCancellationReady(true);
           if (queuedStopRef.current) {
@@ -377,14 +424,26 @@ export default function SwicoChatScreen() {
             }]);
           }
         },
-        onEvent: event => { if (activeRequestRef.current === id) applyStreamEvent(event); },
+        onEvent: event => { if (isCurrentTransport()) applyStreamEvent(event); },
       }, controller.signal);
+      if (!isCurrentTransport()) return;
+      if (submittedPendingIds.size) {
+        submittedPendingIds.forEach(idValue => pendingAttachmentIdsRef.current.delete(idValue));
+        // Keep the valid upload in the active thread context for follow-ups;
+        // only its pending-composer classification is cleared.
+      }
       if (activeThread || streamedThreadRef.current) {
         const resolved = activeThread || streamedThreadRef.current;
         if (resolved) await reloadMessages(resolved);
       }
-      await Promise.all([reloadThreads(false), getBootstrap(user).then(setBootstrap)]);
+      if (!isCurrentTransport()) return;
+      await reloadThreads(false);
+      if (!isCurrentTransport()) return;
+      const refreshedBootstrap = await getBootstrap(user);
+      if (!isCurrentTransport()) return;
+      setBootstrap(refreshedBootstrap);
     } catch (caught) {
+      if (!isCurrentTransport()) return;
       if ((caught as { name?: string }).name === "AbortError" && stopConfirmedRef.current) {
         setStream(previous => reduceSwicoStream(previous, { event: "done", data: { cancelled: true } }));
         setError("Generation stopped. Partial measured usage may already have been charged.");
@@ -408,12 +467,14 @@ export default function SwicoChatScreen() {
         }
       }
     } finally {
+      if (!isCurrentTransport()) return;
       cancellationReadyRef.current = false;
       queuedStopRef.current = false;
       cancellationSentRef.current = false;
       stopConfirmedRef.current = false;
       setCancellationReady(false);
       if (activeRequestRef.current === id) { activeRequestRef.current = null; controllerRef.current = null; setStreaming(false); setRequestId(null); }
+      transportAttemptRef.current = null;
     }
   }, [activeThread, applyStreamEvent, attachments, bootstrap, draft, draftVoiceTurnId, editTarget, longInputMode, messages, offline, reloadMessages, reloadThreads, repositoryId, repositoryMeta, repositoryOwnerUid, repositoryThreadId, requestServerCancellation, streaming, user]);
 
@@ -523,9 +584,18 @@ export default function SwicoChatScreen() {
     } catch (caught) { setError((caught as Error).message); }
   }, [archived, offline, reloadThreads, renameTarget, renameTitle, user]);
 
-  const chooseThread = (id: string) => { activeRequestRef.current = null; setStreaming(false); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setActiveThread(id); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
+  const invalidateNavigation = () => {
+    navigationGenerationRef.current += 1;
+    historyGenerationRef.current += 1;
+    transportAttemptRef.current = null;
+    controllerRef.current?.abort();
+    activeRequestRef.current = null;
+    pendingAttachmentIdsRef.current.clear();
+    setStreaming(false);
+  };
+  const chooseThread = (id: string) => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setAttachments([]); setActiveThread(id); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
   const chooseSearchResult = (id: string, messageId: string | null) => { setPendingScrollMessageId(messageId); setPinnedToBottom(false); pinnedToBottomRef.current = false; chooseThread(id); setHighlightMessageId(messageId); };
-  const newChat = () => { activeRequestRef.current = null; setStreaming(false); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
+  const newChat = () => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
 
   const downloadResponse = useCallback(async (message: Message) => {
     try {
@@ -558,6 +628,7 @@ export default function SwicoChatScreen() {
     try {
       setUploading(true);
       const attachment = await uploadDocument(user, { uri: file.uri, name: file.name, type: file.mimeType || "application/octet-stream" }, progress => setError(progress < 100 ? `Uploading attachment · ${progress}%` : ""));
+      pendingAttachmentIdsRef.current.add((attachment as Attachment).id);
       setAttachments(value => [...value, { ...(attachment as Attachment), local_uri: isImage ? file.uri : undefined }]);
     } catch (caught) { setError((caught as Error).message || "Upload failed."); } finally { setUploading(false); }
   }, [attachments, bootstrap, offline, user]);
@@ -732,7 +803,7 @@ export default function SwicoChatScreen() {
           <Pressable testID="swico-send-button" accessibilityLabel={streaming ? "Stop generation" : "Send message"} onPress={() => streaming ? void stop() : void send()} disabled={offline || uploading || (!streaming && !sendable)} accessibilityState={{ disabled: offline || uploading || (!streaming && !sendable) }} style={[styles.sendButton, (offline || uploading || (!streaming && !sendable)) && styles.sendDisabled]}><Ionicons name={streaming ? "stop" : "arrow-up"} size={20} color={t.accentText} /></Pressable>
         </View>
       </KeyboardAvoidingView>
-      <Drawer visible={drawer} onClose={() => setDrawer(false)} userName={bootstrap.user.name} userEmail={bootstrap.user.email} threads={threads} hasMore={hasMoreThreads} onLoadMore={() => void loadMoreThreads()} archived={archived} setArchived={value => { setArchived(value); void reloadThreads(value); }} active={activeThread} onSelect={chooseThread} onSelectSearch={chooseSearchResult} onNew={newChat} onActions={threadAction} search={search} setSearch={setSearch} results={searchResults} wallet={bootstrap.wallets?.chat || bootstrap.wallet} offline={offline} onBilling={() => { if (offline) { setError("You are offline. Reconnect before adding tokens."); return; } setBillingBucket("chat"); setBilling(true); setDrawer(false); }} onSettings={() => { setSettingsModal(true); setDrawer(false); }} onTheme={() => void setThemePreference(themePreference === "dark" ? "light" : "dark")} onLegal={setLegalPage} onSignOut={() => void signOutUser()} />
+      <Drawer visible={drawer} onClose={() => { setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; }} userName={bootstrap.user.name} userEmail={bootstrap.user.email} threads={threads} hasMore={hasMoreThreads} onLoadMore={() => void loadMoreThreads()} archived={archived} setArchived={value => { setArchived(value); void reloadThreads(value); }} active={activeThread} onSelect={chooseThread} onSelectSearch={chooseSearchResult} onNew={newChat} onActions={threadAction} search={search} setSearch={setSearch} results={searchResults} wallet={bootstrap.wallets?.chat || bootstrap.wallet} offline={offline} onBilling={() => { if (offline) { setError("You are offline. Reconnect before adding tokens."); return; } setBillingBucket("chat"); setBilling(true); setDrawer(false); }} onSettings={() => { setSettingsModal(true); setDrawer(false); }} onTheme={() => void setThemePreference(themePreference === "dark" ? "light" : "dark")} onLegal={setLegalPage} onSignOut={() => void signOutUser()} />
       <TierModal visible={tierModal} onClose={() => setTierModal(false)} bootstrap={bootstrap} onChoose={async tier => { try { const assistant = await updateAssistant(user, tier); setBootstrap(value => value ? { ...value, assistant } : value); setTierModal(false); } catch (caught) { setError((caught as Error).message); } }} />
       <SwicoSettings visible={settingsModal} onClose={() => setSettingsModal(false)} user={user} bootstrap={bootstrap} onBootstrap={setBootstrap} offline={offline} onBilling={() => { if (!offline) { setBillingBucket("chat"); setBilling(true); } }} onLegal={setLegalPage} onArchived={() => { setSettingsModal(false); setArchived(true); setDrawer(true); void reloadThreads(true); }} />
       <SwicoBilling visible={billing} close={() => setBilling(false)} user={user} config={bootstrap.billing} initialBucket={billingBucket} offline={offline} refreshed={async () => { setBootstrap(await getBootstrap(user)); }} />

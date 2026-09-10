@@ -6,6 +6,7 @@ import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List
 
 
@@ -45,6 +46,9 @@ class WebSearchAgent:
                     "snippet": extract,
                     "source": "wikipedia",
                     "url": page_url,
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                    "provenance": "wikipedia_summary",
+                    "temporal_support": False,
                 }
             ],
             reason="wikipedia_summary",

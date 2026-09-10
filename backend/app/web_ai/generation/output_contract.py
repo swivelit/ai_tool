@@ -255,7 +255,7 @@ def extract_output_contract(message: str) -> OutputContract:
         re.search(r"\bTamil\b[^.\n]{0,40}\bsentences?\b", text, re.IGNORECASE)
         or re.search(
             r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
-            r"[^.\n]{0,50}\bTamil(?:\s+Unicode)?(?:\s+script)?\b",
+            r"[^.\n]{0,50}\bTamil(?!\s+nadu\b)(?:\s+Unicode)?(?:\s+script)?\b",
             text,
             re.IGNORECASE,
         )

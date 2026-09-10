@@ -231,7 +231,7 @@ export type ProductionSafeScenarioResult = {
   prerequisite_reason_code?: ProductionPrerequisiteReasonCode
   selected_tier?: 'lite' | 'standard' | 'pro'
   retrieval_status?: 'not_run' | 'sufficient' | 'ambiguous' | 'insufficient' | 'contradictory'
-  quality_status?: 'not_run' | 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
+  quality_status?: 'not_run' | 'checked' | 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
   source_kind_counts?: Record<string, number>
   answer_check_status_counts?: Record<string, number>
   usage_stage_status_counts?: Record<string, number>
@@ -890,7 +890,7 @@ export function buildProductionTriagSummary(input: {
     ].includes(item.retrieval_status ?? '')
       ? { retrieval_status:item.retrieval_status } : {}),
     ...([
-      'not_run', 'verified', 'grounded', 'best_effort', 'unverified',
+      'not_run', 'checked', 'verified', 'grounded', 'best_effort', 'unverified',
       'insufficient_evidence',
     ].includes(item.quality_status ?? '')
       ? { quality_status:item.quality_status } : {}),

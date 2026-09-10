@@ -166,9 +166,23 @@ def calibrated_query_coverage(query: str, text: str) -> float:
 def is_document_overview_request(question: str) -> bool:
     """Whether a request asks for bounded document-wide orientation."""
     text = " ".join(str(question or "").lower().split())
-    return bool(_DOCUMENT_OVERVIEW_RE.search(text)) and bool(
-        re.search(r"\b(?:document|file|pdf|attachment|this|it)\b", text)
-    )
+    if not (bool(_DOCUMENT_OVERVIEW_RE.search(text)) and bool(
+        re.search(r"\b(?:document|file|pdfs?|attachment|this|it)\b", text)
+    )):
+        return False
+    # A document verb does not turn a targeted fact question into an overview.
+    # Keep the normal missing-fact refusal path for requests such as “read this
+    # and tell me the CEO salary”.
+    if re.search(
+        r"\btell\s+me\b(?!\s+about\s+(?:this|the)\s+document\b)|"
+        r"\b(?:what|who|when|where|which|how\s+much|how\s+many|does|is|are)\b"
+        r".{0,80}\b(?:salary|pay|price|revenue|age|name|date|amount|number|"
+        r"ceo|chief\s+executive|president|author|owner)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return True
 
 
 def _representative_chunks(
@@ -178,15 +192,24 @@ def _representative_chunks(
     by_upload: dict[int, list[RankedChunk]] = {}
     for item in ranked:
         by_upload.setdefault(item.upload_index, []).append(item)
-    selected: list[RankedChunk] = []
+    queues: dict[int, list[RankedChunk]] = {}
     for upload_index in sorted(by_upload):
-        items = by_upload[upload_index]
+        items = sorted(by_upload[upload_index], key=lambda item: item.chunk_index)
         indexes = sorted({0, len(items) // 2, len(items) - 1})
-        selected.extend(items[index] for index in indexes)
-    return sorted(
-        selected,
-        key=lambda item: (item.upload_index, item.chunk_index),
-    )[: max(1, int(limit))]
+        queues[upload_index] = [items[index] for index in indexes]
+    selected: list[RankedChunk] = []
+    # Round-robin guarantees that a later file gets represented before an
+    # earlier file consumes the five-excerpt bound.
+    while queues and len(selected) < max(1, int(limit)):
+        for upload_index in list(sorted(queues)):
+            if len(selected) >= max(1, int(limit)):
+                break
+            queue = queues[upload_index]
+            if queue:
+                selected.append(queue.pop(0))
+            if not queue:
+                queues.pop(upload_index, None)
+    return sorted(selected, key=lambda item: (item.upload_index, item.chunk_index))
 
 
 def attachment_prompt_max_chars() -> int:

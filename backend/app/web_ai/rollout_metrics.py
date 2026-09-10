@@ -45,6 +45,7 @@ _RETRIEVAL_STATUSES = frozenset({
     "contradictory",
 })
 _QUALITY_STATUSES = frozenset({
+    "checked",
     "verified",
     "grounded",
     "best_effort",

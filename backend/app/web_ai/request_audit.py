@@ -43,6 +43,7 @@ _RETRIEVAL_STATUSES = frozenset({
     "sufficient", "ambiguous", "insufficient", "contradictory",
 })
 _QUALITY_STATUSES = frozenset({
+    "checked",
     "verified",
     "grounded",
     "best_effort",

@@ -6,6 +6,8 @@ from app.web_ai.generation.quality_gate import quality_outcome
 from app.web_ai.generation.models import QualityCheck
 from app.web_api.attachment_context import is_document_overview_request, select_attachment_context
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk
+from app.web_ai.evidence.pack_builder import build_evidence_pack, evidence_prompt
+from app.web_ai.retrieval.lexical import LexicalAttachmentRetriever
 
 
 def _upload() -> EphemeralUpload:
@@ -57,3 +59,33 @@ def test_structural_buffering_is_checked_not_factually_verified():
         checks=checks, evidence_backed=True, verified_buffered=True,
         repository_validation_required=False,
     ) == "grounded"
+
+
+def test_targeted_document_fact_is_not_promoted_to_overview():
+    assert is_document_overview_request("Read this document and tell me the CEO salary") is False
+
+
+def test_representative_coverage_is_source_ordered_across_files_and_rebuilt_prompt():
+    first = _upload()
+    second = EphemeralUpload(
+        **{**first.__dict__, "id": "second", "name": "second.pdf",
+           "chunks": [
+               ExtractedChunk(text="second opening", source="page 1"),
+               ExtractedChunk(text="second middle", source="page 5"),
+               ExtractedChunk(text="second later", source="page 9"),
+           ]},
+    )
+    candidates = LexicalAttachmentRetriever().retrieve(
+        query="Please go through the PDFs", uploads=[first, second],
+        owner_user_id=1, limit=5,
+    )
+    assert [candidate.source_locator.split(" — ")[0] for candidate in candidates] == [
+        "review.pdf", "second.pdf", "review.pdf", "second.pdf", "review.pdf",
+    ]
+    pack = build_evidence_pack(
+        owner_user_id=1, request_id="coverage", candidates=candidates,
+        status="sufficient", token_cap=2_000,
+    )
+    prompt = evidence_prompt(pack)
+    assert pack.truncated is True
+    assert "representative excerpts only" in prompt

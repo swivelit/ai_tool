@@ -133,6 +133,24 @@ it('uses a safe fallback when the bootstrap name is not usable', async () => {
   expect(screen.queryByText(/^Hey,/u)).not.toBeInTheDocument()
 })
 
+it('shows a recoverable bootstrap error instead of an endless loading state', async () => {
+  mockApi()
+  let attempts = 0
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') {
+      attempts += 1
+      if (attempts === 1) throw new Error('bootstrap unavailable')
+      return bootstrap as never
+    }
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load your Swico workspace.')
+  await userEvent.click(screen.getByRole('button', { name:'Retry' }))
+  expect(await screen.findByRole('heading', { name:'Hey, Hari. How can I help you?' })).toBeInTheDocument()
+})
+
 it('keeps the compact composer for a new chat and after the first message', async () => {
   mockApi()
   render(<ChatPage />)
