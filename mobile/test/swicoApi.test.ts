@@ -232,30 +232,69 @@ describe("canonical Swico mobile API client", () => {
   });
 
   it("keeps the admitted production busy owner when preparation admission is denied", async () => {
-    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const { admitSwicoOperation, SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
     const controller = new SwicoBusyOperationController();
-    const admitted = controller.tryBegin(0);
+    const cells = {
+      activeRequestRef: { current: null as string | null },
+      transportAttemptRef: { current: null as string | null },
+    };
+    const admitted = admitSwicoOperation(
+      controller, 0,
+      { requestId: "request-a", transportAttemptId: "transport-a" }, cells,
+    );
     expect(admitted).not.toBeNull();
-    expect(controller.tryBegin(0)).toBeNull();
+    let resolvePreparationA!: () => void;
+    const preparationA = new Promise<void>(resolve => { resolvePreparationA = resolve; });
+    const completeA = preparationA.then(() => controller.finish(admitted!));
+    expect(admitSwicoOperation(
+      controller, 0,
+      { requestId: "request-b", transportAttemptId: "transport-b" }, cells,
+    )).toBeNull();
+    expect(cells).toEqual({
+      activeRequestRef: { current: "request-a" },
+      transportAttemptRef: { current: "transport-a" },
+    });
     expect(controller.owns(admitted!)).toBe(true);
     expect(controller.canPublish(admitted!, 0)).toBe(true);
-    expect(controller.finish(admitted!)).toBe(true);
+    expect(cells.activeRequestRef.current).toBe("request-a");
+    expect(cells.transportAttemptRef.current).toBe("transport-a");
+    resolvePreparationA();
+    await expect(completeA).resolves.toBe(true);
+    expect(controller.isBusy).toBe(false);
   });
 
-  it("does not publish a stale capacity error after deferred cleanup and navigation", async () => {
-    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+  it("publishes same-chat capacity cleanup but suppresses it after navigation", async () => {
+    const {
+      settleSwicoRejectedUpload,
+      SwicoBusyOperationController,
+    } = await import("../lib/swicoBusyOperation");
     const controller = new SwicoBusyOperationController();
-    const operation = controller.tryBegin(0)!;
     let resolveDeletion!: () => void;
     const deletion = new Promise<void>(resolve => { resolveDeletion = resolve; });
-    const publishAfterCleanup = async () => {
-      await deletion;
-      return controller.canPublish(operation, 1) ? "capacity" : "";
-    };
-    const cleanup = publishAfterCleanup();
-    expect(controller.abandon(1)).toBe(true);
+    let error = "";
+    const sameChat = controller.tryBegin(0)!;
+    const sameChatCleanup = settleSwicoRejectedUpload(
+      controller, sameChat, 0, () => deletion, () => { error = "capacity"; },
+    );
     resolveDeletion();
-    await expect(cleanup).resolves.toBe("");
+    await sameChatCleanup;
+    expect(error).toBe("capacity");
+    expect(controller.finish(sameChat)).toBe(true);
+
+    let resolveOldDeletion!: () => void;
+    const oldDeletion = new Promise<void>(resolve => { resolveOldDeletion = resolve; });
+    const abandoned = controller.tryBegin(0)!;
+    const newChat = { attachments: ["rejected-upload"], error: "", uploading: true };
+    const oldCleanup = settleSwicoRejectedUpload(
+      controller, abandoned, 1, () => oldDeletion,
+      () => { newChat.error = "capacity"; },
+    );
+    expect(controller.abandon(1)).toBe(true);
+    newChat.attachments = [];
+    newChat.uploading = controller.isBusy;
+    resolveOldDeletion();
+    await oldCleanup;
+    expect(newChat).toEqual({ attachments: [], error: "", uploading: false });
   });
 
   it("does not restore a deliberately detached file when deferred history resolves", async () => {

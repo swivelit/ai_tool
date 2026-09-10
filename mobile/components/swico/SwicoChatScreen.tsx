@@ -39,7 +39,12 @@ import { fallbackMessageOffset, messageIndexForSearch } from "@/lib/swicoNavigat
 import { VoiceReplyCache, type VoiceReplyState } from "@/lib/swicoVoiceReply";
 import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, responseProvenanceVisible, voiceAvailability } from "@/lib/swicoCapabilities";
 import { captureSwicoHistoryScope, captureSwicoScope, isSwicoHistoryScopeCurrent, isSwicoScopeCurrent, type SwicoRequestScope } from "@/lib/swicoRequestScope";
-import { SwicoBusyOperationController, type SwicoBusyOperation } from "@/lib/swicoBusyOperation";
+import {
+  admitSwicoOperation,
+  settleSwicoRejectedUpload,
+  SwicoBusyOperationController,
+  type SwicoBusyOperation,
+} from "@/lib/swicoBusyOperation";
 import { buildRegeneratePayload, normalizeSwicoMutationOptions } from "@/lib/swicoRequestPayload";
 import { appendWithinSwicoAttachmentCapacity, detachSwicoAttachment, expiredExplicitAttachments, mergeSwicoHistoryAttachments } from "@/lib/swicoAttachmentState";
 
@@ -422,11 +427,16 @@ export default function SwicoChatScreen() {
     const configuredBootstrap = bootstrap!;
     let preparationOperation: SwicoBusyOperation | null = null;
     if (needsPreparation) {
-      preparationOperation = beginBusyOperation(navigationGeneration);
+      preparationOperation = beginBusyOperation(navigationGeneration, {
+        requestId: id,
+        transportAttemptId,
+      });
       if (!preparationOperation) return;
     }
-    transportAttemptRef.current = transportAttemptId;
-    activeRequestRef.current = id;
+    if (!needsPreparation) {
+      transportAttemptRef.current = transportAttemptId;
+      activeRequestRef.current = id;
+    }
     if (needsPreparation) {
       setError("Preparing large pasted text…");
       try {
@@ -690,8 +700,18 @@ export default function SwicoChatScreen() {
   const chooseSearchResult = (id: string, messageId: string | null) => { setPendingScrollMessageId(messageId); setPinnedToBottom(false); pinnedToBottomRef.current = false; chooseThread(id); setHighlightMessageId(messageId); };
   const newChat = () => { invalidateNavigation(); localConversationIdRef.current = `new-${newSwicoRequestId()}`; setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); clearSearch(); };
 
-  const beginBusyOperation = (navigationGeneration: number): SwicoBusyOperation | null => {
-    const operation = busyOperationRef.current.tryBegin(navigationGeneration);
+  const beginBusyOperation = (
+    navigationGeneration: number,
+    identity?: { requestId: string; transportAttemptId: string },
+  ): SwicoBusyOperation | null => {
+    const operation = identity
+      ? admitSwicoOperation(
+        busyOperationRef.current,
+        navigationGeneration,
+        identity,
+        { activeRequestRef, transportAttemptRef },
+      )
+      : busyOperationRef.current.tryBegin(navigationGeneration);
     if (!operation) return null;
     setUploading(true);
     return operation;
@@ -752,12 +772,15 @@ export default function SwicoChatScreen() {
         limits,
       );
       if (admitted.error) {
-        await deleteUpload(user, (attachment as Attachment).id).catch(() => undefined);
-        if (uploadIsCurrent() && busyOperation && busyOperationRef.current.canPublish(
-          busyOperation, navigationGenerationRef.current,
-        )) {
-          setError(admitted.error);
-        }
+        await settleSwicoRejectedUpload(
+          busyOperationRef.current,
+          busyOperation!,
+          navigationGenerationRef.current,
+          () => deleteUpload(user, (attachment as Attachment).id).catch(() => undefined),
+          () => {
+            if (uploadIsCurrent()) setError(admitted.error!);
+          },
+        );
         return;
       }
       pendingAttachmentIdsRef.current.add((attachment as Attachment).id);

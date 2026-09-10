@@ -11,6 +11,7 @@ from app.ai.language import (
     WEB_REPLY_LANGUAGE_NAMES,
     WEB_REPLY_LANGUAGE_CODES,
     explicit_web_reply_language,
+    localized_web_deterministic_text,
     resolve_web_reply_language,
 )
 from app.ai.types import AIProviderResponse
@@ -19,7 +20,7 @@ from app.ai.types import AIRequest
 from app.billing.pricing import calculate_topup
 from app.billing.service import credit_payment_once
 from app.database import SessionLocal
-from app.models import PaymentOrder
+from app.models import PaymentOrder, User
 from app.web_ai.telemetry.metadata import sanitize_metadata
 from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 from app.web_ai.persistence import persist_answer_quality
@@ -235,7 +236,33 @@ def test_prepared_localized_historical_questions_are_not_live_blocked():
 def test_current_tamil_questions_use_localized_unavailable_endpoint_response(monkeypatch, client, message, language):
     user = create_test_user(f"freshness-endpoint-{language}", f"freshness-endpoint-{language}@example.com")
     _fund(int(user.id))
+    with SessionLocal() as session:
+        profile = session.get(User, int(user.id))
+        assert profile is not None
+        profile.reply_language = language
+        session.add(profile)
+        session.commit()
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "false")
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock if tz else clock.replace(tzinfo=None)
+
+    monkeypatch.setattr("app.ai.freshness.datetime", FrozenDateTime)
+
+    def provider_must_not_run(*_args, **_kwargs):
+        raise AssertionError("retrieval-disabled current requests must not call a provider")
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        provider_must_not_run,
+    )
+    monkeypatch.setattr(
+        "app.ai.providers.sarvam_provider.SarvamProvider.stream_complete",
+        provider_must_not_run,
+    )
     response = client.post(
         "/api/web/chat/stream",
         headers=auth_headers(f"freshness-endpoint-{language}", f"freshness-endpoint-{language}@example.com"),
@@ -244,7 +271,40 @@ def test_current_tamil_questions_use_localized_unavailable_endpoint_response(mon
     assert response.status_code == 200
     text = _sse_text(response)
     assert text.strip()
-    assert "Example" not in text
+    assert localized_web_deterministic_text(language, "live_data_disabled") in text
+
+
+@pytest.mark.parametrize(
+    ("clock", "scope", "required", "as_of"),
+    (
+        (datetime(2025, 9, 10, tzinfo=timezone.utc), "future", True, "2026"),
+        (datetime(2026, 9, 10, tzinfo=timezone.utc), "current", True, "2026-09-10"),
+        (datetime(2027, 9, 10, tzinfo=timezone.utc), "historical", False, "2026"),
+    ),
+)
+def test_localized_year_rollover_is_persisted_through_preparation_and_cache_policy(
+    clock, scope, required, as_of,
+):
+    user = create_test_user(
+        f"freshness-rollover-{clock.year}",
+        f"freshness-rollover-{clock.year}@example.com",
+    )
+    _fund(int(user.id))
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="2026 la Tamil Nadu CM yaaru?",
+        request_id=str(uuid4()), thread_id=None, reply_language="en", now=clock,
+    )
+    metadata = prepared.ai_request.metadata
+    assert metadata["freshness_scope"] == scope
+    assert metadata["freshness_required"] is required
+    assert metadata["freshness_as_of"] == as_of
+    assert prepared.optimization is not None
+    if required:
+        assert prepared.route.provider == "blocked"
+        assert prepared.optimization.cache_eligible is False
+    else:
+        assert prepared.route.provider != "blocked"
+        assert prepared.optimization.cache_scope_reason != "freshness_requires_retrieval"
 
 
 def test_prepared_mixed_scope_and_timeless_role_share_freshness_cache_policy():
