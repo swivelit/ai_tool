@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.ai.prompts import build_provider_messages
+from app.ai.language import resolve_web_reply_language
 from app.ai.types import AIRequest, AIRoute
 from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 from app.web_ai.generation.models import QualityCheck
@@ -71,7 +72,9 @@ def test_tanglish_profile_rejects_unexpected_tamil_script():
 def test_explicit_tamil_script_request_overrides_tanglish_profile_contract():
     base = extract_output_contract("Reply using Tamil script.")
     assert base.required_script == "tamil"
-    contract = apply_reply_language_contract(base, "tanglish")
+    resolved = resolve_web_reply_language("tanglish", "Reply using Tamil script.")
+    assert resolved == "ta"
+    contract = apply_reply_language_contract(base, resolved)
     assert contract.required_script == "tamil"
     assert contract.forbid_tamil_script is False
     assert all(

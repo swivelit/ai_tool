@@ -15,7 +15,9 @@ class FreshnessDecision:
 
 _HISTORICAL_RE = re.compile(
     r"\b(?:as\s+of|in|during|from|between)\s+(?:the\s+year\s+)?\d{4}\b|"
-    r"\b(?:historical|history|former|previous|back\s+then|at\s+that\s+time)\b",
+    r"\b\d{4}\s*(?:-ல்|ல்|la|il)(?=\s|$|[?.!,;])|"
+    r"\b(?:historical|history|former|previous|back\s+then|at\s+that\s+time)\b|"
+    r"(?:முன்னாள்|முந்தைய|வரலாற்று|அப்போது)",
     re.IGNORECASE,
 )
 _EXPLICIT_CURRENT_RE = re.compile(
@@ -132,16 +134,22 @@ def _requested_date(text: str, now: datetime) -> str:
     if explicit:
         return explicit.isoformat()
     year = re.search(
-        r"\b(?:as\s+of|in|during|from|between)\s+(?:the\s+year\s+)?(\d{4})\b",
+        r"\b(?:as\s+of|in|during|from|between)\s+(?:the\s+year\s+)?(\d{4})\b|"
+        r"\b(\d{4})\s*(?:-ல்|ல்|la|il)(?=\s|$|[?.!,;])",
         text, re.IGNORECASE,
     )
     if year:
-        return year.group(1)
+        return year.group(1) or year.group(2)
     return now.astimezone(timezone.utc).date().isoformat()
 
 
 def _explicit_requested_date(text: str) -> date | None:
     return _parse_explicit_date(text)
+
+
+def _localized_requested_year(text: str) -> int | None:
+    match = re.search(r"\b(\d{4})\s*(?:-ல்|ல்|la|il)(?=\s|$|[?.!,;])", text, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _has_current_subject(text: str) -> bool:
@@ -267,7 +275,10 @@ def validate_current_evidence(
         value_terms = _normalized_terms(answer_value)
         if not value_terms or not value_terms.issubset(evidence_terms):
             return False, None, "evidence_missing_answer_value"
-        support_clauses = re.split(r"[.!?;\n]+", f"{title} {snippet}")
+        # Keep the source title separate from the body. A matching title is
+        # metadata about the page, not proof that the body associates the
+        # requested entity with the identified value.
+        support_clauses = [title, *re.split(r"[.!?;\n]+", snippet)]
         if not any(
             value_terms.issubset(_normalized_terms(clause))
             and (not entity_terms or entity_terms.issubset(_normalized_terms(clause)))
@@ -309,6 +320,7 @@ def resolve_freshness(
     as_of = _requested_date(text, clock)
     historical = _HISTORICAL_RE.search(text)
     explicit_date = _explicit_requested_date(text)
+    localized_year = _localized_requested_year(text)
     explicit_current = _EXPLICIT_CURRENT_RE.search(text)
     officeholder = _has_officeholder_subject(text)
     contextual_officeholder = bool(
@@ -323,6 +335,13 @@ def resolve_freshness(
         or contextual_officeholder
     )
     clock_date = clock.astimezone(timezone.utc).date()
+    if localized_year is not None and officeholder:
+        if localized_year > clock_date.year:
+            return FreshnessDecision("future", True, "future_requested_year", str(localized_year))
+        if localized_year < clock_date.year:
+            return FreshnessDecision("historical", False, "historical_requested_year", str(localized_year))
+        if explicit_current:
+            return FreshnessDecision("current", True, "current_requested_year", str(localized_year))
     if explicit_date and officeholder:
         if explicit_current and explicit_date != clock_date:
             return FreshnessDecision("mixed", True, "mixed_current_historical_request", clock_date.isoformat())

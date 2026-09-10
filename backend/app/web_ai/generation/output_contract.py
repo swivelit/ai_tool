@@ -156,18 +156,16 @@ def apply_reply_language_contract(
 
     normalized = str(reply_language or "").strip().casefold()
     if normalized == "tanglish":
-        # An explicit Tamil-script request wins over the profile's normal
-        # Tanglish contract for this message.
-        if contract.required_script == "tamil":
-            return contract
-        return replace(contract, forbid_tamil_script=True)
-    if normalized == "en":
-        # A Tamil mention may describe the subject or a superseded directive;
-        # the resolved whole-answer language is authoritative for validation.
+        return replace(contract, required_script=None, forbid_tamil_script=True)
+    if normalized == "ta":
+        return replace(contract, required_script="tamil", forbid_tamil_script=False)
+    if normalized in {
+        "en", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od",
+    }:
+        # Subject mentions and superseded whole-answer directives cannot leak
+        # a Tamil script requirement into the resolved target language.
         return replace(contract, required_script=None)
-    if normalized != "ta":
-        return contract
-    return replace(contract, required_script="tamil")
+    return contract
 
 
 def extract_output_contract(message: str) -> OutputContract:

@@ -102,6 +102,28 @@ def test_tamil_and_tanglish_current_officeholder_questions_are_freshness_gated()
         assert decision.requires_fresh_evidence is True
 
 
+def test_tamil_and_tanglish_historical_and_future_years_keep_their_scope():
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    historical = (
+        "2020-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?",
+        "2020 la Tamil Nadu CM yaaru?",
+    )
+    future = (
+        "2027-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?",
+        "2027 la Tamil Nadu CM yaaru?",
+    )
+    for message in historical:
+        decision = resolve_freshness(message, now=clock)
+        assert decision.scope == "historical"
+        assert decision.as_of == "2020"
+        assert decision.requires_fresh_evidence is False
+    for message in future:
+        decision = resolve_freshness(message, now=clock)
+        assert decision.scope == "future"
+        assert decision.as_of == "2027"
+        assert decision.requires_fresh_evidence is True
+
+
 def test_prepared_tamil_and_tanglish_current_questions_are_blocked_without_search():
     user = create_test_user("freshness-localized", "freshness-localized@example.com")
     _fund(int(user.id))
@@ -118,6 +140,25 @@ def test_prepared_tamil_and_tanglish_current_questions_are_blocked_without_searc
         assert prepared.route.provider == "blocked"
         assert prepared.optimization is not None
         assert prepared.optimization.cache_eligible is False
+
+
+def test_prepared_localized_historical_questions_are_not_live_blocked():
+    user = create_test_user("freshness-localized-history", "freshness-localized-history@example.com")
+    _fund(int(user.id))
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    for message in (
+        "2020-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?",
+        "2020 la Tamil Nadu CM yaaru?",
+    ):
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language="en", now=clock,
+        )
+        assert prepared.ai_request.metadata["freshness_scope"] == "historical"
+        assert prepared.ai_request.metadata["freshness_required"] is False
+        assert prepared.route.provider != "blocked"
+        assert prepared.optimization is not None
+        assert prepared.optimization.cache_scope_reason != "freshness_requires_retrieval"
 
 
 @pytest.mark.parametrize(
@@ -182,6 +223,8 @@ def test_current_evidence_matches_role_and_ignores_polite_instruction_words():
     assert validate_current_evidence("Please identify the PM of India", prime_minister, now=fixed)[0] is True
     wrong_state = {**base, "title": "Kerala Chief Minister", "snippet": "The Chief Minister of Kerala is Example Person."}
     assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", wrong_state, now=fixed)[0] is False
+    matching_title_wrong_body = {**base, "title": "Tamil Nadu Chief Minister", "snippet": "Example Person is the Chief Minister of Kerala.", "officeholder": "Example Person"}
+    assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", matching_title_wrong_body, now=fixed)[0] is False
     role_definition = {**base, "title": "Tamil Nadu Chief Minister", "snippet": "The Chief Minister of Tamil Nadu leads the elected state government."}
     assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", role_definition, now=fixed)[0] is False
 

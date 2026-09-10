@@ -23,6 +23,10 @@ export class SwicoBusyOperationController {
     return this.active !== null;
   }
 
+  owns(operation: SwicoBusyOperation): boolean {
+    return this.active?.id === operation.id;
+  }
+
   abandon(navigationGeneration: number): boolean {
     if (!this.active || this.active.navigationGeneration >= navigationGeneration) return false;
     this.active = null;

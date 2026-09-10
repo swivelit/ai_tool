@@ -242,6 +242,24 @@ describe("canonical Swico mobile API client", () => {
     expect(controller.finish(admitted!)).toBe(true);
   });
 
+  it("does not publish a stale capacity error after deferred cleanup and navigation", async () => {
+    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const controller = new SwicoBusyOperationController();
+    const operation = controller.tryBegin(0)!;
+    let resolveDeletion!: () => void;
+    const deletion = new Promise<void>(resolve => { resolveDeletion = resolve; });
+    let error = "";
+    const publishAfterCleanup = async () => {
+      await deletion;
+      if (controller.owns(operation)) error = "capacity";
+    };
+    const cleanup = publishAfterCleanup();
+    expect(controller.abandon(1)).toBe(true);
+    resolveDeletion();
+    await cleanup;
+    expect(error).toBe("");
+  });
+
   it("does not restore a deliberately detached file when deferred history resolves", async () => {
     const { detachSwicoAttachment, mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
     const attachment = { id: "removed-a", name: "a.pdf", media_type: "application/pdf", size_bytes: 4, created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-10T00:10:00Z", status: "ready" as const, warnings: [] };

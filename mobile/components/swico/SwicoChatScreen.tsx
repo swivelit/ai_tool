@@ -753,7 +753,9 @@ export default function SwicoChatScreen() {
       );
       if (admitted.error) {
         await deleteUpload(user, (attachment as Attachment).id).catch(() => undefined);
-        setError(admitted.error);
+        if (uploadIsCurrent() && busyOperation && busyOperationRef.current.owns(busyOperation)) {
+          setError(admitted.error);
+        }
         return;
       }
       pendingAttachmentIdsRef.current.add((attachment as Attachment).id);
