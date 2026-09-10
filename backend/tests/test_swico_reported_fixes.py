@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from app.ai.freshness import resolve_freshness
@@ -8,6 +9,12 @@ from app.web_api.attachment_context import is_document_overview_request, select_
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk
 from app.web_ai.evidence.pack_builder import build_evidence_pack, evidence_prompt
 from app.web_ai.retrieval.lexical import LexicalAttachmentRetriever
+from app.web_ai.retrieval.runtime import execute_hybrid_retrieval
+from app.web_ai.execution_plan import ExecutionPlan
+from app.web_ai.settings import TriagSettings
+from app.web_ai.tier_policy import tier_policy_for
+from app.web_ai.token_allocator import TokenAllocation
+from app.web_api.upload_store import InProcessEphemeralUploadStore
 
 
 def _upload() -> EphemeralUpload:
@@ -89,3 +96,35 @@ def test_representative_coverage_is_source_ordered_across_files_and_rebuilt_prom
     prompt = evidence_prompt(pack)
     assert pack.truncated is True
     assert "representative excerpts only" in prompt
+
+
+def test_hybrid_lite_overview_keeps_all_files_through_final_pack_selection():
+    uploads = [
+        EphemeralUpload(
+            id=f"overview-{index}", owner_user_id=1, name=f"file-{index}.pdf",
+            extension=".pdf", media_type="application/pdf", size_bytes=100,
+            created_at="2026-09-10T00:00:00+00:00",
+            expires_at="2026-09-10T00:05:00+00:00",
+            chunks=[ExtractedChunk(text=f"file {index} section {part}", source=f"page {part}") for part in range(1, 4)],
+            source_locators=[], warnings=[],
+        )
+        for index in (1, 2, 3)
+    ]
+    base_policy = tier_policy_for("lite")
+    policy = replace(base_policy, candidate_limit=12, evidence_item_limit=4, evidence_token_cap=40)
+    plan = ExecutionPlan(
+        policy_version="v1", tier_id="lite", route="provider_backed", intent="document",
+        answer_class="normal", reason_codes=(), retrieval_sources=("documents",),
+        token_allocation=TokenAllocation(4096, 100, document_tokens=300),
+        max_output_tokens=512, expected_provider_calls=1, cache_eligible=False,
+        deterministic=False, streaming_mode="existing_sse", planned_usage_stages=(),
+    )
+    result = execute_hybrid_retrieval(
+        plan=plan, policy=policy, settings=TriagSettings(), owner_user_id=1,
+        request_id="hybrid-overview", query="Please go through the PDFs",
+        uploads=uploads, store=InProcessEphemeralUploadStore(),
+    )
+    names = [item.source_label for item in result.pack.items]
+    assert set(names) == {"file-1.pdf", "file-2.pdf", "file-3.pdf"}
+    assert result.pack.truncated is True
+    assert "representative excerpts only" in evidence_prompt(result.pack)

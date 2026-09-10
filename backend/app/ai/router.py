@@ -48,7 +48,13 @@ class AIProviderRouter:
             "intent_before_cleanup": intent.metadata.get("intent_before_cleanup") or intent.intent,
             "intent_after_cleanup": intent.intent,
         }
-        freshness = resolve_freshness(request.message)
+        freshness_context = "\n".join(
+            value
+            for turn in request.context_turns[-4:]
+            for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
+            if value
+        )
+        freshness = resolve_freshness(request.message, context=freshness_context)
         intent_metadata.update({
             "freshness_scope": freshness.scope,
             "freshness_required": freshness.requires_fresh_evidence,

@@ -50,6 +50,7 @@ export function Composer({
   disabled,
   focusKey = '',
   attachments = [],
+  pendingAttachments,
   attachmentsEnabled = false,
   repository = null,
   repositoryUploadEnabled = false,
@@ -84,7 +85,7 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   cancellationReady?: boolean;
   streaming: boolean; disabled?: boolean; focusKey?: string;
-  attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
+  attachments?: ComposerAttachment[]; pendingAttachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
   repository?: ComposerRepository | null; repositoryUploadEnabled?: boolean;
   repositoryChatEnabled?: boolean;
   repositoryValidationCapability?: 'static_only' | 'executable';
@@ -116,14 +117,15 @@ export function Composer({
   const composing = useRef(false)
   const [now, setNow] = useState(Date.now())
   const [menuOpen, setMenuOpen] = useState(false)
+  const visibleAttachments = pendingAttachments ?? attachments
 
   useEffect(() => { valueRef.current = value }, [value])
 
   useEffect(() => {
-    if (!attachments.some(item => item.status === 'ready')) return
+    if (!visibleAttachments.some(item => item.status === 'ready')) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [attachments])
+  }, [visibleAttachments])
 
   const insertTranscript = useCallback((transcript: string, voiceTurnId: string, wallet: Wallet) => {
     const current = valueRef.current
@@ -141,9 +143,9 @@ export function Composer({
   })
 
   const audioBusy = ['requesting', 'recording', 'stopping', 'transcribing'].includes(recorder.state.status)
-  const uploadBusy = attachments.some(item => item.status === 'uploading')
+  const uploadBusy = visibleAttachments.some(item => item.status === 'uploading')
   const repositoryUploadBusy = repository?.status === 'uploading'
-  const readyAttachments = attachments.filter(item => item.status === 'ready')
+  const readyAttachments = visibleAttachments.filter(item => item.status === 'ready')
   const hasSendableContent = !!value.trim() || readyAttachments.length > 0
   const overLimit = value.length > maxCharacters
   const nearLimit = value.length >= Math.floor(maxCharacters * 0.8)
@@ -285,8 +287,8 @@ export function Composer({
   return <div className="composer-wrap" ref={wrapRef}>
     <div className="composer-shell">
 
-      {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
-        {attachments.map(attachment => <div
+      {visibleAttachments.length > 0 && <div className="attachment-tray" aria-label="Pending attachments">
+        {visibleAttachments.map(attachment => <div
           className={`attachment-chip ${attachment.status}`}
           key={'local_id' in attachment ? attachment.local_id : attachment.id}
         >

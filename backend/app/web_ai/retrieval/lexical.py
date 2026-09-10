@@ -78,6 +78,7 @@ class LexicalAttachmentRetriever:
                         *candidate.bounded_metadata,
                         ("coverage_mode", "representative"),
                         ("coverage_complete", "false"),
+                        ("upload_index", str(item.upload_index)),
                     ),
                 )
             output.append(candidate)

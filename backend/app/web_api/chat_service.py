@@ -2654,10 +2654,34 @@ def prepare_web_turn(
             channel="text", request_id=request_id, metadata=metadata,
             context_turns=context_turns,
         )
+        freshness = resolve_freshness(
+            model_message,
+            context="\n".join(
+                value
+                for turn in all_context[-4:]
+                for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
+                if value
+            ),
+        )
+        base_metadata.update({
+            "freshness_scope": freshness.scope,
+            "freshness_required": freshness.requires_fresh_evidence,
+            "freshness_reason": freshness.reason,
+            "freshness_as_of": freshness.as_of,
+        })
+        ai_request.metadata.update({
+            "freshness_scope": freshness.scope,
+            "freshness_required": freshness.requires_fresh_evidence,
+            "freshness_reason": freshness.reason,
+            "freshness_as_of": freshness.as_of,
+        })
         route = AIProviderRouter().select_route(ai_request)
         freshness_precomputed: AIProviderResponse | None = None
         freshness_pack: EvidencePack | None = None
-        if freshness.requires_fresh_evidence and route.intent == "live_data":
+        if freshness.requires_fresh_evidence and route.intent not in {
+            "unsafe_or_sensitive", "urgent_medical_emergency",
+            "harmful_credential_abuse", "swico_brand",
+        }:
             # Current factual requests are retrieval-gated in the prepared-turn
             # path used by both web and mobile. Free remains local-only even if
             # the legacy flag is enabled; paid requests use the configured,
@@ -6568,6 +6592,9 @@ def execute_web_turn(
             ),
             answer_quality=prepared.answer_quality,
         )
+        if prepared.ai_request.metadata.get("freshness_required") is True:
+            turn_cache_eligible = False
+            cache_scope_reason = "freshness_requires_retrieval"
         optimization_metrics.update({
             "cache_eligible": turn_cache_eligible,
             "cache_scope": "global" if turn_cache_eligible else "disabled",

@@ -26,7 +26,7 @@ import {
   type SwicoApiError,
 } from "@/lib/swicoApi";
 import { emptySwicoStreamState, reduceSwicoStream, type SwicoStreamState } from "@/lib/swicoChatReducer";
-import type { Attachment, Bootstrap, InputMode, Message, RepositorySnapshot, SearchResult, Thread } from "@/lib/swicoTypes";
+import type { Attachment, Bootstrap, ChatRequestPayload, InputMode, Message, RepositorySnapshot, SearchResult, Thread } from "@/lib/swicoTypes";
 import { SwicoRealtimeVoiceTransport, realtimePcmAvailable, realtimePcmPlaybackAvailable, startRealtimePcmPlayback, stopRealtimePcmPlayback, validateRealtimeAudioStart, writeRealtimePcmPlayback } from "@/lib/swicoRealtimeVoice";
 import { useConnectivity } from "@/hooks/use-connectivity";
 import { repositoryDetachCode, repositoryExpired, repositoryUsable } from "@/lib/swicoRepository";
@@ -38,6 +38,7 @@ import { assistantActionsEnabled, hasSendableContent, latestEditableUserId, retr
 import { fallbackMessageOffset, messageIndexForSearch } from "@/lib/swicoNavigation";
 import { VoiceReplyCache, type VoiceReplyState } from "@/lib/swicoVoiceReply";
 import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadRepository, canUseAttachments, responseProvenanceVisible, voiceAvailability } from "@/lib/swicoCapabilities";
+import { captureSwicoHistoryScope, captureSwicoScope, isSwicoHistoryScopeCurrent, isSwicoScopeCurrent, type SwicoRequestScope } from "@/lib/swicoRequestScope";
 
 function nowIso() { return new Date().toISOString(); }
 function makeUserMessage(text: string, requestId: string, threadId: string, attachments: Attachment[] = []) : Message {
@@ -98,10 +99,12 @@ export default function SwicoChatScreen() {
   const activeRequestRef = useRef<string | null>(null);
   const transportAttemptRef = useRef<string | null>(null);
   const navigationGenerationRef = useRef(0);
-  const historyGenerationRef = useRef(0);
+  const threadListGenerationRef = useRef(0);
+  const messageHistoryGenerationRef = useRef(0);
   const activeThreadRef = useRef<string | null>(activeThread);
   const archivedRef = useRef(archived);
   const pendingAttachmentIdsRef = useRef(new Set<string>());
+  const submittedPayloadsRef = useRef(new Map<string, ChatRequestPayload>());
   const draftRef = useRef(draft);
   const attachmentsRef = useRef(attachments);
   const searchGenerationRef = useRef(0);
@@ -124,25 +127,31 @@ export default function SwicoChatScreen() {
 
   const reloadThreads = useCallback(async (isArchived = archived) => {
     if (!user) return;
-    const generation = ++historyGenerationRef.current;
+    const generation = ++threadListGenerationRef.current;
+    const scope = captureSwicoHistoryScope("threads", generation, null, isArchived);
     const result = await getThreads(user, isArchived);
-    if (generation !== historyGenerationRef.current || isArchived !== archivedRef.current) return;
+    if (!isSwicoHistoryScopeCurrent(scope, { generation: threadListGenerationRef.current, activeThreadId: activeThreadRef.current, archived: archivedRef.current })) return;
     setThreads(result.items);
     setHasMoreThreads(result.has_more);
   }, [archived, user]);
 
   const loadMoreThreads = useCallback(async () => {
     if (!user || !hasMoreThreads) return;
-    const result = await getThreads(user, archived, "", threads.length);
+    const generation = ++threadListGenerationRef.current;
+    const requestedArchived = archived;
+    const scope = captureSwicoHistoryScope("threads", generation, null, requestedArchived);
+    const result = await getThreads(user, requestedArchived, "", threads.length);
+    if (!isSwicoHistoryScopeCurrent(scope, { generation: threadListGenerationRef.current, activeThreadId: activeThreadRef.current, archived: archivedRef.current })) return;
     setThreads(value => [...value, ...result.items.filter(item => !value.some(existing => existing.id === item.id))]);
     setHasMoreThreads(result.has_more);
   }, [archived, hasMoreThreads, threads.length, user]);
 
   const reloadMessages = useCallback(async (threadId: string) => {
     if (!user) return;
-    const generation = ++historyGenerationRef.current;
+    const generation = ++messageHistoryGenerationRef.current;
+    const scope = captureSwicoHistoryScope("messages", generation, threadId, archivedRef.current);
     const result = await getMessages(user, threadId);
-    if (generation !== historyGenerationRef.current || activeThreadRef.current !== threadId) return;
+    if (!isSwicoHistoryScopeCurrent(scope, { generation: messageHistoryGenerationRef.current, activeThreadId: activeThreadRef.current, archived: archivedRef.current })) return;
     setMessages(result.items);
     const restored = new Map<string, Attachment>();
     result.items.forEach(message => (message.attachments || []).forEach(attachment => {
@@ -155,7 +164,7 @@ export default function SwicoChatScreen() {
     ));
     const merged = new Map<string, Attachment>();
     for (const item of [...Array.from(restored.values()), ...current]) if (!merged.has(item.id)) merged.set(item.id, item);
-    if (generation !== historyGenerationRef.current || activeThreadRef.current !== threadId) return;
+    if (!isSwicoHistoryScopeCurrent(scope, { generation: messageHistoryGenerationRef.current, activeThreadId: activeThreadRef.current, archived: archivedRef.current })) return;
     setAttachments(Array.from(merged.values()).slice(-5));
     if (!pendingScrollMessageId) setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
   }, [pendingScrollMessageId, user]);
@@ -176,7 +185,17 @@ export default function SwicoChatScreen() {
   useEffect(() => { void loadWorkspace(); }, [loadWorkspace]);
 
   useEffect(() => {
-    if (activeThread && !streaming) void reloadMessages(activeThread).catch(() => setError("This conversation could not be loaded."));
+    if (!activeThread || streaming) return;
+    const requestedThread = activeThread;
+    const requestedGeneration = messageHistoryGenerationRef.current + 1;
+    const navigationGeneration = navigationGenerationRef.current;
+    void reloadMessages(requestedThread).catch(() => {
+      if (
+        navigationGenerationRef.current === navigationGeneration
+        && activeThreadRef.current === requestedThread
+        && messageHistoryGenerationRef.current === requestedGeneration
+      ) setError("This conversation could not be loaded.");
+    });
   }, [activeThread, reloadMessages, streaming]);
 
   useEffect(() => {
@@ -250,6 +269,19 @@ export default function SwicoChatScreen() {
     return () => clearTimeout(timer);
   }, [bootstrap?.features.web_content_search, offline, search, user]);
 
+  const updateSearch = useCallback((value: string) => {
+    if (!value.trim()) {
+      searchGenerationRef.current += 1;
+      setSearchResults([]);
+    }
+    setSearch(value);
+  }, []);
+  const clearSearch = useCallback(() => {
+    searchGenerationRef.current += 1;
+    setSearch("");
+    setSearchResults([]);
+  }, []);
+
   const streamedThreadRef = useRef<string | null>(null);
   const applyStreamEvent = useCallback((event: { event: string; data: unknown }) => {
     if (event.event === "error" && event.data && typeof event.data === "object") {
@@ -304,19 +336,26 @@ export default function SwicoChatScreen() {
     }
   }, [user]);
 
-  const send = useCallback(async (override?: string, options: { continueId?: string; editId?: string; regenerateId?: string; inputMode?: InputMode; voiceTurnId?: string | null; requestId?: string; attachments?: Attachment[] } = {}) => {
+  const send = useCallback(async (override?: string, options: { continueId?: string; editId?: string; regenerateId?: string; inputMode?: InputMode; voiceTurnId?: string | null; requestId?: string; attachments?: Attachment[]; payloadOverride?: ChatRequestPayload } = {}) => {
     if (!user || streaming || offline) return;
     if (options.editId && bootstrap?.features.web_message_edit !== true) return;
     if (options.editId && options.editId !== latestEditableUserId(messages, streaming)) return;
     const navigationGeneration = navigationGenerationRef.current;
     const transportAttemptId = newSwicoRequestId();
     const id = options.requestId || newSwicoRequestId();
-    const threadId = activeThread || "new-thread";
+    const threadId = options.payloadOverride?.thread_id || activeThread || "new-thread";
     transportAttemptRef.current = transportAttemptId;
+    const requestScope: SwicoRequestScope = captureSwicoScope(
+      navigationGeneration, transportAttemptId, id,
+      threadId === "new-thread" ? null : threadId,
+    );
     const isCurrentTransport = () => (
-      transportAttemptRef.current === transportAttemptId
-      && navigationGenerationRef.current === navigationGeneration
-      && activeRequestRef.current === id
+      isSwicoScopeCurrent(requestScope, {
+        navigationGeneration: navigationGenerationRef.current,
+        transportAttemptId: transportAttemptRef.current,
+        requestId: activeRequestRef.current,
+        threadId: requestScope.threadId,
+      })
     );
     const rawText = String(override ?? (options.continueId ? "Continue response" : draft));
     const text = rawText.trim();
@@ -329,18 +368,21 @@ export default function SwicoChatScreen() {
     const originalForRevision = revisionTarget?.role === "assistant"
       ? messages.find(item => item.role === "user" && item.request_id === revisionTarget.request_id)
       : revisionTarget;
-    let selectedAttachments = options.attachments ?? attachments;
+    let sourceAttachments = options.attachments ?? attachments;
+    let selectedAttachments = sourceAttachments;
     if ((options.editId || options.regenerateId) && !selectedAttachments.length) selectedAttachments = originalForRevision?.attachments ?? [];
+    const explicitlySelected = Boolean(options.attachments || options.payloadOverride);
     const expired = selectedAttachments.filter(item => item.status === "expired" || new Date(item.expires_at).getTime() <= Date.now());
+    const explicitlyExpired = expired.filter(item => explicitlySelected || pendingAttachmentIdsRef.current.has(item.id));
     selectedAttachments = selectedAttachments.filter(item => item.status === "ready" && new Date(item.expires_at).getTime() > Date.now());
-    const explicitlyRequestsDocument = /\b(?:read|review|summari[sz]e|document|pdf|file|attachment|what\s+does|tell\s+me\s+about)\b/i.test(text);
-    if (expired.length && (!text || explicitlyRequestsDocument)) {
+    if (explicitlyExpired.length) {
       setError("That attachment has expired. Detach it or upload it again before asking about it.");
-      setAttachments(value => value.map(item => expired.some(expiredItem => expiredItem.id === item.id) ? { ...item, status: "expired" as const } : item));
+      setAttachments(value => value.map(item => explicitlyExpired.some(expiredItem => expiredItem.id === item.id) ? { ...item, status: "expired" as const } : item));
       return;
     }
     const repositoryReady = Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user.uid, activeThread));
-    if (!hasSendableContent(text, selectedAttachments, repositoryReady, canChatWithRepository(bootstrap!.features))) return;
+    const retryRepository = Boolean(options.payloadOverride?.repository_id);
+    if (!hasSendableContent(text, selectedAttachments, repositoryReady || retryRepository, canChatWithRepository(bootstrap!.features))) return;
     activeRequestRef.current = id;
     let providerText = text;
     const inlineThreshold = bootstrap?.uploads.long_input_inline_threshold_chars || 16000;
@@ -358,16 +400,18 @@ export default function SwicoChatScreen() {
         const virtual = await uploadText(user, rawText, longInputMode) as Attachment;
         if (!isCurrentTransport()) return;
         selectedAttachments = [...selectedAttachments, virtual];
+        sourceAttachments = [...sourceAttachments, virtual];
+        pendingAttachmentIdsRef.current.add(virtual.id);
         setAttachments(selectedAttachments.slice(-bootstrap.uploads.max_files_per_message));
         const labels = { summarize: "Summarize", analyze: "Analyze", ask_questions: "Answer questions about", rewrite: "Rewrite", translate: "Translate" };
         providerText = `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`;
       } catch (caught) {
         if (!isCurrentTransport()) return;
         setUploading(false); setError((caught as Error).message || "Large text upload failed."); return;
-      } finally { setUploading(false); }
+      } finally { if (isCurrentTransport()) setUploading(false); }
     }
-    const payload = {
-      request_id: id, message: providerText, ...(activeThread ? { thread_id: activeThread } : {}),
+    const computedPayload: ChatRequestPayload = {
+      request_id: id, message: providerText, ...(threadId && threadId !== "new-thread" ? { thread_id: threadId } : {}),
       attachment_ids: selectedAttachments.map(item => item.id), ...(canChatWithRepository(bootstrap!.features) && repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user.uid, activeThread) ? { repository_id: repositoryId } : {}),
       input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : (originalForRevision?.input_mode ?? "text")),
       ...((options.voiceTurnId === undefined ? (draftVoiceTurnId ?? originalForRevision?.voice_turn_id) : options.voiceTurnId) ? { voice_turn_id: options.voiceTurnId === undefined ? (draftVoiceTurnId ?? originalForRevision?.voice_turn_id)! : options.voiceTurnId! } : {}),
@@ -375,6 +419,12 @@ export default function SwicoChatScreen() {
       ...(revisionId ? { edit_message_id: revisionId } : {}),
       ...(options.regenerateId ? { regenerate_message_id: options.regenerateId } : {}),
     };
+    const payload: ChatRequestPayload = options.payloadOverride
+      ? { ...options.payloadOverride, request_id: id }
+      : computedPayload;
+    providerText = payload.message;
+    selectedAttachments = sourceAttachments.filter(item => payload.attachment_ids?.includes(item.id));
+    submittedPayloadsRef.current.set(id, payload);
     const submittedPendingIds = new Set(
       selectedAttachments.map(item => item.id).filter(idValue => pendingAttachmentIdsRef.current.has(idValue)),
     );
@@ -586,16 +636,17 @@ export default function SwicoChatScreen() {
 
   const invalidateNavigation = () => {
     navigationGenerationRef.current += 1;
-    historyGenerationRef.current += 1;
+    threadListGenerationRef.current += 1;
+    messageHistoryGenerationRef.current += 1;
     transportAttemptRef.current = null;
     controllerRef.current?.abort();
     activeRequestRef.current = null;
     pendingAttachmentIdsRef.current.clear();
     setStreaming(false);
   };
-  const chooseThread = (id: string) => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setAttachments([]); setActiveThread(id); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
+  const chooseThread = (id: string) => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setAttachments([]); setActiveThread(id); setDrawer(false); clearSearch(); };
   const chooseSearchResult = (id: string, messageId: string | null) => { setPendingScrollMessageId(messageId); setPinnedToBottom(false); pinnedToBottomRef.current = false; chooseThread(id); setHighlightMessageId(messageId); };
-  const newChat = () => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
+  const newChat = () => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); clearSearch(); };
 
   const downloadResponse = useCallback(async (message: Message) => {
     try {
@@ -607,9 +658,17 @@ export default function SwicoChatScreen() {
   }, []);
 
   const pickDocument = useCallback(async () => {
+    const uploadNavigation = navigationGenerationRef.current;
+    const uploadThread = activeThreadRef.current;
+    const uploadIsCurrent = () => (
+      navigationGenerationRef.current === uploadNavigation
+      && activeThreadRef.current === uploadThread
+      && activeRequestRef.current === null
+    );
     if (offline) { setError("You are offline. Reconnect before uploading files."); return; }
     if (!user || !bootstrap || !canUseAttachments(bootstrap.features)) return;
     const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true });
+    if (!uploadIsCurrent()) return;
     if (result.canceled || !result.assets[0]) return;
     const file = result.assets[0];
     const limits = bootstrap.uploads;
@@ -627,10 +686,16 @@ export default function SwicoChatScreen() {
     if (isImage && currentImages >= (limits.image_max_count || 4)) { setError(`You can attach up to ${limits.image_max_count || 4} images.`); return; }
     try {
       setUploading(true);
-      const attachment = await uploadDocument(user, { uri: file.uri, name: file.name, type: file.mimeType || "application/octet-stream" }, progress => setError(progress < 100 ? `Uploading attachment · ${progress}%` : ""));
+      const attachment = await uploadDocument(user, { uri: file.uri, name: file.name, type: file.mimeType || "application/octet-stream" }, progress => {
+        if (uploadIsCurrent()) setError(progress < 100 ? `Uploading attachment · ${progress}%` : "");
+      });
+      if (!uploadIsCurrent()) {
+        await deleteUpload(user, (attachment as Attachment).id).catch(() => undefined);
+        return;
+      }
       pendingAttachmentIdsRef.current.add((attachment as Attachment).id);
       setAttachments(value => [...value, { ...(attachment as Attachment), local_uri: isImage ? file.uri : undefined }]);
-    } catch (caught) { setError((caught as Error).message || "Upload failed."); } finally { setUploading(false); }
+    } catch (caught) { if (uploadIsCurrent()) setError((caught as Error).message || "Upload failed."); } finally { if (uploadIsCurrent()) setUploading(false); }
   }, [attachments, bootstrap, offline, user]);
 
   const removeRepository = useCallback(async () => {
@@ -651,9 +716,17 @@ export default function SwicoChatScreen() {
   }, [offline, user]);
 
   const pickRepository = useCallback(async () => {
+    const uploadNavigation = navigationGenerationRef.current;
+    const uploadThread = activeThreadRef.current;
+    const uploadIsCurrent = () => (
+      navigationGenerationRef.current === uploadNavigation
+      && activeThreadRef.current === uploadThread
+      && activeRequestRef.current === null
+    );
     if (offline) { setError("You are offline. Reconnect before uploading a repository."); return; }
     if (!user || !bootstrap || !canUploadRepository(bootstrap.features) || !bootstrap.repositories) return;
     const result = await DocumentPicker.getDocumentAsync({ type: "application/zip", copyToCacheDirectory: true });
+    if (!uploadIsCurrent()) return;
     if (result.canceled || !result.assets[0]) return;
     const file = result.assets[0];
     if (!file.name.toLowerCase().endsWith(".zip")) { setError("Select a ZIP archive for the code repository."); return; }
@@ -662,25 +735,43 @@ export default function SwicoChatScreen() {
     try {
       setUploading(true);
       const previousId = repositoryId;
-      const repository = await uploadRepository(user, { uri: file.uri, name: file.name, type: "application/zip" }, newSwicoRequestId(), progress => setError(progress < 100 ? `Uploading repository · ${progress}%` : ""));
+      const repository = await uploadRepository(user, { uri: file.uri, name: file.name, type: "application/zip" }, newSwicoRequestId(), progress => {
+        if (uploadIsCurrent()) setError(progress < 100 ? `Uploading repository · ${progress}%` : "");
+      });
+      if (!uploadIsCurrent()) {
+        await deleteRepository(user, repository.id).catch(() => undefined);
+        return;
+      }
       setRepositoryId(repository.id);
       setRepositoryMeta(repository);
       setRepositoryOwnerUid(user.uid);
       setRepositoryThreadId(activeThread);
       if (previousId && previousId !== repository.id) await deleteRepository(user, previousId).catch(() => setError("The replacement is ready, but the earlier temporary repository could not be cleared."));
-    } catch (caught) { setError((caught as Error).message || "Repository upload failed."); } finally { setUploading(false); }
+    } catch (caught) { if (uploadIsCurrent()) setError((caught as Error).message || "Repository upload failed."); } finally { if (uploadIsCurrent()) setUploading(false); }
   }, [activeThread, bootstrap, offline, repositoryId, user]);
 
   const startDictation = useCallback(async () => {
+    const dictationNavigation = navigationGenerationRef.current;
+    const dictationThread = activeThreadRef.current;
+    const dictationIsCurrent = () => (
+      navigationGenerationRef.current === dictationNavigation
+      && activeThreadRef.current === dictationThread
+      && activeRequestRef.current === null
+    );
     if (offline) { setError("You are offline. Dictation needs a server connection."); return; }
     if (!user || !bootstrap || !canDictate(bootstrap.features)) { setError("Dictation is unavailable for this account."); return; }
     if (bootstrap.assistant.tier === "free") { setError("Swico Free is text only. Switch to Swico Lite, Swico, or Swico Pro for voice."); return; }
     const permission = await Audio.requestPermissionsAsync();
+    if (!dictationIsCurrent()) return;
     if (!permission.granted) { setError("Microphone permission is required for dictation."); return; }
     const recording = new Audio.Recording();
     try {
       await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await recording.startAsync();
+      if (!dictationIsCurrent()) {
+        await recording.stopAndUnloadAsync().catch(() => undefined);
+        return;
+      }
       dictationRecordingRef.current = recording;
       const finish = async (cancelled: boolean) => {
         if (dictationRecordingRef.current !== recording) return;
@@ -690,13 +781,17 @@ export default function SwicoChatScreen() {
         if (!uri) return;
         if (!cancelled) {
           const result = await transcribeAudioUri(user, { uri, name: "recording.m4a", type: "audio/mp4" }, newSwicoRequestId(), newSwicoRequestId(), bootstrap.user.reply_language);
+          if (!dictationIsCurrent()) {
+            void FileSystem.deleteAsync(uri, { idempotent: true });
+            return;
+          }
           setDraft(value => `${value}${value ? " " : ""}${result.transcript}`);
           setDraftVoiceTurnId(result.voice_turn_id);
         }
         void FileSystem.deleteAsync(uri, { idempotent: true });
       };
       Alert.alert("Dictation", "Speak now, then press Stop.", [{ text: "Cancel", style: "cancel", onPress: () => void finish(true) }, { text: "Stop", onPress: () => void finish(false) }]);
-    } catch { setError("The microphone could not start."); }
+    } catch { if (dictationIsCurrent()) setError("The microphone could not start."); }
   }, [bootstrap, offline, user]);
 
   const openRealtimeVoice = useCallback(() => {
@@ -723,7 +818,13 @@ export default function SwicoChatScreen() {
       return;
     }
     const summary = `Attached: ${(original.attachments || []).map(item => item.name).join(", ")}`;
-    void send(original.content === summary ? "" : original.content, { requestId: original.request_id, inputMode: original.input_mode, voiceTurnId: original.voice_turn_id, attachments: original.attachments });
+    void send(original.content === summary ? "" : original.content, {
+      requestId: original.request_id,
+      inputMode: original.input_mode,
+      voiceTurnId: original.voice_turn_id,
+      attachments: original.attachments,
+      payloadOverride: submittedPayloadsRef.current.get(original.request_id),
+    });
   }, [messages, offline, send, streaming]);
 
   const submitFeedback = useCallback(async (message: Message, rating: "up" | "down") => {
@@ -756,8 +857,9 @@ export default function SwicoChatScreen() {
       : undefined;
     return { ...message, content: editedResponses[message.id] ?? message.content, sources: message.sources, provenance: provenanceEnabled ? message.provenance : undefined, quality };
   }), [bootstrap, editedResponses, logicalMessages]);
+  const pendingAttachments = attachments.filter(item => pendingAttachmentIdsRef.current.has(item.id));
   const latestEditableId = useMemo(() => bootstrap && bootstrap.features.web_message_edit === true ? latestEditableUserId(messages, streaming) : null, [bootstrap, messages, streaming]);
-  const sendable = hasSendableContent(draft, attachments, Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user?.uid || "", activeThread)), Boolean(bootstrap?.features.web_repository_chat));
+  const sendable = hasSendableContent(draft, pendingAttachments, Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user?.uid || "", activeThread)), Boolean(bootstrap?.features.web_repository_chat));
   const attachmentsEnabled = Boolean(bootstrap && canUseAttachments(bootstrap.features));
   const repositoryUploadEnabled = Boolean(bootstrap && canUploadRepository(bootstrap.features));
   const dictationEnabled = Boolean(bootstrap && canDictate(bootstrap.features));
@@ -793,8 +895,8 @@ export default function SwicoChatScreen() {
         {stream.phase === "queued" || stream.phase === "starting" ? <View style={styles.queueBanner}><Ionicons name="time-outline" color={t.accent} size={16} /><Text style={styles.queueText}>{stream.phase === "starting" ? "Starting..." : `Waiting · position ${stream.queuePosition ?? "—"}${stream.estimatedWaitSeconds ? ` · ~${stream.estimatedWaitSeconds}s` : ""}`}</Text></View> : null}
         {offline ? <View style={styles.offlineBanner}><Ionicons name="cloud-offline-outline" size={15} color={t.caramel} /><Text style={styles.offlineText}>Offline — reconnect to send, search, upload, or change settings.</Text></View> : null}
         {error ? <Pressable onPress={() => setError("")} style={styles.errorBanner}><Text style={styles.errorText}>{error}</Text></Pressable> : null}
-        {displayMessages.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>How can Swico help?</Text><Text style={styles.emptyText}>Ask a question, upload a document, or continue a conversation from the web.</Text><View style={styles.suggestions}>{["Explain something clearly", "Help me plan a project", "Summarize a document"].map(suggestion => <Pressable key={suggestion} disabled={offline} onPress={() => void send(suggestion)} style={styles.suggestion}><Text style={styles.suggestionText}>{suggestion}</Text><Ionicons name="arrow-up-outline" size={15} color={t.muted} /></Pressable>)}</View></View> : <><FlatList ref={listRef} data={displayMessages} keyExtractor={item => item.id} contentContainerStyle={styles.messages} onScrollToIndexFailed={({ index }) => listRef.current?.scrollToOffset({ offset: fallbackMessageOffset(index), animated: true })} onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent; const next = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 48; pinnedToBottomRef.current = next; setPinnedToBottom(next); }} scrollEventThrottle={100} renderItem={({ item }) => { const actions = assistantActionsEnabled(item, Boolean(bootstrap.features.web_answer_feedback), voiceReplyEnabled); return <MessageRow message={item} highlighted={item.id === highlightMessageId} retryTick={retryTick} editable={item.id === latestEditableId} assistantActions={actions} voiceState={voiceReplyStates[item.id] || "idle"} onRetry={() => retryMessage(item)} onCopy={() => void Clipboard.setStringAsync(item.content)} onShare={() => void Share.share({ message: item.content })} onDownload={() => void downloadResponse(item)} onOpenEditor={() => setEditorMessage(item)} onEditResponse={() => setEditorMessage(item)} onVoice={() => void playVoice(item)} onFeedback={rating => void submitFeedback(item, rating)} onContinue={() => void send(undefined, { continueId: item.id })} onRegenerate={() => { const original = messages.find(candidate => candidate.role === "user" && candidate.request_id === item.request_id); if (original) void send(original.content, { regenerateId: item.id }); }} onEdit={() => { if (bootstrap.features.web_message_edit === true) { setDraft(item.content); setEditTarget(item.id); } }} />; }} />{!pinnedToBottom ? <Pressable onPress={() => { pinnedToBottomRef.current = true; setPinnedToBottom(true); listRef.current?.scrollToEnd({ animated: true }); }} style={styles.scrollBottom}><Ionicons name="arrow-down" size={18} color={t.text} /></Pressable> : null}</>}
-        {attachments.length || repositoryId ? <View style={styles.attachmentBar}>{attachments.map(item => <View key={item.id} style={styles.chip}>{item.local_uri ? <Image source={{ uri: item.local_uri }} style={{ width: 28, height: 28, borderRadius: 5 }} /> : null}<View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired" : item.warnings?.[0] || "Ready"}</Text></View>{bootstrap.features.web_knowledge_library ? <Pressable onPress={() => void saveAttachmentToKnowledge(item.id)} accessibilityLabel="Save document to Knowledge Library"><Ionicons name="bookmark-outline" size={14} color={t.accent} /></Pressable> : null}<Pressable onPress={() => { setAttachments(value => value.filter(entry => entry.id !== item.id)); void deleteUpload(user, item.id); }}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{repositoryId ? <View style={styles.chip}><View><Text style={styles.chipText}>{repositoryMeta?.display_name || "Repository ready"}</Text><Text style={styles.attachmentMeta}>{repositoryMeta ? `${repositoryMeta.status} · ${repositoryMeta.file_count} files${repositoryMeta.languages?.length ? ` · ${repositoryMeta.languages.slice(0, 3).join(", ")}` : ""}` : "Ready"}</Text></View><Pressable onPress={() => void removeRepository()}><Ionicons name="close" size={14} color={t.text} /></Pressable></View> : null}</View> : null}
+        {displayMessages.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>How can Swico help?</Text><Text style={styles.emptyText}>Ask a question, upload a document, or continue a conversation from the web.</Text><View style={styles.suggestions}>{["Explain something clearly", "Help me plan a project", "Summarize a document"].map(suggestion => <Pressable key={suggestion} disabled={offline} onPress={() => void send(suggestion)} style={styles.suggestion}><Text style={styles.suggestionText}>{suggestion}</Text><Ionicons name="arrow-up-outline" size={15} color={t.muted} /></Pressable>)}</View></View> : <><FlatList ref={listRef} data={displayMessages} keyExtractor={item => item.id} contentContainerStyle={styles.messages} onScrollToIndexFailed={({ index }) => listRef.current?.scrollToOffset({ offset: fallbackMessageOffset(index), animated: true })} onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent; const next = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 48; pinnedToBottomRef.current = next; setPinnedToBottom(next); }} scrollEventThrottle={100} renderItem={({ item }) => { const actions = assistantActionsEnabled(item, Boolean(bootstrap.features.web_answer_feedback), voiceReplyEnabled); return <MessageRow message={item} highlighted={item.id === highlightMessageId} retryTick={retryTick} editable={item.id === latestEditableId} assistantActions={actions} voiceState={voiceReplyStates[item.id] || "idle"} onRetry={() => retryMessage(item)} onCopy={() => void Clipboard.setStringAsync(item.content)} onShare={() => void Share.share({ message: item.content })} onDownload={() => void downloadResponse(item)} onOpenEditor={() => setEditorMessage(item)} onEditResponse={() => setEditorMessage(item)} onVoice={() => void playVoice(item)} onFeedback={rating => void submitFeedback(item, rating)} onContinue={() => void send(undefined, { continueId: item.id })} onRegenerate={() => { const original = messages.find(candidate => candidate.role === "user" && candidate.request_id === item.request_id); if (original) { const prior = original.request_id ? submittedPayloadsRef.current.get(original.request_id) : undefined; void send(original.content, { regenerateId: item.id, attachments: original.attachments, payloadOverride: prior ? { ...prior, regenerate_message_id: item.id } : undefined }); } }} onEdit={() => { if (bootstrap.features.web_message_edit === true) { setDraft(item.content); setEditTarget(item.id); } }} />; }} />{!pinnedToBottom ? <Pressable onPress={() => { pinnedToBottomRef.current = true; setPinnedToBottom(true); listRef.current?.scrollToEnd({ animated: true }); }} style={styles.scrollBottom}><Ionicons name="arrow-down" size={18} color={t.text} /></Pressable> : null}</>}
+        {pendingAttachments.length || repositoryId ? <View style={styles.attachmentBar}>{pendingAttachments.map(item => <View key={item.id} style={styles.chip}>{item.local_uri ? <Image source={{ uri: item.local_uri }} style={{ width: 28, height: 28, borderRadius: 5 }} /> : null}<View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired — re-upload or remove" : item.warnings?.[0] || "Ready to send"}</Text></View>{bootstrap.features.web_knowledge_library ? <Pressable onPress={() => void saveAttachmentToKnowledge(item.id)} accessibilityLabel="Save document to Knowledge Library"><Ionicons name="bookmark-outline" size={14} color={t.accent} /></Pressable> : null}<Pressable onPress={() => { pendingAttachmentIdsRef.current.delete(item.id); setAttachments(value => value.filter(entry => entry.id !== item.id)); void deleteUpload(user, item.id); }}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{repositoryId ? <View style={styles.chip}><View><Text style={styles.chipText}>{repositoryMeta?.display_name || "Repository ready"}</Text><Text style={styles.attachmentMeta}>{repositoryMeta ? `${repositoryMeta.status} · ${repositoryMeta.file_count} files${repositoryMeta.languages?.length ? ` · ${repositoryMeta.languages.slice(0, 3).join(", ")}` : ""}` : "Ready"}</Text></View><Pressable onPress={() => void removeRepository()}><Ionicons name="close" size={14} color={t.text} /></Pressable></View> : null}</View> : null}
         <View style={[styles.composerShell, styles.composerSurface, { paddingBottom: Math.max(insets.bottom, 10) }]}>
           <View style={styles.composerTools}>{attachmentsEnabled ? <Pressable testID="swico-attachment-button" onPress={pickDocument} accessibilityLabel="Attach file"><Ionicons name="add-circle-outline" size={25} color={t.accent} /></Pressable> : null}{repositoryUploadEnabled ? <Pressable testID="swico-repository-button" onPress={pickRepository} accessibilityLabel="Attach repository"><Ionicons name="logo-github" size={21} color={t.accent} /></Pressable> : null}{dictationEnabled ? <Pressable testID="swico-dictation-button" onPress={() => void startDictation()} accessibilityLabel="Dictate"><Ionicons name="mic-outline" size={23} color={t.accent} /></Pressable> : null}<Pressable testID="swico-realtime-voice-button" disabled={!realtimeNativeAvailable} onPress={openRealtimeVoice} accessibilityLabel={realtimeNativeAvailable ? "Realtime voice" : realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."} style={!realtimeNativeAvailable ? styles.sendDisabled : undefined}><Ionicons name="radio-outline" size={21} color={realtimeNativeAvailable ? t.accent : t.muted} /></Pressable><Pressable testID="swico-tier-button" onPress={() => setTierModal(true)} style={styles.tierPill}><Text style={styles.tierPillText}>{bootstrap.assistant.tier_label}</Text><Ionicons name="chevron-down" size={14} color={t.accent} /></Pressable></View>
           {!realtimeNativeAvailable ? <Text style={styles.attachmentMeta}>{realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."}</Text> : null}
@@ -803,7 +905,7 @@ export default function SwicoChatScreen() {
           <Pressable testID="swico-send-button" accessibilityLabel={streaming ? "Stop generation" : "Send message"} onPress={() => streaming ? void stop() : void send()} disabled={offline || uploading || (!streaming && !sendable)} accessibilityState={{ disabled: offline || uploading || (!streaming && !sendable) }} style={[styles.sendButton, (offline || uploading || (!streaming && !sendable)) && styles.sendDisabled]}><Ionicons name={streaming ? "stop" : "arrow-up"} size={20} color={t.accentText} /></Pressable>
         </View>
       </KeyboardAvoidingView>
-      <Drawer visible={drawer} onClose={() => { setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; }} userName={bootstrap.user.name} userEmail={bootstrap.user.email} threads={threads} hasMore={hasMoreThreads} onLoadMore={() => void loadMoreThreads()} archived={archived} setArchived={value => { setArchived(value); void reloadThreads(value); }} active={activeThread} onSelect={chooseThread} onSelectSearch={chooseSearchResult} onNew={newChat} onActions={threadAction} search={search} setSearch={setSearch} results={searchResults} wallet={bootstrap.wallets?.chat || bootstrap.wallet} offline={offline} onBilling={() => { if (offline) { setError("You are offline. Reconnect before adding tokens."); return; } setBillingBucket("chat"); setBilling(true); setDrawer(false); }} onSettings={() => { setSettingsModal(true); setDrawer(false); }} onTheme={() => void setThemePreference(themePreference === "dark" ? "light" : "dark")} onLegal={setLegalPage} onSignOut={() => void signOutUser()} />
+      <Drawer visible={drawer} onClose={() => { setDrawer(false); clearSearch(); }} userName={bootstrap.user.name} userEmail={bootstrap.user.email} threads={threads} hasMore={hasMoreThreads} onLoadMore={() => void loadMoreThreads()} archived={archived} setArchived={value => { setArchived(value); void reloadThreads(value); }} active={activeThread} onSelect={chooseThread} onSelectSearch={chooseSearchResult} onNew={newChat} onActions={threadAction} search={search} setSearch={updateSearch} results={searchResults} wallet={bootstrap.wallets?.chat || bootstrap.wallet} offline={offline} onBilling={() => { if (offline) { setError("You are offline. Reconnect before adding tokens."); return; } setBillingBucket("chat"); setBilling(true); setDrawer(false); }} onSettings={() => { setSettingsModal(true); setDrawer(false); }} onTheme={() => void setThemePreference(themePreference === "dark" ? "light" : "dark")} onLegal={setLegalPage} onSignOut={() => void signOutUser()} />
       <TierModal visible={tierModal} onClose={() => setTierModal(false)} bootstrap={bootstrap} onChoose={async tier => { try { const assistant = await updateAssistant(user, tier); setBootstrap(value => value ? { ...value, assistant } : value); setTierModal(false); } catch (caught) { setError((caught as Error).message); } }} />
       <SwicoSettings visible={settingsModal} onClose={() => setSettingsModal(false)} user={user} bootstrap={bootstrap} onBootstrap={setBootstrap} offline={offline} onBilling={() => { if (!offline) { setBillingBucket("chat"); setBilling(true); } }} onLegal={setLegalPage} onArchived={() => { setSettingsModal(false); setArchived(true); setDrawer(true); void reloadThreads(true); }} />
       <SwicoBilling visible={billing} close={() => setBilling(false)} user={user} config={bootstrap.billing} initialBucket={billingBucket} offline={offline} refreshed={async () => { setBootstrap(await getBootstrap(user)); }} />

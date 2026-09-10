@@ -250,17 +250,33 @@ def extract_output_contract(message: str) -> OutputContract:
     ) or re.search(r"(ஐந்து)\s+.{0,20}வாக்கியங்களில்", text)
     if match:
         sentence_count = _number(match.group(1))
+    # Output-language mentions inside quoted examples or negated clauses are
+    # not script requirements. Keep the original text for all other format
+    # rules, but use a scoped view for this contract field.
+    script_text = re.sub(
+        r"(`[^`]*`|\"[^\"]*\"|'[^']*'|“[^”]*”|‘[^’]*’)",
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+    script_text = re.sub(
+        r"\b(?:do\s+not|don't|don’t|never|must\s+not|avoid)\b[^.!?;\n]*"
+        r"\b(?:reply|answer|respond|write|output|provide|give|use)\b[^.!?;\n]*"
+        r"\bTamil\b[^.!?;\n]*[.!?;]?",
+        " ",
+        script_text,
+        flags=re.IGNORECASE,
+    )
     required_script = None
     if (
-        re.search(r"\bTamil\b[^.\n]{0,40}\bsentences?\b", text, re.IGNORECASE)
+        re.search(r"\b(?:simple\s+)?Tamil\s+sentences\b", script_text, re.IGNORECASE)
         or re.search(
             r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
             r"[^.\n]{0,50}\bTamil(?!\s+nadu\b)(?:\s+Unicode)?(?:\s+script)?\b",
-            text,
+            script_text,
             re.IGNORECASE,
         )
-        or ("தமிழ்" in text and "வாக்கிய" in text)
-        or re.search(r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", text)
+        or ("தமிழ்" in script_text and "வாக்கிய" in script_text)
+        or re.search(r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", script_text)
     ):
         required_script = "tamil"
 

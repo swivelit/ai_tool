@@ -92,16 +92,24 @@ def _has_current_subject(text: str) -> bool:
 def validate_current_evidence(
     query: str,
     result: object,
+    *,
+    now: datetime | None = None,
 ) -> tuple[bool, dict[str, object] | None, str]:
     """Validate provider-supplied temporal evidence without guessing."""
+    clock = now or datetime.now(timezone.utc)
     result_items = result if isinstance(result, list) else [result]
-    if any(
-        isinstance(item, dict)
-        and (item.get("stale") is True or item.get("conflicting") is True)
-        for item in result_items
-    ):
+    dictionaries = [item for item in result_items if isinstance(item, dict)]
+    if any(item.get("stale") is True or item.get("conflicting") is True for item in dictionaries):
         return False, None, "evidence_stale_or_conflicting"
-    payload = next((item for item in result_items if isinstance(item, dict)), None)
+    claims = {
+        str(item.get(key)).strip()
+        for item in dictionaries
+        for key in ("claim", "officeholder", "current_value")
+        if str(item.get(key) or "").strip()
+    }
+    if len(claims) > 1:
+        return False, None, "evidence_stale_or_conflicting"
+    payload = dictionaries[0] if dictionaries else None
     if not payload:
         return False, None, "retrieval_failed"
     source_url = str(payload.get("url") or "").strip()
@@ -111,18 +119,45 @@ def validate_current_evidence(
     provenance = str(payload.get("provenance") or payload.get("source") or "").strip()
     if not (re.match(r"^https?://\S+$", source_url) and title and snippet):
         return False, None, "evidence_missing_provenance"
-    if not retrieved_at or not provenance or payload.get("temporal_support") is not True:
+    try:
+        retrieved = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
+        if retrieved.tzinfo is None:
+            retrieved = retrieved.replace(tzinfo=timezone.utc)
+        retrieved = retrieved.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False, None, "evidence_invalid_timestamp"
+    age_seconds = (clock.astimezone(timezone.utc) - retrieved).total_seconds()
+    if age_seconds < -300 or age_seconds > 86_400:
+        return False, None, "evidence_timestamp_out_of_range"
+    temporal_as_of = str(
+        payload.get("temporal_as_of") or payload.get("as_of") or ""
+    ).strip()
+    try:
+        claimed_date = date.fromisoformat(temporal_as_of)
+    except (TypeError, ValueError):
         return False, None, "evidence_missing_temporal_support"
-    if payload.get("relevant") is not True:
-        query_terms = {
-            term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
-            if term.casefold() not in {
-                "what", "who", "where", "when", "which", "the", "and", "today", "current",
-            }
+    freshness = resolve_freshness(query, now=clock)
+    if claimed_date.isoformat() != freshness.as_of:
+        return False, None, "evidence_temporal_scope_mismatch"
+    if (
+        not provenance
+        or payload.get("temporal_support") is not True
+        or payload.get("relevant") is False
+    ):
+        return False, None, "evidence_missing_temporal_support"
+    query_terms = {
+        term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
+        if term.casefold() not in {
+            "what", "who", "where", "when", "which", "the", "and", "today", "current",
         }
-        evidence_terms = set(re.findall(r"[A-Za-z]{3,}", f"{title} {snippet}".casefold()))
-        if not query_terms.intersection(evidence_terms):
-            return False, None, "evidence_not_relevant"
+    }
+    evidence_terms = set(re.findall(r"[A-Za-z]{3,}", f"{title} {snippet}".casefold()))
+    if "cm" in query_terms:
+        query_terms.update(("chief", "minister"))
+    if "tamilnadu" in query_terms:
+        query_terms.update(("tamil", "nadu"))
+    if not query_terms.intersection(evidence_terms):
+        return False, None, "evidence_not_relevant"
     return True, {
         "title": title[:256], "snippet": snippet[:4_000],
         "url": source_url[:2_000], "source": provenance[:128],
@@ -130,20 +165,45 @@ def validate_current_evidence(
     }, "grounded_current_evidence"
 
 
-def resolve_freshness(message: str, *, now: datetime | None = None) -> FreshnessDecision:
+def resolve_freshness(
+    message: str,
+    *,
+    context: str = "",
+    now: datetime | None = None,
+) -> FreshnessDecision:
     """Classify temporal scope without naming or guessing a current fact."""
     text = " ".join(str(message or "").split())
+    context_text = " ".join(str(context or "").split())
+    subject_text = f"{text} {context_text}".strip()
     clock = now or datetime.now(timezone.utc)
     as_of = _requested_date(text, clock)
-    if _HISTORICAL_RE.search(text):
-        return FreshnessDecision("historical", False, "historical_or_as_of_request", as_of)
+    historical = _HISTORICAL_RE.search(text)
     explicit_current = _EXPLICIT_CURRENT_RE.search(text)
     officeholder = _OFFICEHOLDER_RE.search(text)
-    if officeholder or _CURRENT_FACT_RE.search(text) or (
-        explicit_current and _has_current_subject(text)
-    ):
-        reason = "implicit_current_officeholder" if officeholder and not explicit_current else (
+    contextual_officeholder = bool(
+        context_text
+        and _OFFICEHOLDER_ROLE_RE.search(context_text)
+        and re.search(r"\b(?:holds?|it|they|them|incumbent|office)\b", text, re.IGNORECASE)
+    )
+    current_subject = _has_current_subject(subject_text)
+    current_signal = bool(
+        explicit_current or _CURRENT_FACT_RE.search(text)
+        or (officeholder and not historical)
+        or contextual_officeholder
+    )
+    # An explicit as-of/on/in date is historical even when it happens to be
+    # today's injected server date. Mixed questions still need fresh support
+    # for their current half.
+    if historical and not explicit_current and not contextual_officeholder:
+        return FreshnessDecision("historical", False, "historical_or_as_of_request", as_of)
+    if current_signal and (current_subject or officeholder or contextual_officeholder):
+        scope = "mixed" if historical else "current"
+        reason = "mixed_current_historical_request" if scope == "mixed" else (
+            "implicit_current_officeholder" if officeholder and not explicit_current else (
             "explicit_current_request" if explicit_current else "current_fact_request"
+            )
         )
-        return FreshnessDecision("current", True, reason, as_of)
+        return FreshnessDecision(scope, True, reason, as_of)
+    if historical:
+        return FreshnessDecision("historical", False, "historical_or_as_of_request", as_of)
     return FreshnessDecision("unspecified", False, "no_temporal_freshness_signal", as_of)

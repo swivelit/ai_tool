@@ -24,6 +24,11 @@ type ActiveRepository = ComposerRepository & {
   owner_uid: string;
   thread_id: string | null;
 }
+type SubmittedChatPayload = {
+  request_id: string; message: string; thread_id?: string; attachment_ids?: string[];
+  repository_id?: string; input_mode: InputMode; voice_turn_id?: string;
+  continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string;
+}
 
 function safeRepositoryFilename(value: string): string {
   const basename = value.replaceAll('\\', '/').split('/').at(-1) ?? ''
@@ -98,6 +103,7 @@ export function ChatPage() {
   const queryRef = useRef(query)
   const archivedRef = useRef(archived)
   const pendingAttachmentKeysRef = useRef(new Set<string>())
+  const submittedPayloadsRef = useRef(new Map<string, SubmittedChatPayload>())
   const [bootstrapError, setBootstrapError] = useState('')
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
@@ -372,7 +378,18 @@ export function ChatPage() {
     void loadBootstrap()
   }, [loadBootstrap, user])
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadThreads(true).catch(() => setError('Chat history could not be loaded.')) }, 250)
+    const navigationGeneration = navigationGenerationRef.current
+    const requestedArchived = archived
+    const requestedQuery = query.trim()
+    const timer = window.setTimeout(() => {
+      void loadThreads(true).catch(() => {
+        if (
+          navigationGenerationRef.current === navigationGeneration
+          && archivedRef.current === requestedArchived
+          && queryRef.current.trim() === requestedQuery
+        ) setError('Chat history could not be loaded.')
+      })
+    }, 250)
     return () => window.clearTimeout(timer)
   }, [archived, query, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -409,10 +426,17 @@ export function ChatPage() {
   }, [])
   useEffect(() => {
     if (!user || !active) { if (!streaming) { setMessages([]); clearActiveAttachments() }; return }
+    const navigationGeneration = navigationGenerationRef.current
+    const requestedThread = active
     const streamingThread = streamScopeRef.current?.threadId
       ?? streamState.assistant?.thread_id
     if (streaming && streamingThread === active) return
-    void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
+    void loadMessages(active).catch(() => {
+      if (
+        navigationGenerationRef.current === navigationGeneration
+        && activeRef.current === requestedThread
+      ) setError('Conversation could not be loaded.')
+    })
   }, [active, clearActiveAttachments, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!user || !active || streaming) return
@@ -445,11 +469,15 @@ export function ChatPage() {
     if (!attachments.some(item => item.status === 'ready')) return
     const removeExpiredAttachments = () => {
       const now = Date.now()
-      const expiredKeys = new Set(attachments
-        .filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
-        .map(item => 'local_id' in item ? item.local_id : item.id))
+      const expiredItems = attachments.filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
+      const expiredKeys = new Set(expiredItems.map(item => 'local_id' in item ? item.local_id : item.id))
       if (!expiredKeys.size) return
-      replaceActiveAttachments(attachments.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
+      replaceActiveAttachments(attachments.flatMap(item => {
+        const key = 'local_id' in item ? item.local_id : item.id
+        if (!expiredKeys.has(key)) return [item]
+        if (!pendingAttachmentKeysRef.current.has(key)) return []
+        return 'id' in item ? [{ ...item, status:'expired' as const }] : [item]
+      }))
     }
     removeExpiredAttachments()
     const timer = window.setInterval(removeExpiredAttachments, 1000)
@@ -508,7 +536,7 @@ export function ChatPage() {
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
     attachmentOverride?: MessageAttachment[], originOverride?: { inputMode: InputMode; voiceTurnId: string | null },
-    requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string },
+    requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string; payloadOverride?: SubmittedChatPayload },
   ) => {
     const navigationGeneration = navigationGenerationRef.current
     const transportAttemptId = crypto.randomUUID()
@@ -519,7 +547,30 @@ export function ChatPage() {
       && streamScopeRef.current?.requestId === nextRequestId
       && streamScopeRef.current?.transportAttemptId === transportAttemptId
     )
-    let selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
+    const sourceAttachments = attachmentOverride ?? attachments
+    const explicitAttachmentSelection = Boolean(
+      attachmentOverride || requestOptions?.editMessageId || requestOptions?.regenerateMessageId,
+    )
+    const expiredAttachments = sourceAttachments.filter(item => (
+      'expires_at' in item
+      && (new Date(item.expires_at).getTime() <= Date.now() || item.status === 'expired')
+    ))
+    const expiredPendingAttachments = expiredAttachments.filter(item => (
+      explicitAttachmentSelection || pendingAttachmentKeysRef.current.has(attachmentKey(item))
+    ))
+    let selectedAttachments = sourceAttachments.filter((item): item is ReadyAttachment => (
+      item.status === 'ready' && new Date(item.expires_at).getTime() > Date.now()
+    ))
+    if (expiredPendingAttachments.length) {
+      replaceActiveAttachments(attachments.map(item => (
+        'id' in item
+        && expiredPendingAttachments.some(expired => attachmentKey(expired) === attachmentKey(item))
+          ? { ...item, status:'expired' as const }
+          : item
+      )))
+      setError('An explicitly selected attachment expired. Remove it or upload it again before sending.')
+      return
+    }
     if (
       !user || !bootstrap || streaming
       || (!text.trim() && !selectedAttachments.length)
@@ -599,7 +650,27 @@ export function ChatPage() {
       && (!repository.expires_at
         || new Date(repository.expires_at).getTime() > Date.now())
     ) ? repository.id : null
+    const computedPayload: SubmittedChatPayload = {
+      request_id: nextRequestId,
+      message: providerText,
+      attachment_ids: selectedAttachments.map(item => item.id),
+      input_mode: origin.inputMode,
+      ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
+      ...(threadId ? { thread_id: threadId } : {}),
+      ...(requestRepositoryId ? { repository_id: requestRepositoryId } : {}),
+      ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
+      ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
+      ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
+    }
+    const payload: SubmittedChatPayload = requestOptions?.payloadOverride
+      ? { ...requestOptions.payloadOverride, request_id: nextRequestId }
+      : computedPayload
+    providerText = payload.message
+    selectedAttachments = sourceAttachments.filter((item): item is ReadyAttachment => (
+      'id' in item && payload.attachment_ids?.includes(item.id) === true
+    ))
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
+    submittedPayloadsRef.current.set(nextRequestId, payload)
     if (!existingUser && !revisionTarget && !requestOptions?.continueMessageId) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: isReplyLanguage(bootstrap.user.reply_language) ? bootstrap.user.reply_language : 'en' }
@@ -614,18 +685,7 @@ export function ChatPage() {
     dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '', tier: bootstrap.assistant.tier, tierLabel: bootstrap.assistant.tier_label })
     const abort = new AbortController(); setController(abort)
     try {
-      await streamChat(user, {
-        request_id: nextRequestId,
-        message: providerText,
-        attachment_ids: selectedAttachments.map(item => item.id),
-        input_mode: origin.inputMode,
-        ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
-        ...(threadId ? { thread_id: threadId } : {}),
-        ...(requestRepositoryId ? { repository_id: requestRepositoryId } : {}),
-        ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
-        ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
-        ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
-      }, event => {
+      await streamChat(user, payload, event => {
         const scope = streamScopeRef.current
         if (
           !scope
@@ -794,6 +854,8 @@ export function ChatPage() {
     const retryText = original.attachments?.length && original.content === summary ? '' : original.content
     void send(retryText, original.thread_id || active, original.request_id, original.attachments, {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
+    }, {
+      payloadOverride: submittedPayloadsRef.current.get(original.request_id),
     })
   }
   const continueResponse = (message: Message) => {
@@ -908,8 +970,23 @@ export function ChatPage() {
       }
       pendingAttachmentKeysRef.current.add(localId)
       setAttachments(value => [...value, pending])
-      void uploadDocument(user, file, progress => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item)))
+      const uploadNavigation = navigationGenerationRef.current
+      const uploadThread = activeRef.current
+      const uploadIsCurrent = () => (
+        navigationGenerationRef.current === uploadNavigation
+        && activeRef.current === uploadThread
+        && userUidRef.current === user.uid
+      )
+      void uploadDocument(user, file, progress => {
+        if (!uploadIsCurrent()) return
+        setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item))
+      })
         .then(upload => {
+          if (!uploadIsCurrent()) {
+            pendingAttachmentKeysRef.current.delete(localId)
+            void deleteUpload(user, upload.id).catch(() => undefined)
+            return
+          }
           if (removedLocalUploads.current.delete(localId)) {
             pendingAttachmentKeysRef.current.delete(localId)
             void deleteUpload(user, upload.id).catch(() => undefined)
@@ -920,8 +997,11 @@ export function ChatPage() {
           setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
             ? { ...upload, preview_url:item.preview_url ?? upload.preview_url } : item))
         })
-        .catch(caught => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
-          ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item)))
+        .catch(caught => {
+          if (!uploadIsCurrent()) return
+          setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
+            ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item))
+        })
     }
   }
   const removeAttachment = (attachment: ComposerAttachment) => {
@@ -1003,11 +1083,23 @@ export function ChatPage() {
     }
     setError('')
     setRepository(pending)
+    const uploadNavigation = navigationGenerationRef.current
+    const uploadThread = activeRef.current
+    const uploadIsCurrent = () => (
+      navigationGenerationRef.current === uploadNavigation
+      && activeRef.current === uploadThread
+      && userUidRef.current === ownerUid
+    )
     void uploadRepository(user, file, repositoryId, progress => {
+      if (!uploadIsCurrent()) return
       setRepository(value => value?.id === repositoryId
         ? { ...value, progress:Math.min(100, Math.max(0, progress)) }
         : value)
     }).then((snapshot: RepositorySnapshot) => {
+      if (!uploadIsCurrent()) {
+        void deleteRepository(user, snapshot.id).catch(() => undefined)
+        return
+      }
       if (removedRepositoryUploads.current.delete(repositoryId)) {
         void deleteRepository(user, snapshot.id).catch(() => undefined)
         return
@@ -1033,7 +1125,7 @@ export function ChatPage() {
         })
       }
     }).catch(caught => {
-      if (userUidRef.current !== ownerUid) return
+      if (!uploadIsCurrent()) return
       const message = repositoryUploadError(caught)
       setError(message)
       setRepository(value => value?.id !== repositoryId ? value
@@ -1075,19 +1167,29 @@ export function ChatPage() {
   const closeSettings = () => { setSettings(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
   const voiceTurnDone = useCallback((turn: VoiceTurnDone) => {
     if (turn.completion_status !== 'complete') return
+    const navigationGeneration = navigationGenerationRef.current
     voiceThreadRef.current = turn.thread_id
     activeRef.current = turn.thread_id
     setActive(turn.thread_id)
     void Promise.all([loadMessages(turn.thread_id), loadThreads(true), refreshWallet()])
-      .catch(() => setError('The Voice turn was saved, but chat history could not be refreshed yet.'))
+      .catch(() => {
+        if (navigationGenerationRef.current === navigationGeneration && activeRef.current === turn.thread_id) {
+          setError('The Voice turn was saved, but chat history could not be refreshed yet.')
+        }
+      })
   }, [loadMessages, loadThreads, refreshWallet])
   const closeVoiceMode = useCallback(() => {
+    const navigationGeneration = navigationGenerationRef.current
     setVoiceMode(false)
     const authoritativeThread = voiceThreadRef.current ?? active
     if (authoritativeThread) {
       activeRef.current = authoritativeThread
       setActive(authoritativeThread)
-      void loadMessages(authoritativeThread).catch(() => setError('Voice messages were saved, but the final refresh failed.'))
+      void loadMessages(authoritativeThread).catch(() => {
+        if (navigationGenerationRef.current === navigationGeneration && activeRef.current === authoritativeThread) {
+          setError('Voice messages were saved, but the final refresh failed.')
+        }
+      })
     }
     void loadThreads(true).catch(() => undefined)
     void refreshWallet().catch(() => undefined)
@@ -1119,7 +1221,7 @@ export function ChatPage() {
       <div className={emptyChat ? 'empty-chat-home' : undefined}>
         {emptyChat && <div className="empty-chat-welcome"><h1 data-testid="empty-chat-greeting">{emptyGreeting}</h1></div>}
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
-        attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        attachments={attachments} pendingAttachments={attachments.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}
         repositoryChatEnabled={Boolean(bootstrap.features.web_repository_chat)}

@@ -338,7 +338,7 @@ def explicit_web_reply_language(message: str) -> str | None:
     for pattern in (_TRANSLATE_REPLY_LANGUAGE_RE, _OUTPUT_REPLY_LANGUAGE_RE):
         for match in pattern.finditer(unquoted):
             before = unquoted[max(0, match.start() - 36):match.start()].lower()
-            before = re.split(r"[;\n]", before)[-1]
+            before = re.split(r"[;.!?\n]", before)[-1]
             if re.search(r"\b(?:do\s+not|don['’]?t|never|must\s+not|avoid)\b", before):
                 continue
             language = normalize_web_reply_language(match.group(1))

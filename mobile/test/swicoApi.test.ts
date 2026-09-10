@@ -132,11 +132,42 @@ describe("canonical Swico mobile API client", () => {
     expect(source).toContain("navigationGenerationRef.current");
     expect(source).toContain("transportAttemptRef.current");
     expect(source).toContain("if (!isCurrentTransport()) return;");
-    expect(source).toContain("activeThreadRef.current !== threadId");
     expect(source).toContain("pendingAttachmentIdsRef");
-    expect(source).toContain("explicitlyRequestsDocument");
     expect(source).toContain('item.role === "user" && item.request_id === id');
     expect(source).toContain("onAccepted: () => {");
+  });
+
+  it("rejects deferred callbacks after navigation using the production scope guard", async () => {
+    const { captureSwicoScope, isSwicoScopeCurrent } = await import("../lib/swicoRequestScope");
+    const scope = captureSwicoScope(4, "transport-a", "request-a", "thread-a");
+    expect(isSwicoScopeCurrent(scope, { navigationGeneration: 5, transportAttemptId: "transport-a", requestId: "request-a", threadId: "thread-a" })).toBe(false);
+    expect(isSwicoScopeCurrent(scope, { navigationGeneration: 4, transportAttemptId: "transport-b", requestId: "request-a", threadId: "thread-a" })).toBe(false);
+    expect(isSwicoScopeCurrent(scope, { navigationGeneration: 4, transportAttemptId: "transport-a", requestId: "request-a", threadId: "thread-a" })).toBe(true);
+  });
+
+  it("keeps thread-list and message-history refreshes independent", async () => {
+    const {
+      captureSwicoHistoryScope,
+      isSwicoHistoryScopeCurrent,
+    } = await import("../lib/swicoRequestScope");
+    const threads = captureSwicoHistoryScope("threads", 2, null, false);
+    const messages = captureSwicoHistoryScope("messages", 2, "thread-a", false);
+
+    expect(isSwicoHistoryScopeCurrent(threads, {
+      generation: 2,
+      activeThreadId: "thread-b",
+      archived: false,
+    })).toBe(true);
+    expect(isSwicoHistoryScopeCurrent(messages, {
+      generation: 2,
+      activeThreadId: "thread-a",
+      archived: false,
+    })).toBe(true);
+    expect(isSwicoHistoryScopeCurrent(messages, {
+      generation: 2,
+      activeThreadId: "thread-b",
+      archived: false,
+    })).toBe(false);
   });
 
   it("keeps parity metadata and feature-gated actions in the production screen", async () => {
