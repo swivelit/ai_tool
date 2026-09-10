@@ -1019,6 +1019,45 @@ it('rejects unsupported documents before upload', async () => {
   expect(uploadDocument).not.toHaveBeenCalled()
 })
 
+it('rejects a dropped upload during first-thread assignment without leaving the composer busy', async () => {
+  mockApi()
+  const streamGate = deferred<void>()
+  const submitted: unknown[] = []
+  vi.mocked(streamChat).mockImplementation(async (_user, payload, onEvent) => {
+    submitted.push(payload)
+    if (submitted.length === 1) {
+      onEvent({ event:'thread', data:{ thread_id:'drop-assigned-thread' } })
+      onEvent({ event:'done', data:{ message_id:'drop-answer', request_id:'drop-request' } })
+      await streamGate.promise
+    }
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes('/drop-assigned-thread/messages')) return { items:[{
+      id:'drop-answer', thread_id:'drop-assigned-thread', role:'assistant', content:'First answer',
+      request_id:'drop-request', status:'complete', attachments:[],
+    }] } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(textbox, 'First request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  const dropTarget = screen.getByTestId('conversation')
+  fireEvent.drop(dropTarget, {
+    dataTransfer:{ types:['Files'], files:[new File(['late'], 'late.pdf', { type:'application/pdf' })] },
+  })
+  expect(uploadDocument).not.toHaveBeenCalled()
+  await act(async () => { streamGate.resolve(undefined); await streamGate.promise })
+  expect(await screen.findByText('First answer')).toBeInTheDocument()
+  await userEvent.type(textbox, 'Second request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(screen.queryByText(/Uploading/)).not.toBeInTheDocument()
+})
+
 it('accepts a file dropped over the main chat area and prevents send while pending', async () => {
   mockApi(); vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
   render(<ChatPage />)

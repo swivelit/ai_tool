@@ -292,6 +292,21 @@ def extract_output_contract(message: str) -> OutputContract:
         r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", script_text
     ):
         required_script = "tamil"
+    # A later transformation target supersedes an earlier whole-answer Tamil
+    # instruction. The target language is resolved separately, but removing
+    # this stale script requirement here keeps the final contract consistent
+    # for Tanglish and other supported languages too.
+    if required_script == "tamil" and re.search(
+        r"\btranslate(?:\s+(?:it|this|that|the\s+answer|the\s+result))?\b[^.!?;\n]{0,80}\b"
+        r"(?:to|into|in)\s+(?:English|Tanglish|Hindi|Bengali|Telugu|Kannada|Malayalam|"
+        r"Marathi|Gujarati|Punjabi|Odia|Oriya)\b|"
+        r"\b(?:explain|describe|answer|respond|write)\b[^.!?;\n]{0,50}\b"
+        r"in\s+(?:English|Tanglish|Hindi|Bengali|Telugu|Kannada|Malayalam|Marathi|"
+        r"Gujarati|Punjabi|Odia|Oriya)\b",
+        script_text,
+        re.IGNORECASE,
+    ):
+        required_script = None
 
     question_count = None
     match = re.search(

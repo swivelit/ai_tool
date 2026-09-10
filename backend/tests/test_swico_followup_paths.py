@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
 from app.ai.freshness import resolve_freshness, validate_current_evidence
 from app.ai.language import explicit_web_reply_language, resolve_web_reply_language
 from app.ai.types import AIProviderResponse
@@ -89,6 +91,57 @@ def test_general_role_explanation_is_not_current_officeholder_data():
     assert decision.requires_fresh_evidence is False
 
 
+def test_tamil_and_tanglish_current_officeholder_questions_are_freshness_gated():
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    for message in (
+        "தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?",
+        "Tamil Nadu la ippo CM yaaru?",
+    ):
+        decision = resolve_freshness(message, now=clock)
+        assert decision.scope == "current"
+        assert decision.requires_fresh_evidence is True
+
+
+def test_prepared_tamil_and_tanglish_current_questions_are_blocked_without_search():
+    user = create_test_user("freshness-localized", "freshness-localized@example.com")
+    _fund(int(user.id))
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    for message, language in (
+        ("தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?", "ta"),
+        ("Tamil Nadu la ippo CM yaaru?", "tanglish"),
+    ):
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language=language, now=clock,
+        )
+        assert prepared.ai_request.metadata["freshness_required"] is True
+        assert prepared.route.provider == "blocked"
+        assert prepared.optimization is not None
+        assert prepared.optimization.cache_eligible is False
+
+
+@pytest.mark.parametrize(
+    ("message", "language"),
+    (
+        ("தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?", "ta"),
+        ("Tamil Nadu la ippo CM yaaru?", "tanglish"),
+    ),
+)
+def test_current_tamil_questions_use_localized_unavailable_endpoint_response(monkeypatch, client, message, language):
+    user = create_test_user(f"freshness-endpoint-{language}", f"freshness-endpoint-{language}@example.com")
+    _fund(int(user.id))
+    monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "false")
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers(f"freshness-endpoint-{language}", f"freshness-endpoint-{language}@example.com"),
+        json={"request_id": str(uuid4()), "message": message, "reply_language": language},
+    )
+    assert response.status_code == 200
+    text = _sse_text(response)
+    assert text.strip()
+    assert "Example" not in text
+
+
 def test_prepared_mixed_scope_and_timeless_role_share_freshness_cache_policy():
     user = create_test_user("freshness-mixed-prepared", "freshness-mixed-prepared@example.com")
     _fund(int(user.id))
@@ -123,12 +176,14 @@ def test_current_evidence_matches_role_and_ignores_polite_instruction_words():
         "temporal_as_of": "2026-09-10", "relevant": True,
         "retrieved_at": fixed.isoformat(),
     }
-    governor = {**base, "title": "Tamil Nadu Governor", "snippet": "The Governor of Tamil Nadu oversees the state."}
-    prime_minister = {**base, "title": "Prime Minister of India", "snippet": "The Prime Minister is the current head of the Union government."}
+    governor = {**base, "title": "Tamil Nadu Governor", "snippet": "The Governor of Tamil Nadu is Example Governor."}
+    prime_minister = {**base, "title": "Prime Minister of India", "snippet": "Example PM is the current Prime Minister of India.", "officeholder": "Example PM"}
     assert validate_current_evidence("Please identify the CM of Tamil Nadu", governor, now=fixed)[0] is False
     assert validate_current_evidence("Please identify the PM of India", prime_minister, now=fixed)[0] is True
     wrong_state = {**base, "title": "Kerala Chief Minister", "snippet": "The Chief Minister of Kerala is Example Person."}
     assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", wrong_state, now=fixed)[0] is False
+    role_definition = {**base, "title": "Tamil Nadu Chief Minister", "snippet": "The Chief Minister of Tamil Nadu leads the elected state government."}
+    assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", role_definition, now=fixed)[0] is False
 
 
 def test_language_resolution_ignores_quotes_negation_and_subject_names():
@@ -168,6 +223,41 @@ def test_superseded_or_discussed_tamil_does_not_conflict_with_english_contract()
             contract,
         )
         assert all(check.status == "passed" for check in checks)
+
+
+def test_resolved_non_english_targets_replace_superseded_tamil_script_contracts():
+    cases = (
+        ("Reply in Tamil. Translate it to Tanglish.", "tanglish", "Tamil Nadu pathi oru short explanation."),
+        ("Reply in Tamil. Explain it in Hindi.", "hi", "तमिलनाडु के बारे में यह एक संक्षिप्त विवरण है।"),
+        ("Reply in Tamil. Translate it to English.", "en", "This is an English explanation."),
+        ("Reply in Tamil.", "ta", "இது தமிழ் பதில்."),
+    )
+    for message, expected_language, answer in cases:
+        resolved = resolve_web_reply_language("ta", message)
+        assert resolved == expected_language
+        contract = apply_reply_language_contract(extract_output_contract(message), resolved)
+        checks = validate_output_contract(answer, contract)
+        assert all(check.status == "passed" for check in checks)
+
+
+def test_prepared_non_english_language_contract_reaches_provider_and_validation():
+    user = create_test_user("language-non-english", "language-non-english@example.com")
+    _fund(int(user.id))
+    cases = (
+        ("Reply in Tamil. Translate it to Tanglish.", "tanglish", "Tamil Nadu pathi oru short explanation."),
+        ("Reply in Tamil. Explain it in Hindi.", "hi", "तमिलनाडु के बारे में यह एक संक्षिप्त विवरण है।"),
+    )
+    for message, expected_language, answer in cases:
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language="ta",
+        )
+        assert prepared.reply_language == expected_language
+        contract = OutputContract.from_metadata(prepared.ai_request.metadata["output_contract"])
+        assert all(check.status == "passed" for check in validate_output_contract(answer, contract))
+        assert any(expected_language.title() in str(item.get("content") or "")
+                   for item in prepared.ai_request.metadata["provider_messages"]
+                   if isinstance(item, dict))
 
 
 def test_prepared_language_contract_uses_the_final_english_instruction():
@@ -513,7 +603,8 @@ def test_current_request_uses_validated_retrieval_in_prepared_turn(monkeypatch):
             enabled=True,
             results=[{
                 "title": "Tamil Nadu Chief Minister",
-                "snippet": "The current chief minister is supported by a dated official source.",
+                "snippet": "Example Person is the current Chief Minister of Tamil Nadu.",
+                "officeholder": "Example Person",
                 "source": "official-government",
                 "provenance": "official-government",
                 "url": "https://example.test/tamil-nadu-chief-minister",

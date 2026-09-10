@@ -231,6 +231,17 @@ describe("canonical Swico mobile API client", () => {
     expect(controller.isBusy).toBe(false);
   });
 
+  it("keeps an admitted transport owner unchanged when preparation admission is denied", async () => {
+    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const controller = new SwicoBusyOperationController();
+    const requestOwner = { requestId: "admitted-request", transportId: "admitted-transport" };
+    const admitted = controller.tryBegin(0);
+    expect(admitted).not.toBeNull();
+    expect(controller.tryBegin(0)).toBeNull();
+    expect(requestOwner).toEqual({ requestId: "admitted-request", transportId: "admitted-transport" });
+    expect(controller.finish(admitted!)).toBe(true);
+  });
+
   it("does not restore a deliberately detached file when deferred history resolves", async () => {
     const { detachSwicoAttachment, mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
     const attachment = { id: "removed-a", name: "a.pdf", media_type: "application/pdf", size_bytes: 4, created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-10T00:10:00Z", status: "ready" as const, warnings: [] };
@@ -244,6 +255,26 @@ describe("canonical Swico mobile API client", () => {
     expect(mergeSwicoHistoryAttachments([attachment], afterRemoval, pending, 5, detached)).toEqual([]);
     expect(pending.has(attachment.id)).toBe(false);
     expect(detached.has(attachment.id)).toBe(true);
+  });
+
+  it("rechecks authoritative capacity after history wins a deferred upload", async () => {
+    const { appendWithinSwicoAttachmentCapacity, mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
+    const makeAttachment = (id: string, size = 4) => ({
+      id, name: `${id}.pdf`, media_type: "application/pdf", size_bytes: size,
+      created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-11T00:10:00Z",
+      status: "ready" as const, warnings: [],
+    });
+    const current = ["a", "b", "c", "d"].map(id => makeAttachment(id));
+    const history = Promise.resolve({ items: [makeAttachment("e")] });
+    const restored = await history;
+    const limits = { max_files_per_message: 5, max_total_bytes: 100, image_max_count: 4 };
+    const authoritative = mergeSwicoHistoryAttachments(
+      restored.items, current, new Set(current.map(item => item.id)), 5, new Set(), limits,
+    );
+    expect(authoritative).toHaveLength(5);
+    const completedUpload = appendWithinSwicoAttachmentCapacity(authoritative, makeAttachment("f"), limits);
+    expect(completedUpload.error).toMatch(/up to 5 files/i);
+    expect(completedUpload.attachments).toHaveLength(5);
   });
 
   it("normalizes regeneration to one target even when the historical fallback has an active edit", async () => {

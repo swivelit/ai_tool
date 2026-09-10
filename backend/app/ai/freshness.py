@@ -43,10 +43,24 @@ _CURRENT_FACT_RE = re.compile(
     r"weather|score\s+today)\b",
     re.IGNORECASE,
 )
+_TAMIL_OFFICEHOLDER_RE = re.compile(
+    r"(?:முதலமைச்சர்|பிரதமர்|ஆளுநர்).*(?:யார்|தற்போதைய|இப்போது|இன்றைய)|"
+    r"(?:யார்|தற்போதைய|இப்போது|இன்றைய).*(?:முதலமைச்சர்|பிரதமர்|ஆளுநர்)",
+    re.IGNORECASE,
+)
+_TANGLISH_OFFICEHOLDER_RE = re.compile(
+    r"\b(?:cm|chief\s+minister|pm|prime\s+minister|governor)\b"
+    r".*\b(?:yaar|yaaru|who|ippo|ippa|current|present|latest)\b|"
+    r"\b(?:yaar|yaaru|who|ippo|ippa|current|present|latest)\b.*"
+    r"\b(?:cm|chief\s+minister|pm|prime\s+minister|governor)\b",
+    re.IGNORECASE,
+)
 
 
 def _has_officeholder_subject(text: str) -> bool:
     """Recognize identifying a role, not merely discussing that role."""
+    if _TAMIL_OFFICEHOLDER_RE.search(text) or _TANGLISH_OFFICEHOLDER_RE.search(text):
+        return True
     if _OFFICEHOLDER_RE.search(text):
         return True
     if not _OFFICEHOLDER_ROLE_RE.search(text):
@@ -243,6 +257,28 @@ def validate_current_evidence(
         entity_terms = _requested_entity_terms(query)
         if entity_terms and not entity_terms.issubset(evidence_terms):
             return False, None, "evidence_not_relevant"
+        answer_value = next(
+            (str(payload.get(key) or "").strip() for key in ("officeholder", "current_value", "claim")
+             if str(payload.get(key) or "").strip()),
+            "",
+        )
+        if not answer_value:
+            return False, None, "evidence_missing_answer_value"
+        value_terms = _normalized_terms(answer_value)
+        if not value_terms or not value_terms.issubset(evidence_terms):
+            return False, None, "evidence_missing_answer_value"
+        support_clauses = re.split(r"[.!?;\n]+", f"{title} {snippet}")
+        if not any(
+            value_terms.issubset(_normalized_terms(clause))
+            and (not entity_terms or entity_terms.issubset(_normalized_terms(clause)))
+            and (
+                any(role in clause.casefold() for role in expected_roles)
+                or ("cm" in role_terms and bool(re.search(r"\b(?:cm|chief\s+minister)\b", clause, re.I)))
+                or ("pm" in role_terms and bool(re.search(r"\b(?:pm|prime\s+minister)\b", clause, re.I)))
+            )
+            for clause in support_clauses
+        ):
+            return False, None, "evidence_claim_not_supported"
         subject_terms = {
             term for term in query_terms
             if term not in {"please", "identify", "name", "tell", "me", "could", "you", "who", "what", "is", "the", "of", "current", "latest", "chief", "prime", "minister", "president", "governor", "mayor", "chancellor", "tamilnadu", "tamil", "nadu", "cm", "pm"}

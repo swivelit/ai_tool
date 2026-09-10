@@ -41,7 +41,7 @@ import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadReposito
 import { captureSwicoHistoryScope, captureSwicoScope, isSwicoHistoryScopeCurrent, isSwicoScopeCurrent, type SwicoRequestScope } from "@/lib/swicoRequestScope";
 import { SwicoBusyOperationController, type SwicoBusyOperation } from "@/lib/swicoBusyOperation";
 import { buildRegeneratePayload, normalizeSwicoMutationOptions } from "@/lib/swicoRequestPayload";
-import { detachSwicoAttachment, expiredExplicitAttachments, mergeSwicoHistoryAttachments } from "@/lib/swicoAttachmentState";
+import { appendWithinSwicoAttachmentCapacity, detachSwicoAttachment, expiredExplicitAttachments, mergeSwicoHistoryAttachments } from "@/lib/swicoAttachmentState";
 
 function nowIso() { return new Date().toISOString(); }
 function makeUserMessage(text: string, requestId: string, threadId: string, attachments: Attachment[] = []) : Message {
@@ -168,9 +168,14 @@ export default function SwicoChatScreen() {
     // the merge even when expired so the composer can offer re-upload/remove.
     const current = attachmentsRef.current.filter(item => pendingAttachmentIdsRef.current.has(item.id));
     if (!isSwicoHistoryScopeCurrent(scope, { generation: messageHistoryGenerationRef.current, activeThreadId: activeThreadRef.current, archived: archivedRef.current })) return;
-    setAttachments(mergeSwicoHistoryAttachments([...restored.values()], current, pendingAttachmentIdsRef.current, 5, detachedIds));
+    const merged = mergeSwicoHistoryAttachments(
+      [...restored.values()], current, pendingAttachmentIdsRef.current, 5, detachedIds,
+      bootstrap?.uploads,
+    );
+    attachmentsRef.current = merged;
+    setAttachments(merged);
     if (!pendingScrollMessageId) setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
-  }, [pendingScrollMessageId, user]);
+  }, [bootstrap?.uploads, pendingScrollMessageId, user]);
 
   const loadWorkspace = useCallback(async () => {
     if (!user) return;
@@ -415,21 +420,20 @@ export default function SwicoChatScreen() {
       return;
     }
     const configuredBootstrap = bootstrap!;
+    let preparationOperation: SwicoBusyOperation | null = null;
+    if (needsPreparation) {
+      preparationOperation = beginBusyOperation(navigationGeneration);
+      if (!preparationOperation) return;
+    }
     transportAttemptRef.current = transportAttemptId;
     activeRequestRef.current = id;
     if (needsPreparation) {
-      const preparationOperation = beginBusyOperation(navigationGeneration);
-      if (!preparationOperation) {
-        activeRequestRef.current = null;
-        transportAttemptRef.current = null;
-        return;
-      }
       setError("Preparing large pasted text…");
       try {
         const virtual = await uploadText(user, rawText, longInputMode) as Attachment;
         if (!isCurrentTransport()) {
           await deleteUpload(user, virtual.id).catch(() => undefined);
-          finishBusyOperation(preparationOperation);
+          finishBusyOperation(preparationOperation!);
           return;
         }
         selectedAttachments = [...selectedAttachments, virtual];
@@ -444,7 +448,7 @@ export default function SwicoChatScreen() {
         activeRequestRef.current = null;
         transportAttemptRef.current = null;
         return;
-      } finally { finishBusyOperation(preparationOperation); }
+      } finally { finishBusyOperation(preparationOperation!); }
     }
     const computedPayload: ChatRequestPayload = {
       request_id: id, message: providerText, ...(threadId && threadId !== "new-thread" ? { thread_id: threadId } : {}),
@@ -726,7 +730,7 @@ export default function SwicoChatScreen() {
       const extension = `.${file.name.split(".").pop()?.toLowerCase() || ""}`;
       const isImage = String(file.mimeType || "").startsWith("image/");
       const size = Number(file.size || 0);
-      const currentFiles = attachments.filter(item => item.status === "ready");
+      const currentFiles = attachmentsRef.current.filter(item => item.status === "ready");
       const currentBytes = currentFiles.reduce((sum, item) => sum + item.size_bytes, 0);
       const currentImages = currentFiles.filter(item => item.media_type.startsWith("image/")).length;
       const perFileLimit = isImage ? (limits.image_max_file_bytes || limits.max_file_bytes) : limits.max_file_bytes;
@@ -742,11 +746,25 @@ export default function SwicoChatScreen() {
         await deleteUpload(user, (attachment as Attachment).id).catch(() => undefined);
         return;
       }
+      const admitted = appendWithinSwicoAttachmentCapacity(
+        attachmentsRef.current,
+        attachment as Attachment,
+        limits,
+      );
+      if (admitted.error) {
+        await deleteUpload(user, (attachment as Attachment).id).catch(() => undefined);
+        setError(admitted.error);
+        return;
+      }
       pendingAttachmentIdsRef.current.add((attachment as Attachment).id);
-      setAttachments(value => [...value, { ...(attachment as Attachment), local_uri: isImage ? file.uri : undefined }]);
+      const nextAttachments = admitted.attachments.map(item => item.id === (attachment as Attachment).id
+        ? { ...item, local_uri: isImage ? file.uri : undefined }
+        : item);
+      attachmentsRef.current = nextAttachments;
+      setAttachments(nextAttachments);
     } catch (caught) { if (uploadIsCurrent()) setError((caught as Error).message || "Upload failed."); }
     finally { if (busyOperation) finishBusyOperation(busyOperation); }
-  }, [attachments, bootstrap, offline, user]);
+  }, [bootstrap, offline, user]);
 
   const removeRepository = useCallback(async () => {
     if (!repositoryId) return;

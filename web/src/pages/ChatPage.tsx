@@ -955,6 +955,13 @@ export function ChatPage() {
   }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
+    // The chooser is disabled while a response is streaming. Keep drag/drop
+    // on the same admission policy so a file cannot be stranded when the
+    // first response assigns its server thread.
+    if (streaming) {
+      setError('Finish the current response before adding an attachment.')
+      return
+    }
     const limits = bootstrap.uploads
     const usable = attachments.filter(item => item.status !== 'expired' && item.status !== 'unavailable' && item.status !== 'error')
     let count = usable.length
