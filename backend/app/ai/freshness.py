@@ -46,13 +46,43 @@ _CURRENT_FACT_RE = re.compile(
 
 
 def _has_officeholder_subject(text: str) -> bool:
-    """Recognize a role question even when a date follows the subject."""
+    """Recognize identifying a role, not merely discussing that role."""
     if _OFFICEHOLDER_RE.search(text):
         return True
-    return bool(
-        _OFFICEHOLDER_ROLE_RE.search(text)
-        and re.search(r"\b(?:of|in)\b", text, re.IGNORECASE)
+    if not _OFFICEHOLDER_ROLE_RE.search(text):
+        return False
+    if re.search(
+        r"\b(?:who|name|identify|appointed|holds?|incumbent|officeholder|current)\b",
+        text, re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:explain|role|duties|responsibilities|constitution|meaning)\b",
+        text, re.IGNORECASE,
+    ):
+        return False
+    return bool(re.search(
+        r"\b(?:president|prime\s+minister|chief\s+minister|governor|mayor|"
+        r"chancellor|minister|secretary|leader|cm|pm|mp|mla)\s+of\s+[A-Za-z]",
+        text, re.IGNORECASE,
+    ))
+
+
+def _normalized_terms(value: str) -> set[str]:
+    normalized = re.sub(r"\btamilnadu\b", "tamil nadu", value.casefold())
+    return set(re.findall(r"[a-z]{3,}", normalized))
+
+
+def _requested_entity_terms(query: str) -> set[str]:
+    match = re.search(
+        r"\b(?:president|prime\s+minister|chief\s+minister|governor|mayor|"
+        r"chancellor|minister|secretary|leader|cm|pm|mp|mla)\s+of\s+(.+?)"
+        r"(?=\s+(?:as\s+of|on|from|now|today|and)\b|[?.!,;]|$)",
+        query, re.IGNORECASE,
     )
+    if not match:
+        return set()
+    return _normalized_terms(match.group(1))
 
 
 def _parse_explicit_date(text: str) -> date | None:
@@ -174,7 +204,7 @@ def validate_current_evidence(
             "what", "who", "where", "when", "which", "the", "and", "today", "current",
         }
     }
-    evidence_terms = set(re.findall(r"[A-Za-z]{3,}", f"{title} {snippet}".casefold()))
+    evidence_terms = _normalized_terms(f"{title} {snippet}")
     if "cm" in query_terms:
         query_terms.update(("chief", "minister"))
     if "pm" in query_terms:
@@ -209,6 +239,9 @@ def validate_current_evidence(
         if expected_roles and not any(role in evidence_lower for role in expected_roles):
             evidence_role_supported = False
         if not role_supported or not evidence_role_supported:
+            return False, None, "evidence_not_relevant"
+        entity_terms = _requested_entity_terms(query)
+        if entity_terms and not entity_terms.issubset(evidence_terms):
             return False, None, "evidence_not_relevant"
         subject_terms = {
             term for term in query_terms
@@ -255,6 +288,8 @@ def resolve_freshness(
     )
     clock_date = clock.astimezone(timezone.utc).date()
     if explicit_date and officeholder:
+        if explicit_current and explicit_date != clock_date:
+            return FreshnessDecision("mixed", True, "mixed_current_historical_request", clock_date.isoformat())
         if explicit_date > clock_date:
             return FreshnessDecision("future", True, "future_requested_date", as_of)
         if explicit_date == clock_date:

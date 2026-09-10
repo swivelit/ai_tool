@@ -14,6 +14,11 @@ export class SwicoBusyOperationController {
     return operation;
   }
 
+  tryBegin(navigationGeneration: number): SwicoBusyOperation | null {
+    if (this.active) return null;
+    return this.begin(navigationGeneration);
+  }
+
   get isBusy(): boolean {
     return this.active !== null;
   }

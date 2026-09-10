@@ -71,6 +71,50 @@ def test_temporal_decision_normalizes_abbreviated_and_named_officeholder_dates()
     assert resolve_freshness("Who is the CM on 2020-01-02?", now=clock).scope == "historical"
 
 
+def test_temporal_mixed_scope_preserves_current_evidence_requirement():
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    decision = resolve_freshness(
+        "Who was the CM on 2020-01-02, and who is the CM now?", now=clock,
+    )
+    assert decision.scope == "mixed"
+    assert decision.requires_fresh_evidence is True
+
+
+def test_general_role_explanation_is_not_current_officeholder_data():
+    decision = resolve_freshness(
+        "Explain the role of a chief minister in the Indian Constitution.",
+        now=datetime(2026, 9, 10, tzinfo=timezone.utc),
+    )
+    assert decision.scope == "unspecified"
+    assert decision.requires_fresh_evidence is False
+
+
+def test_prepared_mixed_scope_and_timeless_role_share_freshness_cache_policy():
+    user = create_test_user("freshness-mixed-prepared", "freshness-mixed-prepared@example.com")
+    _fund(int(user.id))
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    mixed = prepare_web_turn(
+        user_id=int(user.id),
+        message="Who was the CM on 2020-01-02, and who is the CM now?",
+        request_id=str(uuid4()), thread_id=None, reply_language="en", now=clock,
+    )
+    assert mixed.ai_request.metadata["freshness_scope"] == "mixed"
+    assert mixed.ai_request.metadata["freshness_required"] is True
+    assert mixed.route.provider == "blocked"
+    assert mixed.optimization is not None and mixed.optimization.cache_eligible is False
+
+    general = prepare_web_turn(
+        user_id=int(user.id),
+        message="Explain the role of a chief minister in the Indian Constitution.",
+        request_id=str(uuid4()), thread_id=None, reply_language="en", now=clock,
+    )
+    assert general.ai_request.metadata["freshness_scope"] == "unspecified"
+    assert general.ai_request.metadata["freshness_required"] is False
+    assert general.route.provider != "blocked"
+    assert general.optimization is not None
+    assert general.optimization.cache_scope_reason != "freshness_requires_retrieval"
+
+
 def test_current_evidence_matches_role_and_ignores_polite_instruction_words():
     fixed = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
     base = {
@@ -83,6 +127,8 @@ def test_current_evidence_matches_role_and_ignores_polite_instruction_words():
     prime_minister = {**base, "title": "Prime Minister of India", "snippet": "The Prime Minister is the current head of the Union government."}
     assert validate_current_evidence("Please identify the CM of Tamil Nadu", governor, now=fixed)[0] is False
     assert validate_current_evidence("Please identify the PM of India", prime_minister, now=fixed)[0] is True
+    wrong_state = {**base, "title": "Kerala Chief Minister", "snippet": "The Chief Minister of Kerala is Example Person."}
+    assert validate_current_evidence("Who is the Chief Minister of Tamil Nadu?", wrong_state, now=fixed)[0] is False
 
 
 def test_language_resolution_ignores_quotes_negation_and_subject_names():
@@ -107,9 +153,13 @@ def test_resolved_english_clears_subject_language_script_requirement():
 
 
 def test_superseded_or_discussed_tamil_does_not_conflict_with_english_contract():
-    for message in (
-        "Reply in English and explain how Tamil sentences are structured",
-        "Reply in Tamil. Actually, reply in English.",
+    for message, profile in (
+        ("Reply in English and explain how Tamil sentences are structured", "ta"),
+        ("Reply in Tamil. Actually, reply in English.", "ta"),
+        ("Write about education in Tamil Nadu", "en"),
+        ("Give me information about schools in Tamil Nadu", "en"),
+        ("Reply in Tamil. Translate it to English.", "ta"),
+        ("Reply in Tamil. Explain it in English.", "ta"),
     ):
         contract = apply_reply_language_contract(extract_output_contract(message), "en")
         assert contract.required_script is None
@@ -123,13 +173,17 @@ def test_superseded_or_discussed_tamil_does_not_conflict_with_english_contract()
 def test_prepared_language_contract_uses_the_final_english_instruction():
     user = create_test_user("language-final-instruction", "language-final-instruction@example.com")
     _fund(int(user.id))
-    for message in (
-        "Reply in English and explain how Tamil sentences are structured",
-        "Reply in Tamil. Actually, reply in English.",
+    for message, profile in (
+        ("Reply in English and explain how Tamil sentences are structured", "ta"),
+        ("Reply in Tamil. Actually, reply in English.", "ta"),
+        ("Write about education in Tamil Nadu", "en"),
+        ("Give me information about schools in Tamil Nadu", "en"),
+        ("Reply in Tamil. Translate it to English.", "ta"),
+        ("Reply in Tamil. Explain it in English.", "ta"),
     ):
         prepared = prepare_web_turn(
             user_id=int(user.id), message=message, request_id=str(uuid4()),
-            thread_id=None, reply_language="ta",
+            thread_id=None, reply_language=profile,
         )
         assert prepared.reply_language == "en"
         assert prepared.ai_request.metadata["output_contract"]["required_script"] is None
@@ -202,7 +256,7 @@ def test_prepared_turn_sends_the_resolved_language_to_provider_and_validation():
 
     prepared = prepare_web_turn(
         user_id=int(user.id),
-        message="Explain Tamil Nadu in three simple sentences in English",
+        message="Reply in English and explain how Tamil sentences are structured",
         request_id=str(uuid4()), thread_id=None, reply_language="ta",
     )
     completed = execute_web_turn(

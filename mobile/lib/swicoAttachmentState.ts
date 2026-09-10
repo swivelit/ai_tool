@@ -1,5 +1,17 @@
 import type { Attachment } from "./swicoTypes";
 
+/** Apply one removal intent to both pending selections and historical context. */
+export function detachSwicoAttachment(
+  attachments: Attachment[],
+  attachmentId: string,
+  pendingIds: Set<string>,
+  detachedIds: Set<string>,
+): Attachment[] {
+  pendingIds.delete(attachmentId);
+  detachedIds.add(attachmentId);
+  return attachments.filter(item => item.id !== attachmentId);
+}
+
 export function mergeSwicoHistoryAttachments(
   restored: Attachment[],
   current: Attachment[],

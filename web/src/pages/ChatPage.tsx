@@ -92,6 +92,7 @@ export function ChatPage() {
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
   const detachedAttachmentIds = useRef(new Map<string, Set<string>>())
+  const localConversationIdRef = useRef(`new-${crypto.randomUUID()}`)
   const removedRepositoryUploads = useRef(new Set<string>())
   const revokedAttachmentPreviews = useRef(new Set<string>())
   const attachmentsRef = useRef<ComposerAttachment[]>([])
@@ -117,6 +118,7 @@ export function ChatPage() {
     initialThreadId: string | null
     threadId: string | null
     navigationGeneration: number
+    localConversationId: string
     assistantMessageId?: string
   } | null>(null)
   const cancellationReadyRef = useRef(false)
@@ -157,6 +159,8 @@ export function ChatPage() {
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
     userUidRef.current = userUid
+    detachedAttachmentIds.current.clear()
+    localConversationIdRef.current = `new-${crypto.randomUUID()}`
     setRepository(value => value?.owner_uid === userUid ? value : null)
   }, [userUid])
   useEffect(() => {
@@ -545,6 +549,7 @@ export function ChatPage() {
     const navigationGeneration = navigationGenerationRef.current
     const transportAttemptId = crypto.randomUUID()
     const nextRequestId = retryRequestId || crypto.randomUUID()
+    const localConversationId = localConversationIdRef.current
     const isCurrentTransport = () => (
       transportAttemptRef.current === transportAttemptId
       && navigationGenerationRef.current === navigationGeneration
@@ -584,7 +589,7 @@ export function ChatPage() {
     transportAttemptRef.current = transportAttemptId
     streamScopeRef.current = {
       requestId: nextRequestId, transportAttemptId,
-      initialThreadId: threadId, threadId, navigationGeneration,
+      initialThreadId: threadId, threadId, navigationGeneration, localConversationId,
     }
     const submittedPendingKeys = new Set(
       selectedAttachments
@@ -708,6 +713,15 @@ export function ChatPage() {
           if (id) {
             const stillViewingOrigin = activeRef.current === scope.initialThreadId
             scope.threadId = id
+            if (!scope.initialThreadId) {
+              const detached = detachedAttachmentIds.current.get(scope.localConversationId)
+              if (detached?.size) {
+                const serverDetached = detachedAttachmentIds.current.get(id) ?? new Set<string>()
+                detached.forEach(attachmentId => serverDetached.add(attachmentId))
+                detachedAttachmentIds.current.set(id, serverDetached)
+                detachedAttachmentIds.current.delete(scope.localConversationId)
+              }
+            }
             if (stillViewingOrigin) {
               pendingRepositoryThreadRebindRef.current = {
                 from:scope.initialThreadId,
@@ -909,6 +923,7 @@ export function ChatPage() {
     invalidateNavigation()
     pendingAttachmentKeysRef.current.clear()
     voiceReply.clear(); draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null)
+    localConversationIdRef.current = `new-${crypto.randomUUID()}`
     activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`)
   }
   const select = (id: string) => {
@@ -1016,7 +1031,7 @@ export function ChatPage() {
     attachmentsRef.current = attachmentsRef.current.filter(item => attachmentKey(item) !== key)
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
     if (!('local_id' in attachment)) {
-      const scope = activeRef.current ?? 'new-thread'
+      const scope = activeRef.current ?? localConversationIdRef.current
       const detached = detachedAttachmentIds.current.get(scope) ?? new Set<string>()
       detached.add(attachment.id)
       detachedAttachmentIds.current.set(scope, detached)

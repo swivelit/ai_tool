@@ -345,12 +345,56 @@ it('keeps an explicitly removed attachment detached when an older history respon
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
   await userEvent.click(screen.getByRole('button', { name:'Remove detached.pdf' }))
-  await act(async () => { olderHistory.resolve({ items:[{ id:'older-answer', thread_id:thread.id, role:'assistant', content:'Older', status:'complete', attachments:[attachment] }] }); await olderHistory.promise })
+  await act(async () => { olderHistory.resolve({ items:[{ id:'detached-answer-1', thread_id:thread.id, role:'assistant', content:'Older', request_id:'detached-request-1', status:'complete', attachments:[attachment] }] }); await olderHistory.promise })
+  expect(await screen.findByText('Older')).toBeInTheDocument()
   await waitFor(() => expect(screen.queryByLabelText('Active attachment context')).not.toBeInTheDocument())
   await userEvent.type(composer, 'Follow up without the removed file')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
   expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids || []).not.toContain('detached-pdf')
+})
+
+it('transfers new-chat removal intent when the first SSE event assigns a server thread', async () => {
+  mockApi()
+  const thread = { id:'assigned-thread', title:'Assigned', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const attachment = { ...uploaded, id:'new-chat-pdf', name:'new-chat.pdf', media_type:'application/pdf' }
+  const streamGate = deferred<void>()
+  const history = deferred<{ items: unknown[] }>()
+  const pendingDelete = deferred<void>()
+  let streamCallback: ((event: { event:string; data:unknown }) => void) | undefined
+  const submitted: unknown[] = []
+  vi.mocked(uploadDocument).mockResolvedValue(attachment)
+  vi.mocked(deleteUpload).mockReturnValue(pendingDelete.promise)
+  vi.mocked(streamChat).mockImplementation(async (_user, payload, onEvent) => {
+    submitted.push(payload)
+    streamCallback = onEvent
+    await streamGate.promise
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes(`/threads/${thread.id}/messages`)) return history.promise as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Read this')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'new-chat.pdf', { type:'application/pdf' }))
+  await screen.findByText('new-chat.pdf')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await userEvent.click(screen.getByRole('button', { name:'Remove new-chat.pdf' }))
+  streamCallback?.({ event:'thread', data:{ thread_id:thread.id } })
+  streamCallback?.({ event:'done', data:{ message_id:'assigned-answer', request_id:'assigned-request' } })
+  await act(async () => { streamGate.resolve(undefined); await streamGate.promise })
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes(`/threads/${thread.id}/messages`))).toBe(true))
+  await act(async () => { history.resolve({ items:[{ id:'assigned-answer', thread_id:thread.id, role:'assistant', content:'Assigned history', request_id:'assigned-request', status:'complete', attachments:[attachment] }] }); await history.promise })
+  expect(await screen.findByText('Assigned history')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Active attachment context')).not.toBeInTheDocument()
+  await userEvent.type(composer, 'Follow up')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids || []).not.toContain(attachment.id)
 })
 
 it('keeps an explicitly selected expired PDF recoverable instead of silently sending text', async () => {

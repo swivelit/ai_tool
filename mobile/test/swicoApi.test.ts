@@ -216,15 +216,34 @@ describe("canonical Swico mobile API client", () => {
     expect(controller.isBusy).toBe(false);
   });
 
+  it("admits only one overlapping upload/preparation operation until it settles", async () => {
+    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const controller = new SwicoBusyOperationController();
+    const first = controller.tryBegin(0);
+    expect(first).not.toBeNull();
+    expect(controller.tryBegin(0)).toBeNull();
+    expect(controller.isBusy).toBe(true);
+    expect(controller.finish(first!)).toBe(true);
+    const second = controller.tryBegin(0);
+    expect(second).not.toBeNull();
+    expect(controller.isBusy).toBe(true);
+    expect(controller.finish(second!)).toBe(true);
+    expect(controller.isBusy).toBe(false);
+  });
+
   it("does not restore a deliberately detached file when deferred history resolves", async () => {
-    const { mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
+    const { detachSwicoAttachment, mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
     const attachment = { id: "removed-a", name: "a.pdf", media_type: "application/pdf", size_bytes: 4, created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-10T00:10:00Z", status: "ready" as const, warnings: [] };
     let resolveHistory!: (value: { items: typeof attachment[] }) => void;
     const history = new Promise<{ items: typeof attachment[] }>(resolve => { resolveHistory = resolve; });
-    const detached = new Set<string>([attachment.id]);
+    const pending = new Set([attachment.id]);
+    const detached = new Set<string>();
+    const afterRemoval = detachSwicoAttachment([attachment], attachment.id, pending, detached);
     resolveHistory({ items: [attachment] });
     await history;
-    expect(mergeSwicoHistoryAttachments([attachment], [], new Set(), 5, detached)).toEqual([]);
+    expect(mergeSwicoHistoryAttachments([attachment], afterRemoval, pending, 5, detached)).toEqual([]);
+    expect(pending.has(attachment.id)).toBe(false);
+    expect(detached.has(attachment.id)).toBe(true);
   });
 
   it("normalizes regeneration to one target even when the historical fallback has an active edit", async () => {

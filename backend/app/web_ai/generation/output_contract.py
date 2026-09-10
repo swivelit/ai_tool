@@ -161,6 +161,10 @@ def apply_reply_language_contract(
         if contract.required_script == "tamil":
             return contract
         return replace(contract, forbid_tamil_script=True)
+    if normalized == "en":
+        # A Tamil mention may describe the subject or a superseded directive;
+        # the resolved whole-answer language is authoritative for validation.
+        return replace(contract, required_script=None)
     if normalized != "ta":
         return contract
     return replace(contract, required_script="tamil")
@@ -273,7 +277,7 @@ def extract_output_contract(message: str) -> OutputContract:
     directives = list(re.finditer(
         r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
         r"[^.!?;\n]{0,32}?\b(?:in|using|with)\s+(?:the\s+)?"
-        r"(Tamil|English|Tanglish)\b",
+        r"(Tamil(?!\s+nadu\b)|English|Tanglish)\b",
         script_text,
         re.IGNORECASE,
     ))

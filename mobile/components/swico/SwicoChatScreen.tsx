@@ -41,7 +41,7 @@ import { canChatWithRepository, canDictate, canReplyWithVoice, canUploadReposito
 import { captureSwicoHistoryScope, captureSwicoScope, isSwicoHistoryScopeCurrent, isSwicoScopeCurrent, type SwicoRequestScope } from "@/lib/swicoRequestScope";
 import { SwicoBusyOperationController, type SwicoBusyOperation } from "@/lib/swicoBusyOperation";
 import { buildRegeneratePayload, normalizeSwicoMutationOptions } from "@/lib/swicoRequestPayload";
-import { expiredExplicitAttachments, mergeSwicoHistoryAttachments } from "@/lib/swicoAttachmentState";
+import { detachSwicoAttachment, expiredExplicitAttachments, mergeSwicoHistoryAttachments } from "@/lib/swicoAttachmentState";
 
 function nowIso() { return new Date().toISOString(); }
 function makeUserMessage(text: string, requestId: string, threadId: string, attachments: Attachment[] = []) : Message {
@@ -108,6 +108,7 @@ export default function SwicoChatScreen() {
   const archivedRef = useRef(archived);
   const pendingAttachmentIdsRef = useRef(new Set<string>());
   const detachedAttachmentIdsRef = useRef(new Map<string, Set<string>>());
+  const localConversationIdRef = useRef(`new-${newSwicoRequestId()}`);
   const submittedPayloadsRef = useRef(new Map<string, ChatRequestPayload>());
   const draftRef = useRef(draft);
   const attachmentsRef = useRef(attachments);
@@ -285,6 +286,14 @@ export default function SwicoChatScreen() {
   }, []);
 
   const streamedThreadRef = useRef<string | null>(null);
+  const detachAttachment = useCallback((attachmentId: string) => {
+    if (!user) return;
+    const scope = activeThreadRef.current || localConversationIdRef.current;
+    const ids = detachedAttachmentIdsRef.current.get(scope) || new Set<string>();
+    detachedAttachmentIdsRef.current.set(scope, ids);
+    setAttachments(value => detachSwicoAttachment(value, attachmentId, pendingAttachmentIdsRef.current, ids));
+    void deleteUpload(user, attachmentId).catch(() => undefined);
+  }, [user]);
   const applyStreamEvent = useCallback((event: { event: string; data: unknown }) => {
     if (event.event === "error" && event.data && typeof event.data === "object") {
       const data = event.data as Record<string, unknown>;
@@ -298,6 +307,14 @@ export default function SwicoChatScreen() {
         )), next.assistant!]);
       }
       if (next.assistant?.thread_id && next.assistant.thread_id !== "new-thread") {
+        const previousThread = activeThreadRef.current;
+        if (!previousThread) {
+          const detached = detachedAttachmentIdsRef.current.get(localConversationIdRef.current);
+          if (detached?.size) {
+            detachedAttachmentIdsRef.current.set(next.assistant.thread_id, new Set(detached));
+            detachedAttachmentIdsRef.current.delete(localConversationIdRef.current);
+          }
+        }
         streamedThreadRef.current = next.assistant.thread_id;
         setActiveThread(next.assistant.thread_id);
         if (repositoryId && repositoryThreadId === null) setRepositoryThreadId(next.assistant.thread_id);
@@ -305,7 +322,7 @@ export default function SwicoChatScreen() {
       if (pinnedToBottomRef.current) setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 20);
       return next;
     });
-  }, [repositoryId, repositoryThreadId]);
+  }, [localConversationIdRef, repositoryId, repositoryThreadId]);
 
   const requestServerCancellation = useCallback(async (targetRequestId: string, targetController: AbortController) => {
     if (!user || cancellationSentRef.current) return;
@@ -402,6 +419,11 @@ export default function SwicoChatScreen() {
     activeRequestRef.current = id;
     if (needsPreparation) {
       const preparationOperation = beginBusyOperation(navigationGeneration);
+      if (!preparationOperation) {
+        activeRequestRef.current = null;
+        transportAttemptRef.current = null;
+        return;
+      }
       setError("Preparing large pasted text…");
       try {
         const virtual = await uploadText(user, rawText, longInputMode) as Attachment;
@@ -662,10 +684,11 @@ export default function SwicoChatScreen() {
   };
   const chooseThread = (id: string) => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setAttachments([]); setActiveThread(id); setDrawer(false); clearSearch(); };
   const chooseSearchResult = (id: string, messageId: string | null) => { setPendingScrollMessageId(messageId); setPinnedToBottom(false); pinnedToBottomRef.current = false; chooseThread(id); setHighlightMessageId(messageId); };
-  const newChat = () => { invalidateNavigation(); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); clearSearch(); };
+  const newChat = () => { invalidateNavigation(); localConversationIdRef.current = `new-${newSwicoRequestId()}`; setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); clearSearch(); };
 
-  const beginBusyOperation = (navigationGeneration: number): SwicoBusyOperation => {
-    const operation = busyOperationRef.current.begin(navigationGeneration);
+  const beginBusyOperation = (navigationGeneration: number): SwicoBusyOperation | null => {
+    const operation = busyOperationRef.current.tryBegin(navigationGeneration);
+    if (!operation) return null;
     setUploading(true);
     return operation;
   };
@@ -695,6 +718,7 @@ export default function SwicoChatScreen() {
     let busyOperation: SwicoBusyOperation | null = null;
     try {
       busyOperation = beginBusyOperation(uploadNavigation);
+      if (!busyOperation) return;
       const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true });
       if (!uploadIsCurrent() || result.canceled || !result.assets[0]) return;
       const file = result.assets[0];
@@ -754,6 +778,7 @@ export default function SwicoChatScreen() {
     let busyOperation: SwicoBusyOperation | null = null;
     try {
       busyOperation = beginBusyOperation(uploadNavigation);
+      if (!busyOperation) return;
       const result = await DocumentPicker.getDocumentAsync({ type: "application/zip", copyToCacheDirectory: true });
       if (!uploadIsCurrent() || result.canceled || !result.assets[0]) return;
       const file = result.assets[0];
@@ -924,9 +949,9 @@ export default function SwicoChatScreen() {
         {offline ? <View style={styles.offlineBanner}><Ionicons name="cloud-offline-outline" size={15} color={t.caramel} /><Text style={styles.offlineText}>Offline — reconnect to send, search, upload, or change settings.</Text></View> : null}
         {error ? <Pressable onPress={() => setError("")} style={styles.errorBanner}><Text style={styles.errorText}>{error}</Text></Pressable> : null}
         {displayMessages.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>How can Swico help?</Text><Text style={styles.emptyText}>Ask a question, upload a document, or continue a conversation from the web.</Text><View style={styles.suggestions}>{["Explain something clearly", "Help me plan a project", "Summarize a document"].map(suggestion => <Pressable key={suggestion} disabled={offline} onPress={() => void send(suggestion)} style={styles.suggestion}><Text style={styles.suggestionText}>{suggestion}</Text><Ionicons name="arrow-up-outline" size={15} color={t.muted} /></Pressable>)}</View></View> : <><FlatList ref={listRef} data={displayMessages} keyExtractor={item => item.id} contentContainerStyle={styles.messages} onScrollToIndexFailed={({ index }) => listRef.current?.scrollToOffset({ offset: fallbackMessageOffset(index), animated: true })} onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent; const next = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 48; pinnedToBottomRef.current = next; setPinnedToBottom(next); }} scrollEventThrottle={100} renderItem={({ item }) => { const actions = assistantActionsEnabled(item, Boolean(bootstrap.features.web_answer_feedback), voiceReplyEnabled); return <MessageRow message={item} highlighted={item.id === highlightMessageId} retryTick={retryTick} editable={item.id === latestEditableId} assistantActions={actions} voiceState={voiceReplyStates[item.id] || "idle"} onRetry={() => retryMessage(item)} onCopy={() => void Clipboard.setStringAsync(item.content)} onShare={() => void Share.share({ message: item.content })} onDownload={() => void downloadResponse(item)} onOpenEditor={() => setEditorMessage(item)} onEditResponse={() => setEditorMessage(item)} onVoice={() => void playVoice(item)} onFeedback={rating => void submitFeedback(item, rating)} onContinue={() => void send(undefined, { continueId: item.id })} onRegenerate={() => { const original = messages.find(candidate => candidate.role === "user" && candidate.request_id === item.request_id); if (original) { const prior = original.request_id ? submittedPayloadsRef.current.get(original.request_id) : undefined; const regenerateRequestId = newSwicoRequestId(); const payloadOverride = prior ? buildRegeneratePayload(prior, { content: original.content, attachments: original.attachments }, item.id, regenerateRequestId) : undefined; void send(original.content, { regenerateId: item.id, requestId: regenerateRequestId, attachments: original.attachments, payloadOverride }); } }} onEdit={() => { if (bootstrap.features.web_message_edit === true) { setDraft(item.content); setEditTarget(item.id); } }} />; }} />{!pinnedToBottom ? <Pressable onPress={() => { pinnedToBottomRef.current = true; setPinnedToBottom(true); listRef.current?.scrollToEnd({ animated: true }); }} style={styles.scrollBottom}><Ionicons name="arrow-down" size={18} color={t.text} /></Pressable> : null}</>}
-        {pendingAttachments.length || activeContextAttachments.length || repositoryId ? <View style={styles.attachmentBar}>{activeContextAttachments.length ? <Text style={styles.attachmentMeta}>Active document context — included in follow-ups. Remove one to make room for another file.</Text> : null}{activeContextAttachments.map(item => <View key={`context-${item.id}`} style={styles.chip}><View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired context — no longer sent" : "Active context"}</Text></View><Pressable onPress={() => { const scope = activeThreadRef.current || "new-thread"; const ids = detachedAttachmentIdsRef.current.get(scope) || new Set<string>(); ids.add(item.id); detachedAttachmentIdsRef.current.set(scope, ids); setAttachments(value => value.filter(entry => entry.id !== item.id)); void deleteUpload(user, item.id); }} accessibilityLabel={`Remove active context ${item.name}`}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{pendingAttachments.map(item => <View key={item.id} style={styles.chip}>{item.local_uri ? <Image source={{ uri: item.local_uri }} style={{ width: 28, height: 28, borderRadius: 5 }} /> : null}<View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired — re-upload or remove" : item.warnings?.[0] || "Ready to send"}</Text></View>{bootstrap.features.web_knowledge_library ? <Pressable onPress={() => void saveAttachmentToKnowledge(item.id)} accessibilityLabel="Save document to Knowledge Library"><Ionicons name="bookmark-outline" size={14} color={t.accent} /></Pressable> : null}<Pressable onPress={() => { pendingAttachmentIdsRef.current.delete(item.id); setAttachments(value => value.filter(entry => entry.id !== item.id)); void deleteUpload(user, item.id); }}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{repositoryId ? <View style={styles.chip}><View><Text style={styles.chipText}>{repositoryMeta?.display_name || "Repository ready"}</Text><Text style={styles.attachmentMeta}>{repositoryMeta ? `${repositoryMeta.status} · ${repositoryMeta.file_count} files${repositoryMeta.languages?.length ? ` · ${repositoryMeta.languages.slice(0, 3).join(", ")}` : ""}` : "Ready"}</Text></View><Pressable onPress={() => void removeRepository()}><Ionicons name="close" size={14} color={t.text} /></Pressable></View> : null}</View> : null}
+        {pendingAttachments.length || activeContextAttachments.length || repositoryId ? <View style={styles.attachmentBar}>{activeContextAttachments.length ? <Text style={styles.attachmentMeta}>Active document context — included in follow-ups. Remove one to make room for another file.</Text> : null}{activeContextAttachments.map(item => <View key={`context-${item.id}`} style={styles.chip}><View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired context — no longer sent" : "Active context"}</Text></View><Pressable onPress={() => detachAttachment(item.id)} accessibilityLabel={`Remove active context ${item.name}`}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{pendingAttachments.map(item => <View key={item.id} style={styles.chip}>{item.local_uri ? <Image source={{ uri: item.local_uri }} style={{ width: 28, height: 28, borderRadius: 5 }} /> : null}<View><Text style={styles.chipText} numberOfLines={1}>{item.name}</Text><Text style={styles.attachmentMeta}>{item.status === "expired" ? "Expired — re-upload or remove" : item.warnings?.[0] || "Ready to send"}</Text></View>{bootstrap.features.web_knowledge_library ? <Pressable onPress={() => void saveAttachmentToKnowledge(item.id)} accessibilityLabel="Save document to Knowledge Library"><Ionicons name="bookmark-outline" size={14} color={t.accent} /></Pressable> : null}<Pressable onPress={() => detachAttachment(item.id)} accessibilityLabel={`Remove ${item.name}`}><Ionicons name="close" size={14} color={t.text} /></Pressable></View>)}{repositoryId ? <View style={styles.chip}><View><Text style={styles.chipText}>{repositoryMeta?.display_name || "Repository ready"}</Text><Text style={styles.attachmentMeta}>{repositoryMeta ? `${repositoryMeta.status} · ${repositoryMeta.file_count} files${repositoryMeta.languages?.length ? ` · ${repositoryMeta.languages.slice(0, 3).join(", ")}` : ""}` : "Ready"}</Text></View><Pressable onPress={() => void removeRepository()}><Ionicons name="close" size={14} color={t.text} /></Pressable></View> : null}</View> : null}
         <View style={[styles.composerShell, styles.composerSurface, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-          <View style={styles.composerTools}>{attachmentsEnabled ? <Pressable testID="swico-attachment-button" onPress={pickDocument} accessibilityLabel="Attach file"><Ionicons name="add-circle-outline" size={25} color={t.accent} /></Pressable> : null}{repositoryUploadEnabled ? <Pressable testID="swico-repository-button" onPress={pickRepository} accessibilityLabel="Attach repository"><Ionicons name="logo-github" size={21} color={t.accent} /></Pressable> : null}{dictationEnabled ? <Pressable testID="swico-dictation-button" onPress={() => void startDictation()} accessibilityLabel="Dictate"><Ionicons name="mic-outline" size={23} color={t.accent} /></Pressable> : null}<Pressable testID="swico-realtime-voice-button" disabled={!realtimeNativeAvailable} onPress={openRealtimeVoice} accessibilityLabel={realtimeNativeAvailable ? "Realtime voice" : realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."} style={!realtimeNativeAvailable ? styles.sendDisabled : undefined}><Ionicons name="radio-outline" size={21} color={realtimeNativeAvailable ? t.accent : t.muted} /></Pressable><Pressable testID="swico-tier-button" onPress={() => setTierModal(true)} style={styles.tierPill}><Text style={styles.tierPillText}>{bootstrap.assistant.tier_label}</Text><Ionicons name="chevron-down" size={14} color={t.accent} /></Pressable></View>
+          <View style={styles.composerTools}>{attachmentsEnabled ? <Pressable testID="swico-attachment-button" disabled={uploading || streaming} onPress={pickDocument} accessibilityLabel="Attach file"><Ionicons name="add-circle-outline" size={25} color={t.accent} /></Pressable> : null}{repositoryUploadEnabled ? <Pressable testID="swico-repository-button" disabled={uploading || streaming} onPress={pickRepository} accessibilityLabel="Attach repository"><Ionicons name="logo-github" size={21} color={t.accent} /></Pressable> : null}{dictationEnabled ? <Pressable testID="swico-dictation-button" onPress={() => void startDictation()} accessibilityLabel="Dictate"><Ionicons name="mic-outline" size={23} color={t.accent} /></Pressable> : null}<Pressable testID="swico-realtime-voice-button" disabled={!realtimeNativeAvailable} onPress={openRealtimeVoice} accessibilityLabel={realtimeNativeAvailable ? "Realtime voice" : realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."} style={!realtimeNativeAvailable ? styles.sendDisabled : undefined}><Ionicons name="radio-outline" size={21} color={realtimeNativeAvailable ? t.accent : t.muted} /></Pressable><Pressable testID="swico-tier-button" onPress={() => setTierModal(true)} style={styles.tierPill}><Text style={styles.tierPillText}>{bootstrap.assistant.tier_label}</Text><Ionicons name="chevron-down" size={14} color={t.accent} /></Pressable></View>
           {!realtimeNativeAvailable ? <Text style={styles.attachmentMeta}>{realtimeAvailability.reason || "Realtime Voice needs the Android PCM audio runtime."}</Text> : null}
           {bootstrap.uploads.long_input_enabled && draft.length > (bootstrap.uploads.long_input_inline_threshold_chars || 16000) ? <View style={styles.longInputRow}><Text style={styles.attachmentMeta}>Large text action</Text>{(["summarize", "analyze", "ask_questions", "rewrite", "translate"] as const).map(mode => <Pressable key={mode} onPress={() => setLongInputMode(mode)} style={[styles.modePill, longInputMode === mode && styles.modePillSelected]}><Text style={styles.modeText}>{mode.replace("_", " ")}</Text></Pressable>)}</View> : null}
           <TextInput testID="swico-chat-input" accessibilityLabel="Swico chat input" value={draft} onChangeText={setDraft} placeholder={offline ? "Reconnect to send a message" : "Message Swico"} placeholderTextColor={t.muted} multiline maxLength={bootstrap.uploads.long_input_enabled ? (bootstrap.uploads.long_input_max_chars || 64000) : 16000} style={styles.input} editable={!offline && !streaming && !uploading} onSubmitEditing={() => void send()} blurOnSubmit={false} />
