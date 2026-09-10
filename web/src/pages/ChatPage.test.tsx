@@ -263,9 +263,49 @@ it('clears the pending PDF chip after success while retaining server context for
   await screen.findByText('successful.pdf')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
-  await waitFor(() => expect(document.querySelector('.attachment-tray')).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Active attachment context')).toHaveTextContent('successful.pdf')
   expect(deleteUpload).not.toHaveBeenCalled()
   expect(screen.getByText('Read')).toBeInTheDocument()
+})
+
+it('accounts for active PDF context, exposes removal, and allows a replacement upload', async () => {
+  mockApi()
+  const files = Array.from({ length:5 }, (_, index) => ({
+    ...uploaded, id:`context-${index}`, name:`context-${index}.pdf`, media_type:'application/pdf',
+  }))
+  let uploadIndex = 0
+  vi.mocked(uploadDocument).mockImplementation(async () => files[uploadIndex++])
+  vi.mocked(streamChat).mockImplementation(async (_user, _payload, onEvent) => {
+    onEvent({ event:'thread', data:{ thread_id:'context-thread' } })
+    onEvent({ event:'done', data:{ message_id:'context-answer', request_id:'context-request' } })
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes('/context-thread/messages')) return { items:[{
+      id:'context-answer', thread_id:'context-thread', role:'assistant', content:'Done', request_id:'context-request',
+      status:'complete', attachments:files,
+    }] } as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  for (const file of files) {
+    await userEvent.upload(input, new File(['pdf'], file.name, { type:'application/pdf' }))
+    await screen.findByText(file.name)
+  }
+  await userEvent.type(screen.getByRole('textbox', { name:'Message Swico' }), 'Review these files')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Active attachment context')).toHaveTextContent('context-0.pdf')
+  await userEvent.upload(input, new File(['pdf'], 'blocked.pdf', { type:'application/pdf' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/up to 5 files/i)
+  await userEvent.click(screen.getByRole('button', { name:'Remove active context context-0.pdf' }))
+  await userEvent.upload(input, new File(['pdf'], 'replacement.pdf', { type:'application/pdf' }))
+  expect(await screen.findByText('replacement.pdf')).toBeInTheDocument()
 })
 
 it('keeps an explicitly selected expired PDF recoverable instead of silently sending text', async () => {

@@ -170,6 +170,97 @@ describe("canonical Swico mobile API client", () => {
     })).toBe(false);
   });
 
+  it("releases abandoned upload busy state without letting old cleanup clear a newer upload", async () => {
+    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const controller = new SwicoBusyOperationController();
+    let uploading = false;
+    const deferred = () => {
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+    const oldUpload = deferred();
+    const old = controller.begin(0);
+    uploading = controller.isBusy;
+    expect(uploading).toBe(true);
+
+    expect(controller.abandon(1)).toBe(true);
+    uploading = controller.isBusy;
+    expect(uploading).toBe(false);
+
+    const newUpload = deferred();
+    const current = controller.begin(1);
+    uploading = controller.isBusy;
+    expect(uploading).toBe(true);
+    oldUpload.resolve();
+    expect(controller.finish(old)).toBe(false);
+    expect(controller.isBusy).toBe(true);
+    newUpload.resolve();
+    expect(controller.finish(current)).toBe(true);
+    uploading = controller.isBusy;
+    expect(uploading).toBe(false);
+    await expect(oldUpload.promise).resolves.toBeUndefined();
+  });
+
+  it("settles failure and cancellation cleanup only for the operation that still owns busy state", async () => {
+    const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
+    const controller = new SwicoBusyOperationController();
+    const failed = controller.begin(2);
+    expect(controller.isBusy).toBe(true);
+    expect(controller.finish(failed)).toBe(true);
+    expect(controller.isBusy).toBe(false);
+    const cancelled = controller.begin(3);
+    expect(controller.abandon(4)).toBe(true);
+    expect(controller.finish(cancelled)).toBe(false);
+    expect(controller.isBusy).toBe(false);
+  });
+
+  it("builds regeneration with one fresh mutation target while retry keeps the immutable request", async () => {
+    const { buildRegeneratePayload } = await import("../lib/swicoRequestPayload");
+    const original = {
+      request_id: "original-request",
+      message: "Explain the document",
+      thread_id: "thread-a",
+      repository_id: "repo-a",
+      attachment_ids: ["upload-a"],
+      input_mode: "text" as const,
+      edit_message_id: "edit-target",
+      continue_message_id: "continue-target",
+    };
+    const regenerated = buildRegeneratePayload(
+      original,
+      { content: "Explain the document", attachments: [{ id: "upload-a" }] },
+      "assistant-target",
+      "regenerate-request",
+    );
+    expect(regenerated).toMatchObject({
+      request_id: "regenerate-request",
+      message: "Explain the document",
+      thread_id: "thread-a",
+      repository_id: "repo-a",
+      attachment_ids: ["upload-a"],
+      regenerate_message_id: "assistant-target",
+    });
+    expect(regenerated).not.toHaveProperty("edit_message_id");
+    expect(regenerated).not.toHaveProperty("continue_message_id");
+    expect(original).toHaveProperty("edit_message_id", "edit-target");
+  });
+
+  it("keeps an expired pending selection through a deferred history merge and blocks its explicit send", async () => {
+    const { mergeSwicoHistoryAttachments, expiredExplicitAttachments } = await import("../lib/swicoAttachmentState");
+    const pending = {
+      id: "pending-pdf", name: "report.pdf", status: "expired", expires_at: "2026-09-10T00:00:00Z",
+    } as any;
+    let resolveHistory!: (items: any[]) => void;
+    const history = new Promise<any[]>(resolve => { resolveHistory = resolve; });
+    const pendingIds = new Set([pending.id]);
+    resolveHistory([{ id: "old-history", name: "old.pdf", status: "ready", expires_at: "2026-09-11T00:00:00Z" }]);
+    const merged = mergeSwicoHistoryAttachments(await history, [pending], pendingIds);
+    expect(merged.map(item => item.id)).toEqual(["pending-pdf", "old-history"]);
+    expect(expiredExplicitAttachments(merged, pendingIds, Date.parse("2026-09-10T12:00:00Z"))).toEqual([pending]);
+  });
+
   it("keeps parity metadata and feature-gated actions in the production screen", async () => {
     const fs = await import("node:fs/promises");
     const source = await fs.readFile(new URL("../components/swico/SwicoChatScreen.tsx", import.meta.url).pathname, "utf8");

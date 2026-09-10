@@ -1221,7 +1221,7 @@ export function ChatPage() {
       <div className={emptyChat ? 'empty-chat-home' : undefined}>
         {emptyChat && <div className="empty-chat-welcome"><h1 data-testid="empty-chat-greeting">{emptyGreeting}</h1></div>}
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
-        attachments={attachments} pendingAttachments={attachments.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        attachments={attachments} pendingAttachments={attachments.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))} activeAttachments={attachments.filter(item => !pendingAttachmentKeysRef.current.has(attachmentKey(item)))} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}
         repositoryChatEnabled={Boolean(bootstrap.features.web_repository_chat)}

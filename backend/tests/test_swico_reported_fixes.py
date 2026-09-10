@@ -10,6 +10,8 @@ from app.web_api.upload_store import EphemeralUpload, ExtractedChunk
 from app.web_ai.evidence.pack_builder import build_evidence_pack, evidence_prompt
 from app.web_ai.retrieval.lexical import LexicalAttachmentRetriever
 from app.web_ai.retrieval.runtime import execute_hybrid_retrieval
+from app.web_ai.retrieval.models import RetrievalCandidate
+from app.web_ai.retrieval.reranker import select_by_marginal_value
 from app.web_ai.execution_plan import ExecutionPlan
 from app.web_ai.settings import TriagSettings
 from app.web_ai.tier_policy import tier_policy_for
@@ -128,3 +130,33 @@ def test_hybrid_lite_overview_keeps_all_files_through_final_pack_selection():
     assert set(names) == {"file-1.pdf", "file-2.pdf", "file-3.pdf"}
     assert result.pack.truncated is True
     assert "representative excerpts only" in evidence_prompt(result.pack)
+
+
+def test_final_overview_selection_reserves_affordable_coverage_before_depth():
+    def candidate(name: str, upload: str, index: int, tokens: int) -> RetrievalCandidate:
+        return RetrievalCandidate(
+            candidate_id=name, owner_user_id=1, source_kind="document",
+            source_locator=f"{upload} — page {index}", runtime_text=(name + " ") * tokens,
+            token_count=tokens, fused_score=0.8,
+            bounded_metadata=(
+                ("coverage_mode", "representative"),
+                ("coverage_complete", "false"),
+                ("upload_id", upload), ("upload_index", str({"a": 0, "b": 1, "c": 2}[upload])),
+                ("upload_name", f"{upload}.pdf"), ("chunk_index", str(index)),
+            ),
+        )
+
+    candidates = tuple(
+        [candidate("a1", "a", 1, 500), candidate("a2", "a", 2, 50), candidate("a3", "a", 3, 50)]
+        + [candidate("b1", "b", 1, 500), candidate("b2", "b", 2, 500), candidate("b3", "b", 3, 500)]
+        + [candidate("c1", "c", 1, 300), candidate("c2", "c", 2, 300), candidate("c3", "c", 3, 300)]
+    )
+    selected = select_by_marginal_value(candidates, item_limit=4, token_cap=1200)
+    pack = build_evidence_pack(
+        owner_user_id=1, request_id="unequal-coverage", candidates=selected,
+        status="sufficient", token_cap=1200,
+    )
+    assert {item.source_label for item in pack.items} == {"a.pdf", "b.pdf", "c.pdf"}
+    assert [item.evidence_id for item in pack.items[:3]] == ["a2", "b1", "c1"]
+    assert pack.truncated is True
+    assert "representative excerpts only" in evidence_prompt(pack)

@@ -51,6 +51,7 @@ export function Composer({
   focusKey = '',
   attachments = [],
   pendingAttachments,
+  activeAttachments = [],
   attachmentsEnabled = false,
   repository = null,
   repositoryUploadEnabled = false,
@@ -85,7 +86,7 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   cancellationReady?: boolean;
   streaming: boolean; disabled?: boolean; focusKey?: string;
-  attachments?: ComposerAttachment[]; pendingAttachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
+  attachments?: ComposerAttachment[]; pendingAttachments?: ComposerAttachment[]; activeAttachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
   repository?: ComposerRepository | null; repositoryUploadEnabled?: boolean;
   repositoryChatEnabled?: boolean;
   repositoryValidationCapability?: 'static_only' | 'executable';
@@ -332,6 +333,17 @@ export function Composer({
           >
             <X size={15} />
           </button>
+        </div>)}
+      </div>}
+
+      {activeAttachments.length > 0 && <div className="attachment-tray attachment-context-tray" aria-label="Active attachment context">
+        <div className="attachment-context-note" role="status">
+          Active context is included in follow-ups. Remove a file here to make room for another upload.
+        </div>
+        {activeAttachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={`context-${'local_id' in attachment ? attachment.local_id : attachment.id}`}>
+          <span className="attachment-visual"><AttachmentVisual attachment={attachment} /></span>
+          <span className="attachment-copy"><strong title={attachment.name}>{attachment.name}</strong><small>{attachment.status === 'expired' ? 'Expired context — remove or re-upload' : 'Active for this chat'}</small></span>
+          <button type="button" aria-label={`Remove active context ${attachment.name}`} title={`Remove active context ${attachment.name}`} onClick={() => removeAttachment(attachment)}><X size={15} /></button>
         </div>)}
       </div>}
 

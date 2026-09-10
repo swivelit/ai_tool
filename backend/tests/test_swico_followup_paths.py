@@ -18,6 +18,12 @@ from app.web_ai.generation.models import AnswerQualityResult, QualityCheck
 from app.web_ai.persistence import persist_answer_quality
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.ai.agents.web_search_agent import WebSearchResult
+from app.web_ai.generation.output_contract import (
+    OutputContract,
+    apply_reply_language_contract,
+    extract_output_contract,
+    validate_output_contract,
+)
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -64,6 +70,26 @@ def test_language_resolution_ignores_quotes_negation_and_subject_names():
     assert explicit_web_reply_language('Discuss "reply in English" and English grammar') is None
     assert resolve_web_reply_language("ta", "Answer in English about Tamil Nadu") == "en"
     assert resolve_web_reply_language("ta", "Translate it to English") == "en"
+
+
+def test_resolved_english_clears_subject_language_script_requirement():
+    message = "Reply in English and explain the Tamil language"
+    contract = apply_reply_language_contract(
+        extract_output_contract(message), "en",
+    )
+    assert contract.required_script is None
+    checks = validate_output_contract(
+        "Tamil is a language spoken by many people. English can describe its history clearly.",
+        contract,
+    )
+    assert all(check.status == "passed" for check in checks)
+
+
+def test_explicit_english_translation_does_not_require_tamil_script():
+    contract = apply_reply_language_contract(
+        extract_output_contract("Translate this Tamil sentence to English"), "en",
+    )
+    assert contract == OutputContract()
 
 
 def test_prepared_language_contract_accepts_an_english_answer_about_tamil_nadu():
@@ -200,13 +226,41 @@ def test_current_request_is_gated_in_real_web_stream_before_provider(monkeypatch
     assert prepared.optimization is not None and prepared.optimization.cache_eligible is False
 
 
-def test_freshness_resolves_as_of_today_as_historical_and_mixed_requests_as_current():
+def test_explicit_today_and_future_officeholder_requests_are_gated_in_prepared_path():
+    user = create_test_user("freshness-explicit-date", "freshness-explicit-date@example.com")
+    _fund(int(user.id))
+    for message, scope in (
+        ("Who is the CM as of 2026-09-10?", "current"),
+        ("Who is the CM as of 2026-09-11?", "future"),
+    ):
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language="en",
+        )
+        assert prepared.ai_request.metadata["freshness_scope"] == scope
+        assert prepared.ai_request.metadata["freshness_required"] is True
+        assert prepared.route.provider == "blocked"
+        assert prepared.optimization is not None and prepared.optimization.cache_eligible is False
+
+
+def test_freshness_resolves_explicit_dates_against_the_injected_clock():
     clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
     as_of_today = resolve_freshness(
         "Who is the CM as of 2026-09-10?", now=clock,
     )
-    assert as_of_today.scope == "historical"
+    assert as_of_today.scope == "current"
+    assert as_of_today.requires_fresh_evidence is True
     assert as_of_today.as_of == "2026-09-10"
+    future = resolve_freshness(
+        "Who is the CM as of 2026-09-11?", now=clock,
+    )
+    assert future.scope == "future"
+    assert future.requires_fresh_evidence is True
+    past = resolve_freshness(
+        "Who was CM as of 2020-01-02?", now=clock,
+    )
+    assert past.scope == "historical"
+    assert past.requires_fresh_evidence is False
     mixed = resolve_freshness(
         "Who is the current CM and who was the previous CM?", now=clock,
     )
@@ -314,10 +368,21 @@ def test_current_evidence_rejects_malformed_old_future_unrelated_and_conflicting
     assert validate_current_evidence(query, {**base, "retrieved_at": "2020-01-01T00:00:00Z"}, now=fixed)[0] is False
     assert validate_current_evidence(query, {**base, "retrieved_at": "2026-09-11T00:00:00Z"}, now=fixed)[0] is False
     assert validate_current_evidence(query, {**base, "retrieved_at": fixed.isoformat(), "relevant": False, "snippet": "weather in London"}, now=fixed)[0] is False
+    assert validate_current_evidence(query, {
+        **base,
+        "title": "Tamil Nadu tourism guide",
+        "snippet": "Tamil Nadu has beaches, temples, and wildlife tourism.",
+        "retrieved_at": fixed.isoformat(),
+    }, now=fixed)[0] is False
     assert validate_current_evidence(query, [
         {**base, "retrieved_at": fixed.isoformat(), "claim": "A"},
         {**base, "retrieved_at": fixed.isoformat(), "claim": "B"},
     ], now=fixed)[0] is False
+    assert validate_current_evidence(
+        "Who is the CM as of 2026-09-11?",
+        {**base, "temporal_as_of": "2026-09-11", "retrieved_at": fixed.isoformat()},
+        now=fixed,
+    )[0] is False
 
 
 def test_current_request_uses_validated_retrieval_in_prepared_turn(monkeypatch):

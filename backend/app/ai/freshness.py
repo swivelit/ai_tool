@@ -79,6 +79,19 @@ def _requested_date(text: str, now: datetime) -> str:
     return now.astimezone(timezone.utc).date().isoformat()
 
 
+def _explicit_requested_date(text: str) -> date | None:
+    match = re.search(
+        r"\b(?:as\s+of|on|from)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b",
+        text, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
 def _has_current_subject(text: str) -> bool:
     if _OFFICEHOLDER_ROLE_RE.search(text) or _CURRENT_FACT_RE.search(text):
         return True
@@ -137,6 +150,8 @@ def validate_current_evidence(
     except (TypeError, ValueError):
         return False, None, "evidence_missing_temporal_support"
     freshness = resolve_freshness(query, now=clock)
+    if freshness.scope == "future":
+        return False, None, "future_temporal_scope_unavailable"
     if claimed_date.isoformat() != freshness.as_of:
         return False, None, "evidence_temporal_scope_mismatch"
     if (
@@ -156,6 +171,28 @@ def validate_current_evidence(
         query_terms.update(("chief", "minister"))
     if "tamilnadu" in query_terms:
         query_terms.update(("tamil", "nadu"))
+    if _OFFICEHOLDER_RE.search(query):
+        role_terms = set(re.findall(r"[A-Za-z]{2,}", query.casefold()))
+        evidence_lower = f"{title} {snippet}".casefold()
+        role_supported = (
+            ("chief" in role_terms and "minister" in role_terms)
+            or "cm" in role_terms
+            or any(role in role_terms for role in ("president", "governor", "mayor", "chancellor"))
+        )
+        evidence_role_supported = (
+            ("chief" in evidence_lower and "minister" in evidence_lower)
+            or bool(re.search(r"\bcm\b", evidence_lower))
+            or any(re.search(rf"\b{role}\b", evidence_lower) for role in ("president", "governor", "mayor", "chancellor"))
+        )
+        if not role_supported or not evidence_role_supported:
+            return False, None, "evidence_not_relevant"
+        subject_terms = {
+            term for term in query_terms
+            if term not in {"chief", "minister", "president", "governor", "mayor", "chancellor", "tamilnadu"}
+            and len(term) >= 4
+        }
+        if subject_terms and not subject_terms.issubset(evidence_terms):
+            return False, None, "evidence_not_relevant"
     if not query_terms.intersection(evidence_terms):
         return False, None, "evidence_not_relevant"
     return True, {
@@ -178,6 +215,7 @@ def resolve_freshness(
     clock = now or datetime.now(timezone.utc)
     as_of = _requested_date(text, clock)
     historical = _HISTORICAL_RE.search(text)
+    explicit_date = _explicit_requested_date(text)
     explicit_current = _EXPLICIT_CURRENT_RE.search(text)
     officeholder = _OFFICEHOLDER_RE.search(text)
     contextual_officeholder = bool(
@@ -191,9 +229,13 @@ def resolve_freshness(
         or (officeholder and not historical)
         or contextual_officeholder
     )
-    # An explicit as-of/on/in date is historical even when it happens to be
-    # today's injected server date. Mixed questions still need fresh support
-    # for their current half.
+    clock_date = clock.astimezone(timezone.utc).date()
+    if explicit_date and officeholder:
+        if explicit_date > clock_date:
+            return FreshnessDecision("future", True, "future_requested_date", as_of)
+        if explicit_date == clock_date:
+            return FreshnessDecision("current", True, "current_requested_date", as_of)
+    # Mixed questions still need fresh support for their current half.
     if historical and not explicit_current and not contextual_officeholder:
         return FreshnessDecision("historical", False, "historical_or_as_of_request", as_of)
     if current_signal and (current_subject or officeholder or contextual_officeholder):

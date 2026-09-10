@@ -77,6 +77,33 @@ def _select_representative_overview(
     )
     selected: list[RetrievalCandidate] = []
     remaining = max(0, int(token_cap))
+    item_budget = max(0, int(item_limit))
+
+    # Reserve one affordable excerpt per source before adding depth. A first
+    # excerpt can be too large even though a later representative excerpt
+    # would let every uploaded file fit within the same tier budget.
+    if len(ordered_groups) <= item_budget:
+        coverage = [
+            min(
+                items,
+                key=lambda item: (
+                    item.token_count,
+                    int(dict(item.bounded_metadata).get("chunk_index") or 0),
+                    item.source_locator,
+                    item.candidate_id,
+                ),
+            )
+            for items in ordered_groups if items
+        ]
+        if len(coverage) == len(ordered_groups) and sum(item.token_count for item in coverage) <= remaining:
+            reserved = {item.candidate_id for item in coverage}
+            for item in coverage:
+                selected.append(replace(item, rank=len(selected)))
+                remaining -= item.token_count
+            ordered_groups = [
+                [item for item in items if item.candidate_id not in reserved]
+                for items in ordered_groups
+            ]
     while ordered_groups and len(selected) < max(0, int(item_limit)):
         next_groups: list[list[RetrievalCandidate]] = []
         for items in ordered_groups:

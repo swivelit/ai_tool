@@ -271,7 +271,8 @@ def extract_output_contract(message: str) -> OutputContract:
         re.search(r"\b(?:simple\s+)?Tamil\s+sentences\b", script_text, re.IGNORECASE)
         or re.search(
             r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
-            r"[^.\n]{0,50}\bTamil(?!\s+nadu\b)(?:\s+Unicode)?(?:\s+script)?\b",
+            r"\s+(?:in|using|with)\s+(?:the\s+)?Tamil"
+            r"(?!\s+nadu\b)(?:\s+Unicode)?(?:\s+script)?\b",
             script_text,
             re.IGNORECASE,
         )
