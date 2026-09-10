@@ -3,7 +3,7 @@
   color: #171717; background: #fff; font-synthesis: none;
   --bg: #fff; --surface: #f7f7f8; --surface-2: #ececec; --hover: #e8e8e8;
   --text: #171717; --muted: #6b6b6b; --subtle: #8d8d8d; --line: #dedede;
-  --sidebar: #000000; --composer: #f4f4f4; --accent: #111; --accent-text: #fff;
+  --sidebar: #f9f9f9;; --composer: #f4f4f4; --accent: #111; --accent-text: #fff;
   --danger: #c83232; --danger-bg: #fff0f0; --focus: #7c7c7c; --shadow: 0 10px 35px rgb(0 0 0 / 10%);
   --scrollbar-track: transparent; --scrollbar-thumb: color-mix(in srgb, var(--muted) 55%, transparent); --scrollbar-thumb-hover: color-mix(in srgb, var(--muted) 80%, transparent);
 }
@@ -42,6 +42,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sidebar-primary { display: grid; gap: 2px }
 .rail-action, .search-action { display: flex; width: 100%; min-height: 42px; align-items: center; gap: 12px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; font-size: 14px; cursor: pointer }
 .rail-action:hover, .search-action:hover { background: var(--hover) }
+.rail-action.new-chat {
+  background: linear-gradient(90deg, #45b9f5 0%, #8b3ff2 100%);
+  color: #fff;
+}
+.rail-action.new-chat:hover {
+  background: linear-gradient(90deg, #35a9e5 0%, #7b32e2 100%);
+}
 .search-action input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent }
 .search-action kbd { color: var(--subtle); font: 11px ui-monospace, monospace }
 .archive-toggle { margin: 8px 0 4px; color: var(--muted); font-size: 13px }
@@ -765,10 +772,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   }
 }
 /* Sidebar */
-aside {
+/*aside {
   background: #000000 !important;
   color: #ffffff !important;
-}
+}*/
 
 
 

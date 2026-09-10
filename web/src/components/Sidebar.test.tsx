@@ -29,6 +29,7 @@ it('keeps the primary New chat action unique when a thread has the same title', 
     ...props.threads[0], title:'New chat',
   }]} />)
   expect(screen.getAllByRole('button', { name:'New chat' })).toHaveLength(2)
+  expect(screen.getByTestId('new-chat-button')).toHaveClass('rail-action', 'new-chat')
   fireEvent.click(screen.getByTestId('new-chat-button'))
   expect(newChat).toHaveBeenCalledTimes(1)
   expect(props.select).not.toHaveBeenCalled()
