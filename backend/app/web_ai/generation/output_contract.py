@@ -267,17 +267,25 @@ def extract_output_contract(message: str) -> OutputContract:
         flags=re.IGNORECASE,
     )
     required_script = None
-    if (
-        re.search(r"\b(?:simple\s+)?Tamil\s+sentences\b", script_text, re.IGNORECASE)
-        or re.search(
-            r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
-            r"\s+(?:in|using|with)\s+(?:the\s+)?Tamil"
-            r"(?!\s+nadu\b)(?:\s+Unicode)?(?:\s+script)?\b",
-            script_text,
-            re.IGNORECASE,
-        )
-        or ("தமிழ்" in script_text and "வாக்கிய" in script_text)
-        or re.search(r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", script_text)
+    # Only a direct answer-language directive creates a script requirement.
+    # Subject discussion ("explain Tamil sentences") and an earlier directive
+    # superseded by a later one must not contradict the resolved language.
+    directives = list(re.finditer(
+        r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
+        r"[^.!?;\n]{0,32}?\b(?:in|using|with)\s+(?:the\s+)?"
+        r"(Tamil|English|Tanglish)\b",
+        script_text,
+        re.IGNORECASE,
+    ))
+    if directives and directives[-1].group(1).casefold() == "tamil":
+        required_script = "tamil"
+    elif re.search(
+        r"\b(?:in|using)\s+(?:exactly\s+\w+\s+)?(?:simple\s+)?Tamil\s+sentences\b",
+        script_text, re.IGNORECASE,
+    ):
+        required_script = "tamil"
+    elif ("தமிழ்" in script_text and "வாக்கிய" in script_text) or re.search(
+        r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", script_text
     ):
         required_script = "tamil"
 

@@ -5,9 +5,13 @@ export function mergeSwicoHistoryAttachments(
   current: Attachment[],
   pendingIds: ReadonlySet<string>,
   limit = 5,
+  detachedIds: ReadonlySet<string> = new Set<string>(),
 ): Attachment[] {
   const merged = new Map<string, Attachment>();
-  for (const item of [...restored, ...current]) if (!merged.has(item.id)) merged.set(item.id, item);
+  for (const item of [...restored, ...current]) {
+    if (detachedIds.has(item.id)) continue;
+    if (!merged.has(item.id)) merged.set(item.id, item);
+  }
   const values = [...merged.values()];
   const pending = values.filter(item => pendingIds.has(item.id));
   const historical = values.filter(item => !pendingIds.has(item.id));

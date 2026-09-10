@@ -91,6 +91,7 @@ export function ChatPage() {
   const [fileDragActive, setFileDragActive] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
+  const detachedAttachmentIds = useRef(new Map<string, Set<string>>())
   const removedRepositoryUploads = useRef(new Set<string>())
   const revokedAttachmentPreviews = useRef(new Set<string>())
   const attachmentsRef = useRef<ComposerAttachment[]>([])
@@ -257,15 +258,18 @@ export function ChatPage() {
       }
     }
     const current = attachmentsRef.current
+    const detached = detachedAttachmentIds.current.get(threadId) ?? new Set<string>()
     const pending = current.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))
     const activeReady = current.filter(item => (
       item.status === 'ready'
       && !('local_id' in item)
+      && !detached.has(item.id)
       && !pendingAttachmentKeysRef.current.has(item.id)
       && !removedLocalUploads.current.has(item.id)
     ))
     const merged = new Map<string, ComposerAttachment>()
     for (const item of [...activeReady, ...Array.from(restored.values()), ...pending]) {
+      if ('id' in item && detached.has(item.id)) continue
       const key = attachmentKey(item)
       if (!merged.has(key)) merged.set(key, item)
     }
@@ -1011,7 +1015,13 @@ export function ChatPage() {
     revokeAttachmentPreview(attachment)
     attachmentsRef.current = attachmentsRef.current.filter(item => attachmentKey(item) !== key)
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
-    if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
+    if (!('local_id' in attachment)) {
+      const scope = activeRef.current ?? 'new-thread'
+      const detached = detachedAttachmentIds.current.get(scope) ?? new Set<string>()
+      detached.add(attachment.id)
+      detachedAttachmentIds.current.set(scope, detached)
+      if (user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
+    }
   }
 
   const hasFileDragData = (event: DragEvent<HTMLElement>) => (

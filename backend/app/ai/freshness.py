@@ -45,16 +45,26 @@ _CURRENT_FACT_RE = re.compile(
 )
 
 
-def _requested_date(text: str, now: datetime) -> str:
-    full = re.search(
+def _has_officeholder_subject(text: str) -> bool:
+    """Recognize a role question even when a date follows the subject."""
+    if _OFFICEHOLDER_RE.search(text):
+        return True
+    return bool(
+        _OFFICEHOLDER_ROLE_RE.search(text)
+        and re.search(r"\b(?:of|in)\b", text, re.IGNORECASE)
+    )
+
+
+def _parse_explicit_date(text: str) -> date | None:
+    match = re.search(
         r"\b(?:as\s+of|on|from)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b",
         text, re.IGNORECASE,
     )
-    if full:
+    if match:
         try:
-            return date(int(full.group(1)), int(full.group(2)), int(full.group(3))).isoformat()
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
         except ValueError:
-            pass
+            return None
     month_names = (
         "january|february|march|april|may|june|july|august|september|"
         "october|november|december"
@@ -67,9 +77,16 @@ def _requested_date(text: str, now: datetime) -> str:
         try:
             return datetime.strptime(
                 f"{named.group(1)} {named.group(2)} {named.group(3)}", "%B %d %Y"
-            ).date().isoformat()
+            ).date()
         except ValueError:
-            pass
+            return None
+    return None
+
+
+def _requested_date(text: str, now: datetime) -> str:
+    explicit = _parse_explicit_date(text)
+    if explicit:
+        return explicit.isoformat()
     year = re.search(
         r"\b(?:as\s+of|in|during|from|between)\s+(?:the\s+year\s+)?(\d{4})\b",
         text, re.IGNORECASE,
@@ -80,16 +97,7 @@ def _requested_date(text: str, now: datetime) -> str:
 
 
 def _explicit_requested_date(text: str) -> date | None:
-    match = re.search(
-        r"\b(?:as\s+of|on|from)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b",
-        text, re.IGNORECASE,
-    )
-    if not match:
-        return None
-    try:
-        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    except ValueError:
-        return None
+    return _parse_explicit_date(text)
 
 
 def _has_current_subject(text: str) -> bool:
@@ -169,26 +177,42 @@ def validate_current_evidence(
     evidence_terms = set(re.findall(r"[A-Za-z]{3,}", f"{title} {snippet}".casefold()))
     if "cm" in query_terms:
         query_terms.update(("chief", "minister"))
+    if "pm" in query_terms:
+        query_terms.update(("prime", "minister"))
     if "tamilnadu" in query_terms:
         query_terms.update(("tamil", "nadu"))
-    if _OFFICEHOLDER_RE.search(query):
+    if _has_officeholder_subject(query):
         role_terms = set(re.findall(r"[A-Za-z]{2,}", query.casefold()))
         evidence_lower = f"{title} {snippet}".casefold()
+        if "pm" in role_terms or ("prime" in role_terms and "minister" in role_terms):
+            expected_roles = ("prime minister",)
+        elif "cm" in role_terms or ("chief" in role_terms and "minister" in role_terms):
+            expected_roles = ("chief minister",)
+        else:
+            expected_roles = tuple(
+                role for role in ("president", "governor", "mayor", "chancellor")
+                if role in role_terms
+            )
         role_supported = (
             ("chief" in role_terms and "minister" in role_terms)
             or "cm" in role_terms
+            or ("prime" in role_terms and "minister" in role_terms)
+            or "pm" in role_terms
             or any(role in role_terms for role in ("president", "governor", "mayor", "chancellor"))
         )
         evidence_role_supported = (
             ("chief" in evidence_lower and "minister" in evidence_lower)
             or bool(re.search(r"\bcm\b", evidence_lower))
+            or ("prime minister" in evidence_lower or bool(re.search(r"\bpm\b", evidence_lower)))
             or any(re.search(rf"\b{role}\b", evidence_lower) for role in ("president", "governor", "mayor", "chancellor"))
         )
+        if expected_roles and not any(role in evidence_lower for role in expected_roles):
+            evidence_role_supported = False
         if not role_supported or not evidence_role_supported:
             return False, None, "evidence_not_relevant"
         subject_terms = {
             term for term in query_terms
-            if term not in {"chief", "minister", "president", "governor", "mayor", "chancellor", "tamilnadu"}
+            if term not in {"please", "identify", "name", "tell", "me", "could", "you", "who", "what", "is", "the", "of", "current", "latest", "chief", "prime", "minister", "president", "governor", "mayor", "chancellor", "tamilnadu", "tamil", "nadu", "cm", "pm"}
             and len(term) >= 4
         }
         if subject_terms and not subject_terms.issubset(evidence_terms):
@@ -217,7 +241,7 @@ def resolve_freshness(
     historical = _HISTORICAL_RE.search(text)
     explicit_date = _explicit_requested_date(text)
     explicit_current = _EXPLICIT_CURRENT_RE.search(text)
-    officeholder = _OFFICEHOLDER_RE.search(text)
+    officeholder = _has_officeholder_subject(text)
     contextual_officeholder = bool(
         context_text
         and _OFFICEHOLDER_ROLE_RE.search(context_text)
@@ -235,6 +259,7 @@ def resolve_freshness(
             return FreshnessDecision("future", True, "future_requested_date", as_of)
         if explicit_date == clock_date:
             return FreshnessDecision("current", True, "current_requested_date", as_of)
+        return FreshnessDecision("historical", False, "historical_requested_date", as_of)
     # Mixed questions still need fresh support for their current half.
     if historical and not explicit_current and not contextual_officeholder:
         return FreshnessDecision("historical", False, "historical_or_as_of_request", as_of)

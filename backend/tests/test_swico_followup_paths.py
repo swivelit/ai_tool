@@ -64,6 +64,27 @@ def test_temporal_decision_handles_roles_dates_and_timedless_now():
     assert historical.scope == "historical" and historical.as_of == "2020-01-02"
 
 
+def test_temporal_decision_normalizes_abbreviated_and_named_officeholder_dates():
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    assert resolve_freshness("CM of Tamil Nadu as of 2026-09-10", now=clock).scope == "current"
+    assert resolve_freshness("CM of Tamilnadu as of September 11, 2026", now=clock).scope == "future"
+    assert resolve_freshness("Who is the CM on 2020-01-02?", now=clock).scope == "historical"
+
+
+def test_current_evidence_matches_role_and_ignores_polite_instruction_words():
+    fixed = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    base = {
+        "url": "https://example.test/current", "source": "official-government",
+        "provenance": "official-government", "temporal_support": True,
+        "temporal_as_of": "2026-09-10", "relevant": True,
+        "retrieved_at": fixed.isoformat(),
+    }
+    governor = {**base, "title": "Tamil Nadu Governor", "snippet": "The Governor of Tamil Nadu oversees the state."}
+    prime_minister = {**base, "title": "Prime Minister of India", "snippet": "The Prime Minister is the current head of the Union government."}
+    assert validate_current_evidence("Please identify the CM of Tamil Nadu", governor, now=fixed)[0] is False
+    assert validate_current_evidence("Please identify the PM of India", prime_minister, now=fixed)[0] is True
+
+
 def test_language_resolution_ignores_quotes_negation_and_subject_names():
     assert explicit_web_reply_language("Translate it to English") == "en"
     assert explicit_web_reply_language("Do not reply in Tamil; reply in English") == "en"
@@ -83,6 +104,40 @@ def test_resolved_english_clears_subject_language_script_requirement():
         contract,
     )
     assert all(check.status == "passed" for check in checks)
+
+
+def test_superseded_or_discussed_tamil_does_not_conflict_with_english_contract():
+    for message in (
+        "Reply in English and explain how Tamil sentences are structured",
+        "Reply in Tamil. Actually, reply in English.",
+    ):
+        contract = apply_reply_language_contract(extract_output_contract(message), "en")
+        assert contract.required_script is None
+        checks = validate_output_contract(
+            "English can explain how Tamil sentences are structured without requiring Tamil script.",
+            contract,
+        )
+        assert all(check.status == "passed" for check in checks)
+
+
+def test_prepared_language_contract_uses_the_final_english_instruction():
+    user = create_test_user("language-final-instruction", "language-final-instruction@example.com")
+    _fund(int(user.id))
+    for message in (
+        "Reply in English and explain how Tamil sentences are structured",
+        "Reply in Tamil. Actually, reply in English.",
+    ):
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language="ta",
+        )
+        assert prepared.reply_language == "en"
+        assert prepared.ai_request.metadata["output_contract"]["required_script"] is None
+        assert any(
+            "English" in str(item.get("content") or "")
+            for item in prepared.ai_request.metadata["provider_messages"]
+            if isinstance(item, dict)
+        )
 
 
 def test_explicit_english_translation_does_not_require_tamil_script():
@@ -232,15 +287,22 @@ def test_explicit_today_and_future_officeholder_requests_are_gated_in_prepared_p
     for message, scope in (
         ("Who is the CM as of 2026-09-10?", "current"),
         ("Who is the CM as of 2026-09-11?", "future"),
+        ("CM of Tamil Nadu as of 2026-09-10?", "current"),
+        ("CM of Tamilnadu as of September 11, 2026?", "future"),
     ):
         prepared = prepare_web_turn(
             user_id=int(user.id), message=message, request_id=str(uuid4()),
             thread_id=None, reply_language="en",
+            now=datetime(2026, 9, 10, tzinfo=timezone.utc),
         )
         assert prepared.ai_request.metadata["freshness_scope"] == scope
         assert prepared.ai_request.metadata["freshness_required"] is True
         assert prepared.route.provider == "blocked"
         assert prepared.optimization is not None and prepared.optimization.cache_eligible is False
+    assert resolve_freshness(
+        "CM of Tamil Nadu as of 2026-09-10?",
+        now=datetime(2026, 9, 11, tzinfo=timezone.utc),
+    ).scope == "historical"
 
 
 def test_freshness_resolves_explicit_dates_against_the_injected_clock():

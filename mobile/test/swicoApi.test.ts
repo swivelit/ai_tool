@@ -216,6 +216,24 @@ describe("canonical Swico mobile API client", () => {
     expect(controller.isBusy).toBe(false);
   });
 
+  it("does not restore a deliberately detached file when deferred history resolves", async () => {
+    const { mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
+    const attachment = { id: "removed-a", name: "a.pdf", media_type: "application/pdf", size_bytes: 4, created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-10T00:10:00Z", status: "ready" as const, warnings: [] };
+    let resolveHistory!: (value: { items: typeof attachment[] }) => void;
+    const history = new Promise<{ items: typeof attachment[] }>(resolve => { resolveHistory = resolve; });
+    const detached = new Set<string>([attachment.id]);
+    resolveHistory({ items: [attachment] });
+    await history;
+    expect(mergeSwicoHistoryAttachments([attachment], [], new Set(), 5, detached)).toEqual([]);
+  });
+
+  it("normalizes regeneration to one target even when the historical fallback has an active edit", async () => {
+    const { normalizeSwicoMutationOptions } = await import("../lib/swicoRequestPayload");
+    expect(normalizeSwicoMutationOptions({ regenerateId: "assistant-a" }, "user-edit-a")).toEqual({ regenerateId: "assistant-a" });
+    expect(normalizeSwicoMutationOptions({ editId: "user-edit-a" }, "user-edit-a")).toEqual({ editId: "user-edit-a" });
+    expect(normalizeSwicoMutationOptions({ continueId: "assistant-a", regenerateId: "assistant-b" }, "user-edit-a")).toEqual({ regenerateId: "assistant-b" });
+  });
+
   it("builds regeneration with one fresh mutation target while retry keeps the immutable request", async () => {
     const { buildRegeneratePayload } = await import("../lib/swicoRequestPayload");
     const original = {

@@ -4,6 +4,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -1241,6 +1242,7 @@ def prepare_web_turn(
     resume_accepted_queue: bool = False,
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
+    now: datetime | None = None,
 ) -> PreparedWebTurn:
     request_triag_settings = triag_settings
     if request_triag_settings is None:
@@ -1620,7 +1622,7 @@ def prepare_web_turn(
         reply_language = resolve_web_reply_language(
             inherited_reply_language or reply_language, model_message
         )
-        freshness = resolve_freshness(model_message)
+        freshness = resolve_freshness(model_message, now=now)
         output_contract = apply_reply_language_contract(
             extract_output_contract(model_message), reply_language,
         )
@@ -2662,6 +2664,7 @@ def prepare_web_turn(
                 for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
                 if value
             ),
+            now=now,
         )
         base_metadata.update({
             "freshness_scope": freshness.scope,

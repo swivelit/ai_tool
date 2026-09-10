@@ -1,5 +1,22 @@
 import type { ChatRequestPayload } from "./swicoTypes";
 
+export type SwicoMutationOptions = {
+  continueId?: string;
+  editId?: string;
+  regenerateId?: string;
+};
+
+/** Select exactly one server mutation target for a newly constructed operation. */
+export function normalizeSwicoMutationOptions(
+  options: SwicoMutationOptions,
+  activeEditTarget?: string | null,
+): SwicoMutationOptions {
+  if (options.regenerateId) return { regenerateId: options.regenerateId };
+  if (options.continueId) return { continueId: options.continueId };
+  if (options.editId || activeEditTarget) return { editId: options.editId || activeEditTarget! };
+  return {};
+}
+
 type RegenerationSource = {
   content: string;
   attachments?: Array<{ id: string }>;
