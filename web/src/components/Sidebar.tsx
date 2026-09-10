@@ -44,7 +44,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     window.addEventListener('keydown', shortcuts); return () => window.removeEventListener('keydown', shortcuts)
   }, [close, open])
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
-  const iconButton = (label: string, icon: ReactNode, action: () => void, testId?: string) => <button className="rail-action" aria-label={label} title={label} data-testid={testId} onClick={action}>{icon}<span>{label}</span></button>
+  const iconButton = (label: string, icon: ReactNode, action: () => void, testId?: string) => <button className={`rail-action ${testId === 'new-chat-button' ? 'new-chat' : ''}`} aria-label={label} title={label} data-testid={testId} onClick={action}>{icon}<span>{label}</span></button>
   const estimatedTokens = wallet?.token_estimate?.estimated_blended_tokens
   const billingExempt = wallet?.billing_exempt === true
   const estimatedBalanceName = !wallet || estimatedTokens === null || estimatedTokens === undefined
