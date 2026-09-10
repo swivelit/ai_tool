@@ -3,6 +3,7 @@ import type { ResponseQuality } from '../types'
 
 const LABELS: Record<ResponseQuality['status'], string> = {
   verified: 'Verified',
+  checked: 'Structure checked; sources not verified',
   grounded: 'Sources checked',
   best_effort: 'Best effort',
   unverified: 'Could not fully verify',

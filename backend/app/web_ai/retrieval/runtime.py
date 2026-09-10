@@ -286,10 +286,12 @@ def _lexical_support_sufficient(run: RetrievalRun) -> bool:
     """Return true when lexical evidence is strong enough to skip dense search."""
 
     return any(
-        max(
-            float(getattr(item, "lexical_score", 0.0) or 0.0),
-            float(getattr(item, "metadata_score", 0.0) or 0.0),
-        ) >= 0.08
+        float(getattr(item, "semantic_score", 0.0) or 0.0) >= 0.55
+        or float(getattr(item, "metadata_score", 0.0) or 0.0) >= 0.5
+        or (
+            float(getattr(item, "lexical_score", 0.0) or 0.0) >= 0.45
+            and float(getattr(item, "query_coverage", 0.0) or 0.0) >= 0.45
+        )
         for result_set in run.result_sets
         for item in result_set
     )

@@ -17,6 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
+from ..ai.freshness import resolve_freshness
 from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
@@ -407,7 +408,7 @@ def _safe_quality_summary(value: object) -> dict[str, object] | None:
         return None
     status = str(value.get("status") or "")
     if status not in {
-        "verified", "grounded", "best_effort", "unverified",
+        "verified", "checked", "grounded", "best_effort", "unverified",
         "insufficient_evidence",
     }:
         return None
@@ -1534,6 +1535,11 @@ def prepare_web_turn(
                 "Continue the previous response exactly from where it stopped. "
                 "Do not repeat completed sections; finish all remaining steps end-to-end."
             )
+        # Resolve once, after edit/regenerate/continuation semantics have
+        # selected the effective turn text. Every downstream consumer uses
+        # this value: contracts, prompts, routing, metadata, and cache keys.
+        reply_language = resolve_web_reply_language(reply_language, model_message)
+        freshness = resolve_freshness(model_message)
         output_contract = apply_reply_language_contract(
             extract_output_contract(model_message), reply_language,
         )
@@ -1723,6 +1729,18 @@ def prepare_web_turn(
         preliminary = _persistent_knowledge_cache_policy(
             preliminary, persistent_knowledge_tokens
         )
+        if freshness.requires_fresh_evidence:
+            preliminary = replace(
+                preliminary,
+                cache_eligible=False,
+                cache_scope="disabled",
+                cache_scope_reason="freshness_requires_retrieval",
+                metrics={
+                    **preliminary.metrics,
+                    "cache_scope": "disabled",
+                    "cache_scope_reason": "freshness_requires_retrieval",
+                },
+            )
         if repository_snapshot is not None:
             preliminary = replace(
                 preliminary,
@@ -1788,6 +1806,10 @@ def prepare_web_turn(
             "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
             "user_tier": "paid", "swico_tier": swico_tier,
             "attachment_count": len(uploads),
+            "freshness_scope": freshness.scope,
+            "freshness_required": freshness.requires_fresh_evidence,
+            "freshness_reason": freshness.reason,
+            "freshness_as_of": freshness.as_of,
             # These values are derived only after the upload store has enforced
             # TTL and owner isolation.  The provider router uses them to avoid
             # mistaking web attachment questions for legacy document tools.
@@ -6324,9 +6346,12 @@ def execute_web_turn(
             ),
         })
         response.raw.update(optimization_metrics)
+        provider_sources = response.raw.get("sources")
         safe_sources = (
             list(prepared.retrieval_context.safe_sources)
             if prepared.retrieval_context is not None
+            else [item for item in provider_sources if isinstance(item, dict)]
+            if isinstance(provider_sources, list)
             else []
         )
         response.raw["sources"] = safe_sources

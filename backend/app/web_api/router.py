@@ -73,7 +73,7 @@ from ..ai.providers.sarvam_provider import (
 )
 from ..ai.language import (
     WEB_REPLY_LANGUAGES, is_supported_web_reply_language,
-    normalize_web_reply_language, resolve_web_stt_mode,
+    normalize_web_reply_language, resolve_web_reply_language, resolve_web_stt_mode,
 )
 from ..ai.providers.sarvam_streaming_provider import (
     SarvamStreamingError, SarvamStreamingProvider, sarvam_tts_output_codec,
@@ -697,7 +697,7 @@ def _serialize_message(
     if isinstance(raw_quality, dict):
         quality_status = str(raw_quality.get("status") or "")
         if quality_status in {
-            "verified", "grounded", "best_effort", "unverified",
+            "verified", "checked", "grounded", "best_effort", "unverified",
             "insufficient_evidence",
         }:
             quality_checks = []
@@ -4117,7 +4117,9 @@ async def chat_stream(
                 raise HTTPException(401, "Missing auth token")
             user = get_owned_user(rate_session, auth)
             user_id = int(user.id)
-            resolved_reply_language = _resolved_reply_language(user)
+            resolved_reply_language = resolve_web_reply_language(
+                _resolved_reply_language(user), payload.message,
+            )
             billing_exempt = is_internal_test_user(auth, user)
             free_eligible = swico_free_eligible(
                 user_id, internal_account=billing_exempt,

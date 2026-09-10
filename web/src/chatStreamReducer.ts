@@ -54,7 +54,7 @@ function sources(data: unknown): SourceSummary[] {
 function quality(data: unknown): ResponseQuality | null {
   const value = record(data)
   const status = String(value.status ?? '')
-  if (!['verified', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence'].includes(status)) return null
+  if (!['verified', 'checked', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence'].includes(status)) return null
   const checks = (Array.isArray(value.checks) ? value.checks : []).flatMap(item => {
     const check = record(item)
     const type = String(check.type ?? '').slice(0, 64)

@@ -26,7 +26,9 @@ def quality_outcome(
     if evidence_backed:
         return "grounded"
     if verified_buffered:
-        return "verified"
+        # Buffering and structural checks say that the response is well formed;
+        # without factual evidence they must not be labelled verified.
+        return "checked"
     return "best_effort"
 
 

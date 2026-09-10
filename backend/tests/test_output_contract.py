@@ -583,7 +583,7 @@ def test_last_mile_contract_guard_cannot_persist_invalid_text_as_verified():
             output_contract=contract,
         ),
     )
-    assert claimed.status == "verified"
+    assert claimed.status == "checked"
 
     enforced = _enforce_final_output_contract_quality(
         "One paragraph that violates the contract.", contract, claimed

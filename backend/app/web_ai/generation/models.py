@@ -7,6 +7,7 @@ from typing import Literal
 AnswerCheckStatus = Literal["not_run", "passed", "failed", "skipped", "error"]
 QualityOutcome = Literal[
     "verified",
+    "checked",
     "grounded",
     "best_effort",
     "unverified",
@@ -52,7 +53,7 @@ class AnswerQualityResult:
 
     @property
     def passed(self) -> bool:
-        return self.status in {"verified", "grounded", "best_effort"}
+        return self.status in {"verified", "checked", "grounded", "best_effort"}
 
     @property
     def failed_checks(self) -> tuple[QualityCheck, ...]:

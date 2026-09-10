@@ -294,6 +294,39 @@ def is_supported_web_reply_language(value: Optional[str]) -> bool:
     return _normalized_reply_language(value) in WEB_REPLY_LANGUAGES
 
 
+_EXPLICIT_REPLY_LANGUAGE_RE = re.compile(
+    r"\b(?:reply|answer|respond|give|provide|show|tell|return|write|output|result|"
+    r"explain|say)\b[^\n.!?]{0,80}?\b(?:in|using|as)\s+"
+    r"(english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|marathi|"
+    r"gujarati|punjabi|odia|oriya)\b(?!\s+nadu\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE = re.compile(
+    r"\b(english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|"
+    r"marathi|gujarati|punjabi|odia|oriya)\s+la\b",
+    re.IGNORECASE,
+)
+
+
+def explicit_web_reply_language(message: str) -> str | None:
+    """Return a one-turn output-language instruction, if one is explicit.
+
+    The output verb requirement is intentional: place names (for example,
+    Tamil Nadu), quoted material, and subjects such as English grammar are not
+    reply-language requests.
+    """
+    text = str(message or "")
+    match = _EXPLICIT_REPLY_LANGUAGE_RE.search(text)
+    if match:
+        return normalize_web_reply_language(match.group(1))
+    # Common Tanglish imperatives are output transformations, not translation
+    # commands for the words in the request itself.
+    match = _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE.search(text)
+    if match and re.search(r"\b(?:sollu|sollunga|pannu|pannunga|reply|answer|respond)\b", text, re.I):
+        return normalize_web_reply_language(match.group(1))
+    return None
+
+
 def web_reply_language_name(value: Optional[str]) -> str:
     return WEB_REPLY_LANGUAGE_NAMES.get(normalize_web_reply_language(value) or "", "English")
 
@@ -305,7 +338,15 @@ def web_reply_language_script(value: Optional[str]) -> str:
 def resolve_web_reply_language(
     reply_language: Optional[str], message: str = ""
 ) -> str:
-    """Resolve website reply style, preferring a valid saved preference."""
+    """Resolve the effective output language for one request.
+
+    A current-turn instruction has precedence over the saved profile setting;
+    it does not mutate that setting.
+    """
+
+    explicit = explicit_web_reply_language(message)
+    if explicit in WEB_REPLY_LANGUAGES:
+        return explicit
 
     normalized = normalize_web_reply_language(reply_language)
     if normalized in WEB_REPLY_LANGUAGES:
@@ -336,7 +377,8 @@ def _romanized_language(message: str) -> Optional[str]:
 
 
 def detect_language(message: str, reply_language: Optional[str] = None) -> LanguageDecision:
-    reply = _normalized_reply_language(reply_language)
+    explicit = explicit_web_reply_language(message)
+    reply = explicit or normalize_web_reply_language(reply_language) or ""
     script_language = _script_language(message)
     romanized_language = _romanized_language(message) if not script_language else None
     input_language = script_language or romanized_language or "en"
@@ -363,7 +405,7 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
         return LanguageDecision(
             language=language,
             is_indic=True,
-            code_mixed=reply == "tanglish",
+            code_mixed=reply == "tanglish" or (reply == "ta" and bool(romanized_language)),
             prefer_provider="sarvam",
             reason="reply_language_prefers_indic",
             input_language=input_language,

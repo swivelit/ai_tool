@@ -114,7 +114,7 @@ export type SourceSummary = {
   confidence: number;
   source_kind: string;
 }
-export type QualityOutcome = 'verified' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
+export type QualityOutcome = 'verified' | 'checked' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
 export type QualityCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped' | 'error'
 export type ResponseQuality = {
   status: QualityOutcome;

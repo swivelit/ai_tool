@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import re
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Optional
 
@@ -14,7 +15,12 @@ from sqlmodel import Session
 from .budget import enforce_free_text_quota, enforce_provider_budget
 from .agent_runtime import AgentRuntime, agentic_mode_enabled
 from .intent import classify_contextual_followup
-from .language import localized_web_deterministic_text, normalize_web_reply_language, web_reply_language_name
+from .freshness import resolve_freshness
+from .agents.web_search_agent import WebSearchAgent
+from .language import (
+    explicit_web_reply_language, localized_web_deterministic_text,
+    normalize_web_reply_language, web_reply_language_name,
+)
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
@@ -74,6 +80,62 @@ def run_text_turn(
             cache_hit=True,
             metadata={"cache_hit_source": "L0_negative_cache"},
         )
+
+    # Current facts bypass model/cache guesses. The existing bounded search
+    # helper is used only when explicitly enabled; failures become a truthful
+    # unavailable response with no provider call.
+    freshness = resolve_freshness(ai_request.message)
+    if freshness.requires_fresh_evidence and _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False):
+        search = WebSearchAgent().search(ai_request.message)
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        if search.results:
+            result = search.results[0]
+            url = str(result.get("url") or "").strip()
+            title = str(result.get("title") or "Web source").strip()[:128]
+            snippet = str(result.get("snippet") or "").strip()
+            source = {
+                "id": "W1", "label": title, "locator": url[:256],
+                "confidence": 0.7, "source_kind": "web_search",
+            }
+            text = (
+                f"I found a current source relevant to this question:\n\n{snippet}\n\n"
+                f"Source: {url}\nRetrieved: {retrieved_at}"
+            )
+            response = AIProviderResponse(
+                text=text, provider="backend_tool", model=None,
+                route="web_search_grounded", reason="bounded_retrieval_success",
+                language=ai_request.reply_language or "en", intent="live_data",
+                characters=len(text), raw={
+                    "web_search": True, "web_search_used": True,
+                    "retrieved_at": retrieved_at, "freshness": freshness.__dict__,
+                    "sources": [source], "quality": {
+                        "status": "grounded", "retrieval_status": "sufficient",
+                        "checks": [{"type": "freshness_evidence", "status": "passed"}],
+                    },
+                },
+            )
+            return _record(session, response, ai_request, started, metadata={"freshness": freshness.__dict__})
+        text = (
+            localized_web_deterministic_text(
+                ai_request.reply_language, "live_data_disabled",
+            )
+            + " Please try again later; I will not guess."
+        )
+        response = AIProviderResponse(
+            text=text, provider="blocked", model=None,
+            route="live_data_unavailable", reason=f"fresh_retrieval_{search.reason}",
+            language=ai_request.reply_language or "en", intent="live_data",
+            characters=len(text), raw={
+                "web_search": True, "web_search_used": False,
+                "retrieved_at": retrieved_at, "freshness": freshness.__dict__,
+                "retrieval_failure": search.reason,
+                "quality": {
+                    "status": "insufficient_evidence", "retrieval_status": "insufficient",
+                    "checks": [{"type": "freshness_evidence", "status": "failed"}],
+                },
+            },
+        )
+        return _record(session, response, ai_request, started, metadata={"freshness": freshness.__dict__})
 
     agent_result = None
     if agentic_mode_enabled():
@@ -420,6 +482,7 @@ def _expanded_contextual_prompt(message: str, intent: str, target: dict[str, str
     previous_assistant = target.get("assistant", "")
     operation = {
         "contextual_translate": "translate or restate the previous topic",
+        "contextual_language": "rewrite the previous answer in the requested language",
         "contextual_rewrite": "rewrite or shorten the previous answer",
         "contextual_explain": "explain the previous topic simply",
     }.get(intent, "answer the contextual follow-up")
@@ -435,6 +498,9 @@ def _expanded_contextual_prompt(message: str, intent: str, target: dict[str, str
 
 def _contextual_language(message: str, reply_language: Optional[str]) -> str:
     text = str(message or "").lower()
+    explicit = explicit_web_reply_language(message)
+    if explicit:
+        return explicit
     normalized_reply = normalize_web_reply_language(reply_language)
     if normalized_reply:
         return normalized_reply
@@ -802,11 +868,9 @@ def _max_embedding_calls_per_turn() -> int:
 
 
 def _blocked_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:
+    language = normalize_web_reply_language(request.reply_language or route.language) or "en"
     if route.intent in {"weather", "live_data"}:
-        text = (
-            "I cannot fetch live or current data from this free route right now. "
-            "Please connect a live data provider or ask a stable background question."
-        )
+        text = localized_web_deterministic_text(language, "live_data_disabled")
     elif route.intent == "unsafe_or_sensitive":
         text = (
             "I cannot provide high-risk medical, legal, financial, or emergency instructions here. "

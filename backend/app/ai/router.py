@@ -8,6 +8,7 @@ from ..openai_model_router import OpenAIModelRouter
 from .provider_pool import MultiProviderBroker, multi_provider_routing_enabled
 from .swico_tiers import SwicoTierUnavailableError, free_enabled, free_output_token_ceiling
 from .intent import IntentDecision, classify_intent_with_metadata, normalize_voice_query_for_intent
+from .freshness import resolve_freshness
 from .language import detect_language
 from .prompts import concise_max_output_tokens
 from .providers.sarvam_provider import chat_model_for_intent
@@ -47,6 +48,13 @@ class AIProviderRouter:
             "intent_before_cleanup": intent.metadata.get("intent_before_cleanup") or intent.intent,
             "intent_after_cleanup": intent.intent,
         }
+        freshness = resolve_freshness(request.message)
+        intent_metadata.update({
+            "freshness_scope": freshness.scope,
+            "freshness_required": freshness.requires_fresh_evidence,
+            "freshness_reason": freshness.reason,
+            "freshness_as_of": freshness.as_of,
+        })
         if intent.metadata.get("tool_intent_candidate"):
             intent_metadata["tool_intent_candidate"] = intent.metadata[
                 "tool_intent_candidate"
@@ -74,6 +82,11 @@ class AIProviderRouter:
                 metadata=intent_metadata,
             )
 
+        if freshness.requires_fresh_evidence and intent.intent == "general":
+            intent = IntentDecision(
+                intent="live_data", route="blocked_live_data",
+                reason=freshness.reason, metadata=intent.metadata,
+            )
         if intent.intent in {"weather", "live_data"}:
             if not _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False):
                 return AIRoute(
@@ -111,6 +124,7 @@ class AIProviderRouter:
                 reason="validated_attachment_question",
                 metadata=intent.metadata,
             )
+            intent_metadata["intent_after_cleanup"] = "live_data"
         if intent.route == "backend_tool" and not web_attachment_qa:
             return AIRoute(
                 provider="backend_tool",

@@ -86,6 +86,7 @@ export default function SwicoChatScreen() {
   const [billingBucket, setBillingBucket] = useState<"chat" | "voice">("chat");
   const [legalPage, setLegalPage] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
+  const [bootstrapFailed, setBootstrapFailed] = useState(false);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const [voiceReplyStates, setVoiceReplyStates] = useState<Record<string, VoiceReplyState>>({});
   const [renameTarget, setRenameTarget] = useState<Thread | null>(null);
@@ -94,6 +95,10 @@ export default function SwicoChatScreen() {
   const [editedResponses, setEditedResponses] = useState<Record<string, string>>({});
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const activeRequestRef = useRef<string | null>(null);
+  const draftRef = useRef(draft);
+  const attachmentsRef = useRef(attachments);
+  const searchGenerationRef = useRef(0);
   const cancellationReadyRef = useRef(false);
   const queuedStopRef = useRef(false);
   const cancellationSentRef = useRef(false);
@@ -106,6 +111,8 @@ export default function SwicoChatScreen() {
   const offline = useConnectivity();
   const mobileRelease = String((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.MOBILE_BUILD_ID || "unavailable");
   const realtimeAvailability = useMemo(() => bootstrap ? voiceAvailability(bootstrap, mobileRelease) : { enabled: false, reason: "Voice Mode is unavailable while Swico is loading.", releaseMismatch: false }, [bootstrap, mobileRelease]);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
 
   const reloadThreads = useCallback(async (isArchived = archived) => {
     if (!user) return;
@@ -129,21 +136,27 @@ export default function SwicoChatScreen() {
     result.items.forEach(message => (message.attachments || []).forEach(attachment => {
       if (attachment.status === "ready" && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment);
     }));
-    setAttachments(Array.from(restored.values()).slice(-5));
+    const current = attachmentsRef.current.filter(item => item.status === "ready" && new Date(item.expires_at).getTime() > Date.now());
+    const merged = new Map<string, Attachment>();
+    for (const item of [...Array.from(restored.values()), ...current]) if (!merged.has(item.id)) merged.set(item.id, item);
+    setAttachments(Array.from(merged.values()).slice(-5));
     if (!pendingScrollMessageId) setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
   }, [pendingScrollMessageId, user]);
 
-  useEffect(() => {
+  const loadWorkspace = useCallback(async () => {
     if (!user) return;
-    let alive = true;
-    void Promise.all([getBootstrap(user), getThreads(user)]).then(([nextBootstrap, nextThreads]) => {
-      if (!alive) return;
+    setBootstrapFailed(false);
+    try {
+      const [nextBootstrap, nextThreads] = await Promise.all([getBootstrap(user), getThreads(user)]);
       setBootstrap(nextBootstrap);
       setThreads(nextThreads.items);
       setHasMoreThreads(nextThreads.has_more);
-    }).catch(() => setError("Swico could not load your workspace. Check your connection and try again."));
-    return () => { alive = false; };
+    } catch {
+      setBootstrapFailed(true);
+      setError("Swico could not load your workspace. Check your connection and try again.");
+    }
   }, [user]);
+  useEffect(() => { void loadWorkspace(); }, [loadWorkspace]);
 
   useEffect(() => {
     if (activeThread && !streaming) void reloadMessages(activeThread).catch(() => setError("This conversation could not be loaded."));
@@ -210,7 +223,13 @@ export default function SwicoChatScreen() {
     if (!user || offline || !search.trim() || !bootstrap?.features.web_content_search) {
       setSearchResults([]); return;
     }
-    const timer = setTimeout(() => void searchChats(user, search).then(result => setSearchResults(result.items)).catch(() => setSearchResults([])), 300);
+    const generation = ++searchGenerationRef.current;
+    const query = search.trim();
+    const timer = setTimeout(() => void searchChats(user, query).then(result => {
+      if (generation === searchGenerationRef.current && query === search.trim()) setSearchResults(result.items);
+    }).catch(() => {
+      if (generation === searchGenerationRef.current && query === search.trim()) setSearchResults([]);
+    }), 300);
     return () => clearTimeout(timer);
   }, [bootstrap?.features.web_content_search, offline, search, user]);
 
@@ -223,7 +242,9 @@ export default function SwicoChatScreen() {
     setStream(previous => {
       const next = reduceSwicoStream(previous, event);
       if (next.assistant) {
-        setMessages(value => [...value.filter(item => item.request_id !== next.assistant?.request_id), next.assistant!]);
+        setMessages(value => [...value.filter(item => !(
+          item.role === "assistant" && item.request_id === next.assistant?.request_id
+        )), next.assistant!]);
       }
       if (next.assistant?.thread_id && next.assistant.thread_id !== "new-thread") {
         streamedThreadRef.current = next.assistant.thread_id;
@@ -255,7 +276,7 @@ export default function SwicoChatScreen() {
     }
   }, [user]);
 
-  const send = useCallback(async (override?: string, options: { continueId?: string; editId?: string; regenerateId?: string; inputMode?: InputMode; voiceTurnId?: string | null; requestId?: string } = {}) => {
+  const send = useCallback(async (override?: string, options: { continueId?: string; editId?: string; regenerateId?: string; inputMode?: InputMode; voiceTurnId?: string | null; requestId?: string; attachments?: Attachment[] } = {}) => {
     if (!user || streaming || offline) return;
     if (options.editId && bootstrap?.features.web_message_edit !== true) return;
     if (options.editId && options.editId !== latestEditableUserId(messages, streaming)) return;
@@ -270,8 +291,15 @@ export default function SwicoChatScreen() {
     const originalForRevision = revisionTarget?.role === "assistant"
       ? messages.find(item => item.role === "user" && item.request_id === revisionTarget.request_id)
       : revisionTarget;
-    let selectedAttachments = attachments;
+    let selectedAttachments = options.attachments ?? attachments;
     if ((options.editId || options.regenerateId) && !selectedAttachments.length) selectedAttachments = originalForRevision?.attachments ?? [];
+    const expired = selectedAttachments.filter(item => item.status === "expired" || new Date(item.expires_at).getTime() <= Date.now());
+    selectedAttachments = selectedAttachments.filter(item => item.status === "ready" && new Date(item.expires_at).getTime() > Date.now());
+    if (expired.length && !text) {
+      setError("That attachment has expired. Remove it and upload it again before sending.");
+      setAttachments(value => value.map(item => expired.some(expiredItem => expiredItem.id === item.id) ? { ...item, status: "expired" as const } : item));
+      return;
+    }
     const repositoryReady = Boolean(repositoryId && repositoryMeta && repositoryUsable({ ...repositoryMeta, owner_uid: repositoryOwnerUid || "", thread_id: repositoryThreadId }, user.uid, activeThread));
     if (!hasSendableContent(text, selectedAttachments, repositoryReady, canChatWithRepository(bootstrap!.features))) return;
     let providerText = text;
@@ -307,7 +335,9 @@ export default function SwicoChatScreen() {
       ...(revisionId ? { edit_message_id: revisionId } : {}),
       ...(options.regenerateId ? { regenerate_message_id: options.regenerateId } : {}),
     };
+    draftRef.current = "";
     setDraft(""); setDraftVoiceTurnId(null); setEditTarget(null); setError(""); setStreaming(true); setRequestId(id);
+    activeRequestRef.current = id;
     cancellationReadyRef.current = false;
     queuedStopRef.current = false;
     cancellationSentRef.current = false;
@@ -318,9 +348,9 @@ export default function SwicoChatScreen() {
       id: `stream-${id}`, thread_id: threadId, role: "assistant", content: "", request_id: id,
       tier: bootstrap?.assistant.tier || null, tier_label: bootstrap?.assistant.tier_label || "Swico",
       input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: "streaming",
-      created_at: nowIso(), input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : (originalForRevision?.input_mode ?? "text")), voice_turn_id: options.voiceTurnId === undefined ? (draftVoiceTurnId ?? originalForRevision?.voice_turn_id ?? null) : options.voiceTurnId, reply_language: bootstrap?.user.reply_language === "ta" ? "ta" : "en",
+      created_at: nowIso(), input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : (originalForRevision?.input_mode ?? "text")), voice_turn_id: options.voiceTurnId === undefined ? (draftVoiceTurnId ?? originalForRevision?.voice_turn_id ?? null) : options.voiceTurnId, reply_language: bootstrap?.user.reply_language || "en",
     }});
-    if (!revisionTarget && !options.continueId) setMessages(value => [...value, { ...makeUserMessage(providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, id, threadId), content: providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, attachments: selectedAttachments, input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : "text"), voice_turn_id: options.voiceTurnId === undefined ? draftVoiceTurnId : options.voiceTurnId, reply_language: bootstrap?.user.reply_language === "ta" ? "ta" : "en" }]);
+    if (!revisionTarget && !options.continueId) setMessages(value => [...value, { ...makeUserMessage(providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, id, threadId), content: providerText || `Attached: ${selectedAttachments.map(item => item.name).join(", ")}`, attachments: selectedAttachments, input_mode: options.inputMode ?? (draftVoiceTurnId ? "dictation" : "text"), voice_turn_id: options.voiceTurnId === undefined ? draftVoiceTurnId : options.voiceTurnId, reply_language: bootstrap?.user.reply_language || "en" }]);
     const controller = new AbortController(); controllerRef.current = controller;
     try {
       await streamChat(user, payload, {
@@ -347,7 +377,7 @@ export default function SwicoChatScreen() {
             }]);
           }
         },
-        onEvent: applyStreamEvent,
+        onEvent: event => { if (activeRequestRef.current === id) applyStreamEvent(event); },
       }, controller.signal);
       if (activeThread || streamedThreadRef.current) {
         const resolved = activeThread || streamedThreadRef.current;
@@ -371,6 +401,11 @@ export default function SwicoChatScreen() {
           setError(`Your monthly usage limit has been reached. It resets at ${resetAt}. Add-token credits do not change this limit.`);
         } else if (repositoryDetachCode(apiError.code || "")) { setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setError("The active code repository is no longer attached. Upload it again to continue using repository context."); }
         else setError(apiError.message || "Swico could not complete that response.");
+        if (!draftRef.current.trim() && text) { draftRef.current = text; setDraft(text); }
+        if (apiError.status === 410 || apiError.code === "attachment_expired") {
+          setAttachments(value => value.map(item => selectedAttachments.some(selected => selected.id === item.id) ? { ...item, status: "expired" as const } : item));
+          setError("An attachment expired before it could be read. Remove it and upload it again, then retry.");
+        }
       }
     } finally {
       cancellationReadyRef.current = false;
@@ -378,7 +413,7 @@ export default function SwicoChatScreen() {
       cancellationSentRef.current = false;
       stopConfirmedRef.current = false;
       setCancellationReady(false);
-      controllerRef.current = null; setStreaming(false); setRequestId(null);
+      if (activeRequestRef.current === id) { activeRequestRef.current = null; controllerRef.current = null; setStreaming(false); setRequestId(null); }
     }
   }, [activeThread, applyStreamEvent, attachments, bootstrap, draft, draftVoiceTurnId, editTarget, longInputMode, messages, offline, reloadMessages, reloadThreads, repositoryId, repositoryMeta, repositoryOwnerUid, repositoryThreadId, requestServerCancellation, streaming, user]);
 
@@ -488,9 +523,9 @@ export default function SwicoChatScreen() {
     } catch (caught) { setError((caught as Error).message); }
   }, [archived, offline, reloadThreads, renameTarget, renameTitle, user]);
 
-  const chooseThread = (id: string) => { setEditTarget(null); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setActiveThread(id); setDrawer(false); setSearch(""); };
+  const chooseThread = (id: string) => { activeRequestRef.current = null; setStreaming(false); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setActiveThread(id); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
   const chooseSearchResult = (id: string, messageId: string | null) => { setPendingScrollMessageId(messageId); setPinnedToBottom(false); pinnedToBottomRef.current = false; chooseThread(id); setHighlightMessageId(messageId); };
-  const newChat = () => { setEditTarget(null); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); };
+  const newChat = () => { activeRequestRef.current = null; setStreaming(false); setEditTarget(null); draftRef.current = ""; setDraft(""); setDraftVoiceTurnId(null); setHighlightMessageId(null); setActiveThread(null); setMessages([]); setAttachments([]); setRepositoryId(undefined); setRepositoryMeta(null); setRepositoryThreadId(null); setRepositoryOwnerUid(null); setDrawer(false); setSearch(""); setSearchResults([]); ++searchGenerationRef.current; };
 
   const downloadResponse = useCallback(async (message: Message) => {
     try {
@@ -617,7 +652,7 @@ export default function SwicoChatScreen() {
       return;
     }
     const summary = `Attached: ${(original.attachments || []).map(item => item.name).join(", ")}`;
-    void send(original.content === summary ? "" : original.content, { requestId: original.request_id, inputMode: original.input_mode, voiceTurnId: original.voice_turn_id });
+    void send(original.content === summary ? "" : original.content, { requestId: original.request_id, inputMode: original.input_mode, voiceTurnId: original.voice_turn_id, attachments: original.attachments });
   }, [messages, offline, send, streaming]);
 
   const submitFeedback = useCallback(async (message: Message, rating: "up" | "down") => {
@@ -671,7 +706,8 @@ export default function SwicoChatScreen() {
     return () => clearTimeout(timer);
   }, [displayMessages, pendingScrollMessageId]);
 
-  if (!user || !bootstrap) return <Screen glow={false}><View style={styles.loading}><ActivityIndicator color={t.accent} /><Text style={styles.muted}>Loading Swico...</Text></View></Screen>;
+  if (!user) return <Screen glow={false}><View style={styles.loading}><ActivityIndicator color={t.accent} /><Text style={styles.muted}>Loading Swico...</Text></View></Screen>;
+  if (!bootstrap) return <Screen glow={false}><View style={styles.loading}>{bootstrapFailed ? <><Text style={styles.errorText}>Swico could not load your workspace.</Text><Pressable testID="swico-bootstrap-retry" onPress={() => void loadWorkspace()} style={styles.newChat}><Text style={styles.newChatText}>Retry</Text></Pressable></> : <><ActivityIndicator color={t.accent} /><Text style={styles.muted}>Loading Swico...</Text></>}</View></Screen>;
   if (legalPage) return <SwicoLegalScreen page={legalPage} onClose={() => setLegalPage(null)} />;
   const activeTitle = threads.find(item => item.id === activeThread)?.title || "New chat";
   return (

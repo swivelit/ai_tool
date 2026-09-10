@@ -89,6 +89,11 @@ export function ChatPage() {
   const removedRepositoryUploads = useRef(new Set<string>())
   const revokedAttachmentPreviews = useRef(new Set<string>())
   const attachmentsRef = useRef<ComposerAttachment[]>([])
+  const draftRef = useRef(draft)
+  const navigationGenerationRef = useRef(0)
+  const threadLoadGenerationRef = useRef(0)
+  const messageLoadGenerationRef = useRef(new Map<string, number>())
+  const searchGenerationRef = useRef(0)
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
   const activeRef = useRef<string | null>(active)
@@ -98,6 +103,7 @@ export function ChatPage() {
     requestId: string
     initialThreadId: string | null
     threadId: string | null
+    navigationGeneration: number
     assistantMessageId?: string
   } | null>(null)
   const cancellationReadyRef = useRef(false)
@@ -128,6 +134,7 @@ export function ChatPage() {
     replaceActiveAttachments([])
   }, [replaceActiveAttachments])
   useEffect(() => { attachmentsRef.current = attachments }, [attachments])
+  useEffect(() => { draftRef.current = draft }, [draft])
   useEffect(() => () => {
     attachmentsRef.current.forEach(revokeAttachmentPreview)
   }, [revokeAttachmentPreview])
@@ -169,10 +176,19 @@ export function ChatPage() {
 
   const loadThreads = useCallback(async (reset = true) => {
     if (!user) return
+    const generation = ++threadLoadGenerationRef.current
+    const requestedArchived = archived
+    const requestedQuery = query.trim()
     const offset = reset ? 0 : threadCountRef.current
     const params = new URLSearchParams({ archived: String(archived), limit: '50', offset: String(offset) })
-    if (query.trim()) params.set('q', query.trim())
+    if (requestedQuery) params.set('q', requestedQuery)
     const page = await apiJson<{ items: Thread[]; has_more: boolean }>(user, `/api/web/threads?${params}`)
+    if (
+      generation !== threadLoadGenerationRef.current
+      || userUidRef.current !== user.uid
+      || requestedArchived !== archived
+      || requestedQuery !== query.trim()
+    ) return
     setThreads(value => reset ? page.items : [...value, ...page.items]); setHasMore(page.has_more)
   }, [archived, query, user])
   const refreshWallet = useCallback(async () => {
@@ -190,6 +206,8 @@ export function ChatPage() {
     } = {},
   ): Promise<boolean> => {
     if (!user) return false
+    const generation = (messageLoadGenerationRef.current.get(threadId) ?? 0) + 1
+    messageLoadGenerationRef.current.set(threadId, generation)
     const data = await apiJson<{ items: Message[] }>(user, `/api/web/threads/${threadId}/messages`)
     const unique = Array.from(new Map(data.items.map(message => [message.id, message])).values())
     if (
@@ -202,7 +220,10 @@ export function ChatPage() {
         )
       ))
     ) return false
-    if (activeRef.current !== threadId) return false
+    if (
+      activeRef.current !== threadId
+      || messageLoadGenerationRef.current.get(threadId) !== generation
+    ) return false
     setMessages(unique)
     const restored = new Map<string, MessageAttachment>()
     const localPreviews = new Map(
@@ -220,7 +241,19 @@ export function ChatPage() {
         }
       }
     }
-    replaceActiveAttachments(Array.from(restored.values()).slice(-5))
+    const current = attachmentsRef.current
+    const pending = current.filter(item => 'local_id' in item)
+    const activeReady = current.filter(item => (
+      item.status === 'ready'
+      && !('local_id' in item)
+      && !removedLocalUploads.current.has(item.id)
+    ))
+    const merged = new Map<string, ComposerAttachment>()
+    for (const item of [...activeReady, ...Array.from(restored.values()), ...pending]) {
+      const key = attachmentKey(item)
+      if (!merged.has(key)) merged.set(key, item)
+    }
+    replaceActiveAttachments(Array.from(merged.values()).slice(-5))
     return true
   }, [replaceActiveAttachments, user])
   const applyWallet = useCallback((wallet: Wallet) => {
@@ -311,15 +344,21 @@ export function ChatPage() {
     return () => window.clearTimeout(timer)
   }, [archived, query, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
+    const generation = ++searchGenerationRef.current
     if (!user || !bootstrap?.features.web_content_search || !query.trim()) {
       setSearchResults([])
       return
     }
+    const requestedQuery = query.trim()
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({ q: query.trim(), limit: '20' })
       void apiJson<{ items: SearchResult[] }>(user, `/api/web/search?${params}`)
-        .then(value => setSearchResults(value.items))
-        .catch(() => setSearchResults([]))
+        .then(value => {
+          if (generation === searchGenerationRef.current && requestedQuery === query.trim()) setSearchResults(value.items)
+        })
+        .catch(() => {
+          if (generation === searchGenerationRef.current && requestedQuery === query.trim()) setSearchResults([])
+        })
     }, 300)
     return () => window.clearTimeout(timer)
   }, [bootstrap?.features.web_content_search, query, user])
@@ -488,7 +527,8 @@ export function ChatPage() {
       }
     }
     const nextRequestId = retryRequestId || crypto.randomUUID()
-    streamScopeRef.current = { requestId:nextRequestId, initialThreadId:threadId, threadId }
+    const navigationGeneration = navigationGenerationRef.current
+    streamScopeRef.current = { requestId:nextRequestId, initialThreadId:threadId, threadId, navigationGeneration }
     const origin = originOverride ?? {
       inputMode: draftVoiceTurnId ? 'dictation' as const : 'text' as const,
       voiceTurnId: draftVoiceTurnId,
@@ -514,6 +554,7 @@ export function ChatPage() {
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: isReplyLanguage(bootstrap.user.reply_language) ? bootstrap.user.reply_language : 'en' }
       setMessages(value => [...value, optimistic])
     }
+    draftRef.current = ''
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
     cancellationReadyRef.current = false
     queuedStopRef.current = false
@@ -535,7 +576,11 @@ export function ChatPage() {
         ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
       }, event => {
         const scope = streamScopeRef.current
-        if (!scope || scope.requestId !== nextRequestId) return
+        if (
+          !scope
+          || scope.requestId !== nextRequestId
+          || scope.navigationGeneration !== navigationGenerationRef.current
+        ) return
         if (event.event === 'sources' && (
           typeof event.data !== 'object' || event.data === null
         )) return
@@ -625,7 +670,11 @@ export function ChatPage() {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
       } else {
-        if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
+        // Keep a recoverable payload after a failed send, but never replace text
+        // typed after the request began. Attachments remain server-owned and are
+        // intentionally not deleted here.
+        if (!draftRef.current.trim()) { draftRef.current = text; setDraft(text) }
+        if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
         const repositoryDetached = [
@@ -646,10 +695,12 @@ export function ChatPage() {
         await loadMessages(threadId)
       }
     } finally {
-      cancellationReadyRef.current = false
-      queuedStopRef.current = false
-      setCancellationReady(false)
-      setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`)
+      if (streamScopeRef.current?.requestId === nextRequestId) {
+        cancellationReadyRef.current = false
+        queuedStopRef.current = false
+        setCancellationReady(false)
+        setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`)
+      }
     }
   }
 
@@ -706,11 +757,28 @@ export function ChatPage() {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
     }, { regenerateMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const resetSearch = () => { setQuery(''); setSearchResults([]); ++searchGenerationRef.current }
+  const invalidateNavigation = () => {
+    ++navigationGenerationRef.current
+    streamScopeRef.current = null
+    setStreaming(false)
+    setController(null)
+    setRequestId(null)
+    setCancellationReady(false)
+  }
+  const newChat = () => {
+    invalidateNavigation()
+    voiceReply.clear(); draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null)
+    activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`)
+  }
+  const select = (id: string) => {
+    invalidateNavigation()
+    draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`)
+  }
   const selectSearch = (result: SearchResult) => {
     if (!result.thread_id) return
-    setDraftVoiceTurnId(null); clearActiveAttachments(); setRepository(null); activeRef.current = result.thread_id
+    invalidateNavigation()
+    draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); clearActiveAttachments(); setRepository(null); activeRef.current = result.thread_id
     setActive(result.thread_id); setHighlightMessageId(result.message_id)
     setDrawer(false); setError(''); setFocusKey(`search-${result.thread_id}`)
   }

@@ -72,7 +72,7 @@ function normalizeQualityEvent(event: SSEEvent): SSEEvent {
   if (event.event !== 'quality' || !event.data || typeof event.data !== 'object') return event
   const data = event.data as Record<string, unknown>
   const status = String(data.status ?? '')
-  const outcomes: QualityOutcome[] = ['verified', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence']
+  const outcomes: QualityOutcome[] = ['verified', 'checked', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence']
   if (!outcomes.includes(status as QualityOutcome)) {
     return { event: 'quality', data: null }
   }

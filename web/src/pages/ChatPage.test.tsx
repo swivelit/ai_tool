@@ -68,6 +68,12 @@ function mockApi() {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(nextResolve => { resolve = nextResolve })
+  return { promise, resolve }
+}
+
 const uploaded = {
   id:'upload-1', name:'notes.txt', media_type:'text/plain', size_bytes:5,
   created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),
@@ -135,6 +141,98 @@ it('keeps the compact composer for a new chat and after the first message', asyn
   expect(textarea).toHaveValue('Keep this draft')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(document.querySelector('.chat-main')).not.toHaveClass('empty-chat'))
+})
+
+it('does not bind a delayed first-thread event after New chat', async () => {
+  mockApi()
+  const first = deferred<void>()
+  let firstEvent: ((event: { event:string; data:unknown }) => void) | undefined
+  vi.mocked(streamChat)
+    .mockImplementationOnce(async (_user, _payload, onEvent) => {
+      firstEvent = onEvent
+      await first.promise
+    })
+    .mockResolvedValueOnce(undefined)
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'old request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+
+  await userEvent.click(screen.getByTestId('new-chat-button'))
+  await act(async () => { firstEvent?.({ event:'thread', data:{ thread_id:'old-thread' } }) })
+  await userEvent.type(composer, 'new request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(streamChat).mock.calls[1][1]).not.toHaveProperty('thread_id')
+  await act(async () => { first.resolve(undefined); await first.promise })
+})
+
+it('keeps newer history and search responses ahead of older requests', async () => {
+  mockApi()
+  const threadA = { id:'history-a', title:'History A', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const threadB = { id:'history-b', title:'History B', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const historyA = deferred<{ items: unknown[] }>()
+  const historyB = deferred<{ items: unknown[] }>()
+  const searchOld = deferred<{ items: unknown[] }>()
+  const searchNew = deferred<{ items: unknown[] }>()
+  let searchCalls = 0
+  const searchBootstrap = { ...bootstrap, features:{ ...bootstrap.features, web_content_search:true } }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return searchBootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[threadA, threadB], has_more:false } as never
+    if (path.includes('/history-a/messages')) return historyA.promise as never
+    if (path.includes('/history-b/messages')) return historyB.promise as never
+    if (path.startsWith('/api/web/search?')) return (++searchCalls === 1 ? searchOld.promise : searchNew.promise) as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'History A' }))
+  await userEvent.click(await screen.findByRole('button', { name:'History B' }))
+  await act(async () => { historyB.resolve({ items:[{ id:'b-answer', thread_id:'history-b', role:'assistant', content:'Newer history', status:'complete' }] }) })
+  expect(await screen.findByText('Newer history')).toBeInTheDocument()
+  await act(async () => { historyA.resolve({ items:[{ id:'a-answer', thread_id:'history-a', role:'assistant', content:'Older history', status:'complete' }] }) })
+  expect(screen.queryByText('Older history')).not.toBeInTheDocument()
+
+  const search = screen.getByRole('textbox', { name:'Search chats' })
+  fireEvent.change(search, { target:{ value:'old query' } })
+  await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 350)) })
+  fireEvent.change(search, { target:{ value:'new query' } })
+  await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 350)) })
+  await act(async () => { searchNew.resolve({ items:[{ thread_id:'history-b', message_id:'new-result', source_kind:'message', snippet:'new result', updated_at:new Date().toISOString() }] }) })
+  expect(await screen.findByText('new result')).toBeInTheDocument()
+  await act(async () => { searchOld.resolve({ items:[{ thread_id:'history-a', message_id:'old-result', source_kind:'message', snippet:'old result', updated_at:new Date().toISOString() }] }) })
+  expect(screen.queryByText('old result')).not.toBeInTheDocument()
+})
+
+it('restores a failed PDF prompt without deleting its server upload', async () => {
+  mockApi()
+  const pdf = { ...uploaded, id:'pdf-upload', name:'report.pdf', media_type:'application/pdf' }
+  vi.mocked(uploadDocument).mockResolvedValue(pdf)
+  vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(503, {}))
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Summarize this PDF')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'report.pdf', { type:'application/pdf' }))
+  await screen.findByText(/remaining/)
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('temporarily unavailable'))
+  expect(composer).toHaveValue('Summarize this PDF')
+  expect(deleteUpload).not.toHaveBeenCalled()
+})
+
+it('keeps a pending upload visible while history refreshes', async () => {
+  mockApi()
+  const pending = deferred<typeof uploaded>()
+  vi.mocked(uploadDocument).mockReturnValue(pending.promise)
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'pending.pdf', { type:'application/pdf' }))
+  await screen.findByText('Uploading… 0%')
+  await userEvent.click(screen.getByRole('button', { name:'Archived chats' }))
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes('archived=true'))).toBe(true))
+  expect(screen.getByText('Uploading… 0%')).toBeInTheDocument()
+  await act(async () => { pending.resolve({ ...uploaded, id:'pending-upload', name:'pending.pdf', media_type:'application/pdf' }); await pending.promise })
 })
 
 it('continues without an optimistic control bubble and consumes the parent button', async () => {
@@ -577,7 +675,7 @@ it('applies the released wallet and delays Retry for service capacity', async ()
   expect(await screen.findByRole('alert')).toHaveTextContent(
     /service capacity.*Try again after/i
   )
-  expect(screen.getByText('Keep my prompt visible')).toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name:'Message Swico' })).toHaveValue('Keep my prompt visible')
   expect(screen.getByText('≈ 1.2K tokens')).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Retry answer' })).toBeDisabled()
   expect(screen.queryByRole('dialog', { name:/Billing/i })).not.toBeInTheDocument()

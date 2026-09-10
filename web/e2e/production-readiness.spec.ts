@@ -196,6 +196,31 @@ async function signIn(page: Page) {
   await expect(page.getByRole('button', { name: 'Start real-time Voice Mode' })).toBeVisible()
 }
 
+test('collapsed search opens a visible focused field and mobile drawer keeps it usable', async ({ page }, testInfo) => {
+  await installBackend(page, { wallet:5_000_000 })
+  await signIn(page)
+  if (testInfo.project.name === 'mobile-chromium') {
+    await page.getByRole('button', { name: 'Open sidebar' }).click()
+    await expect(page.locator('.sidebar')).toHaveClass(/open/)
+    const input = page.getByRole('textbox', { name:'Search chats' })
+    await expect(input).toBeVisible()
+    await input.fill('Tamil')
+    await expect(input).toHaveValue('Tamil')
+    await page.locator('.mobile-close').click()
+    return
+  }
+  await page.getByRole('button', { name:'Collapse sidebar' }).click()
+  const searchButton = page.getByRole('button', { name:'Search chats' })
+  await expect(searchButton).toBeVisible()
+  const input = page.getByRole('textbox', { name:'Search chats' })
+  await expect(input).toBeHidden()
+  await searchButton.click()
+  await expect(input).toBeVisible()
+  await expect(input).toBeFocused()
+  await page.keyboard.press('ControlOrMeta+K')
+  await expect(input).toBeFocused()
+})
+
 test('long prompts keep the native textarea scrollbar at the composer edge', async ({ page }) => {
   await installBackend(page, { wallet:5_000_000 })
   await signIn(page)
