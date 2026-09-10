@@ -11,6 +11,10 @@ class FreshnessDecision:
     requires_fresh_evidence: bool
     reason: str
     as_of: str
+    # For mixed requests, ``as_of`` is the clock date used to validate the
+    # current claim. Keep the explicitly requested historical period separate
+    # so retrieval and reporting cannot confuse the two.
+    historical_as_of: str | None = None
 
 
 _HISTORICAL_RE = re.compile(
@@ -23,6 +27,11 @@ _HISTORICAL_RE = re.compile(
 _EXPLICIT_CURRENT_RE = re.compile(
     r"\b(?:current(?:ly)?|latest|most\s+recent|today|now|present|incumbent|"
     r"as\s+of\s+today|right\s+now|breaking|live)\b",
+    re.IGNORECASE,
+)
+_LOCALIZED_CURRENT_RE = re.compile(
+    r"\b(?:ippo|ippa|ippove|current|present|latest)\b|"
+    r"(?:தற்போதைய|இப்போது|இப்போ|இன்றைய|நடப்பு)",
     re.IGNORECASE,
 )
 _OFFICEHOLDER_RE = re.compile(
@@ -339,9 +348,18 @@ def resolve_freshness(
         if localized_year > clock_date.year:
             return FreshnessDecision("future", True, "future_requested_year", str(localized_year))
         if localized_year < clock_date.year:
+            if explicit_current or _LOCALIZED_CURRENT_RE.search(text):
+                return FreshnessDecision(
+                    "mixed", True, "mixed_current_historical_request",
+                    clock_date.isoformat(), str(localized_year),
+                )
             return FreshnessDecision("historical", False, "historical_requested_year", str(localized_year))
-        if explicit_current:
-            return FreshnessDecision("current", True, "current_requested_year", str(localized_year))
+        # A localized year equal to the clock year is not a completed
+        # historical period. Current factual questions still need evidence,
+        # and validation uses the full clock date rather than just the year.
+        return FreshnessDecision(
+            "current", True, "current_requested_year", clock_date.isoformat(),
+        )
     if explicit_date and officeholder:
         if explicit_current and explicit_date != clock_date:
             return FreshnessDecision("mixed", True, "mixed_current_historical_request", clock_date.isoformat())

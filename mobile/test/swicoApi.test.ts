@@ -231,14 +231,14 @@ describe("canonical Swico mobile API client", () => {
     expect(controller.isBusy).toBe(false);
   });
 
-  it("keeps an admitted transport owner unchanged when preparation admission is denied", async () => {
+  it("keeps the admitted production busy owner when preparation admission is denied", async () => {
     const { SwicoBusyOperationController } = await import("../lib/swicoBusyOperation");
     const controller = new SwicoBusyOperationController();
-    const requestOwner = { requestId: "admitted-request", transportId: "admitted-transport" };
     const admitted = controller.tryBegin(0);
     expect(admitted).not.toBeNull();
     expect(controller.tryBegin(0)).toBeNull();
-    expect(requestOwner).toEqual({ requestId: "admitted-request", transportId: "admitted-transport" });
+    expect(controller.owns(admitted!)).toBe(true);
+    expect(controller.canPublish(admitted!, 0)).toBe(true);
     expect(controller.finish(admitted!)).toBe(true);
   });
 
@@ -248,16 +248,14 @@ describe("canonical Swico mobile API client", () => {
     const operation = controller.tryBegin(0)!;
     let resolveDeletion!: () => void;
     const deletion = new Promise<void>(resolve => { resolveDeletion = resolve; });
-    let error = "";
     const publishAfterCleanup = async () => {
       await deletion;
-      if (controller.owns(operation)) error = "capacity";
+      return controller.canPublish(operation, 1) ? "capacity" : "";
     };
     const cleanup = publishAfterCleanup();
     expect(controller.abandon(1)).toBe(true);
     resolveDeletion();
-    await cleanup;
-    expect(error).toBe("");
+    await expect(cleanup).resolves.toBe("");
   });
 
   it("does not restore a deliberately detached file when deferred history resolves", async () => {
@@ -275,24 +273,39 @@ describe("canonical Swico mobile API client", () => {
     expect(detached.has(attachment.id)).toBe(true);
   });
 
-  it("rechecks authoritative capacity after history wins a deferred upload", async () => {
+  it("rechecks authoritative capacity before and after injected expiry after history wins a deferred upload", async () => {
     const { appendWithinSwicoAttachmentCapacity, mergeSwicoHistoryAttachments } = await import("../lib/swicoAttachmentState");
-    const makeAttachment = (id: string, size = 4) => ({
-      id, name: `${id}.pdf`, media_type: "application/pdf", size_bytes: size,
-      created_at: "2026-09-10T00:00:00Z", expires_at: "2026-09-11T00:10:00Z",
-      status: "ready" as const, warnings: [],
-    });
-    const current = ["a", "b", "c", "d"].map(id => makeAttachment(id));
-    const history = Promise.resolve({ items: [makeAttachment("e")] });
-    const restored = await history;
-    const limits = { max_files_per_message: 5, max_total_bytes: 100, image_max_count: 4 };
-    const authoritative = mergeSwicoHistoryAttachments(
-      restored.items, current, new Set(current.map(item => item.id)), 5, new Set(), limits,
-    );
-    expect(authoritative).toHaveLength(5);
-    const completedUpload = appendWithinSwicoAttachmentCapacity(authoritative, makeAttachment("f"), limits);
-    expect(completedUpload.error).toMatch(/up to 5 files/i);
-    expect(completedUpload.attachments).toHaveLength(5);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T00:00:00Z"));
+    try {
+      const makeAttachment = (id: string, size = 4, expiresAt = "2026-09-10T00:10:00Z") => ({
+        id, name: `${id}.pdf`, media_type: "application/pdf", size_bytes: size,
+        created_at: "2026-09-10T00:00:00Z", expires_at: expiresAt,
+        status: "ready" as const, warnings: [],
+      });
+      const current = ["a", "b", "c", "d"].map(id => makeAttachment(id));
+      const history = Promise.resolve({ items: [makeAttachment("e")] });
+      const restored = await history;
+      const limits = { max_files_per_message: 5, max_total_bytes: 100, image_max_count: 4 };
+      const authoritative = mergeSwicoHistoryAttachments(
+        restored.items, current, new Set(current.map(item => item.id)), 5, new Set(), limits,
+      );
+      expect(authoritative).toHaveLength(5);
+      const completedUpload = appendWithinSwicoAttachmentCapacity(authoritative, makeAttachment("f"), limits);
+      expect(completedUpload.error).toMatch(/up to 5 files/i);
+      expect(completedUpload.attachments).toHaveLength(5);
+      vi.setSystemTime(new Date("2026-09-10T00:11:00Z"));
+      const afterExpiry = appendWithinSwicoAttachmentCapacity(
+        authoritative, makeAttachment("f", 4, "2026-09-10T01:00:00Z"), limits,
+      );
+      expect(afterExpiry.error).toBeUndefined();
+      expect(afterExpiry.attachments.map(item => item.id)).toEqual(["a", "b", "c", "d", "e", "f"]);
+      expect(afterExpiry.attachments.filter(item => (
+        item.status === "ready" && new Date(item.expires_at).getTime() > Date.now()
+      )).map(item => item.id)).toEqual(["f"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("normalizes regeneration to one target even when the historical fallback has an active edit", async () => {

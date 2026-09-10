@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from dataclasses import replace
 
 from ..openai_model_router import OpenAIModelRouter
@@ -16,7 +17,9 @@ from .types import AIRequest, AIRoute
 
 
 class AIProviderRouter:
-    def select_route(self, request: AIRequest) -> AIRoute:
+    def select_route(
+        self, request: AIRequest, *, now: datetime | None = None,
+    ) -> AIRoute:
         language = detect_language(request.message, request.reply_language)
         language_metadata = {
             "input_language": language.input_language,
@@ -54,12 +57,15 @@ class AIProviderRouter:
             for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
             if value
         )
-        freshness = resolve_freshness(request.message, context=freshness_context)
+        freshness = resolve_freshness(
+            request.message, context=freshness_context, now=now,
+        )
         intent_metadata.update({
             "freshness_scope": freshness.scope,
             "freshness_required": freshness.requires_fresh_evidence,
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
+            "freshness_historical_as_of": freshness.historical_as_of,
         })
         if intent.metadata.get("tool_intent_candidate"):
             intent_metadata["tool_intent_candidate"] = intent.metadata[

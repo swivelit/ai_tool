@@ -7,7 +7,12 @@ from uuid import uuid4
 import pytest
 
 from app.ai.freshness import resolve_freshness, validate_current_evidence
-from app.ai.language import explicit_web_reply_language, resolve_web_reply_language
+from app.ai.language import (
+    WEB_REPLY_LANGUAGE_NAMES,
+    WEB_REPLY_LANGUAGE_CODES,
+    explicit_web_reply_language,
+    resolve_web_reply_language,
+)
 from app.ai.types import AIProviderResponse
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIRequest
@@ -124,6 +129,61 @@ def test_tamil_and_tanglish_historical_and_future_years_keep_their_scope():
         assert decision.requires_fresh_evidence is True
 
 
+@pytest.mark.parametrize(
+    ("message", "scope", "required", "as_of", "historical_as_of"),
+    (
+        ("2020 la Tamil Nadu CM yaaru?", "historical", False, "2020", None),
+        ("2027 la Tamil Nadu CM yaaru?", "future", True, "2027", None),
+        ("2026 la Tamil Nadu CM yaaru?", "current", True, "2026-09-10", None),
+        (
+            "2020 la Tamil Nadu CM yaaru, and who is the CM now?",
+            "mixed", True, "2026-09-10", "2020",
+        ),
+        (
+            "2020 la Tamil Nadu CM yaaru, ippo CM yaaru?",
+            "mixed", True, "2026-09-10", "2020",
+        ),
+        ("2020-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?", "historical", False, "2020", None),
+        ("2027-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?", "future", True, "2027", None),
+        ("2026-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?", "current", True, "2026-09-10", None),
+        (
+            "2020-ல் தமிழ்நாட்டின் முதலமைச்சர் யார், இப்போது முதலமைச்சர் யார்?",
+            "mixed", True, "2026-09-10", "2020",
+        ),
+    ),
+)
+def test_localized_years_preserve_mixed_current_scope_and_validation_date(
+    message, scope, required, as_of, historical_as_of,
+):
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    decision = resolve_freshness(message, now=clock)
+    assert (decision.scope, decision.requires_fresh_evidence, decision.as_of) == (
+        scope, required, as_of,
+    )
+    assert decision.historical_as_of == historical_as_of
+
+
+def test_localized_mixed_scope_reaches_preparation_and_cache_admission():
+    user = create_test_user("freshness-localized-mixed", "freshness-localized-mixed@example.com")
+    _fund(int(user.id))
+    clock = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    for message in (
+        "2020 la Tamil Nadu CM yaaru, and who is the CM now?",
+        "2020 la Tamil Nadu CM yaaru, ippo CM yaaru?",
+    ):
+        prepared = prepare_web_turn(
+            user_id=int(user.id), message=message, request_id=str(uuid4()),
+            thread_id=None, reply_language="en", now=clock,
+        )
+        assert prepared.ai_request.metadata["freshness_scope"] == "mixed"
+        assert prepared.ai_request.metadata["freshness_required"] is True
+        assert prepared.ai_request.metadata["freshness_as_of"] == "2026-09-10"
+        assert prepared.ai_request.metadata["freshness_historical_as_of"] == "2020"
+        assert prepared.route.provider == "blocked"
+        assert prepared.optimization is not None
+        assert prepared.optimization.cache_eligible is False
+
+
 def test_prepared_tamil_and_tanglish_current_questions_are_blocked_without_search():
     user = create_test_user("freshness-localized", "freshness-localized@example.com")
     _fund(int(user.id))
@@ -131,6 +191,8 @@ def test_prepared_tamil_and_tanglish_current_questions_are_blocked_without_searc
     for message, language in (
         ("தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?", "ta"),
         ("Tamil Nadu la ippo CM yaaru?", "tanglish"),
+        ("2026 la Tamil Nadu CM yaaru?", "en"),
+        ("2026-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?", "ta"),
     ):
         prepared = prepare_web_turn(
             user_id=int(user.id), message=message, request_id=str(uuid4()),
@@ -166,6 +228,8 @@ def test_prepared_localized_historical_questions_are_not_live_blocked():
     (
         ("தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?", "ta"),
         ("Tamil Nadu la ippo CM yaaru?", "tanglish"),
+        ("2026 la Tamil Nadu CM yaaru?", "en"),
+        ("2026-ல் தமிழ்நாட்டின் முதலமைச்சர் யார்?", "ta"),
     ),
 )
 def test_current_tamil_questions_use_localized_unavailable_endpoint_response(monkeypatch, client, message, language):
@@ -301,6 +365,48 @@ def test_prepared_non_english_language_contract_reaches_provider_and_validation(
         assert any(expected_language.title() in str(item.get("content") or "")
                    for item in prepared.ai_request.metadata["provider_messages"]
                    if isinstance(item, dict))
+
+
+@pytest.mark.parametrize("target", WEB_REPLY_LANGUAGE_CODES)
+@pytest.mark.parametrize("directive", ("Reply", "Translate", "Explain"))
+def test_full_language_matrix_reaches_contract_prompt_and_validation(target, directive):
+    user = create_test_user(
+        f"language-matrix-{directive.lower()}-{target}",
+        f"language-matrix-{directive.lower()}-{target}@example.com",
+    )
+    _fund(int(user.id))
+    target_name = WEB_REPLY_LANGUAGE_NAMES[target]
+    if directive == "Reply":
+        message = f"Reply in Tamil. Actually, reply in {target_name}."
+    elif directive == "Translate":
+        message = f"Reply in Tamil. Translate it to {target_name}."
+    else:
+        message = f"Reply in Tamil. Explain it in {target_name}."
+    resolved = resolve_web_reply_language("ta", message)
+    assert resolved == target
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message=message, request_id=str(uuid4()),
+        thread_id=None, reply_language="ta",
+    )
+    assert prepared.reply_language == resolved == target
+    contract = OutputContract.from_metadata(
+        prepared.ai_request.metadata["output_contract"]
+    )
+    if target == "ta":
+        answer = "தமிழ் மொழியில் இது ஒரு சுருக்கமான பதில்."
+        assert contract.required_script == "tamil"
+    elif target == "tanglish":
+        answer = "Idhu oru short Tanglish badhil."
+        assert contract.forbid_tamil_script is True
+        assert contract.required_script is None
+    else:
+        answer = f"This is a concise answer in {target_name}."
+        assert contract.required_script is None
+        assert contract.forbid_tamil_script is False
+    checks = validate_output_contract(answer, contract)
+    assert all(check.status == "passed" for check in checks)
+    provider_messages = prepared.ai_request.metadata["provider_messages"]
+    assert target_name in " ".join(str(item.get("content") or "") for item in provider_messages)
 
 
 def test_prepared_language_contract_uses_the_final_english_instruction():

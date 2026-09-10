@@ -1893,6 +1893,7 @@ def prepare_web_turn(
             "freshness_required": freshness.requires_fresh_evidence,
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
+            "freshness_historical_as_of": freshness.historical_as_of,
             # These values are derived only after the upload store has enforced
             # TTL and owner isolation.  The provider router uses them to avoid
             # mistaking web attachment questions for legacy document tools.
@@ -2298,7 +2299,7 @@ def prepare_web_turn(
                     metadata=brand_metadata,
                 )
             else:
-                route = AIProviderRouter().select_route(ai_request)
+                route = AIProviderRouter().select_route(ai_request, now=now)
                 if (
                     preliminary.local_intent in _WEB_UNSUPPORTED_INTENTS
                     and str(preliminary.metrics.get("intent_reason") or "").endswith(
@@ -2671,14 +2672,16 @@ def prepare_web_turn(
             "freshness_required": freshness.requires_fresh_evidence,
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
+            "freshness_historical_as_of": freshness.historical_as_of,
         })
         ai_request.metadata.update({
             "freshness_scope": freshness.scope,
             "freshness_required": freshness.requires_fresh_evidence,
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
+            "freshness_historical_as_of": freshness.historical_as_of,
         })
-        route = AIProviderRouter().select_route(ai_request)
+        route = AIProviderRouter().select_route(ai_request, now=now)
         freshness_precomputed: AIProviderResponse | None = None
         freshness_pack: EvidencePack | None = None
         if freshness.requires_fresh_evidence and route.intent not in {

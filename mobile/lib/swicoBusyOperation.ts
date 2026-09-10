@@ -27,6 +27,11 @@ export class SwicoBusyOperationController {
     return this.active?.id === operation.id;
   }
 
+  /** Only the still-current operation may publish a post-cleanup result. */
+  canPublish(operation: SwicoBusyOperation, navigationGeneration: number): boolean {
+    return this.owns(operation) && operation.navigationGeneration === navigationGeneration;
+  }
+
   abandon(navigationGeneration: number): boolean {
     if (!this.active || this.active.navigationGeneration >= navigationGeneration) return false;
     this.active = null;
