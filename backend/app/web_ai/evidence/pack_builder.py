@@ -66,7 +66,8 @@ def build_evidence_pack(
                     "document_id", "chunk_id", "raw_chunk_id",
                     "source_version", "extraction_version", "cache_scope",
                     "coverage_mode", "coverage_complete", "retrieved_at",
-                    "provenance",
+                    "provenance", "claim_support_type", "verification_strength",
+                    "independent_verification", "temporal_support_strength",
                 }
             ),
         )

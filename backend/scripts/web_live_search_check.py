@@ -94,8 +94,17 @@ def main() -> int:
         for item in bundles
         for source in (item.get("claim_sources") or [])
     )
+    independently_verified = _source_urls(
+        source
+        for item in bundles
+        if item.get("verification_strength") == "independently_source_supported"
+        for source in (item.get("claim_sources") or [])
+    )
     report.update({
-        "status": "verified" if valid else "failed",
+        "status": (
+            "verified" if valid and independently_verified else
+            "grounded" if valid else "failed"
+        ),
         "provider_request": True,
         "latency_ms": elapsed_ms,
         "search_reason": result.reason,
@@ -105,9 +114,16 @@ def main() -> int:
         "usable_source_count": len(associated_supporting),
         "associated_supporting_source_count": len(associated_supporting),
         "validated_supporting_source_count": len(associated_supporting) if valid else 0,
+        "independently_verified_source_count": len(independently_verified),
+        "verification_strength": (
+            str(bundles[0].get("verification_strength") or "")
+            if bundles else "unavailable"
+        ),
         "consulted_source_count": len(consulted),
         "cited_source_count": len(cited),
         "evidence_valid": valid,
+        "provider_grounding_valid": valid,
+        "independent_verification_valid": bool(valid and independently_verified),
         "evidence_reason": reason,
         "capture_clock": capture_clock.isoformat(),
         "requested_as_of": resolve_freshness(args.query, now=capture_clock).as_of,
@@ -150,6 +166,22 @@ def main() -> int:
                 "answer_value": str(item.get("answer_value") or item.get("officeholder") or "")[:160],
                 "temporal_as_of": str(item.get("temporal_as_of") or item.get("as_of") or "")[:32],
                 "sources": public_sources,
+                "claim_sources": public_sources,
+                "supporting_passages": [
+                    {
+                        "source_url": str(passage.get("source_url") or "")[:500],
+                        "block_id": str(passage.get("block_id") or "")[:128],
+                        "marker_text": str(passage.get("marker_text") or "")[:160],
+                        "start_index": int(passage.get("start_index") or 0),
+                        "end_index": int(passage.get("end_index") or 0),
+                        "passage": str(passage.get("passage") or "")[:500],
+                        "association_method": str(passage.get("association_method") or "")[:80],
+                    }
+                    for passage in (item.get("supporting_passages") or [])[:8]
+                    if isinstance(passage, dict)
+                ],
+                "claim_support_type": str(item.get("claim_support_type") or "")[:64],
+                "verification_strength": str(item.get("verification_strength") or "")[:64],
             })
         report["debug_evidence"] = {
             "completion_status": (
@@ -166,6 +198,10 @@ def main() -> int:
             "citation_annotations": diagnostics.get("citation_annotations", [])[:16],
             "invalid_annotations": diagnostics.get("invalid_annotations", [])[:16],
             "extraction": diagnostics.get("extraction", {}),
+            "citation_association": (
+                diagnostics.get("extraction", {}).get("associations", [])[:16]
+                if isinstance(diagnostics.get("extraction"), dict) else []
+            ),
             "sources": [
                 {
                     "title": str(source.get("title") or "")[:160],
@@ -229,8 +265,17 @@ def _replay_fixture(args: argparse.Namespace) -> int:
         for item in result.results
         for source in (item.get("claim_sources") or [])
     )
+    independently_verified = _source_urls(
+        source
+        for item in result.results
+        if item.get("verification_strength") == "independently_source_supported"
+        for source in (item.get("claim_sources") or [])
+    )
     report = {
-        "status": "verified" if valid else "failed",
+        "status": (
+            "verified" if valid and independently_verified else
+            "grounded" if valid else "failed"
+        ),
         "offline_replay": True,
         "provider_request": False,
         "latency_ms": int(round((monotonic() - started) * 1000)),
@@ -241,7 +286,14 @@ def _replay_fixture(args: argparse.Namespace) -> int:
         "usable_source_count": len(associated_supporting),
         "associated_supporting_source_count": len(associated_supporting),
         "validated_supporting_source_count": len(associated_supporting) if valid else 0,
+        "independently_verified_source_count": len(independently_verified),
+        "verification_strength": (
+            str(result.results[0].get("verification_strength") or "")
+            if result.results else "unavailable"
+        ),
         "evidence_valid": valid,
+        "provider_grounding_valid": valid,
+        "independent_verification_valid": bool(valid and independently_verified),
         "evidence_reason": reason,
         "capture_clock": capture_clock.isoformat(),
         "requested_as_of": resolve_freshness(query, now=capture_clock).as_of,
@@ -258,6 +310,10 @@ def _replay_fixture(args: argparse.Namespace) -> int:
             "citation_annotations": diagnostics.get("citation_annotations", [])[:16],
             "invalid_annotations": diagnostics.get("invalid_annotations", [])[:16],
             "extraction": diagnostics.get("extraction", {}),
+            "citation_association": (
+                diagnostics.get("extraction", {}).get("associations", [])[:16]
+                if isinstance(diagnostics.get("extraction"), dict) else []
+            ),
             "sources": [
                 {"title": str(source.get("title") or "")[:160], "url": str(source.get("url"))[:500]}
                 for source in diagnostics.get("consulted_sources", [])[:8]

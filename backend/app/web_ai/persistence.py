@@ -15,7 +15,7 @@ from ..models import (
 )
 from .evidence.models import EvidencePack
 from .execution_plan import ExecutionPlan
-from .generation.models import AnswerQualityResult
+from .generation.models import AnswerQualityResult, SAFE_QUALITY_REASON_CODES
 from .telemetry.metadata import UnsafeMetadataError, sanitize_metadata
 
 
@@ -249,6 +249,13 @@ def persist_retrieval_pack(
                 "content_hash": item.content_hash,
                 "total_token_count": item.estimated_tokens,
                 "status": "complete",
+                **{
+                    key: value for key, value in item.safe_attributes
+                    if key in {
+                        "claim_support_type", "verification_strength",
+                        "independent_verification", "temporal_support_strength",
+                    }
+                },
             }
         )
         session.add(
@@ -299,10 +306,18 @@ def persist_answer_quality(
                 {
                     "check_type": check.check_type,
                     "check_status": check.status,
+                    **(
+                        {"reason_code": check.reason_code}
+                        if check.reason_code in SAFE_QUALITY_REASON_CODES else {}
+                    ),
                     **dict(check.observations),
                 }
                 for check in result.checks
             ],
+            **(
+                {"evidence_strength": result.evidence_strength}
+                if result.evidence_strength else {}
+            ),
             "repair_attempted": result.repair_attempted,
             "verifier_used": result.verifier_used,
             **(

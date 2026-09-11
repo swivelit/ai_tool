@@ -44,6 +44,7 @@ def build_quality_result(
     repair_attempted: bool = False,
     verifier_used: bool = False,
     repository_validation_mode: RepositoryValidationMode | None = None,
+    evidence_strength: str | None = None,
 ) -> AnswerQualityResult:
     return AnswerQualityResult(
         status=quality_outcome(
@@ -59,4 +60,5 @@ def build_quality_result(
         repair_attempted=repair_attempted,
         verifier_used=verifier_used,
         repository_validation_mode=repository_validation_mode,
+        evidence_strength=evidence_strength,
     )

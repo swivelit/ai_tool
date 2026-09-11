@@ -18,6 +18,15 @@ RepositoryValidationMode = Literal[
     "static_only", "executable", "unavailable"
 ]
 
+SAFE_QUALITY_REASON_CODES = frozenset({
+    "no_cited_sections", "unsupported_cited_section", "missing_citation",
+    "citation_without_source", "provider_output_incomplete",
+    "verifier_unavailable", "claim_verifier_rejected", "contradictory_evidence",
+    "web_claim_not_supported", "provider_cited_grounding",
+    "independent_source_support_unavailable", "not_web_evidence",
+    "evidence_temporal_scope_not_established",
+})
+
 
 @dataclass(frozen=True)
 class QualityCheck:
@@ -39,6 +48,8 @@ class QualityCheck:
         }
         if self.observations:
             summary["observations"] = dict(self.observations)
+        if self.reason_code in SAFE_QUALITY_REASON_CODES:
+            summary["reason"] = self.reason_code
         return summary
 
 
@@ -50,6 +61,7 @@ class AnswerQualityResult:
     repair_attempted: bool = False
     verifier_used: bool = False
     repository_validation_mode: RepositoryValidationMode | None = None
+    evidence_strength: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -67,6 +79,7 @@ class AnswerQualityResult:
             "checks": [check.safe_summary for check in self.checks],
             "repository_validation_mode": self.repository_validation_mode,
             "repair_attempted": self.repair_attempted,
+            **({"evidence_strength": self.evidence_strength} if self.evidence_strength else {}),
         }
 
 

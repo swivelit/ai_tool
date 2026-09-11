@@ -179,6 +179,7 @@ class WebSearchAgent:
         completed_search = False
         completed_search_count = 0
         sources: list[dict[str, str]] = []
+        consulted_sources: list[dict[str, str]] = []
         citation_annotations: list[dict[str, object]] = []
 
         tool_statuses: list[dict[str, object]] = []
@@ -186,7 +187,7 @@ class WebSearchAgent:
         def add_source(source: Any) -> None:
             url = str(_value(source, "url", "") or "").strip()
             title = " ".join(str(_value(source, "title", "") or "").split())
-            if re.match(r"^https?://\S+$", url) and title:
+            if re.match(r"^https?://\S+$", url):
                 candidate = {
                     "url": url[:2000], "title": title[:256],
                 }
@@ -195,8 +196,21 @@ class WebSearchAgent:
                 ).split())
                 if source_text:
                     candidate["snippet"] = source_text[:4000]
-                if not any(item.get("url") == candidate["url"] for item in sources):
+                if not any(item.get("url") == candidate["url"] for item in consulted_sources):
+                    consulted_sources.append(candidate.copy())
+                existing = next(
+                    (item for item in sources if item.get("url") == candidate["url"]),
+                    None,
+                )
+                if existing is None:
                     sources.append(candidate)
+                else:
+                    # Hosted search action sources often contain only a URL;
+                    # a later citation annotation can enrich that identity.
+                    if candidate.get("title"):
+                        existing["title"] = candidate["title"]
+                    if candidate.get("snippet"):
+                        existing["snippet"] = candidate["snippet"]
 
         for item in items:
             if _value(item, "type") == "web_search_call":
@@ -272,6 +286,7 @@ class WebSearchAgent:
             text_blocks=canonical["diagnostic_blocks"],
             tool_statuses=tool_statuses,
             sources=sources,
+            consulted_sources=consulted_sources,
             citations=citation_annotations,
             usage=usage_data,
             invalid_annotations=invalid_annotations,
@@ -375,7 +390,11 @@ class WebSearchAgent:
                 "temporal_support": "completed_live_search",
                 "temporal_as_of": candidate.get("temporal_as_of", clock.date().isoformat()),
                 "relevant": True, "search_call_completed": True,
-                "sources": [{"url": item["url"], "title": item["title"]} for item in sources[:16]],
+                "sources": [{"url": item["url"], "title": item.get("title", "")} for item in sources[:16]],
+                "consulted_sources": [
+                    {"url": item["url"], "title": item.get("title", "")}
+                    for item in consulted_sources[:16]
+                ],
                 "claim_sources": claim_sources,
                 "citation_annotations": candidate_annotations[:32],
                 "supporting_passages": [
@@ -561,6 +580,7 @@ def _canonical_response_blocks(response: Any, items: list[Any]) -> dict[str, obj
 def _response_diagnostics(
     *, response: Any, original_text: str, text_blocks: list[dict[str, object]],
     tool_statuses: list[dict[str, object]], sources: list[dict[str, str]],
+    consulted_sources: list[dict[str, str]],
     citations: list[dict[str, object]], usage: dict[str, int | float],
     invalid_annotations: list[dict[str, object]] | None = None,
     canonical_text_truncated: bool = False,
@@ -582,7 +602,13 @@ def _response_diagnostics(
         "text_blocks": [dict(block) for block in text_blocks[:16]],
         "canonical_text_truncated": canonical_text_truncated,
         "aggregate_output_text_used": aggregate_output_text_used,
-        "consulted_sources": [dict(source) for source in sources[:16]],
+        "consulted_sources": [dict(source) for source in consulted_sources[:16]],
+        "cited_sources": [
+            dict(source) for source in sources[:16]
+            if source.get("url") in {
+                str(annotation.get("url") or "") for annotation in citations
+            }
+        ],
         "citation_annotations": [dict(annotation) for annotation in citations[:32]],
         "invalid_annotations": list(invalid_annotations or [])[:32],
         "usage": dict(usage),

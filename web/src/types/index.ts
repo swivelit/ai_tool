@@ -113,6 +113,7 @@ export type SourceSummary = {
   locator: string;
   confidence: number;
   source_kind: string;
+  attributes?: Record<string, string>;
 }
 export type QualityOutcome = 'verified' | 'checked' | 'grounded' | 'best_effort' | 'unverified' | 'insufficient_evidence'
 export type QualityCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped' | 'error'
@@ -120,7 +121,8 @@ export type ResponseQuality = {
   status: QualityOutcome;
   retrieval_status: string | null;
   repository_validation_mode: 'static_only' | 'executable' | 'unavailable' | null;
-  checks: Array<{ type: string; status: QualityCheckStatus }>;
+  evidence_strength?: 'provider_cited_grounding' | 'independently_source_supported' | null;
+  checks: Array<{ type: string; status: QualityCheckStatus; reason?: string }>;
 }
 export type SearchResult = {
   thread_id: string | null; message_id: string | null; snippet: string;

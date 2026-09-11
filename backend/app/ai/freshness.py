@@ -243,6 +243,7 @@ def validate_current_evidence(
         # later usable result.
         for preferred in (
             "evidence_stale_or_conflicting", "evidence_claim_not_supported",
+            "evidence_temporal_scope_not_established",
             "evidence_not_relevant", "evidence_missing_answer_value",
         ):
             if preferred in reasons:
@@ -251,11 +252,19 @@ def validate_current_evidence(
 
     answer_values = {
         frozenset(_normalized_terms(str(
-            item.get("officeholder") or item.get("current_value") or item.get("claim") or ""
+            normalized.get("answer_value")
+            or item.get("officeholder")
+            or item.get("current_value")
+            or item.get("claim")
+            or ""
         )))
-        for item, _normalized in valid
+        for item, normalized in valid
         if str(
-            item.get("officeholder") or item.get("current_value") or item.get("claim") or ""
+            normalized.get("answer_value")
+            or item.get("officeholder")
+            or item.get("current_value")
+            or item.get("claim")
+            or ""
         ).strip()
     }
     if len(answer_values) > 1:
@@ -322,7 +331,7 @@ def _validate_current_evidence_item(
     claim_for_temporal_checks = " ".join((snippet or claim).split())
     if re.search(r"\b(?:not|never|former|previous|ex[- ]|no longer)\b", claim_for_temporal_checks, re.I):
         return False, None, "evidence_claim_not_supported"
-    if freshness.scope == "current":
+    if freshness.scope in {"current", "mixed"}:
         dated_prefix = re.search(
             r"^(?:in|during|as\s+of)\s+(\d{4})\b", claim_for_temporal_checks, re.I,
         )
@@ -333,6 +342,19 @@ def _validate_current_evidence_item(
             claim_for_temporal_checks, re.I,
         ) and not re.search(r"\b(?:today|now|currently|present)\b", claim_for_temporal_checks, re.I):
             return False, None, "evidence_temporal_scope_mismatch"
+        # An inauguration, appointment, election or swearing-in is an event
+        # in the past.  It may explain how an officeholder took office, but it
+        # does not by itself establish that the person still holds the office
+        # on the requested current date.
+        if re.search(
+            r"\b(?:was|were)\s+(?:sworn\s+in|appointed|elected|named|chosen)\b"
+            r"|\b(?:sworn\s+in|appointed|elected|named|chosen)\s+on\b",
+            claim_for_temporal_checks, re.I,
+        ) and not re.search(
+            r"\b(?:current(?:ly)?|now|today|present|incumbent|serves?|remains?|still)\b",
+            claim_for_temporal_checks, re.I,
+        ):
+            return False, None, "evidence_temporal_scope_not_established"
     query_terms = {
         term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
         if term.casefold() not in {
@@ -468,6 +490,58 @@ def _validate_current_evidence_item(
             return False, None, "evidence_not_relevant"
     if not query_terms.intersection(evidence_terms) and not _has_officeholder_subject(query):
         return False, None, "evidence_not_relevant"
+    claim_sources = [
+        {
+            "url": str(source.get("url") or "")[:2_000],
+            "title": str(source.get("title") or "")[:256],
+            **(
+                {"snippet": str(source.get("snippet") or "")[:4_000]}
+                if source.get("snippet") else {}
+            ),
+        }
+        for source in payload.get("claim_sources", [])
+        if isinstance(source, dict) and str(source.get("url") or "").strip()
+    ][:16]
+    if not claim_sources and source_url:
+        claim_sources = [{"url": source_url[:2_000], "title": title[:256]}]
+    citation_annotations = [
+        {
+            key: str(annotation.get(key) or "")[:2_000]
+            for key in ("url", "title", "block_id", "marker_text", "association_method")
+            if annotation.get(key) is not None
+        }
+        | {
+            "start_index": int(annotation.get("start_index") or 0),
+            "end_index": int(annotation.get("end_index") or 0),
+            "supporting_span": annotation.get("supporting_span")
+            if isinstance(annotation.get("supporting_span"), dict) else {},
+        }
+        for annotation in payload.get("citation_annotations", [])
+        if isinstance(annotation, dict)
+    ][:32]
+    supporting_passages = [
+        {
+            "source_url": str(passage.get("source_url") or "")[:2_000],
+            "block_id": str(passage.get("block_id") or "")[:128],
+            "marker_text": str(passage.get("marker_text") or "")[:512],
+            "passage": str(passage.get("passage") or "")[:4_000],
+            "association_method": str(passage.get("association_method") or "")[:64],
+            "start_index": int(passage.get("start_index") or 0),
+            "end_index": int(passage.get("end_index") or 0),
+        }
+        for passage in payload.get("supporting_passages", [])
+        if isinstance(passage, dict) and str(passage.get("source_url") or "").strip()
+    ][:32]
+    source_content_available = bool(snippet)
+    support_type = str(payload.get("claim_support_type") or "cited_synthesis")[:64]
+    verification_strength = (
+        "independently_source_supported"
+        if source_content_available else "provider_cited_grounding"
+    )
+    temporal_strength = (
+        "source_content_supported"
+        if source_content_available else "provider_asserted_period"
+    )
     return True, {
         "title": title[:256], "snippet": snippet[:4_000],
         **({"claim": claim[:1_000], "answer_value": answer_value[:256]} if claim else {}),
@@ -475,6 +549,15 @@ def _validate_current_evidence_item(
         "url": source_url[:2_000], "source": provenance[:128],
         "retrieved_at": retrieved_at[:128],
         "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],
+        "claim_sources": claim_sources,
+        "citation_annotations": citation_annotations,
+        "supporting_passages": supporting_passages,
+        "claim_support_type": support_type,
+        "verification_strength": verification_strength,
+        "independent_verification": (
+            "source_content" if source_content_available else "unavailable"
+        ),
+        "temporal_support_strength": temporal_strength,
     }, "grounded_current_evidence"
 
 

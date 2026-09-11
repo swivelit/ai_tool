@@ -63,6 +63,10 @@ function normalizeSourcesEvent(event: SSEEvent): SSEEvent {
       locator: String(source.locator ?? '').slice(0, 256),
       confidence: Math.max(0, Math.min(1, Number(source.confidence ?? 0))),
       source_kind: String(source.source_kind ?? '').slice(0, 32),
+      ...(typeof source.attributes === 'object' && source.attributes !== null
+        ? { attributes: Object.fromEntries(Object.entries(source.attributes as Record<string, unknown>).flatMap(([key, value]) =>
+          ['verification_strength', 'independent_verification', 'temporal_support_strength', 'claim_support_type'].includes(key)
+            ? [[key, String(value).slice(0, 128)]] : [])) } : {}),
     } satisfies SourceSummary
   }).filter(source => source.id && source.label && source.locator)
   return { event: 'sources', data: { sources } }
@@ -83,8 +87,16 @@ function normalizeQualityEvent(event: SSEEvent): SSEEvent {
     const type = String(check.type ?? '').slice(0, 64)
     const checkStatus = String(check.status ?? '')
     return type && allowedChecks.includes(checkStatus as QualityCheckStatus)
-      ? [{ type, status: checkStatus as QualityCheckStatus }] : []
+      ? [{
+        type, status: checkStatus as QualityCheckStatus,
+        ...(String(check.reason ?? '').trim()
+          ? { reason: String(check.reason).slice(0, 80) } : {}),
+      }] : []
   })
+  const evidenceStrength = ['provider_cited_grounding', 'independently_source_supported']
+    .includes(String(data.evidence_strength ?? ''))
+    ? data.evidence_strength as ResponseQuality['evidence_strength']
+    : null
   const quality: ResponseQuality = {
     status: status as QualityOutcome,
     retrieval_status: typeof data.retrieval_status === 'string'
@@ -93,6 +105,7 @@ function normalizeQualityEvent(event: SSEEvent): SSEEvent {
       .includes(String(data.repository_validation_mode ?? ''))
       ? data.repository_validation_mode as ResponseQuality['repository_validation_mode']
       : null,
+    ...(evidenceStrength ? { evidence_strength: evidenceStrength } : {}),
     checks: checks.slice(0, 24),
   }
   return { event: 'quality', data: quality }

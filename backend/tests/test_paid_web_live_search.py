@@ -24,6 +24,8 @@ from app.billing.service import credit_payment_once
 from app.database import SessionLocal
 from app.models import PaymentOrder, UsageCharge, WebChatMessage, WebUsagePreferences
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
+from app.web_api.chat_service import _freshness_evidence_pack
+from app.web_ai.generation.answer_guard import AnswerGuard, AnswerGuardContext
 
 from tests.conftest import auth_headers, create_test_user
 
@@ -668,7 +670,10 @@ def test_paid_adapter_associates_trailing_marker_with_bounded_supporting_passage
     onmanorama = {
         "url": "https://example.test/onmanorama",
         "title": "Onmanorama report",
-        "snippet": "The report describes the May swearing-in.",
+        "snippet": (
+            "On May 10, 2026, C. Joseph Vijay was sworn in as Chief Minister "
+            "of Tamil Nadu."
+        ),
     }
     ndtv = {
         "url": "https://example.test/ndtv",
@@ -720,13 +725,13 @@ def test_paid_adapter_associates_trailing_marker_with_bounded_supporting_passage
     )
     assert "[Onmanorama]" in bundle["supporting_passages"][0]["marker_text"]
     assert ndtv["url"] not in [item["url"] for item in bundle["claim_sources"]]
-    # Association succeeded, but the historical source snippet does not prove
-    # that the generated September status is current.
+    # Association succeeded, but the historical event containing the complete
+    # identity/role/entity still does not prove September incumbency.
     valid, _evidence, reason = validate_current_evidence(
         "Who is the CM of Tamil Nadu?", result.results, now=clock,
     )
     assert valid is False
-    assert reason == "evidence_claim_not_supported"
+    assert reason == "evidence_temporal_scope_not_established"
 
 
 def test_paid_adapter_rejects_single_consulted_source_without_inline_support(monkeypatch):
@@ -970,6 +975,12 @@ def test_paid_prepared_turn_admits_lookup_after_reservation_and_keeps_evidence(
     monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "false")
+    monkeypatch.setenv("WEB_RESPONSE_PROVENANCE_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_ENABLED", "true")
+    monkeypatch.setenv("WEB_TRIAG_SHADOW_MODE", "false")
+    monkeypatch.setenv("WEB_ANSWER_GUARD_ENABLED", "true")
+    monkeypatch.setenv("WEB_VERIFIED_STREAMING_ENABLED", "true")
+    monkeypatch.setenv("WEB_ROLLOUT_ANSWER_GUARD_MODE", "all_eligible")
     user = create_test_user("paid-live-search", "paid-live-search@example.com")
     _fund(int(user.id))
     fixed = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
@@ -1034,6 +1045,14 @@ def test_paid_prepared_turn_admits_lookup_after_reservation_and_keeps_evidence(
     completed = execute_web_turn(prepared, providers={"openai": Provider()})
     assert completed.message.sources
     assert completed.message.sources[0]["locator"].startswith("https://")
+    assert completed.message.quality["evidence_strength"] == (
+        "independently_source_supported"
+    )
+    assert any(
+        check["type"] == "web_evidence_support" and check["status"] == "passed"
+        for check in completed.message.quality["checks"]
+    )
+    assert completed.response.raw["provenance"] == ["web_search"]
     assert completed.response.raw["cache_eligible"] is False
     assert completed.response.raw["web_search_usage"]["calls"] == 1
 
@@ -1192,3 +1211,177 @@ def test_evidence_validation_can_skip_irrelevant_first_result_but_reject_conflic
     assert validate_current_evidence(
         query, [supported, conflicting], now=fixed,
     )[2] == "evidence_stale_or_conflicting"
+
+
+def test_captured_url_only_responses_fixture_shape_keeps_consulted_sources_and_grounding(monkeypatch):
+    """Replays the supplied capture shape; indices are an explicit local reconstruction."""
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fixed = datetime(2026, 9, 11, 10, 30, 29, 123634, tzinfo=timezone.utc)
+    answer = (
+        "As of September 11, 2026, C. Joseph Vijay is the Chief Minister of "
+        "Tamil Nadu. [Onmanorama] The appointment followed the assembly election. "
+        "[NDTV]"
+    )
+    urls = [
+        {"url": f"https://example.test/consulted/{index}"}
+        for index in range(12)
+    ]
+    onmanorama = "https://example.test/consulted/0"
+    ndtv = "https://example.test/consulted/1"
+    response = type("Response", (), {
+        "status": "completed",
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"type": "search", "sources": urls})(),
+            })(),
+            type("Message", (), {
+                "type": "message",
+                "content": [type("Content", (), {
+                    "id": "captured-text-0", "type": "output_text", "text": answer,
+                    "annotations": [
+                        type("Annotation", (), {
+                            "type": "url_citation", "url": onmanorama,
+                            "title": "Onmanorama", "start_index": answer.index("[Onmanorama]"),
+                            "end_index": answer.index("[Onmanorama]") + len("[Onmanorama]"),
+                        })(),
+                        type("Annotation", (), {
+                            "type": "url_citation", "url": ndtv,
+                            "title": "NDTV", "start_index": answer.index("[NDTV]"),
+                            "end_index": answer.index("[NDTV]") + len("[NDTV]"),
+                        })(),
+                    ],
+                })()],
+            })(),
+        ],
+        # The SDK exposes this convenience value as well; it must not create a
+        # second diagnostic text block or reset nested annotation coordinates.
+        "output_text": answer,
+        "usage": type("Usage", (), {"input_tokens": 8646, "output_tokens": 199})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: fixed,
+    ).search("Who is the CM of Tamil Nadu?")
+
+    assert result.reason == "openai_responses_web_search"
+    assert len(result.diagnostics["consulted_sources"]) == 12
+    assert len(result.diagnostics["cited_sources"]) == 2
+    assert len(result.results) == 1
+    assert result.results[0]["url"] == onmanorama
+    accepted, normalized, reason = validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=fixed,
+    )
+    assert accepted is True
+    assert reason == "grounded_current_evidence"
+    assert normalized["verification_strength"] == "provider_cited_grounding"
+    assert normalized["independent_verification"] == "unavailable"
+    assert normalized["claim_sources"][0]["url"] == onmanorama
+
+
+def test_historical_inauguration_does_not_establish_current_incumbency():
+    fixed = datetime(2026, 9, 11, 10, tzinfo=timezone.utc)
+    event = {
+        "url": "https://example.test/inauguration",
+        "title": "Election report",
+        "snippet": (
+            "On May 10, 2026, C. Joseph Vijay was sworn in as Chief Minister "
+            "of Tamil Nadu."
+        ),
+        "claim": (
+            "On May 10, 2026, C. Joseph Vijay was sworn in as Chief Minister "
+            "of Tamil Nadu."
+        ),
+        "officeholder": "C. Joseph Vijay",
+        "provenance": "dated-report",
+        "retrieved_at": fixed.isoformat(),
+        "temporal_as_of": "2026-09-11",
+        "temporal_support": True,
+        "search_call_completed": True,
+        "relevant": True,
+    }
+    accepted, _normalized, reason = validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", [event], now=fixed,
+    )
+    assert accepted is False
+    assert reason == "evidence_temporal_scope_not_established"
+
+
+def test_freshness_pack_uses_only_claim_sources_and_quality_reports_provider_grounding():
+    fixed = datetime(2026, 9, 11, 10, tzinfo=timezone.utc)
+    evidence = {
+        "url": "https://example.test/supporting-b",
+        "title": "Source B",
+        "claim": "Example Person is the Chief Minister of Tamil Nadu.",
+        "synthesis": "Source A was consulted first and contains unrelated context.",
+        "retrieved_at": fixed.isoformat(),
+        "temporal_as_of": "2026-09-11",
+        "source": "openai_web_search",
+        "claim_sources": [
+            {"url": "https://example.test/supporting-b", "title": "Source B"},
+        ],
+        "citation_annotations": [{
+            "url": "https://example.test/supporting-b", "title": "Source B",
+            "marker_text": "[B]", "start_index": 62, "end_index": 65,
+        }],
+        "supporting_passages": [{
+            "source_url": "https://example.test/supporting-b",
+            "passage": "Example Person is the Chief Minister of Tamil Nadu.",
+            "block_id": "text-0", "association_method": "trailing_citation_group",
+            "start_index": 0, "end_index": 65,
+        }],
+        "claim_support_type": "cited_synthesis",
+        "verification_strength": "provider_cited_grounding",
+    }
+    pack = _freshness_evidence_pack(
+        user_id=1, request_id="freshness-pack-test", query="Who is the CM of Tamil Nadu?",
+        evidence=evidence,
+    )
+    assert [item.source_locator for item in pack.items] == [
+        "https://example.test/supporting-b"
+    ]
+    assert dict(pack.items[0].safe_attributes)["verification_strength"] == (
+        "provider_cited_grounding"
+    )
+    quality = AnswerGuard().check(
+        "Example Person is the Chief Minister of Tamil Nadu. [S1]",
+        AnswerGuardContext(
+            answer_class="normal", task_contract="Who is the CM of Tamil Nadu?",
+            evidence_pack=pack, verified_buffered=True,
+        ),
+    )
+    assert quality.evidence_strength == "provider_cited_grounding"
+    assert quality.status == "grounded"
+    assert any(
+        check.check_type == "web_evidence_support" and check.status == "passed"
+        for check in quality.checks
+    )
+
+
+def test_web_quality_rejects_unsupported_added_sentence_without_upgrading_grounding():
+    fixed = datetime(2026, 9, 11, 10, tzinfo=timezone.utc)
+    pack = _freshness_evidence_pack(
+        user_id=1, request_id="web-quality-test", query="Who is the CM of Tamil Nadu?",
+        evidence={
+            "url": "https://example.test/source",
+            "title": "Official directory",
+            "claim": "Example Person is the Chief Minister of Tamil Nadu.",
+            "retrieved_at": fixed.isoformat(), "temporal_as_of": "2026-09-11",
+            "source": "openai_web_search",
+            "claim_sources": [{"url": "https://example.test/source", "title": "Official directory"}],
+            "citation_annotations": [], "supporting_passages": [],
+            "verification_strength": "provider_cited_grounding",
+        },
+    )
+    quality = AnswerGuard().check(
+        "Example Person is the Chief Minister of Tamil Nadu. [S1] "
+        "Another Person was appointed Governor of Kerala in May 2026. [S1]",
+        AnswerGuardContext(
+            answer_class="normal", task_contract="Who is the CM of Tamil Nadu?",
+            evidence_pack=pack,
+        ),
+    )
+    web_check = next(check for check in quality.checks if check.check_type == "web_evidence_support")
+    assert web_check.status == "failed"
+    assert web_check.reason_code == "web_claim_not_supported"
+    assert quality.status == "unverified"

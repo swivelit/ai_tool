@@ -54,12 +54,20 @@ class EvidenceItem:
 
     @property
     def safe_source(self) -> dict[str, object]:
+        attributes = {
+            key: value for key, value in self.safe_attributes
+            if key in {
+                "verification_strength", "independent_verification",
+                "temporal_support_strength", "claim_support_type",
+            }
+        }
         return {
             "id": self.citation_label,
             "label": self.source_label,
             "locator": self.source_locator,
             "confidence": round(self.confidence, 6),
             "source_kind": self.source_type,
+            **({"attributes": attributes} if attributes else {}),
         }
 
 

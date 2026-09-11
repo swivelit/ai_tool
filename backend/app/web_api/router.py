@@ -147,6 +147,7 @@ from ..web_ai.retrieval.persistent_knowledge import (
 )
 from ..observability import APP_RELEASE, get_request_id
 from ..openai_tracked import OpenAIBudgetExceededError
+from ..web_ai.generation.models import SAFE_QUALITY_REASON_CODES
 from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
@@ -686,6 +687,19 @@ def _serialize_message(
                 0.0, min(1.0, float(source.get("confidence") or 0.0))
             ),
             "source_kind": str(source.get("source_kind") or "")[:32],
+            **(
+                {
+                    "attributes": {
+                        str(key)[:64]: str(value)[:128]
+                        for key, value in (source.get("attributes") or {}).items()
+                        if str(key) in {
+                            "verification_strength", "independent_verification",
+                            "temporal_support_strength", "claim_support_type",
+                        }
+                    }
+                }
+                if isinstance(source.get("attributes"), dict) else {}
+            ),
         }
         for source in (
             raw_sources if isinstance(raw_sources, list) else []
@@ -712,9 +726,11 @@ def _serialize_message(
                 if check_type and check_status in {
                     "passed", "failed", "warning", "skipped", "error",
                 }:
-                    quality_checks.append({
-                        "type": check_type, "status": check_status,
-                    })
+                    safe_check = {"type": check_type, "status": check_status}
+                    reason = str(check.get("reason") or "")
+                    if reason in SAFE_QUALITY_REASON_CODES:
+                        safe_check["reason"] = reason
+                    quality_checks.append(safe_check)
             quality = {
                 "status": quality_status,
                 "retrieval_status": (
@@ -729,6 +745,13 @@ def _serialize_message(
                     else None
                 ),
                 "repair_attempted": raw_quality.get("repair_attempted") is True,
+                **(
+                    {"evidence_strength": str(raw_quality.get("evidence_strength"))[:64]}
+                    if str(raw_quality.get("evidence_strength") or "") in {
+                        "provider_cited_grounding", "independently_source_supported",
+                    }
+                    else {}
+                ),
             }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,

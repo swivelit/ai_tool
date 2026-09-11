@@ -83,6 +83,7 @@ from ..web_ai.generation.answer_guard import (
 from ..web_ai.generation.generator import GeneratedAnswer, VerifiedGenerator
 from ..web_ai.generation.models import (
     AnswerQualityResult, QualityCheck, RepositoryValidationMode,
+    SAFE_QUALITY_REASON_CODES,
 )
 from ..web_ai.generation.output_contract import (
     OutputContract,
@@ -435,7 +436,11 @@ def _safe_quality_summary(value: object) -> dict[str, object] | None:
         if check_type and check_status in {
             "passed", "failed", "warning", "skipped", "error",
         }:
-            checks.append({"type": check_type, "status": check_status})
+            check = {"type": check_type, "status": check_status}
+            reason = str(item.get("reason") or "")
+            if reason in SAFE_QUALITY_REASON_CODES:
+                check["reason"] = reason
+            checks.append(check)
     return {
         "status": status,
         "retrieval_status": retrieval_status or None,
@@ -446,6 +451,13 @@ def _safe_quality_summary(value: object) -> dict[str, object] | None:
                 "static_only", "executable", "unavailable",
             }
             else None
+        ),
+        **(
+            {"evidence_strength": str(value.get("evidence_strength"))[:64]}
+            if str(value.get("evidence_strength") or "") in {
+                "provider_cited_grounding", "independently_source_supported",
+            }
+            else {}
         ),
     }
 
@@ -479,6 +491,19 @@ def _completed_message_snapshot(message: WebChatMessage) -> CompletedWebMessage:
                 0.0, min(1.0, float(source.get("confidence") or 0.0))
             ),
             "source_kind": str(source.get("source_kind") or "")[:32],
+            **(
+                {
+                    "attributes": {
+                        str(key)[:64]: str(value)[:128]
+                        for key, value in (source.get("attributes") or {}).items()
+                        if str(key) in {
+                            "verification_strength", "independent_verification",
+                            "temporal_support_strength", "claim_support_type",
+                        }
+                    }
+                }
+                if isinstance(source.get("attributes"), dict) else {}
+            ),
         }
         for source in (raw_sources if isinstance(raw_sources, list) else [])
         if isinstance(source, dict)
@@ -1083,12 +1108,13 @@ def _response_provenance(
     values: list[str] = []
     if str(prepared.ai_request.metadata.get("memory_prompt_context") or "").strip():
         values.append("memory")
-    if (
-        prepared.repository_contract is None
-        and str(
-            prepared.ai_request.metadata.get("attachment_prompt_context") or ""
-        ).strip()
-    ):
+    evidence_kinds = {
+        item.source_type for item in (prepared.retrieval_context.items
+                                      if prepared.retrieval_context is not None else ())
+    }
+    if evidence_kinds.intersection({
+        "temporary_upload", "approved_document", "document",
+    }):
         values.append("document")
     if prepared.repository_contract is not None:
         values.append("repository")
@@ -1100,7 +1126,11 @@ def _response_provenance(
         )
     if response.provider == "backend_tool":
         values.append("backend_tool")
-    if response.raw.get("web_search") or response.raw.get("web_search_used"):
+    if (
+        "web_search" in evidence_kinds
+        or response.raw.get("web_search")
+        or response.raw.get("web_search_used")
+    ):
         values.append("web_search")
     allowed = {
         "memory", "document", "cached_answer", "semantic_cache",
@@ -1213,54 +1243,97 @@ def _freshness_unavailable_response(
 def _freshness_evidence_pack(
     *, user_id: int, request_id: str, query: str, evidence: dict[str, object],
 ) -> EvidencePack:
-    rows = evidence.get("sources")
-    sources = rows if isinstance(rows, list) else []
-    if not sources:
-        sources = [{"url": evidence["url"], "title": evidence["title"]}]
+    rows = evidence.get("claim_sources")
+    sources = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if not sources and str(evidence.get("url") or "").strip():
+        # This fallback is the already-validated supporting URL, not the
+        # first consulted URL.  Unassociated search results stay out of the
+        # answer evidence pack.
+        sources = [{"url": evidence["url"], "title": evidence.get("title", "Web source")}]
+    passages = [row for row in evidence.get("supporting_passages", []) if isinstance(row, dict)]
+    annotations = [row for row in evidence.get("citation_annotations", []) if isinstance(row, dict)]
+    claim = str(evidence.get("claim") or "").strip()
+    snippet = str(evidence.get("snippet") or "").strip()
+    support_type = str(evidence.get("claim_support_type") or "cited_synthesis")[:64]
+    verification_strength = str(
+        evidence.get("verification_strength") or "provider_cited_grounding"
+    )[:64]
+    independent_verification = str(
+        evidence.get("independent_verification") or "unavailable"
+    )[:32]
+    temporal_support_strength = str(
+        evidence.get("temporal_support_strength") or "provider_asserted_period"
+    )[:64]
+
+    def source_passages(source: dict[str, object]) -> list[dict[str, object]]:
+        return [
+            passage for passage in passages
+            if str(passage.get("source_url") or "") == str(source.get("url") or "")
+            and str(passage.get("passage") or "").strip()
+        ]
+
+    def source_runtime(source: dict[str, object]) -> str:
+        source_url = str(source.get("url") or "")
+        parts: list[str] = []
+        if claim:
+            parts.append(
+                "Supported relation from the cited web-search response "
+                f"(generated synthesis, not a verbatim source excerpt): {claim}"
+            )
+        parts.extend(
+            "Citation-associated supporting passage "
+            f"(generated synthesis, not a verbatim source excerpt): {passage.get('passage')}"
+            for passage in source_passages(source)
+        )
+        source_excerpt = str(source.get("snippet") or "").strip()
+        if not source_excerpt and snippet and source_url == str(evidence.get("url") or ""):
+            source_excerpt = snippet
+        if source_excerpt:
+            parts.append(f"Source excerpt supplied by the provider: {source_excerpt}")
+        parts.extend(
+            f"Associated citation marker: {annotation.get('marker_text')}"
+            for annotation in annotations
+            if str(annotation.get("url") or "") == source_url
+            and str(annotation.get("marker_text") or "").strip()
+        )
+        parts.extend((
+            f"Retrieved at: {evidence.get('retrieved_at')}",
+            f"Requested period: {evidence.get('temporal_as_of')}",
+        ))
+        return "\n".join(part for part in parts if part)
+
     candidates = tuple(
         RetrievalCandidate(
             candidate_id=f"freshness:{request_id}:{index}", owner_user_id=user_id,
             source_kind="web_search",
-            source_locator=str(source.get("url") or evidence["url"]),
-            runtime_text=(
-                "\n".join(
-                    value for value in (
-                        (
-                            f"Claim from the cited web-search response: {evidence.get('claim')}"
-                            if evidence.get("claim") else ""
-                        ),
-                        (
-                            f"Source excerpt: {evidence['snippet']}"
-                            if evidence.get("snippet") else ""
-                        ),
-                        (
-                            "Search synthesis (untrusted, citation-associated; not a verbatim source excerpt): "
-                            f"{evidence.get('synthesis')}"
-                            if evidence.get("synthesis") else ""
-                        ),
-                        f"Retrieved at: {evidence['retrieved_at']}",
-                    ) if value
-                )
-                if index == 0 else f"Cited source: {source.get('title') or 'Web source'}"
-            ),
-            token_count=(estimate_tokens(" ".join(
-                str(value) for value in (
-                    evidence.get("claim"), evidence.get("snippet"), evidence.get("synthesis")
+            source_locator=str(source.get("url") or "")[:2_000],
+            runtime_text=source_runtime(source),
+            token_count=estimate_tokens(" ".join(
+                value for value in (
+                    claim,
+                    str(source.get("snippet") or ""),
+                    " ".join(
+                        str(passage.get("passage") or "") for passage in source_passages(source)
+                    ),
                 ) if value
-            )) if index == 0 else 12),
+            )),
             lexical_score=1.0, semantic_score=1.0, metadata_score=1.0,
             fused_score=1.0,
             bounded_metadata=(
-                ("source_label", str(source.get("title") or evidence["title"])[:256]),
+                ("source_label", str(source.get("title") or evidence.get("title") or "Web source")[:256]),
                 ("source_kind", "web_search"),
-                ("retrieved_at", str(evidence["retrieved_at"])[:128]),
-                ("provenance", str(evidence["source"])[:128]),
+                ("retrieved_at", str(evidence.get("retrieved_at") or "")[:128]),
+                ("provenance", str(evidence.get("source") or "")[:128]),
                 ("freshness_query", query[:256]),
+                ("claim_support_type", support_type),
+                ("verification_strength", verification_strength),
+                ("independent_verification", independent_verification),
+                ("temporal_support_strength", temporal_support_strength),
             ),
             query_coverage=1.0,
         )
         for index, source in enumerate(sources[:8])
-        if isinstance(source, dict) and str(source.get("url") or "").strip()
+        if str(source.get("url") or "").strip()
     )
     return build_evidence_pack(
         owner_user_id=user_id,
@@ -3832,12 +3905,20 @@ def _merge_live_evidence_pack(
         "sufficient" if "sufficient" in statuses else
         "ambiguous" if "ambiguous" in statuses else "insufficient"
     )
+    items: list[Any] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in (*existing.items, *retrieved.items):
+        identity = (item.source_type, item.source_id, item.evidence_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        items.append(item)
     merged = EvidencePack(
         owner_user_id=existing.owner_user_id,
         request_id=existing.request_id,
         # Fresh web evidence is placed first so later private retrieval cannot
         # overwrite or crowd it out before the prompt is rebuilt.
-        items=(*existing.items, *retrieved.items),
+        items=tuple(items),
         truncated=existing.truncated or retrieved.truncated,
         retrieval_status=status,
         contradictions=(*existing.contradictions, *retrieved.contradictions)[:16],
