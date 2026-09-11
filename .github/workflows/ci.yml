@@ -66,3 +66,29 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: swico-ci
           VITE_FIREBASE_APP_ID: 1:1234567890:web:abcdef123456
           VITE_FIREBASE_MESSAGING_SENDER_ID: '1234567890'
+
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+      - name: Build and test CLI
+        run: npm test
+        working-directory: cli
+      - name: Inspect package contents
+        run: npm pack --dry-run
+        working-directory: cli

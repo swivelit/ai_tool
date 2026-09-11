@@ -395,8 +395,10 @@ RUNTIME_STATUS: Dict[str, Any] = {
 
 if os.getenv("WEB_APP_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
     from .web_api.router import router as web_api_router
+    from .cli_api.router import router as cli_api_router
 
     app.include_router(web_api_router)
+    app.include_router(cli_api_router)
 
 if openwakeword_router is not None:
     app.include_router(openwakeword_router)
@@ -1061,6 +1063,20 @@ def startup_runtime_services() -> None:
     RUNTIME_STATUS["status"] = "starting"
     RUNTIME_STATUS["services"] = {}
     RUNTIME_STATUS["errors"] = []
+
+    try:
+        from .cli_api.config import CliConfigurationError, validate_cli_configuration
+        cli_runtime = validate_cli_configuration()
+    except CliConfigurationError as exc:
+        if os.getenv("SWICO_CLI_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            raise RuntimeError(f"CLI configuration is invalid: {exc}") from exc
+        _record_runtime_service("swico_cli", ok=False, required=False, detail=str(exc))
+    else:
+        _record_runtime_service(
+            "swico_cli", ok=True, required=False,
+            detail="enabled" if cli_runtime.enabled else "disabled",
+            metadata={"enabled": cli_runtime.enabled, "agent_enabled": cli_runtime.agent_enabled},
+        )
 
     try:
         triag_status = TriagSettings.from_environ().runtime_status

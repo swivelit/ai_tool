@@ -1258,3 +1258,34 @@ Mode.
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 
 After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹15 payment with owner-controlled payment details, verify the expected server-calculated credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
+
+## Swico CLI rollout
+
+The CLI is an additional client of the existing API and Chat billing bucket.
+Keep these backend settings disabled by default:
+
+```text
+SWICO_CLI_ENABLED=false
+SWICO_CLI_AGENT_ENABLED=false
+SWICO_CLI_WEB_ORIGIN=https://swico.in
+SWICO_CLI_ALLOWED_EMAILS=
+SWICO_CLI_MAX_AGENT_STEPS=8
+```
+
+Deploy the API and `swico-web` from the same tested commit, run the API-owned
+Alembic pre-deploy migration and the read-only CLI readiness check, then enable
+chat for a test account. Verify device authorization, account ownership, Chat
+reservation/settlement and session revocation before enabling the agent for
+that account. Remove the allowlist only for a wider rollout. Roll back by
+setting either feature flag to `false`; retain schema and billing records.
+There is no new Render service, database, browser localhost origin, or
+provider credential. `/cli/authorize` is served by the existing SPA rewrite.
+
+Readiness check (no paid provider call):
+
+```bash
+cd backend
+python scripts/swico_cli_release_check.py --pretty
+```
+
+CLI installation/authentication details are in `docs/CLI.md`.

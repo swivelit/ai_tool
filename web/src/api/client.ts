@@ -221,6 +221,30 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
   return body as T
 }
 
+export type CliDeviceInfo = {
+  user_code: string; device_description: string; scopes: string[]; status: string; expires_at: string
+}
+
+export async function getCliDeviceInfo(userCode: string): Promise<CliDeviceInfo> {
+  return publicApiJson<CliDeviceInfo>(`/api/cli/v1/device/${encodeURIComponent(userCode)}`)
+}
+
+export async function approveCliDevice(user: User, userCode: string, approved: boolean): Promise<{ status: string }> {
+  return apiJson<{ status: string }>(user, '/api/cli/v1/device/approve', {
+    method: 'POST', body: JSON.stringify({ user_code: userCode, approved }),
+  })
+}
+
+export type CliSessionSummary = { id: string; device_description: string; created_at: string; last_seen_at: string; current?: boolean }
+
+export async function listCliSessions(user: User): Promise<{ items: CliSessionSummary[] }> {
+  return apiJson<{ items: CliSessionSummary[] }>(user, '/api/web/cli/sessions')
+}
+
+export async function revokeCliSession(user: User, sessionId: string): Promise<{ status: string }> {
+  return apiJson<{ status: string }>(user, `/api/web/cli/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}
+
 export async function streamChat(
   user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; repository_id?: string; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string },
   onEvent: (event: SSEEvent) => void, signal: AbortSignal, onAccepted?: () => void,

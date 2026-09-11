@@ -113,6 +113,7 @@ from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
+    CliSession,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
     WebKnowledgeDocument,
 )
@@ -215,6 +216,29 @@ _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
 ALEMBIC_HEAD = repository_alembic_head()
+
+
+def request_generation_cancellation(request_id: str, user_id: int) -> bool:
+    """Shared in-process cancellation admission used by web-compatible clients."""
+    with _active_generations_lock:
+        active = _active_generations.get(str(request_id))
+        if active is not None and active[0] == int(user_id):
+            active[1].cancel()
+            return True
+        _pending_generation_cancellations[str(request_id)] = int(user_id)
+        return False
+
+
+def register_generation(request_id: str, user_id: int, cancellation: GenerationCancellation) -> None:
+    with _active_generations_lock:
+        _active_generations[str(request_id)] = (int(user_id), cancellation)
+        if _pending_generation_cancellations.pop(str(request_id), None) == int(user_id):
+            cancellation.cancel()
+
+
+def unregister_generation(request_id: str) -> None:
+    with _active_generations_lock:
+        _active_generations.pop(str(request_id), None)
 
 
 def _tickets() -> VoiceTicketStore:
@@ -2332,6 +2356,58 @@ def _profile_response(user) -> dict[str, Any]:
         "assistant_name": user.assistant_name, "reply_language": _resolved_reply_language(user),
         "email": user.email, "email_editable": False,
     }
+
+
+@router.get("/cli/sessions")
+def list_web_cli_sessions(
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    """List terminal sessions for the signed-in website account.
+
+    This intentionally uses Firebase website authentication rather than a
+    terminal bearer token, so a user can revoke a lost terminal even after
+    the CLI rollout flag has been disabled.
+    """
+    user = get_owned_user(session, auth)
+    rows = session.exec(
+        select(CliSession).where(
+            CliSession.user_id == int(user.id),
+            CliSession.revoked_at.is_(None),
+        ).order_by(CliSession.created_at.desc())
+    ).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "device_description": row.device_description,
+                "created_at": row.created_at.isoformat(),
+                "last_seen_at": row.last_seen_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/cli/sessions/{session_id}")
+def revoke_web_cli_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(
+        select(CliSession).where(
+            CliSession.id == session_id,
+            CliSession.user_id == int(user.id),
+        ).with_for_update()
+    ).first()
+    if row is None:
+        raise HTTPException(404, "CLI session not found")
+    if row.revoked_at is None:
+        row.revoked_at, row.revoke_reason = utc_now(), "website_revoked"
+        session.add(row)
+    return {"status": "revoked"}
 
 
 @router.get("/settings/profile")

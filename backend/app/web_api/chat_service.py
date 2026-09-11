@@ -43,7 +43,10 @@ from ..ai.provider_pool import (
     CrossProviderVerifier, EmbeddingProviderRouter, TargetedAnswerRepair,
     multi_provider_routing_enabled,
 )
-from ..ai.swico_tiers import SwicoTierUnavailableError, free_output_token_ceiling
+from ..ai.swico_tiers import (
+    SWICO_TIER_IDS, SwicoTierUnavailableError, free_output_token_ceiling,
+    pro_enabled,
+)
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import (
     PriceResult,
@@ -1372,13 +1375,20 @@ def prepare_web_turn(
             request_triag_settings = TriagSettings()
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
-        swico_tier = (
-            str(forced_swico_tier).strip().lower()
-            if forced_swico_tier is not None
-            else selected_swico_tier(session, user_id)
-        )
-        if forced_swico_tier is not None and swico_tier != "free":
-            raise SwicoTierUnavailableError("Only Swico Free can be forced for this request")
+        if forced_swico_tier is not None:
+            requested_tier = str(forced_swico_tier).strip().lower()
+            if requested_tier not in SWICO_TIER_IDS:
+                raise SwicoTierUnavailableError("The requested Swico tier is unavailable")
+            if requested_tier == "pro" and not pro_enabled():
+                raise SwicoTierUnavailableError("Swico Pro is not available yet")
+            if requested_tier == "free" and not swico_free_eligible:
+                raise SwicoTierUnavailableError("Swico Free is not available for this request")
+            # Forced Free is used by the existing guest/queue path and must
+            # remain Free even when the public Free rollout flag is off. Paid
+            # CLI sessions pass an already-authorized public tier.
+            swico_tier = requested_tier
+        else:
+            swico_tier = selected_swico_tier(session, user_id)
         if swico_tier == "free" and not swico_free_eligible:
             raise SwicoTierUnavailableError("Swico Free is not available for this account")
         if swico_tier == "free" and attachment_ids:
