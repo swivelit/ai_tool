@@ -105,9 +105,28 @@ def _requested_entity_terms(query: str) -> set[str]:
         r"(?=\s+(?:as\s+of|on|from|now|today|and)\b|[?.!,;]|$)",
         query, re.IGNORECASE,
     )
-    if not match:
-        return set()
-    return _normalized_terms(match.group(1))
+    if match:
+        return _normalized_terms(match.group(1))
+    # The intent classifier already understands these forms. Keep evidence
+    # matching aligned with it rather than requiring English filler words in a
+    # Tamil/Tanglish question.
+    folded = query.casefold()
+    if "தமிழ்நா" in query or re.search(r"\btamil\s*nadu\b", folded):
+        return {"tamil", "nadu"}
+    if "இந்தியா" in query or re.search(r"\bindia\b", folded):
+        return {"india"}
+    return set()
+
+
+def _requested_role_terms(query: str) -> tuple[str, ...]:
+    folded = query.casefold()
+    if "முதலமைச்சர்" in query or re.search(r"\b(?:cm|chief\s+minister)\b", folded):
+        return ("chief minister",)
+    if "பிரதமர்" in query or re.search(r"\b(?:pm|prime\s+minister)\b", folded):
+        return ("prime minister",)
+    if "ஆளுநர்" in query or re.search(r"\bgovernor\b", folded):
+        return ("governor",)
+    return ()
 
 
 def _parse_explicit_date(text: str) -> date | None:
@@ -177,21 +196,63 @@ def validate_current_evidence(
     *,
     now: datetime | None = None,
 ) -> tuple[bool, dict[str, object] | None, str]:
-    """Validate provider-supplied temporal evidence without guessing."""
+    """Accept one relevant, supported current claim from a bounded result set."""
     clock = now or datetime.now(timezone.utc)
     result_items = result if isinstance(result, list) else [result]
     dictionaries = [item for item in result_items if isinstance(item, dict)]
-    if any(item.get("stale") is True or item.get("conflicting") is True for item in dictionaries):
-        return False, None, "evidence_stale_or_conflicting"
-    claims = {
-        str(item.get(key)).strip()
+    if not dictionaries:
+        return False, None, "retrieval_failed"
+    if any(
+        item.get("stale") is True or item.get("conflicting") is True
         for item in dictionaries
-        for key in ("claim", "officeholder", "current_value")
-        if str(item.get(key) or "").strip()
-    }
-    if len(claims) > 1:
+    ):
         return False, None, "evidence_stale_or_conflicting"
-    payload = dictionaries[0] if dictionaries else None
+
+    valid: list[tuple[dict[str, object], dict[str, object]]] = []
+    reasons: list[str] = []
+    for item in dictionaries:
+        accepted, normalized, reason = _validate_current_evidence_item(
+            query, item, now=clock,
+        )
+        if accepted and normalized is not None:
+            valid.append((item, normalized))
+        else:
+            reasons.append(reason)
+    if not valid:
+        # Preserve the most useful failure category for the deterministic
+        # response while never allowing an irrelevant first result to hide a
+        # later usable result.
+        for preferred in (
+            "evidence_stale_or_conflicting", "evidence_claim_not_supported",
+            "evidence_not_relevant", "evidence_missing_answer_value",
+        ):
+            if preferred in reasons:
+                return False, None, preferred
+        return False, None, reasons[0] if reasons else "retrieval_failed"
+
+    answer_values = {
+        frozenset(_normalized_terms(str(
+            item.get("officeholder") or item.get("current_value") or item.get("claim") or ""
+        )))
+        for item, _normalized in valid
+        if str(
+            item.get("officeholder") or item.get("current_value") or item.get("claim") or ""
+        ).strip()
+    }
+    if len(answer_values) > 1:
+        return False, None, "evidence_stale_or_conflicting"
+    return True, valid[0][1], "grounded_current_evidence"
+
+
+def _validate_current_evidence_item(
+    query: str,
+    result: object,
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, dict[str, object] | None, str]:
+    """Validate provider-supplied temporal evidence without guessing."""
+    clock = now or datetime.now(timezone.utc)
+    payload = result if isinstance(result, dict) else None
     if not payload:
         return False, None, "retrieval_failed"
     source_url = str(payload.get("url") or "").strip()
@@ -223,11 +284,11 @@ def validate_current_evidence(
         return False, None, "future_temporal_scope_unavailable"
     if claimed_date.isoformat() != freshness.as_of:
         return False, None, "evidence_temporal_scope_mismatch"
-    if (
-        not provenance
-        or payload.get("temporal_support") is not True
-        or payload.get("relevant") is False
-    ):
+    temporal_ok = payload.get("temporal_support") is True or (
+        payload.get("temporal_support") == "completed_live_search"
+        and payload.get("search_call_completed") is True
+    )
+    if not provenance or not temporal_ok or payload.get("relevant") is False:
         return False, None, "evidence_missing_temporal_support"
     query_terms = {
         term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
@@ -235,6 +296,9 @@ def validate_current_evidence(
             "what", "who", "where", "when", "which", "the", "and", "today", "current",
         }
     }
+    query_terms.update(_normalized_terms(" ".join(_requested_entity_terms(query))))
+    for role in _requested_role_terms(query):
+        query_terms.update(_normalized_terms(role))
     evidence_terms = _normalized_terms(f"{title} {snippet}")
     if "cm" in query_terms:
         query_terms.update(("chief", "minister"))
@@ -244,6 +308,7 @@ def validate_current_evidence(
         query_terms.update(("tamil", "nadu"))
     if _has_officeholder_subject(query):
         role_terms = set(re.findall(r"[A-Za-z]{2,}", query.casefold()))
+        requested_roles = _requested_role_terms(query)
         evidence_lower = f"{title} {snippet}".casefold()
         if "pm" in role_terms or ("prime" in role_terms and "minister" in role_terms):
             expected_roles = ("prime minister",)
@@ -254,7 +319,7 @@ def validate_current_evidence(
                 role for role in ("president", "governor", "mayor", "chancellor")
                 if role in role_terms
             )
-        role_supported = (
+        role_supported = bool(requested_roles) or (
             ("chief" in role_terms and "minister" in role_terms)
             or "cm" in role_terms
             or ("prime" in role_terms and "minister" in role_terms)
@@ -267,6 +332,8 @@ def validate_current_evidence(
             or ("prime minister" in evidence_lower or bool(re.search(r"\bpm\b", evidence_lower)))
             or any(re.search(rf"\b{role}\b", evidence_lower) for role in ("president", "governor", "mayor", "chancellor"))
         )
+        if requested_roles:
+            expected_roles = requested_roles
         if expected_roles and not any(role in evidence_lower for role in expected_roles):
             evidence_role_supported = False
         if not role_supported or not evidence_role_supported:
@@ -287,7 +354,10 @@ def validate_current_evidence(
         # Keep the source title separate from the body. A matching title is
         # metadata about the page, not proof that the body associates the
         # requested entity with the identified value.
-        support_clauses = [title, *re.split(r"[.!?;\n]+", snippet)]
+        # A page title is provenance metadata, not evidence that the body
+        # associates the requested entity with the answer value. In particular,
+        # a matching title plus a contradictory body must never pass.
+        support_clauses = re.split(r"[.!?;\n]+", snippet)
         if not any(
             value_terms.issubset(_normalized_terms(clause))
             and (not entity_terms or entity_terms.issubset(_normalized_terms(clause)))
@@ -301,7 +371,15 @@ def validate_current_evidence(
             return False, None, "evidence_claim_not_supported"
         subject_terms = {
             term for term in query_terms
-            if term not in {"please", "identify", "name", "tell", "me", "could", "you", "who", "what", "is", "the", "of", "current", "latest", "chief", "prime", "minister", "president", "governor", "mayor", "chancellor", "tamilnadu", "tamil", "nadu", "cm", "pm"}
+            if term not in {
+                "please", "identify", "name", "tell", "me", "could", "you",
+                "who", "what", "is", "the", "of", "current", "latest", "now",
+                "today", "chief", "prime", "minister", "president", "governor",
+                "mayor", "chancellor", "tamilnadu", "tamil", "nadu", "cm", "pm",
+                # Common Tanglish question and temporal particles are
+                # instructions about the lookup, not entity constraints.
+                "la", "il", "ippo", "ippa", "yaar", "yaaru",
+            }
             and len(term) >= 4
         }
         if subject_terms and not subject_terms.issubset(evidence_terms):
@@ -312,6 +390,7 @@ def validate_current_evidence(
         "title": title[:256], "snippet": snippet[:4_000],
         "url": source_url[:2_000], "source": provenance[:128],
         "retrieved_at": retrieved_at[:128],
+        "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],
     }, "grounded_current_evidence"
 
 

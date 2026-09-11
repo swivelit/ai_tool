@@ -19,7 +19,10 @@ from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
 from ..ai.freshness import resolve_freshness, validate_current_evidence
-from ..ai.agents.web_search_agent import WebSearchAgent
+from ..ai.agents.web_search_agent import (
+    LiveSearchConfigurationError, WebSearchAgent, live_search_config,
+    paid_live_search_allowed,
+)
 from ..ai.language import localized_web_deterministic_text, resolve_web_reply_language
 from ..ai.openai_catalog import get_model_spec
 from ..ai.openai_reasoning import resolve_openai_reasoning_budget
@@ -43,6 +46,7 @@ from ..billing.pricing import (
     PriceResult,
     estimate_tokens,
     env_decimal,
+    live_search_price, reserve_live_search_price,
     openai_reported_price,
     price_usage,
     reserve_price,
@@ -1162,7 +1166,18 @@ def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
 def _freshness_unavailable_response(
     *, reply_language: str, reason: str, intent: str = "live_data",
 ) -> AIProviderResponse:
-    text = localized_web_deterministic_text(reply_language, "live_data_disabled")
+    unavailable_reasons = {
+        "retrieval_disabled", "retrieval_disabled_for_tier", "live_search_disabled",
+        "live_search_not_configured", "live_search_configuration_invalid", "missing_api_key",
+    }
+    text = localized_web_deterministic_text(
+        reply_language,
+        "live_data_disabled" if reason in unavailable_reasons else "live_data_unavailable",
+        fallback=(
+            "I couldn’t verify the current answer from reliable sources just now. "
+            "Please try again shortly."
+        ),
+    )
     # Keep the product's localized, no-guessing wording while distinguishing a
     # retrieval outage from a provider answer in metadata and audit records.
     return AIProviderResponse(
@@ -1194,33 +1209,38 @@ def _freshness_unavailable_response(
 def _freshness_evidence_pack(
     *, user_id: int, request_id: str, query: str, evidence: dict[str, object],
 ) -> EvidencePack:
-    candidate = RetrievalCandidate(
-        candidate_id=f"freshness:{request_id}",
-        owner_user_id=user_id,
-        source_kind="web_search",
-        source_locator=str(evidence["url"]),
-        runtime_text=(
-            f"{evidence['title']}\n{evidence['snippet']}\n"
-            f"Retrieved at: {evidence['retrieved_at']}"
-        ),
-        token_count=estimate_tokens(str(evidence["snippet"])),
-        lexical_score=1.0,
-        semantic_score=1.0,
-        metadata_score=1.0,
-        fused_score=1.0,
-        bounded_metadata=(
-            ("source_label", str(evidence["title"])[:256]),
-            ("source_kind", "web_search"),
-            ("retrieved_at", str(evidence["retrieved_at"])[:128]),
-            ("provenance", str(evidence["source"])[:128]),
-            ("freshness_query", query[:256]),
-        ),
-        query_coverage=1.0,
+    rows = evidence.get("sources")
+    sources = rows if isinstance(rows, list) else []
+    if not sources:
+        sources = [{"url": evidence["url"], "title": evidence["title"]}]
+    candidates = tuple(
+        RetrievalCandidate(
+            candidate_id=f"freshness:{request_id}:{index}", owner_user_id=user_id,
+            source_kind="web_search",
+            source_locator=str(source.get("url") or evidence["url"]),
+            runtime_text=(
+                f"{evidence['snippet']}\nRetrieved at: {evidence['retrieved_at']}"
+                if index == 0 else f"Cited source: {source.get('title') or 'Web source'}"
+            ),
+            token_count=(estimate_tokens(str(evidence["snippet"])) if index == 0 else 12),
+            lexical_score=1.0, semantic_score=1.0, metadata_score=1.0,
+            fused_score=1.0,
+            bounded_metadata=(
+                ("source_label", str(source.get("title") or evidence["title"])[:256]),
+                ("source_kind", "web_search"),
+                ("retrieved_at", str(evidence["retrieved_at"])[:128]),
+                ("provenance", str(evidence["source"])[:128]),
+                ("freshness_query", query[:256]),
+            ),
+            query_coverage=1.0,
+        )
+        for index, source in enumerate(sources[:8])
+        if isinstance(source, dict) and str(source.get("url") or "").strip()
     )
     return build_evidence_pack(
         owner_user_id=user_id,
         request_id=request_id,
-        candidates=(candidate,),
+        candidates=candidates,
         status="sufficient",
         status_codes=("freshness_evidence",),
         token_cap=4_000,
@@ -2684,19 +2704,35 @@ def prepare_web_turn(
         route = AIProviderRouter().select_route(ai_request, now=now)
         freshness_precomputed: AIProviderResponse | None = None
         freshness_pack: EvidencePack | None = None
+        freshness_search_pending = False
+        freshness_search_reserved_micros = 0
         if freshness.requires_fresh_evidence and route.intent not in {
             "unsafe_or_sensitive", "urgent_medical_emergency",
             "harmful_credential_abuse", "swico_brand",
         }:
-            # Current factual requests are retrieval-gated in the prepared-turn
-            # path used by both web and mobile. Free remains local-only even if
-            # the legacy flag is enabled; paid requests use the configured,
-            # bounded retrieval provider only when it is explicitly enabled.
-            search_enabled = _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False)
-            if swico_tier == "free" or not search_enabled:
+            # Free remains local-only. Paid web search is governed by its own
+            # capability policy and is deliberately not tied to the legacy
+            # ENABLE_WEB_SEARCH_FOR_FREE flag.
+            try:
+                live_config = live_search_config()
+            except LiveSearchConfigurationError:
+                live_config = None
+                config_reason = "live_search_configuration_invalid"
+            else:
+                config_reason = "live_search_disabled" if not live_config.enabled else ""
+            if (
+                swico_tier == "free"
+                or not paid_live_search_allowed(swico_tier)
+                or live_config is None
+                or not live_config.enabled
+                or (live_config.enabled and not str(os.getenv("OPENAI_API_KEY", "") or "").strip())
+            ):
                 freshness_precomputed = _freshness_unavailable_response(
                     reply_language=str(reply_language or "en"),
-                    reason="retrieval_disabled_for_tier" if swico_tier == "free" else "retrieval_disabled",
+                    reason=(
+                        "retrieval_disabled_for_tier" if swico_tier == "free"
+                        else config_reason or "live_search_not_configured"
+                    ),
                 )
                 route = replace(
                     route, provider="blocked", model=None,
@@ -2705,40 +2741,12 @@ def prepare_web_turn(
                     max_output_tokens=0,
                 )
             else:
-                search = WebSearchAgent().search(model_message)
-                raw_result = search.results
-                valid, evidence, evidence_reason = validate_current_evidence(
-                    model_message, raw_result,
-                )
-                if not valid or evidence is None:
-                    freshness_precomputed = _freshness_unavailable_response(
-                        reply_language=str(reply_language or "en"),
-                        reason=evidence_reason,
-                    )
-                    route = replace(
-                        route, provider="blocked", model=None,
-                        route="freshness_evidence_unavailable",
-                        reason=evidence_reason,
-                        max_output_tokens=0,
-                    )
-                else:
-                    freshness_pack = _freshness_evidence_pack(
-                        user_id=user_id, request_id=request_id,
-                        query=model_message, evidence=evidence,
-                    )
-                    ai_request.metadata["freshness_evidence"] = evidence
-                    ai_request.metadata["freshness_evidence_prompt"] = evidence_prompt(
-                        freshness_pack
-                    )
-                    ai_request.metadata["attachment_prompt_context"] = "\n\n".join(
-                        value for value in (
-                            str(ai_request.metadata.get("attachment_prompt_context") or "").strip(),
-                            ai_request.metadata["freshness_evidence_prompt"],
-                        ) if value
-                    )
-                    ai_request.metadata["freshness_retrieved_at"] = evidence["retrieved_at"]
-                    ai_request.metadata["freshness_source_url"] = evidence["url"]
-                    ai_request.metadata["freshness_evidence_status"] = "grounded"
+                # The actual billable lookup is admitted below, after the
+                # ordinary turn reservation exists. This marker prevents a
+                # pre-reservation helper from making a paid provider call.
+                freshness_search_pending = True
+                ai_request.metadata["freshness_search_model"] = live_config.model
+                ai_request.metadata["freshness_search_max_calls"] = live_config.max_calls_per_turn
         if forced_swico_tier == "free" and route.provider not in {"swico_free", "blocked"}:
             # A guest request must never enter a paid provider or backend-tool
             # path. The Free runtime owns all guest generation decisions.
@@ -3069,6 +3077,128 @@ def prepare_web_turn(
                 usage_kind="chat", credit_bucket=authoritative_bucket,
                 voice_turn_id=voice_turn_id,
             )
+        if freshness_search_pending:
+            # Admit the normal turn first. The bounded search call is an
+            # additional billable operation on the same idempotent charge.
+            search_reserve = reserve_live_search_price(
+                live_config.model, estimate_tokens(model_message),
+                live_config.max_output_tokens,
+            )
+            search = None
+            evidence = None
+            evidence_reason = "search_budget_unavailable"
+            try:
+                if search_reserve is not None and not billing_exempt:
+                    expand_usage_reservation(
+                        session, request_id=request_id,
+                        additional_micros=search_reserve.micros,
+                        expansion_id="web_live_search:1",
+                    )
+                freshness_search_reserved_micros = search_reserve.micros if search_reserve is not None else 0
+                search = WebSearchAgent().search(model_message)
+                valid, evidence, evidence_reason = validate_current_evidence(
+                    model_message, search.results, now=now,
+                )
+            except Exception as exc:
+                valid, evidence = False, None
+            if not valid or evidence is None:
+                freshness_precomputed = _freshness_unavailable_response(
+                    reply_language=str(reply_language or "en"),
+                    reason=(evidence_reason if search is not None else "search_budget_unavailable"),
+                )
+                search_usage = search.usage if search is not None else None
+                search_cost_incurred = bool(
+                    isinstance(search_usage, dict)
+                    and (
+                        int(search_usage.get("input_tokens") or 0) > 0
+                        or int(search_usage.get("output_tokens") or 0) > 0
+                    )
+                )
+                if search_cost_incurred:
+                    # Keep the reservation alive long enough for finalization
+                    # to settle the actual search cost and release the unused
+                    # generation hold. The customer still receives the
+                    # deterministic unavailable answer.
+                    freshness_precomputed = replace(
+                        freshness_precomputed,
+                        provider="openai", model=live_config.model,
+                        raw={
+                            **freshness_precomputed.raw,
+                            "web_search_only": True,
+                            "usage_actual": True,
+                            "web_search_usage": search_usage,
+                        },
+                    )
+                    ai_request.metadata["freshness_search_usage"] = search_usage
+                    ai_request.metadata["freshness_search_cost_only"] = True
+                else:
+                    if not billing_exempt:
+                        release_usage_reservation(
+                            session, request_id, reason="live_search_unavailable",
+                        )
+                    else:
+                        release_billing_exempt_usage(
+                            session, request_id, reason="live_search_unavailable",
+                        )
+                    freshness_search_reserved_micros = 0
+                route = replace(
+                    route, provider="blocked", model=None,
+                    route="freshness_evidence_unavailable",
+                    reason=evidence_reason,
+                    max_output_tokens=0,
+                )
+            else:
+                freshness_pack = _freshness_evidence_pack(
+                    user_id=user_id, request_id=request_id,
+                    query=model_message, evidence=evidence,
+                )
+                ai_request.metadata.update({
+                    "freshness_evidence": evidence,
+                    "freshness_evidence_prompt": evidence_prompt(freshness_pack),
+                    "freshness_retrieved_at": evidence["retrieved_at"],
+                    "freshness_source_url": evidence["url"],
+                    "freshness_evidence_status": "grounded",
+                    "freshness_search_usage": search.usage or {},
+                })
+                ai_request.metadata["attachment_prompt_context"] = "\n\n".join(
+                    value for value in (
+                        str(ai_request.metadata.get("attachment_prompt_context") or "").strip(),
+                        ai_request.metadata["freshness_evidence_prompt"],
+                    ) if value
+                )
+                # The initial prompt is frozen before the paid lookup is
+                # admitted.  Rebuild from the now-enriched request rather
+                # than letting the old provider-message snapshot hide the
+                # untrusted, cited search evidence.
+                ai_request.metadata.pop("provider_messages", None)
+                provider_messages = _hard_budget_provider_messages(
+                    ai_request, route,
+                    prompt_maximum=tier_policy_for(swico_tier).max_prompt_tokens,
+                )
+                serialized_prompt = serialize_provider_messages(provider_messages)
+                new_input_tokens = estimate_tokens(serialized_prompt)
+                if new_input_tokens > input_tokens and not billing_exempt:
+                    prompt_reserve = reserve_price(
+                        route.provider, route.model or "",
+                        new_input_tokens - input_tokens, 0,
+                    )
+                    expand_usage_reservation(
+                        session, request_id=request_id,
+                        additional_micros=prompt_reserve.micros,
+                        expansion_id="web_live_search:prompt",
+                    )
+                    reserve = replace(
+                        reserve, micros=reserve.micros + prompt_reserve.micros,
+                    )
+                ai_request.metadata["provider_messages"] = provider_messages
+                ai_request.metadata["serialized_provider_prompt"] = serialized_prompt
+                ai_request.metadata["estimated_prompt_tokens"] = new_input_tokens
+                input_tokens = new_input_tokens
+                optimization = replace(
+                    optimization, estimated_prompt_tokens=new_input_tokens,
+                    cache_eligible=False, cache_scope="disabled",
+                    cache_scope_reason="freshness_requires_retrieval",
+                )
         embedding_request_id: str | None = None
         embedding_reserved_micros = 0
         embedding_accounted = False
@@ -3194,7 +3324,14 @@ def prepare_web_turn(
         return PreparedWebTurn(
             request_id=request_id, user_id=user_id, thread_id=thread.id,
             ai_request=ai_request, route=route,
-            reserved_micros=0 if billing_exempt or route.provider == "swico_free" else reserve.micros,
+            reserved_micros=(
+                0
+                if billing_exempt or (
+                    route.provider not in {"openai", "sarvam"}
+                    and not ai_request.metadata.get("freshness_search_cost_only")
+                )
+                else reserve.micros + freshness_search_reserved_micros
+            ),
             swico_tier=swico_tier, input_mode=input_mode,
             voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
             billing_exempt=billing_exempt,
@@ -3622,6 +3759,31 @@ def _insufficient_private_source_text(reply_language: str) -> str:
     return localized_web_deterministic_text(reply_language, "private_source")
 
 
+def _merge_live_evidence_pack(
+    existing: EvidencePack | None, retrieved: EvidencePack, token_cap: int,
+) -> EvidencePack:
+    if existing is None:
+        return cap_evidence_pack(retrieved, token_cap)
+    statuses = {existing.retrieval_status, retrieved.retrieval_status}
+    status = (
+        "contradictory" if "contradictory" in statuses else
+        "sufficient" if "sufficient" in statuses else
+        "ambiguous" if "ambiguous" in statuses else "insufficient"
+    )
+    merged = EvidencePack(
+        owner_user_id=existing.owner_user_id,
+        request_id=existing.request_id,
+        # Fresh web evidence is placed first so later private retrieval cannot
+        # overwrite or crowd it out before the prompt is rebuilt.
+        items=(*existing.items, *retrieved.items),
+        truncated=existing.truncated or retrieved.truncated,
+        retrieval_status=status,
+        contradictions=(*existing.contradictions, *retrieved.contradictions)[:16],
+        status_codes=tuple(dict.fromkeys((*existing.status_codes, *retrieved.status_codes))),
+    )
+    return cap_evidence_pack(merged, token_cap)
+
+
 def _execute_phase2_retrieval(
     prepared: PreparedWebTurn,
     *,
@@ -3801,7 +3963,10 @@ def _execute_phase2_retrieval(
                 ),
                 policy.evidence_token_cap,
             )
-        prepared.retrieval_context = pack
+        prepared.retrieval_context = _merge_live_evidence_pack(
+            prepared.retrieval_context, pack, policy.evidence_token_cap,
+        )
+        pack = prepared.retrieval_context
         if pack.retrieval_status == "insufficient":
             insufficient_text = _insufficient_private_source_text(
                 prepared.reply_language
@@ -3910,7 +4075,10 @@ def _execute_phase2_retrieval(
                 retrieval_status="insufficient",
                 status_codes=("lexical_fallback", reason_code),
             )
-        prepared.retrieval_context = pack
+        prepared.retrieval_context = _merge_live_evidence_pack(
+            prepared.retrieval_context, pack, policy.evidence_token_cap,
+        )
+        pack = prepared.retrieval_context
         if pack.retrieval_status == "insufficient":
             prepared.precomputed_response = AIProviderResponse(
                 text=_insufficient_private_source_text(
@@ -6622,7 +6790,33 @@ def execute_web_turn(
             price = openai_reported_price(
                 response.model or "", Decimal(str(response.raw["actual_cost_usd"])), price.snapshot
             )
+        search_price: PriceResult | None = None
+        search_usage = prepared.ai_request.metadata.get("freshness_search_usage")
+        if isinstance(search_usage, dict):
+            search_input = int(search_usage.get("input_tokens") or 0)
+            search_output = int(search_usage.get("output_tokens") or 0)
+            search_calls = max(1, int(search_usage.get("search_calls") or 1))
+            search_price = live_search_price(
+                str(prepared.ai_request.metadata.get("freshness_search_model") or "gpt-4.1-mini"),
+                search_input, search_output, search_calls,
+            )
+            response.raw["web_search_usage"] = {
+                "calls": search_calls,
+                "input_tokens": search_input,
+                "output_tokens": search_output,
+                "charged_micros": search_price.micros,
+            }
         price = _aggregate_phase3_prices(phase3_prices, price)
+        if search_price is not None:
+            price = replace(
+                price,
+                micros=price.micros + search_price.micros,
+                snapshot={
+                    **price.snapshot,
+                    "web_search": search_price.snapshot,
+                    "web_search_cost_micros": search_price.micros,
+                },
+            )
         interrupted_without_usage = bool(
             response.raw.get("client_disconnected_partial_persisted")
             and not response.raw.get("usage_actual")
@@ -6780,7 +6974,7 @@ def execute_web_turn(
                 provider="swico_free", model="free", usage_kind="chat",
                 swico_tier=prepared.swico_tier,
             )
-        elif prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
+        elif prepared.billing_exempt and response.provider in {"openai", "sarvam"}:
             settle_billing_exempt_usage(
                 session, request_id=prepared.request_id,
                 provider_cost_amount=price.amount,
@@ -6798,7 +6992,9 @@ def execute_web_turn(
                 assistant_message_id=assistant.id,
                 provider=response.provider,
                 model=response.model or "",
-                usage_kind="chat", voice_turn_id=prepared.voice_turn_id,
+                usage_kind=(
+                    "web_search" if response.raw.get("web_search_only") else "chat"
+                ), voice_turn_id=prepared.voice_turn_id,
                 swico_tier=prepared.swico_tier,
             )
         elif prepared.reserved_micros:
@@ -6811,7 +7007,9 @@ def execute_web_turn(
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90") if response.provider == "openai" else None,
                 assistant_message_id=assistant.id,
                 provider=response.provider, model=response.model or "",
-                usage_kind="chat", voice_turn_id=prepared.voice_turn_id,
+                usage_kind=(
+                    "web_search" if response.raw.get("web_search_only") else "chat"
+                ), voice_turn_id=prepared.voice_turn_id,
                 swico_tier=prepared.swico_tier,
             )
         thread = _owned_thread(session, prepared.thread_id, prepared.user_id)

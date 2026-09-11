@@ -708,6 +708,8 @@ def test_current_endpoint_requires_temporally_supported_evidence(monkeypatch, cl
     user = create_test_user("freshness-stale", "freshness-stale@example.com")
     _fund(int(user.id))
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "true")
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     provider_calls = {"count": 0}
 
     monkeypatch.setattr(
@@ -736,7 +738,7 @@ def test_current_endpoint_requires_temporally_supported_evidence(monkeypatch, cl
     )
     assert response.status_code == 200
     assert provider_calls["count"] == 0
-    assert "will not guess" in _sse_text(response)
+    assert "couldn’t verify the current answer" in _sse_text(response)
     assert validate_current_evidence("Who is the CM of Tamil Nadu?", {
         "title": "old", "snippet": "old", "url": "https://example.test/old",
         "retrieved_at": "2020-01-01T00:00:00Z", "source": "old", "temporal_support": False,
@@ -747,6 +749,8 @@ def test_weather_endpoint_cannot_bypass_freshness_gate(monkeypatch, client):
     user = create_test_user("freshness-weather", "freshness-weather@example.com")
     _fund(int(user.id))
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "true")
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
         "app.web_api.chat_service.WebSearchAgent.search",
         lambda _self, _query: WebSearchResult(enabled=True, results=[], reason="not_configured"),
@@ -763,7 +767,7 @@ def test_weather_endpoint_cannot_bypass_freshness_gate(monkeypatch, client):
     )
     assert response.status_code == 200
     assert provider_calls["count"] == 0
-    assert "will not guess" in _sse_text(response)
+    assert "couldn’t verify the current answer" in _sse_text(response)
 
 
 def test_current_evidence_rejects_malformed_old_future_unrelated_and_conflicting_results():
@@ -804,6 +808,8 @@ def test_current_request_uses_validated_retrieval_in_prepared_turn(monkeypatch):
     user = create_test_user("freshness-enabled", "freshness-enabled@example.com")
     _fund(int(user.id))
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "true")
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     captured = {}
 
     monkeypatch.setattr(

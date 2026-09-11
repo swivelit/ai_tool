@@ -8,7 +8,9 @@ export function SourceCitations({ sources }: { sources: SourceSummary[] }) {
     <ol>
       {sources.map(source => <li key={`${source.id}-${source.locator}`}>
         <FileText size={14} aria-hidden="true" />
-        <span><b>{source.id}</b> {source.label}<small>{source.locator}</small></span>
+        <span><b>{source.id}</b> {source.label}<small>{/^https?:\/\/\S+$/i.test(source.locator)
+          ? <a href={source.locator} target="_blank" rel="noreferrer noopener">{source.locator}</a>
+          : source.locator}</small></span>
       </li>)}
     </ol>
   </section>

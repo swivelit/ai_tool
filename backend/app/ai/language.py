@@ -215,6 +215,21 @@ def localized_web_deterministic_text(language: Optional[str], key: str, fallback
     normalized = normalize_web_reply_language(language) or "en"
     if key == "provider_unavailable":
         return WEB_PROVIDER_UNAVAILABLE_RESPONSES.get(normalized, WEB_PROVIDER_UNAVAILABLE_RESPONSES["en"])
+    if key == "live_data_unavailable":
+        return {
+            "en": "I couldn’t verify the current answer from reliable sources just now. Please try again shortly.",
+            "ta": "நம்பகமான ஆதாரங்களில் இருந்து தற்போதைய பதிலை இப்போது சரிபார்க்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்.",
+            "tanglish": "Nambagamaana sources-la irundhu current answer-a ippo verify panna mudiyala. Konjam neram kazhichu try pannunga.",
+            "hi": "मैं अभी विश्वसनीय स्रोतों से वर्तमान उत्तर की पुष्टि नहीं कर सका। कृपया थोड़ी देर बाद फिर कोशिश करें।",
+            "bn": "আমি এই মুহূর্তে নির্ভরযোগ্য উৎস থেকে বর্তমান উত্তর যাচাই করতে পারিনি। কিছুক্ষণ পরে আবার চেষ্টা করুন।",
+            "te": "విశ్వసనీయ వనరుల నుండి ప్రస్తుత సమాధానాన్ని ఇప్పుడే ధృవీకరించలేకపోయాను. కొంత సమయం తర్వాత మళ్లీ ప్రయత్నించండి.",
+            "kn": "ವಿಶ್ವಾಸಾರ್ಹ ಮೂಲಗಳಿಂದ ಪ್ರಸ್ತುತ ಉತ್ತರವನ್ನು ಈಗ ಪರಿಶೀಲಿಸಲಾಗಲಿಲ್ಲ. ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+            "ml": "വിശ്വസനീയമായ ഉറവിടങ്ങളിൽ നിന്ന് നിലവിലെ ഉത്തരം ഇപ്പോൾ സ്ഥിരീകരിക്കാനായില്ല. കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക.",
+            "mr": "विश्वसनीय स्रोतांमधून सध्याचे उत्तर आत्ता पडताळता आले नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.",
+            "gu": "વિશ્વસનીય સ્ત્રોતોમાંથી વર્તમાન જવાબની હમણાં ચકાસણી થઈ શકી નથી. થોડા સમય પછી ફરી પ્રયાસ કરો.",
+            "pa": "ਭਰੋਸੇਯੋਗ ਸਰੋਤਾਂ ਤੋਂ ਮੌਜੂਦਾ ਜਵਾਬ ਦੀ ਹੁਣ ਪੁਸ਼ਟੀ ਨਹੀਂ ਹੋ ਸਕੀ। ਕੁਝ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+            "od": "ବିଶ୍ୱସନୀୟ ଉତ୍ସରୁ ବର୍ତ୍ତମାନର ଉତ୍ତର ଏବେ ଯାଞ୍ଚ କରିପାରିଲି ନାହିଁ। କିଛି ସମୟ ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।",
+        }.get(normalized, fallback)
     return WEB_DETERMINISTIC_RESPONSES.get(normalized, {}).get(key, fallback)
 
 _SCRIPT_RANGES: tuple[tuple[str, str, str], ...] = (

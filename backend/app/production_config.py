@@ -9,6 +9,7 @@ from .database_url import is_postgres_database_url
 from .cors_config import cors_configuration_errors, exact_https_origin
 from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
 from .ai.provider_pool import configured_provider_aliases
+from .ai.agents.web_search_agent import LiveSearchConfigurationError, live_search_config
 from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
 from .web_ai.settings import TriagConfigurationError, TriagSettings
 from .web_ai.rollout import (
@@ -68,6 +69,14 @@ _exact_https_origin = exact_https_origin
 def production_configuration_errors(environ: Mapping[str, str] | None = None) -> list[str]:
     env = os.environ if environ is None else environ
     errors: list[str] = []
+
+    # Paid live search is opt-in and independent of the legacy Free-only flag.
+    # Validate even when disabled so a future operator cannot enable a malformed
+    # adapter at runtime. Values are represented only by variable names.
+    try:
+        live_search_config(env, require_key=True)
+    except LiveSearchConfigurationError as exc:
+        errors.append(str(exc))
 
     subscription_flags = (
         "WEB_SUBSCRIPTIONS_ENABLED", "WEB_REFERRALS_ENABLED",

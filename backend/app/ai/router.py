@@ -100,7 +100,13 @@ class AIProviderRouter:
                 reason=freshness.reason, metadata=intent.metadata,
             )
         if intent.intent in {"weather", "live_data"}:
-            if not _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False):
+            paid_web_tier = str(request.metadata.get("swico_tier") or "").strip().lower() in {
+                "lite", "standard", "pro",
+            }
+            # Paid web search has an independent capability policy. The
+            # legacy flag remains a Free-only switch and must not gate paid
+            # tier routing.
+            if not paid_web_tier and not _env_bool("ENABLE_WEB_SEARCH_FOR_FREE", False):
                 return AIRoute(
                     provider="blocked",
                     model=None,

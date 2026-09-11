@@ -259,6 +259,17 @@ it('renders safe source labels and locators without provider names', () => {
   expect(document.body.textContent).not.toMatch(/openai|gpt-|sarvam/i)
 })
 
+it('renders public web citations as safe clickable links', () => {
+  render(<Conversation messages={[message('web-sourced', { sources:[{
+    id:'S1', label:'Tamil Nadu official directory', locator:'https://example.test/official',
+    confidence:0.9, source_kind:'web_search',
+  }] })]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByRole('link', { name:'https://example.test/official' })).toHaveAttribute(
+    'href', 'https://example.test/official',
+  )
+  expect(screen.getByRole('link')).toHaveAttribute('target', '_blank')
+})
+
 it('renders persisted quality without provider or model details', () => {
   render(<Conversation messages={[message('quality', { quality:{
     status:'grounded', retrieval_status:'sufficient',

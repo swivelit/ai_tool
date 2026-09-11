@@ -218,5 +218,49 @@ def reserve_price(provider: str, model: str, input_tokens: int, max_output_token
     return PriceResult(base.amount, base.currency, micros, {**base.snapshot, "reserve_multiplier": str(multiplier)})
 
 
+def live_search_price(
+    model: str, input_tokens: int, output_tokens: int, calls: int = 1,
+) -> PriceResult:
+    """Price one hosted web-search call using the Responses tool contract.
+
+    The configured gpt-4.1-mini non-preview tool bills a fixed 8,000 search
+    content input tokens per call in addition to the response usage, plus the
+    published per-call tool fee. Keep this separate from ordinary generation
+    pricing so it cannot be double-counted as an answer-provider attempt.
+    """
+    count = max(0, int(calls))
+    token_price = openai_price(
+        model,
+        max(0, int(input_tokens)) + (8_000 * count),
+        max(0, int(output_tokens)),
+    )
+    tool_fee_usd = Decimal("0.01") * Decimal(count)
+    fx = env_decimal("USD_TO_INR_BILLING_RATE", "90")
+    buffer_percent = env_decimal("OPENAI_FX_BUFFER_PERCENT", "3")
+    tool_fee_inr = tool_fee_usd * fx * (Decimal("1") + buffer_percent / Decimal("100"))
+    return PriceResult(
+        amount=token_price.amount + tool_fee_usd,
+        currency="USD",
+        micros=token_price.micros + _ceil_micros(tool_fee_inr),
+        snapshot={
+            **token_price.snapshot,
+            "usage_kind": "web_search",
+            "web_search_calls": count,
+            "web_search_tool_fee_usd": str(tool_fee_usd),
+            "web_search_content_input_tokens": 8_000 * count,
+        },
+    )
+
+
+def reserve_live_search_price(model: str, input_tokens: int, max_output_tokens: int) -> PriceResult:
+    base = live_search_price(model, input_tokens, max_output_tokens, 1)
+    multiplier = env_decimal("BILLING_RESERVE_MULTIPLIER", "1.25")
+    micros = int((Decimal(base.micros) * multiplier).to_integral_value(rounding=ROUND_CEILING))
+    return PriceResult(
+        base.amount, base.currency, micros,
+        {**base.snapshot, "reserve_multiplier": str(multiplier)},
+    )
+
+
 def snapshot_json(snapshot: dict[str, Any]) -> str:
     return json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
