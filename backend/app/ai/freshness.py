@@ -129,6 +129,25 @@ def _requested_role_terms(query: str) -> tuple[str, ...]:
     return ()
 
 
+def _claim_answer_value(payload: dict[str, object], claim: str) -> str:
+    for key in ("answer_value", "officeholder", "current_value"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    match = re.search(
+        r"^(.+?)\s+(?:is|was|has\s+been|remains)\s+(?:the\s+)?"
+        r"(?:current\s+)?(?:chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\b",
+        claim, re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip(" ,;:")
+    match = re.search(
+        r"(?:chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\s+of\s+.+?\s+"
+        r"(?:is|was|has\s+been|remains)\s+(.+)$", claim, re.IGNORECASE,
+    )
+    return match.group(1).strip(" ,;:") if match else ""
+
+
 def _parse_explicit_date(text: str) -> date | None:
     match = re.search(
         r"\b(?:as\s+of|on|from)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b",
@@ -257,10 +276,13 @@ def _validate_current_evidence_item(
         return False, None, "retrieval_failed"
     source_url = str(payload.get("url") or "").strip()
     snippet = " ".join(str(payload.get("snippet") or "").split())
+    claim = " ".join(str(payload.get("claim") or "").split())
+    synthesis = " ".join(str(payload.get("synthesis") or "").split())
     title = " ".join(str(payload.get("title") or "").split())
     retrieved_at = str(payload.get("retrieved_at") or "").strip()
     provenance = str(payload.get("provenance") or payload.get("source") or "").strip()
-    if not (re.match(r"^https?://\S+$", source_url) and title and snippet):
+    support_text = snippet or claim if payload.get("claim_support_type") == "cited_synthesis" else snippet
+    if not (re.match(r"^https?://\S+$", source_url) and title and (snippet or claim)):
         return False, None, "evidence_missing_provenance"
     try:
         retrieved = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
@@ -290,6 +312,14 @@ def _validate_current_evidence_item(
     )
     if not provenance or not temporal_ok or payload.get("relevant") is False:
         return False, None, "evidence_missing_temporal_support"
+    claim_for_temporal_checks = " ".join((claim or snippet or synthesis).split())
+    if re.search(r"\b(?:not|never|former|previous|ex[- ]|no longer)\b", claim_for_temporal_checks, re.I):
+        return False, None, "evidence_claim_not_supported"
+    if freshness.scope == "current" and re.search(
+        r"^(?:in|during|as\s+of)\s+\d{4}\b|\bwas\s+(?:the\s+)?(?:current\s+)?(?:chief|prime)\s+minister\b",
+        claim_for_temporal_checks, re.I,
+    ):
+        return False, None, "evidence_temporal_scope_mismatch"
     query_terms = {
         term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
         if term.casefold() not in {
@@ -299,7 +329,8 @@ def _validate_current_evidence_item(
     query_terms.update(_normalized_terms(" ".join(_requested_entity_terms(query))))
     for role in _requested_role_terms(query):
         query_terms.update(_normalized_terms(role))
-    evidence_terms = _normalized_terms(f"{title} {snippet}")
+    evidence_terms = _normalized_terms(support_text)
+    evidence_lower = support_text.casefold()
     if "cm" in query_terms:
         query_terms.update(("chief", "minister"))
     if "pm" in query_terms:
@@ -309,7 +340,6 @@ def _validate_current_evidence_item(
     if _has_officeholder_subject(query):
         role_terms = set(re.findall(r"[A-Za-z]{2,}", query.casefold()))
         requested_roles = _requested_role_terms(query)
-        evidence_lower = f"{title} {snippet}".casefold()
         if "pm" in role_terms or ("prime" in role_terms and "minister" in role_terms):
             expected_roles = ("prime minister",)
         elif "cm" in role_terms or ("chief" in role_terms and "minister" in role_terms):
@@ -332,6 +362,10 @@ def _validate_current_evidence_item(
             or ("prime minister" in evidence_lower or bool(re.search(r"\bpm\b", evidence_lower)))
             or any(re.search(rf"\b{role}\b", evidence_lower) for role in ("president", "governor", "mayor", "chancellor"))
         )
+        if "முதலமைச்சர்" in query and "முதலமைச்சர்" in support_text:
+            evidence_role_supported = True
+        if "பிரதமர்" in query and "பிரதமர்" in support_text:
+            evidence_role_supported = True
         if requested_roles:
             expected_roles = requested_roles
         if expected_roles and not any(role in evidence_lower for role in expected_roles):
@@ -341,11 +375,8 @@ def _validate_current_evidence_item(
         entity_terms = _requested_entity_terms(query)
         if entity_terms and not entity_terms.issubset(evidence_terms):
             return False, None, "evidence_not_relevant"
-        answer_value = next(
-            (str(payload.get(key) or "").strip() for key in ("officeholder", "current_value", "claim")
-             if str(payload.get(key) or "").strip()),
-            "",
-        )
+        claim_text = claim or snippet
+        answer_value = _claim_answer_value(payload, claim_text)
         if not answer_value:
             return False, None, "evidence_missing_answer_value"
         value_terms = _normalized_terms(answer_value)
@@ -357,7 +388,8 @@ def _validate_current_evidence_item(
         # A page title is provenance metadata, not evidence that the body
         # associates the requested entity with the answer value. In particular,
         # a matching title plus a contradictory body must never pass.
-        support_clauses = re.split(r"[.!?;\n]+", snippet)
+        support_basis = claim_text if payload.get("claim_support_type") == "cited_synthesis" else snippet
+        support_clauses = re.split(r"(?<=[!?;])\s+|\n+", support_basis)
         if not any(
             value_terms.issubset(_normalized_terms(clause))
             and (not entity_terms or entity_terms.issubset(_normalized_terms(clause)))
@@ -388,6 +420,8 @@ def _validate_current_evidence_item(
         return False, None, "evidence_not_relevant"
     return True, {
         "title": title[:256], "snippet": snippet[:4_000],
+        **({"claim": claim[:1_000], "answer_value": answer_value[:256]} if claim else {}),
+        **({"synthesis": synthesis[:4_000]} if synthesis else {}),
         "url": source_url[:2_000], "source": provenance[:128],
         "retrieved_at": retrieved_at[:128],
         "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],

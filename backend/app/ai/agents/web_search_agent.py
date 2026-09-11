@@ -32,6 +32,19 @@ class WebSearchResult:
     usage: dict[str, int | float] | None = None
 
 
+_RELATION_RE = re.compile(
+    r"(?P<value>[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,7})\s+"
+    r"(?P<verb>is|was|has\s+been|remains)\s+(?:the\s+)?"
+    r"(?P<role>chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\s+of\s+"
+    r"(?P<entity>[A-Za-z][A-Za-z .'-]{1,80}?)(?=$|[.!?,;]|\s+\[|\s+https?://)", re.I,
+)
+_REVERSE_RELATION_RE = re.compile(
+    r"(?:the\s+)?(?P<role>chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\s+of\s+"
+    r"(?P<entity>[A-Za-z][A-Za-z .'-]{1,80}?)\s+(?:is|was|has\s+been|remains)\s+"
+    r"(?P<value>[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,7})(?=$|[.!?,;]|\s+\[|\s+https?://)", re.I,
+)
+
+
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 _PAID_TIERS = frozenset({"lite", "standard", "pro"})
@@ -138,6 +151,7 @@ class WebSearchAgent:
                 model=config.model,
                 tools=[{"type": "web_search", "external_web_access": True}],
                 tool_choice="required",
+                max_tool_calls=config.max_calls_per_turn,
                 include=["web_search_call.action.sources"],
                 input=(
                     "Search the public web for the user's question. Use the web "
@@ -161,13 +175,17 @@ class WebSearchAgent:
         completed_search = False
         completed_search_count = 0
         sources: list[dict[str, str]] = []
+        citation_annotations: list[dict[str, object]] = []
 
         def add_source(source: Any) -> None:
             url = str(_value(source, "url", "") or "").strip()
             title = " ".join(str(_value(source, "title", "") or "").split())
             if re.match(r"^https?://\S+$", url) and title:
-                candidate = {"url": url[:2000], "title": title[:256]}
-                if candidate not in sources:
+                candidate = {
+                    "url": url[:2000], "title": title[:256],
+                    "snippet": " ".join(str(_value(source, "snippet", "") or "").split())[:4000],
+                }
+                if not any(item.get("url") == candidate["url"] for item in sources):
                     sources.append(candidate)
 
         for item in items:
@@ -183,13 +201,35 @@ class WebSearchAgent:
             # Responses can also expose URL-citation annotations on the
             # assistant message. Keep those associations instead of relying
             # only on the optional expanded source metadata.
-            annotations = _value(item, "annotations", []) or []
+            raw_annotations = _value(item, "annotations", []) or []
             for content in _value(item, "content", []) or []:
-                annotations = [*annotations, *(_value(content, "annotations", []) or [])]
-            for annotation in annotations:
+                raw_annotations = [*raw_annotations, *(_value(content, "annotations", []) or [])]
+            for annotation in raw_annotations:
                 if _value(annotation, "type") in {"url_citation", "url_citation_annotation"}:
-                    add_source(annotation)
+                    # Responses uses direct fields; legacy-shaped fixtures and
+                    # some SDK serializers wrap them in ``url_citation``.
+                    citation = _value(annotation, "url_citation", annotation)
+                    source_url = str(_value(citation, "url", "") or "").strip()
+                    source_title = " ".join(str(_value(citation, "title", "") or "").split())
+                    add_source(citation)
+                    if source_url:
+                        citation_annotations.append({
+                            "url": source_url[:2000],
+                            "title": source_title[:256],
+                            "start_index": _value(citation, "start_index"),
+                            "end_index": _value(citation, "end_index"),
+                        })
         text = " ".join(str(_value(response, "output_text", "") or "").split())
+        if not text:
+            nested_parts: list[str] = []
+            for item in items:
+                for content in _value(item, "content", []) or []:
+                    content_type = _value(content, "type")
+                    if content_type in {"output_text", "text"}:
+                        value = _value(content, "text", "")
+                        if value:
+                            nested_parts.append(str(value))
+            text = " ".join(" ".join(nested_parts).split())
         usage = _value(response, "usage", None)
         usage_data: dict[str, int | float] = {
             "input_tokens": int(_value(usage, "input_tokens", 0) or 0),
@@ -202,10 +242,27 @@ class WebSearchAgent:
             return WebSearchResult(True, [], "search_call_limit_exceeded", usage_data)
         if not text or not sources:
             return WebSearchResult(True, [], "no_usable_sources", usage_data)
+        claim = _extract_search_claim(text, query)
+        if claim is None:
+            return WebSearchResult(True, [], "search_claim_not_extractable", usage_data)
         clock = self._clock().astimezone(timezone.utc)
-        first = sources[0]
+        cited_urls = {
+            str(item.get("url") or "") for item in citation_annotations if item.get("url")
+        }
+        # A single tool result without inline annotations is retained for
+        # backwards-compatible SDK responses. Multiple sources must be tied to
+        # an explicit citation span; consulted URLs are not proof by themselves.
+        claim_sources = [item for item in sources if item["url"] in cited_urls]
+        if not claim_sources and len(sources) == 1:
+            claim_sources = list(sources)
+        if not claim_sources:
+            return WebSearchResult(True, [], "claim_has_no_supporting_citation", usage_data)
+        first = claim_sources[0]
         result = {
-            "title": first["title"], "snippet": text[:4000], "claim": text[:4000],
+            "title": first["title"], "snippet": _source_snippet(first),
+            "synthesis": text[:4000], "claim": claim["claim"],
+            "answer_value": claim["answer_value"],
+            "requested_role": claim["role"], "requested_entity": claim["entity"],
             "url": first["url"], "source": "openai_web_search",
             "provenance": "openai_responses_web_search",
             "retrieved_at": clock.isoformat(),
@@ -213,6 +270,9 @@ class WebSearchAgent:
             "temporal_as_of": clock.date().isoformat(), "relevant": True,
             "search_call_completed": True,
             "sources": [{"url": item["url"], "title": item["title"]} for item in sources[:16]],
+            "claim_sources": claim_sources,
+            "citation_annotations": citation_annotations[:32],
+            "claim_support_type": "cited_synthesis",
         }
         usage_data["search_calls"] = max(1, completed_search_count)
         return WebSearchResult(True, [result], "openai_responses_web_search", usage_data)
@@ -259,6 +319,50 @@ class WebSearchAgent:
                 title = re.sub(r"\b(?:the|a|an)\b$", "", match.group(1).strip(), flags=re.IGNORECASE).strip()
                 return title[:120]
         return ""
+
+
+def _source_snippet(source: Mapping[str, str]) -> str:
+    """Return only source text supplied by the tool, never generated synthesis."""
+    return " ".join(str(source.get("snippet") or source.get("text") or "").split())[:4000]
+
+
+def _extract_search_claim(text: str, query: str) -> dict[str, str] | None:
+    """Extract the small requested fact from a Responses synthesis.
+
+    The complete output remains in ``synthesis``.  This narrow extraction is
+    deliberately conservative: historical or negated clauses are not turned
+    into current evidence merely because the words for a role and place occur.
+    """
+    cleaned = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", text)
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    cleaned = " ".join(cleaned.split())
+    query_l = query.casefold()
+    entity = "Tamil Nadu" if re.search(r"tamil\s*nadu|tamilnadu|தமிழ்நா", query_l + query) else ""
+    match = _RELATION_RE.search(cleaned) or _REVERSE_RELATION_RE.search(cleaned)
+    if match is None:
+        return None
+    value = " ".join(match.group("value").split()).strip(" ,;:")
+    role = " ".join(match.group("role").split()).casefold()
+    role = {"cm": "chief minister", "pm": "prime minister"}.get(role, role)
+    matched_entity = " ".join(match.group("entity").split()).strip(" ,;:")
+    if entity and not re.search(r"tamil\s*nadu|tamilnadu", matched_entity, re.I):
+        return None
+    claim_start = max(0, cleaned.rfind(".", 0, match.start()) + 1)
+    claim_end = cleaned.find(".", match.end())
+    if claim_end < 0:
+        claim_end = len(cleaned)
+    claim = cleaned[claim_start:claim_end].strip(" .")
+    context = cleaned[max(0, claim_start - 24):min(len(cleaned), claim_end + 24)].casefold()
+    if re.search(r"\b(?:not|never|former|previous|ex-|was\s+the)\b", context):
+        return None
+    if re.search(r"\b(?:19|20)\d{2}\b", context) and not re.search(r"\b(?:current|now|today|present)\b", context):
+        return None
+    return {
+        "claim": claim[:1000],
+        "answer_value": value[:256],
+        "role": role[:64],
+        "entity": matched_entity[:256],
+    }
 
 
 def _search_failure_reason(exc: Exception) -> str:

@@ -31,6 +31,7 @@ from ..ai.providers.sarvam_provider import (
     SarvamProvider, sarvam_chat_max_tokens, sarvam_provider_output_budget,
 )
 from ..ai.providers.swico_free_provider import SwicoFreeProvider
+from ..ai.budget import enforce_provider_budget
 from ..ai.providers.base import (
     GenerationCancelled, GenerationIncomplete, ProviderSafetyRejected,
     ProviderStreamInterrupted,
@@ -149,7 +150,10 @@ from ..web_ai.triage import (
     build_execution_plan,
     shadow_metadata,
 )
-from ..openai_tracked import OpenAIBudgetExceededError, tracked_embedding
+from ..openai_tracked import (
+    OpenAIBudgetExceededError, enforce_openai_budget, record_openai_usage,
+    tracked_embedding,
+)
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import ensure_utc, utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
@@ -1219,10 +1223,31 @@ def _freshness_evidence_pack(
             source_kind="web_search",
             source_locator=str(source.get("url") or evidence["url"]),
             runtime_text=(
-                f"{evidence['snippet']}\nRetrieved at: {evidence['retrieved_at']}"
+                "\n".join(
+                    value for value in (
+                        (
+                            f"Claim from the cited web-search response: {evidence.get('claim')}"
+                            if evidence.get("claim") else ""
+                        ),
+                        (
+                            f"Source excerpt: {evidence['snippet']}"
+                            if evidence.get("snippet") else ""
+                        ),
+                        (
+                            "Search synthesis (untrusted, citation-associated; not a verbatim source excerpt): "
+                            f"{evidence.get('synthesis')}"
+                            if evidence.get("synthesis") else ""
+                        ),
+                        f"Retrieved at: {evidence['retrieved_at']}",
+                    ) if value
+                )
                 if index == 0 else f"Cited source: {source.get('title') or 'Web source'}"
             ),
-            token_count=(estimate_tokens(str(evidence["snippet"])) if index == 0 else 12),
+            token_count=(estimate_tokens(" ".join(
+                str(value) for value in (
+                    evidence.get("claim"), evidence.get("snippet"), evidence.get("synthesis")
+                ) if value
+            )) if index == 0 else 12),
             lexical_score=1.0, semantic_score=1.0, metadata_score=1.0,
             fused_score=1.0,
             bounded_metadata=(
@@ -3088,14 +3113,50 @@ def prepare_web_turn(
             evidence = None
             evidence_reason = "search_budget_unavailable"
             try:
-                if search_reserve is not None and not billing_exempt:
-                    expand_usage_reservation(
-                        session, request_id=request_id,
-                        additional_micros=search_reserve.micros,
-                        expansion_id="web_live_search:1",
+                if search_reserve is not None:
+                    # Search is a separate provider attempt, so admit it
+                    # against both the provider's daily budget and the same
+                    # bounded OpenAI budget used by answer generation before
+                    # opening the Responses request.
+                    enforce_provider_budget(session, "openai", currency="USD")
+                    enforce_openai_budget(
+                        session,
+                        route="web_live_search",
+                        model=live_config.model,
+                        model_tier=swico_tier,
+                        estimated_cost_usd=float(search_reserve.amount),
                     )
+                    if not billing_exempt:
+                        expand_usage_reservation(
+                            session, request_id=request_id,
+                            additional_micros=search_reserve.micros,
+                            expansion_id="web_live_search:1",
+                        )
                 freshness_search_reserved_micros = search_reserve.micros if search_reserve is not None else 0
                 search = WebSearchAgent().search(model_message)
+                if search is not None and isinstance(search.usage, dict):
+                    observed_input = int(search.usage.get("input_tokens") or 0)
+                    observed_output = int(search.usage.get("output_tokens") or 0)
+                    observed_calls = max(0, int(search.usage.get("search_calls") or 0))
+                    observed_price = live_search_price(
+                        live_config.model, observed_input, observed_output,
+                        observed_calls,
+                    )
+                    record_openai_usage(
+                        session,
+                        user_id=user_id,
+                        request_id=request_id,
+                        route="web_live_search",
+                        model_used=live_config.model,
+                        model_tier=swico_tier,
+                        reason=search.reason,
+                        estimated_input_tokens=observed_input,
+                        estimated_output_tokens=observed_output,
+                        estimated_cost_usd=float(observed_price.amount),
+                        actual_input_tokens=observed_input or None,
+                        actual_output_tokens=observed_output or None,
+                        actual_cost_usd=float(observed_price.amount) if observed_input or observed_output else None,
+                    )
                 valid, evidence, evidence_reason = validate_current_evidence(
                     model_message, search.results, now=now,
                 )
@@ -3125,6 +3186,7 @@ def prepare_web_turn(
                         raw={
                             **freshness_precomputed.raw,
                             "web_search_only": True,
+                            "zero_charge": True,
                             "usage_actual": True,
                             "web_search_usage": search_usage,
                         },
@@ -6783,8 +6845,10 @@ def execute_web_turn(
         optimization_metrics["usage_source"] = usage_source
         response.raw["usage_source"] = usage_source
         price = price_usage(
-            response.provider, response.model or "", response.input_tokens,
-            response.output_tokens, cached_tokens, cache_write_tokens,
+            response.provider, response.model or "",
+            0 if response.raw.get("web_search_only") else response.input_tokens,
+            0 if response.raw.get("web_search_only") else response.output_tokens,
+            cached_tokens, cache_write_tokens,
         )
         if response.provider == "openai" and response.raw.get("actual_cost_usd") is not None:
             price = openai_reported_price(
@@ -6795,7 +6859,10 @@ def execute_web_turn(
         if isinstance(search_usage, dict):
             search_input = int(search_usage.get("input_tokens") or 0)
             search_output = int(search_usage.get("output_tokens") or 0)
-            search_calls = max(1, int(search_usage.get("search_calls") or 1))
+            search_calls = max(0, int(search_usage.get("search_calls") or 0))
+            if response.raw.get("web_search_only"):
+                response.input_tokens = search_input
+                response.output_tokens = search_output
             search_price = live_search_price(
                 str(prepared.ai_request.metadata.get("freshness_search_model") or "gpt-4.1-mini"),
                 search_input, search_output, search_calls,
@@ -6823,6 +6890,7 @@ def execute_web_turn(
         )
         optimization_metrics["charged_micros"] = (
             0 if prepared.billing_exempt or interrupted_without_usage
+            or bool(response.raw.get("zero_charge"))
             else price.micros
         )
         response.raw["charged_micros"] = optimization_metrics["charged_micros"]
@@ -6833,10 +6901,11 @@ def execute_web_turn(
             input_tokens=response.input_tokens, output_tokens=response.output_tokens,
             usage_source=(
                 usage_source
-                if prepared.route.provider in {"openai", "sarvam", "swico_free"} else None
+                if response.provider in {"openai", "sarvam", "swico_free"} else None
             ),
             charge_micros=(
                 0 if prepared.billing_exempt or interrupted_without_usage
+                or bool(response.raw.get("zero_charge"))
                 else price.micros
             ),
             status="cancelled" if cancelled else "complete",
@@ -6993,7 +7062,7 @@ def execute_web_turn(
                 provider=response.provider,
                 model=response.model or "",
                 usage_kind=(
-                    "web_search" if response.raw.get("web_search_only") else "chat"
+                    "chat"
                 ), voice_turn_id=prepared.voice_turn_id,
                 swico_tier=prepared.swico_tier,
             )
@@ -7007,8 +7076,9 @@ def execute_web_turn(
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90") if response.provider == "openai" else None,
                 assistant_message_id=assistant.id,
                 provider=response.provider, model=response.model or "",
-                usage_kind=(
-                    "web_search" if response.raw.get("web_search_only") else "chat"
+                usage_kind="chat",
+                customer_debit_micros=(
+                    0 if response.raw.get("zero_charge") else None
                 ), voice_turn_id=prepared.voice_turn_id,
                 swico_tier=prepared.swico_tier,
             )

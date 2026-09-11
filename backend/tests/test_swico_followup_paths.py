@@ -810,6 +810,7 @@ def test_current_request_uses_validated_retrieval_in_prepared_turn(monkeypatch):
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "true")
     monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    fixed = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
     captured = {}
 
     monkeypatch.setattr(
@@ -849,7 +850,7 @@ def test_current_request_uses_validated_retrieval_in_prepared_turn(monkeypatch):
     monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", provider)
     prepared = prepare_web_turn(
         user_id=int(user.id), message="Who is the CM of Tamilnadu?",
-        request_id=str(uuid4()), thread_id=None, reply_language="en",
+        request_id=str(uuid4()), thread_id=None, reply_language="en", now=fixed,
     )
     assert prepared.retrieval_context is not None
     assert prepared.retrieval_context.retrieval_status == "sufficient"

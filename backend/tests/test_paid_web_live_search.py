@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
+import openai
+from sqlmodel import select
 
 from app.ai.agents.web_search_agent import (
     LiveSearchConfigurationError, WebSearchAgent, WebSearchResult,
@@ -15,10 +17,10 @@ from app.billing.pricing import calculate_topup
 from app.billing.errors import InsufficientCreditError
 from app.billing.service import credit_payment_once
 from app.database import SessionLocal
-from app.models import PaymentOrder, WebUsagePreferences
+from app.models import PaymentOrder, UsageCharge, WebChatMessage, WebUsagePreferences
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 
-from tests.conftest import create_test_user
+from tests.conftest import auth_headers, create_test_user
 
 
 def _fund(user_id: int) -> None:
@@ -114,6 +116,239 @@ def test_paid_adapter_requires_completed_search_and_normalizes_citations(monkeyp
     ).search("Who is the CM of Tamil Nadu?")
     assert no_search.reason == "search_tool_not_completed"
     assert no_search.results == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    (
+        "Example Person is the Chief Minister of Tamil Nadu.",
+        "Example Person is the Chief Minister of Tamil Nadu. The office coordinates the state government.",
+        "Example Person is the Chief Minister of Tamil Nadu. [Official directory](https://example.test/office.v1).",
+        "A. B. Example is the Chief Minister of Tamil Nadu. See https://example.test/office.v1.",
+    ),
+)
+def test_paid_adapter_extracts_concise_cited_claim_from_realistic_synthesis(monkeypatch, answer):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    source = {
+        "url": "https://example.test/office.v1",
+        "title": "Tamil Nadu official directory",
+        "snippet": (
+            "A. B. Example is the Chief Minister of Tamil Nadu."
+            if answer.startswith("A. B.")
+            else "Example Person is the Chief Minister of Tamil Nadu."
+        ),
+    }
+    annotation = type("Annotation", (), {
+        "type": "url_citation", "url": source["url"], "title": source["title"],
+        "start_index": 0, "end_index": 12,
+    })()
+    action = type("Action", (), {"sources": [source]})()
+    call = type("Call", (), {"type": "web_search_call", "status": "completed", "action": action})()
+    message = type("Message", (), {
+        "type": "message", "content": [type("Text", (), {"type": "output_text", "text": answer, "annotations": [annotation]})()],
+    })()
+    response = type("Response", (), {
+        "output": [call, message], "output_text": answer,
+        "usage": type("Usage", (), {"input_tokens": 8570, "output_tokens": 235})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results[0]["synthesis"] == " ".join(answer.split())[:4000]
+    assert result.results[0]["answer_value"] in {"Example Person", "A. B. Example"}
+    assert result.results[0]["claim"]
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )[0] is True
+
+
+@pytest.mark.parametrize(
+    "answer",
+    (
+        "In 2021, Example Person was the Chief Minister of Tamil Nadu.",
+        "Example Person is not the current Chief Minister of Tamil Nadu.",
+    ),
+)
+def test_paid_adapter_rejects_historical_or_negated_current_claim(monkeypatch, answer):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    source = {"url": "https://example.test/office", "title": "Official directory"}
+    response = type("Response", (), {
+        "output": [type("Call", (), {
+            "type": "web_search_call", "status": "completed",
+            "action": type("Action", (), {"sources": [source]})(),
+        })()],
+        "output_text": answer,
+        "usage": type("Usage", (), {"input_tokens": 10, "output_tokens": 10})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results == []
+    assert result.reason == "search_claim_not_extractable"
+
+
+def test_paid_adapter_binds_claim_to_nested_citation_not_first_consulted_source(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    unrelated = {"url": "https://example.test/weather", "title": "Weather page"}
+    supporting = {
+        "url": "https://example.test/official-office",
+        "title": "Tamil Nadu official directory",
+        "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
+    }
+    nested = type("Annotation", (), {
+        "type": "url_citation",
+        "url_citation": type("Citation", (), {
+            "url": supporting["url"], "title": supporting["title"],
+            "start_index": 0, "end_index": 60,
+        })(),
+    })()
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [unrelated, supporting]})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text",
+                    "text": "Example Person is the Chief Minister of Tamil Nadu.",
+                    "annotations": [nested],
+                })()],
+            })(),
+        ],
+        "output_text": "Example Person is the Chief Minister of Tamil Nadu.",
+        "usage": type("Usage", (), {"input_tokens": 12, "output_tokens": 8})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results[0]["url"] == supporting["url"]
+    assert [source["url"] for source in result.results[0]["claim_sources"]] == [supporting["url"]]
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )[0] is True
+
+
+def test_failed_paid_search_with_usage_persists_zero_customer_charge_and_replays(
+    monkeypatch, client,
+):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    user = create_test_user("paid-search-fallback", "paid-search-fallback@example.com")
+    _fund(int(user.id))
+    request_id = str(uuid4())
+    search_calls = 0
+
+    def failed_search(_self, _query):
+        nonlocal search_calls
+        search_calls += 1
+        return WebSearchResult(
+            enabled=True,
+            reason="openai_responses_web_search",
+            usage={"input_tokens": 8570, "output_tokens": 235, "search_calls": 1},
+            results=[{
+                "title": "Tamil Nadu travel guide",
+                "snippet": "Tamil Nadu has many historic temples and beaches.",
+                "claim": "Example Person is the Governor of Kerala.",
+                "answer_value": "Example Person",
+                "url": "https://example.test/unrelated",
+                "source": "openai_responses_web_search",
+                "provenance": "openai_responses_web_search",
+                "retrieved_at": "2026-09-10T12:00:00+00:00",
+                "temporal_as_of": "2026-09-10",
+                "temporal_support": "completed_live_search",
+                "search_call_completed": True,
+                "relevant": True,
+            }],
+        )
+
+    monkeypatch.setattr("app.web_api.chat_service.WebSearchAgent.search", failed_search)
+    generation_calls = []
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
+        lambda *args, **kwargs: generation_calls.append((args, kwargs))
+        or (_ for _ in ()).throw(AssertionError("unavailable search must not generate")),
+    )
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("paid-search-fallback", "paid-search-fallback@example.com"),
+        json={"request_id": request_id, "message": "Who is the CM of Tamil Nadu?", "reply_language": "en"},
+    )
+    assert response.status_code == 200
+    assert 'event: done' in response.text
+    assert 'event: error' not in response.text
+    assert "I couldn’t verify the current answer" in response.text
+    assert not generation_calls
+    with SessionLocal() as session:
+        charge = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).one()
+        assert charge.status == "settled"
+        assert charge.usage_kind == "chat"
+        assert charge.provider_cost_micros > 0
+        assert charge.debited_micros == 0
+        assert charge.reserved_micros == 0
+        assistant = session.exec(
+            select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )
+        ).one()
+        assert assistant.status == "complete"
+        assert "couldn’t verify" in assistant.content
+    replay = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("paid-search-fallback", "paid-search-fallback@example.com"),
+        json={"request_id": request_id, "message": "Who is the CM of Tamil Nadu?", "reply_language": "en"},
+    )
+    assert replay.status_code == 200
+    assert search_calls == 1
+
+
+def test_endpoint_uses_real_adapter_normalization_and_emits_sources(
+    monkeypatch, client,
+):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    user = create_test_user("paid-search-adapter-endpoint", "paid-search-adapter-endpoint@example.com")
+    _fund(int(user.id))
+    response_fixture = _search_response(with_annotation=True)
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = _Responses(response_fixture)
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    answer = "Example Person is the Chief Minister of Tamil Nadu. [S1]"
+
+    def provider(_self, request, route, on_delta):
+        on_delta(answer)
+        return AIProviderResponse(
+            text=answer, provider="openai", model=route.model, route=route.route,
+            reason="mocked_generation", language="en", intent=route.intent,
+            input_tokens=20, output_tokens=12,
+            raw={"usage_actual": True, "finish_reason": "stop", "completion_status": "complete"},
+        )
+
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", provider)
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("paid-search-adapter-endpoint", "paid-search-adapter-endpoint@example.com"),
+        json={
+            "request_id": str(uuid4()),
+            "message": "Who is the CM of Tamil Nadu?",
+            "reply_language": "en",
+        },
+    )
+    assert response.status_code == 200
+    assert "event: sources" in response.text
+    assert "https://example.test/tamil-nadu-directory" in response.text
 
 
 def test_paid_adapter_reports_missing_sources_timeout_and_missing_key(monkeypatch):

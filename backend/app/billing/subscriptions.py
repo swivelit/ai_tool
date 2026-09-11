@@ -336,6 +336,7 @@ def subscription_window_remaining(window: SubscriptionUsageWindow) -> int:
 def settle_subscription_window(
     session: Session, *, charge: Any, provider_cost_micros: int,
     request_id: str, metadata: dict[str, Any] | None = None,
+    customer_debit_micros: int | None = None,
 ) -> int:
     """Settle without touching a wallet; provider overage is platform absorbed."""
     if not charge.subscription_window_id:
@@ -344,7 +345,11 @@ def settle_subscription_window(
         SubscriptionUsageWindow.id == charge.subscription_window_id,
     ).with_for_update()).one()
     reserved = max(0, int(charge.reserved_micros))
-    debit = min(max(0, int(provider_cost_micros)), reserved)
+    debit_source = (
+        provider_cost_micros
+        if customer_debit_micros is None else customer_debit_micros
+    )
+    debit = min(max(0, int(debit_source)), reserved)
     window.reserved_micros = max(0, int(window.reserved_micros) - reserved)
     window.consumed_micros += debit
     window.version += 1
