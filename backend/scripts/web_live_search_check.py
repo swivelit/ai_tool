@@ -66,11 +66,12 @@ def main() -> int:
         report.update({"status": "disabled", "error": "WEB_LIVE_SEARCH_ENABLED is false"})
         _print(report, args.pretty)
         return 2
+    capture_clock = datetime.now(timezone.utc)
     started = monotonic()
-    result = WebSearchAgent().search(args.query)
+    result = WebSearchAgent(clock=lambda: capture_clock).search(args.query)
     elapsed_ms = int(round((monotonic() - started) * 1000))
     valid, _evidence, reason = validate_current_evidence(
-        args.query, result.results, now=datetime.now(timezone.utc),
+        args.query, result.results, now=capture_clock,
     )
     diagnostics = result.diagnostics or {}
     bundles = [item for item in result.results if isinstance(item, dict)]
@@ -88,30 +89,37 @@ def main() -> int:
             for item in bundles
             for source in (item.get("claim_sources") or [])
         )
+    associated_supporting = _source_urls(
+        source
+        for item in bundles
+        for source in (item.get("claim_sources") or [])
+    )
     report.update({
         "status": "verified" if valid else "failed",
         "provider_request": True,
         "latency_ms": elapsed_ms,
         "search_reason": result.reason,
         "result_bundle_count": len(bundles),
-        "usable_source_count": sum(
-            1 for item in bundles
-            if any(
-                isinstance(source, dict) and source.get("url")
-                for source in (item.get("claim_sources") or [])
-            )
-        ),
+        # Keep the historical field for probe compatibility, but make its
+        # semantics source-count based.  A bundle can contain several sources.
+        "usable_source_count": len(associated_supporting),
+        "associated_supporting_source_count": len(associated_supporting),
+        "validated_supporting_source_count": len(associated_supporting) if valid else 0,
         "consulted_source_count": len(consulted),
         "cited_source_count": len(cited),
         "evidence_valid": valid,
         "evidence_reason": reason,
-        "freshness": resolve_freshness(args.query).__dict__,
+        "capture_clock": capture_clock.isoformat(),
+        "requested_as_of": resolve_freshness(args.query, now=capture_clock).as_of,
+        "freshness": resolve_freshness(args.query, now=capture_clock).__dict__,
         "usage": result.usage or {},
     })
     if args.export_fixture:
         fixture = {
             "format": "swico-paid-live-search-response-v1",
             "query": args.query[:2000],
+            "capture_clock": capture_clock.isoformat(),
+            "requested_as_of": resolve_freshness(args.query, now=capture_clock).as_of,
             "response": diagnostics.get("fixture_response"),
         }
         if not fixture["response"]:
@@ -126,7 +134,7 @@ def main() -> int:
         candidate_diagnostics = []
         for item in bundles[:8]:
             accepted, _normalized, candidate_reason = _validate_current_evidence_item(
-                args.query, item, now=datetime.now(timezone.utc),
+                args.query, item, now=capture_clock,
             )
             public_sources = []
             for source in (item.get("claim_sources") or item.get("sources") or [])[:8]:
@@ -155,6 +163,8 @@ def main() -> int:
             "refusal": diagnostics.get("refusal"),
             "tool_statuses": diagnostics.get("tool_statuses", [])[:8],
             "text_blocks": diagnostics.get("text_blocks", [])[:4],
+            "citation_annotations": diagnostics.get("citation_annotations", [])[:16],
+            "invalid_annotations": diagnostics.get("invalid_annotations", [])[:16],
             "extraction": diagnostics.get("extraction", {}),
             "sources": [
                 {
@@ -185,17 +195,40 @@ def _replay_fixture(args: argparse.Namespace) -> int:
         fixture = json.loads(args.replay_fixture.read_text(encoding="utf-8"))
         query = str(fixture.get("query") or args.query)[:2000]
         response = fixture["response"]
+        requested_as_of = str(fixture.get("requested_as_of") or "").strip() or None
+        captured_at = fixture.get("capture_clock")
+        if captured_at:
+            capture_clock = datetime.fromisoformat(
+                str(captured_at).replace("Z", "+00:00")
+            )
+            if capture_clock.tzinfo is None:
+                capture_clock = capture_clock.replace(tzinfo=timezone.utc)
+            capture_clock = capture_clock.astimezone(timezone.utc)
+        else:
+            # Older fixtures remain replayable, but their interpretation is
+            # necessarily tied to the replay clock because no capture clock
+            # was recorded.
+            capture_clock = datetime.now(timezone.utc)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         _print({"status": "invalid_fixture", "error": str(exc)}, args.pretty)
         return 2
     started = monotonic()
-    result = WebSearchAgent()._normalize_response(response, query)  # noqa: SLF001 - offline production replay.
+    result = WebSearchAgent(
+        clock=lambda: capture_clock,
+    )._normalize_response(  # noqa: SLF001 - offline production replay.
+        response, query, requested_as_of=requested_as_of,
+    )
     valid, _evidence, reason = validate_current_evidence(
-        query, result.results, now=datetime.now(timezone.utc),
+        query, result.results, now=capture_clock,
     )
     diagnostics = result.diagnostics or {}
     consulted = _source_urls(diagnostics.get("consulted_sources"))
     cited = _source_urls(diagnostics.get("citation_annotations"))
+    associated_supporting = _source_urls(
+        source
+        for item in result.results
+        for source in (item.get("claim_sources") or [])
+    )
     report = {
         "status": "verified" if valid else "failed",
         "offline_replay": True,
@@ -205,14 +238,14 @@ def _replay_fixture(args: argparse.Namespace) -> int:
         "result_bundle_count": len(result.results),
         "consulted_source_count": len(consulted),
         "cited_source_count": len(cited),
-        "usable_source_count": sum(
-            1 for item in result.results
-            if any(isinstance(source, dict) and source.get("url")
-                   for source in (item.get("claim_sources") or []))
-        ),
+        "usable_source_count": len(associated_supporting),
+        "associated_supporting_source_count": len(associated_supporting),
+        "validated_supporting_source_count": len(associated_supporting) if valid else 0,
         "evidence_valid": valid,
         "evidence_reason": reason,
-        "freshness": resolve_freshness(query).__dict__,
+        "capture_clock": capture_clock.isoformat(),
+        "requested_as_of": resolve_freshness(query, now=capture_clock).as_of,
+        "freshness": resolve_freshness(query, now=capture_clock).__dict__,
         "usage": result.usage or {},
     }
     if args.debug_evidence:
@@ -222,6 +255,8 @@ def _replay_fixture(args: argparse.Namespace) -> int:
             "refusal": diagnostics.get("refusal"),
             "tool_statuses": diagnostics.get("tool_statuses", [])[:8],
             "text_blocks": diagnostics.get("text_blocks", [])[:4],
+            "citation_annotations": diagnostics.get("citation_annotations", [])[:16],
+            "invalid_annotations": diagnostics.get("invalid_annotations", [])[:16],
             "extraction": diagnostics.get("extraction", {}),
             "sources": [
                 {"title": str(source.get("title") or "")[:160], "url": str(source.get("url"))[:500]}

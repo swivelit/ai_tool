@@ -37,8 +37,8 @@ class WebSearchResult:
 
 
 _ROLE_RE = r"chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm"
-_WORD_RE = r"[\w\u0080-\uffff][\w\u0080-\uffff.'’\-]*"
-_VALUE_RE = rf"(?P<value>{_WORD_RE}(?:\s+{_WORD_RE}){{0,7}})"
+_WORD_RE = r"(?:[A-Za-z]\.|[\w\u0080-\uffff][\w\u0080-\uffff'’\-]*)"
+_VALUE_RE = rf"(?P<value>(?<![\w]){_WORD_RE}(?:\s+{_WORD_RE}){{0,7}})"
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -143,6 +143,9 @@ class WebSearchAgent:
                 client = openai.OpenAI(
                     api_key=api_key, timeout=config.timeout_seconds, max_retries=0,
                 )
+            search_clock = self._clock().astimezone(timezone.utc)
+            from app.ai.freshness import resolve_freshness
+            requested_as_of = resolve_freshness(raw_query, now=search_clock).as_of
             response = client.responses.create(
                 model=config.model,
                 tools=[{"type": "web_search", "external_web_access": True}],
@@ -151,8 +154,12 @@ class WebSearchAgent:
                 include=["web_search_call.action.sources"],
                 input=(
                     "Search the public web for the user's question. Use the web "
-                    "search tool and return a concise answer with citations. "
-                    "Do not rely on memory or private context. User question: "
+                    "search tool and return one concise direct answer. Put each "
+                    "citation immediately after the sentence it supports. For "
+                    "officeholder questions, prioritize an authoritative current "
+                    "directory or dated official report. Resolve the requested "
+                    "period as of " + requested_as_of + ". Do not rely on memory "
+                    "or private context. User question: "
                     + raw_query[:2000]
                 ),
                 max_output_tokens=config.max_output_tokens,
@@ -165,6 +172,7 @@ class WebSearchAgent:
 
     def _normalize_response(
         self, response: Any, query: str, *, max_calls: int = 1,
+        requested_as_of: str | None = None,
     ) -> WebSearchResult:
         output = _value(response, "output", [])
         items = output if isinstance(output, (list, tuple)) else []
@@ -174,8 +182,6 @@ class WebSearchAgent:
         citation_annotations: list[dict[str, object]] = []
 
         tool_statuses: list[dict[str, object]] = []
-        annotation_entries: list[tuple[Any, int]] = []
-        response_has_output_text = bool(str(_value(response, "output_text", "") or ""))
 
         def add_source(source: Any) -> None:
             url = str(_value(source, "url", "") or "").strip()
@@ -192,8 +198,6 @@ class WebSearchAgent:
                 if not any(item.get("url") == candidate["url"] for item in sources):
                     sources.append(candidate)
 
-        raw_text_blocks: list[str] = []
-
         for item in items:
             if _value(item, "type") == "web_search_call":
                 action = _value(item, "action", {})
@@ -209,62 +213,53 @@ class WebSearchAgent:
                     completed_search_count += 1
                 for source in _value(action, "sources", []) or []:
                     add_source(source)
-            # Responses can also expose URL-citation annotations on the
-            # assistant message. Keep those associations instead of relying
-            # only on the optional expanded source metadata.
-            annotation_entries.extend(
-                (annotation, 0)
-                for annotation in (_value(item, "annotations", []) or [])
-            )
-            content_offset = 0
-            for content in _value(item, "content", []) or []:
-                annotation_entries.extend(
-                    (annotation, content_offset)
-                    for annotation in (_value(content, "annotations", []) or [])
-                )
-                content_type = _value(content, "type")
-                if content_type in {"output_text", "text"}:
-                    content_text = str(_value(content, "text", "") or "")
-                    if content_text:
-                        raw_text_blocks.append(content_text[:4000])
-                        content_offset += len(content_text) + 1
-            for annotation, block_offset in annotation_entries:
-                if _value(annotation, "type") in {"url_citation", "url_citation_annotation"}:
-                    # Responses uses direct fields; legacy-shaped fixtures and
-                    # some SDK serializers wrap them in ``url_citation``.
-                    citation = _value(annotation, "url_citation", annotation)
-                    source_url = str(_value(citation, "url", "") or "").strip()
-                    source_title = " ".join(str(_value(citation, "title", "") or "").split())
-                    add_source(citation)
-                    if source_url:
-                        offset = 0 if response_has_output_text else block_offset
-                        citation_annotations.append({
-                            "url": source_url[:2000],
-                            "title": source_title[:256],
-                            "start_index": _offset_index(
-                                _value(citation, "start_index"), offset,
-                            ),
-                            "end_index": _offset_index(
-                                _value(citation, "end_index"), offset,
-                            ),
-                        })
-            # Entries are scoped to the current item.  Keeping the list small
-            # also prevents repeated annotations from multiplying diagnostics.
-            annotation_entries = []
-        original_text = str(_value(response, "output_text", "") or "")
-        if original_text:
-            raw_text_blocks.insert(0, original_text[:4000])
-        if not original_text:
-            nested_parts: list[str] = []
-            for item in items:
-                for content in _value(item, "content", []) or []:
-                    content_type = _value(content, "type")
-                    if content_type in {"output_text", "text"}:
-                        value = _value(content, "text", "")
-                        if value:
-                            nested_parts.append(str(value))
-            original_text = "\n".join(nested_parts)
+        canonical = _canonical_response_blocks(response, items)
+        original_text = str(canonical["text"])
         text = original_text
+        invalid_annotations: list[dict[str, object]] = []
+        for specification in canonical["annotations"]:
+            annotation = specification["annotation"]
+            if _value(annotation, "type") not in {"url_citation", "url_citation_annotation"}:
+                continue
+            citation = _value(annotation, "url_citation", annotation)
+            source_url = str(_value(citation, "url", "") or "").strip()
+            source_title = " ".join(str(_value(citation, "title", "") or "").split())
+            add_source(citation)
+            start = _value(citation, "start_index")
+            end = _value(citation, "end_index")
+            try:
+                local_start = int(start)
+                local_end = int(end)
+            except (TypeError, ValueError):
+                invalid_annotations.append({
+                    "block_id": specification["block_id"],
+                    "start_index": start, "end_index": end,
+                    "reason": "annotation_indices_missing_or_non_numeric",
+                })
+                continue
+            block_length = int(specification["length"])
+            if local_start < 0 or local_end <= local_start or local_end > block_length:
+                invalid_annotations.append({
+                    "block_id": specification["block_id"],
+                    "start_index": start, "end_index": end,
+                    "reason": "annotation_range_invalid_or_truncated",
+                    "block_length": block_length,
+                })
+                continue
+            global_start = int(specification["base"]) + local_start
+            global_end = int(specification["base"]) + local_end
+            citation_annotations.append({
+                "url": source_url[:2000],
+                "title": source_title[:256],
+                "original_start_index": local_start,
+                "original_end_index": local_end,
+                "start_index": global_start,
+                "end_index": global_end,
+                "block_id": specification["block_id"],
+                "scope_start": specification["scope_start"],
+                "scope_end": specification["scope_end"],
+                "marker_text": original_text[global_start:global_end][:512],
+            })
         usage = _value(response, "usage", None)
         usage_data: dict[str, int | float] = {
             "input_tokens": int(_value(usage, "input_tokens", 0) or 0),
@@ -274,11 +269,14 @@ class WebSearchAgent:
         diagnostics = _response_diagnostics(
             response=response,
             original_text=original_text,
-            text_blocks=raw_text_blocks,
+            text_blocks=canonical["diagnostic_blocks"],
             tool_statuses=tool_statuses,
             sources=sources,
             citations=citation_annotations,
             usage=usage_data,
+            invalid_annotations=invalid_annotations,
+            canonical_text_truncated=bool(canonical.get("truncated")),
+            aggregate_output_text_used=bool(canonical.get("aggregate_output_text_used")),
         )
         diagnostics["fixture_response"] = _sanitize_response_fixture(response)
 
@@ -298,9 +296,10 @@ class WebSearchAgent:
         # routing only current questions reach this adapter, but explicit
         # as-of requests still need one authoritative date for validation.
         from app.ai.freshness import resolve_freshness
-        requested_as_of = resolve_freshness(query, now=clock).as_of
+        requested_as_of = requested_as_of or resolve_freshness(query, now=clock).as_of
         candidates = _extract_search_claim_candidates(
             text, query, now=clock, requested_as_of=requested_as_of,
+            block_ranges=canonical["blocks"],
         )
         diagnostics["extraction"] = {
             "stage": "candidate_extraction",
@@ -314,25 +313,44 @@ class WebSearchAgent:
             return failed("search_claim_not_extractable")
         results: list[dict[str, object]] = []
         rejected: list[dict[str, object]] = []
+        associations: list[dict[str, object]] = []
         for candidate in candidates:
             start = int(candidate.get("_start", 0))
             end = int(candidate.get("_end", start))
+            candidate_annotations: list[dict[str, object]] = []
+            candidate_rejections: list[str] = []
+            for annotation in citation_annotations:
+                associated, detail = _associate_citation(annotation, candidate, text)
+                if associated:
+                    candidate_annotations.append({
+                        **annotation,
+                        "association_method": detail["method"],
+                        "supporting_passage": detail["passage"],
+                        "supporting_span": {
+                            "start_index": detail["passage_start"],
+                            "end_index": detail["passage_end"],
+                        },
+                    })
+                elif detail.get("reason"):
+                    candidate_rejections.append(str(detail["reason"]))
             claim_sources = [
                 source for source in sources
                 if source["url"] in {
                     str(annotation.get("url") or "")
-                    for annotation in citation_annotations
-                    if _annotation_overlaps(annotation, start, end)
+                    for annotation in candidate_annotations
                 }
             ]
-            # A single tool result without inline annotations remains
-            # compatible with SDK responses that omit annotations. Multiple
-            # sources must be tied to an explicit claim span.
-            if not claim_sources and len(sources) == 1:
-                claim_sources = list(sources)
             rejection = str(candidate.get("_rejection_reason") or "")
-            if not claim_sources and not rejection:
+            if not candidate_annotations and not rejection:
                 rejection = "claim_has_no_supporting_citation"
+            associations.append({
+                "candidate_claim": candidate["claim"],
+                "candidate_span": {"start_index": start, "end_index": end},
+                "answer_value": candidate["answer_value"],
+                "associated_citations": candidate_annotations[:8],
+                "rejection_reason": rejection or None,
+                "rejected_annotation_reasons": candidate_rejections[:8],
+            })
             if rejection:
                 rejected.append({
                     **{key: value for key, value in candidate.items() if not key.startswith("_")},
@@ -342,6 +360,10 @@ class WebSearchAgent:
             first = claim_sources[0]
             result: dict[str, object] = {
                 "title": first["title"],
+                # Keep the supporting source passage on the evidence item as
+                # well as in claim_sources.  The validator must never use the
+                # generated synthesis as a substitute for this field.
+                "snippet": _source_snippet(first),
                 "synthesis": " ".join(text.split())[:4000],
                 "claim": candidate["claim"],
                 "answer_value": candidate["answer_value"],
@@ -355,11 +377,25 @@ class WebSearchAgent:
                 "relevant": True, "search_call_completed": True,
                 "sources": [{"url": item["url"], "title": item["title"]} for item in sources[:16]],
                 "claim_sources": claim_sources,
-                "citation_annotations": citation_annotations[:32],
+                "citation_annotations": candidate_annotations[:32],
+                "supporting_passages": [
+                    {
+                        "source_url": annotation["url"],
+                        "block_id": annotation["block_id"],
+                        "marker_text": annotation["marker_text"],
+                        "passage": annotation["supporting_passage"],
+                        "start_index": annotation["supporting_span"]["start_index"],
+                        "end_index": annotation["supporting_span"]["end_index"],
+                        "association_method": annotation["association_method"],
+                    }
+                    for annotation in candidate_annotations[:32]
+                ],
                 "claim_support_type": "cited_synthesis",
             }
             results.append(result)
         diagnostics["extraction"]["rejected_candidates"] = rejected[:16]
+        diagnostics["extraction"]["stage"] = "citation_association"
+        diagnostics["extraction"]["associations"] = associations[:16]
         if not results:
             return failed(
                 "claim_has_no_supporting_citation" if rejected and all(
@@ -367,7 +403,6 @@ class WebSearchAgent:
                 ) else "search_claim_not_extractable",
             )
         usage_data["search_calls"] = max(1, completed_search_count)
-        diagnostics["extraction"]["stage"] = "citation_association"
         diagnostics["extraction"]["reason"] = "accepted_candidates"
         return WebSearchResult(True, results, "openai_responses_web_search", usage_data, diagnostics)
 
@@ -420,10 +455,116 @@ def _source_snippet(source: Mapping[str, str]) -> str:
     return " ".join(str(source.get("snippet") or source.get("text") or "").split())[:4000]
 
 
+def _canonical_response_blocks(response: Any, items: list[Any]) -> dict[str, object]:
+    """Use nested message content once and retain each block's coordinates."""
+    blocks: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
+    pending_aggregate_annotations: list[Any] = []
+    cursor = 0
+    for item_index, item in enumerate(items):
+        item_blocks: list[dict[str, object]] = []
+        for content_index, content in enumerate(_value(item, "content", []) or []):
+            if _value(content, "type") not in {"output_text", "text"}:
+                continue
+            content_text = str(_value(content, "text", "") or "")
+            if not content_text:
+                continue
+            content_id = str(_value(content, "id", "") or "").strip()
+            block = {
+                "block_id": content_id[:128] or f"output[{item_index}].content[{content_index}]",
+                "text": content_text[:4000],
+                "start": cursor,
+                "end": cursor + min(len(content_text), 4000),
+                "truncated": len(content_text) > 4000,
+            }
+            blocks.append(block)
+            item_blocks.append(block)
+            for annotation in _value(content, "annotations", []) or []:
+                annotations.append({
+                    "annotation": annotation,
+                    "block_id": block["block_id"],
+                    "base": block["start"],
+                    "length": len(str(block["text"])),
+                    "scope_start": block["start"],
+                    "scope_end": block["end"],
+                })
+            cursor = int(block["end"]) + 1
+        item_annotations = list(_value(item, "annotations", []) or [])
+        if item_annotations:
+            if item_blocks:
+                base = int(item_blocks[0]["start"])
+                length = sum(len(str(block["text"])) for block in item_blocks)
+                length += max(0, len(item_blocks) - 1)
+                scope_start = base
+                scope_end = base + length
+                block_id = f"output[{item_index}]"
+                annotations.extend({
+                    "annotation": annotation,
+                    "block_id": block_id,
+                    "base": base,
+                    "length": length,
+                    "scope_start": scope_start,
+                    "scope_end": scope_end,
+                } for annotation in item_annotations)
+            else:
+                pending_aggregate_annotations.extend(item_annotations)
+    aggregate_output_text_used = False
+    if not blocks:
+        aggregate = str(_value(response, "output_text", "") or "")
+        if aggregate:
+            aggregate_output_text_used = True
+            blocks.append({
+                "block_id": "response.output_text",
+                "text": aggregate[:4000],
+                "start": 0,
+                "end": min(len(aggregate), 4000),
+                "truncated": len(aggregate) > 4000,
+            })
+            for annotation in pending_aggregate_annotations:
+                annotations.append({
+                    "annotation": annotation,
+                    "block_id": "response.output_text",
+                    "base": 0,
+                    "length": min(len(aggregate), 4000),
+                    "scope_start": 0,
+                    "scope_end": min(len(aggregate), 4000),
+                })
+    canonical_text = "\n".join(str(block["text"]) for block in blocks)
+    diagnostic_blocks = [
+        {
+            "block_id": block["block_id"],
+            "start_index": block["start"],
+            "end_index": block["end"],
+            "text": str(block["text"])[:4000],
+            "truncated": bool(block.get("truncated")),
+        }
+        for block in blocks[:16]
+    ]
+    block_ranges = [
+        {
+            "block_id": block["block_id"],
+            "start": block["start"],
+            "end": block["end"],
+        }
+        for block in blocks
+    ]
+    return {
+        "text": canonical_text[:16000],
+        "truncated": len(canonical_text) > 16000,
+        "aggregate_output_text_used": aggregate_output_text_used,
+        "blocks": block_ranges,
+        "annotations": annotations[:64],
+        "diagnostic_blocks": diagnostic_blocks,
+    }
+
+
 def _response_diagnostics(
-    *, response: Any, original_text: str, text_blocks: list[str],
+    *, response: Any, original_text: str, text_blocks: list[dict[str, object]],
     tool_statuses: list[dict[str, object]], sources: list[dict[str, str]],
     citations: list[dict[str, object]], usage: dict[str, int | float],
+    invalid_annotations: list[dict[str, object]] | None = None,
+    canonical_text_truncated: bool = False,
+    aggregate_output_text_used: bool = False,
 ) -> dict[str, Any]:
     """Build a bounded, public-query-only diagnostic envelope.
 
@@ -438,21 +579,25 @@ def _response_diagnostics(
         "incomplete_details": _bounded_value(incomplete),
         "refusal": _bounded_value(refusal),
         "tool_statuses": tool_statuses[:8],
-        "text_blocks": [{"text": str(block)[:4000]} for block in text_blocks[:8]],
-        "output_text": str(original_text)[:4000],
+        "text_blocks": [dict(block) for block in text_blocks[:16]],
+        "canonical_text_truncated": canonical_text_truncated,
+        "aggregate_output_text_used": aggregate_output_text_used,
         "consulted_sources": [dict(source) for source in sources[:16]],
         "citation_annotations": [dict(annotation) for annotation in citations[:32]],
+        "invalid_annotations": list(invalid_annotations or [])[:32],
         "usage": dict(usage),
     }
 
 
 def _sanitize_response_fixture(response: Any) -> dict[str, object]:
     """Serialize only the public Responses fields needed for offline replay."""
+    aggregate_output_text = str(_value(response, "output_text", "") or "")
     serialized: dict[str, object] = {
         "status": str(_value(response, "status", "completed") or "")[:64],
         "incomplete_details": _bounded_value(_value(response, "incomplete_details", None)),
         "refusal": _bounded_value(_value(response, "refusal", None)),
-        "output_text": str(_value(response, "output_text", "") or "")[:4000],
+        "output_text": aggregate_output_text[:4000],
+        "output_text_truncated": len(aggregate_output_text) > 4000,
         "usage": {
             "input_tokens": int(_value(_value(response, "usage", None), "input_tokens", 0) or 0),
             "output_tokens": int(_value(_value(response, "usage", None), "output_tokens", 0) or 0),
@@ -485,9 +630,11 @@ def _sanitize_response_fixture(response: Any) -> dict[str, object]:
             normalized["annotations"] = item_annotations
         content_items: list[dict[str, object]] = []
         for content in list(_value(item, "content", []) or [])[:8]:
+            content_text = str(_value(content, "text", "") or "")
             content_items.append({
                 "type": str(_value(content, "type", "") or "")[:64],
-                "text": str(_value(content, "text", "") or "")[:4000],
+                "text": content_text[:4000],
+                "text_truncated": len(content_text) > 4000,
                 "annotations": [
                     _sanitize_annotation(annotation)
                     for annotation in list(_value(content, "annotations", []) or [])[:32]
@@ -611,6 +758,7 @@ def _claim_sentence(text: str, start: int, end: int) -> str:
 
 def _extract_search_claim_candidates(
     text: str, query: str, *, now: datetime, requested_as_of: str | None = None,
+    block_ranges: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Extract all requested relation candidates without turning prose into proof."""
     role, entity, entity_pattern = _requested_fact_intent(query)
@@ -668,6 +816,14 @@ def _extract_search_claim_candidates(
                 raw_end = offsets[min(max(start, end - 1), len(offsets) - 1)] + 1
             else:
                 raw_start, raw_end = start, end
+            block_id = next(
+                (
+                    str(block["block_id"])
+                    for block in (block_ranges or [])
+                    if raw_start >= int(block["start"]) and raw_end <= int(block["end"])
+                ),
+                "",
+            )
             claim = _claim_sentence(cleaned, start, end)
             key = (value.casefold(), matched_role, _canonical_entity(matched_entity))
             if key in seen:
@@ -686,19 +842,96 @@ def _extract_search_claim_candidates(
                 "claim": claim[:1000], "answer_value": value[:256],
                 "role": matched_role[:64], "entity": matched_entity[:256],
                 "temporal_as_of": requested_as_of or now.date().isoformat(),
-                "_start": raw_start, "_end": raw_end,
+                "_start": raw_start, "_end": raw_end, "_block_id": block_id,
                 "_rejection_reason": rejection,
             })
     return candidates
 
 
-def _annotation_overlaps(annotation: Mapping[str, object], start: int, end: int) -> bool:
+def _associate_citation(
+    annotation: Mapping[str, object],
+    candidate: Mapping[str, object],
+    text: str,
+) -> tuple[bool, dict[str, object]]:
+    """Associate a citation marker with one bounded same-subject passage."""
     try:
-        annotation_start = int(annotation.get("start_index"))
-        annotation_end = int(annotation.get("end_index"))
-    except (TypeError, ValueError):
+        annotation_start = int(annotation["start_index"])
+        annotation_end = int(annotation["end_index"])
+        candidate_start = int(candidate["_start"])
+        candidate_end = int(candidate["_end"])
+        scope_start = int(annotation["scope_start"])
+        scope_end = int(annotation["scope_end"])
+    except (KeyError, TypeError, ValueError):
+        return False, {"reason": "annotation_coordinates_unusable"}
+    if not (scope_start <= candidate_start < candidate_end <= scope_end):
+        return False, {"reason": "citation_outside_content_scope"}
+    if annotation_start < candidate_end and annotation_end > candidate_start:
+        return True, {
+            "method": "direct_overlap",
+            "passage": text[candidate_start:annotation_end][:800],
+            "passage_start": candidate_start,
+            "passage_end": annotation_end,
+        }
+    if annotation_start < candidate_end:
+        return False, {"reason": "citation_precedes_or_misses_claim"}
+    trailing = text[candidate_end:annotation_start]
+    passage = text[candidate_start:annotation_start]
+    if "\n\n" in trailing or len(trailing) > 420:
+        return False, {"reason": "citation_passage_not_bounded"}
+    citation_group_only = _is_citation_group(trailing)
+    if re.search(r"https?://|\[[^\]]+\]\(", trailing) and not citation_group_only:
+        return False, {"reason": "intervening_citation_or_link"}
+    if citation_group_only:
+        return True, {
+            "method": "trailing_citation_group",
+            "passage": text[candidate_start:annotation_end][:800],
+            "passage_start": candidate_start,
+            "passage_end": annotation_end,
+        }
+    sentence_count_text = re.sub(r"\b[A-Z]\.", "", trailing)
+    if len(re.findall(r"[.!?]", sentence_count_text)) > 2:
+        return False, {"reason": "citation_passage_has_competing_sentences"}
+    role = str(candidate.get("role") or "")
+    other_roles = re.findall(
+        r"\b(?:chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\b",
+        trailing,
+        re.IGNORECASE,
+    )
+    if other_roles and not any(role == _canonical_role(item) for item in other_roles):
+        return False, {"reason": "citation_passage_has_competing_role"}
+    entity = str(candidate.get("entity") or "")
+    if entity and re.search(
+        r"\b(?:chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\s+"
+        r"(?:of|in)\s+([A-Z][A-Za-z ]+)", trailing, re.IGNORECASE,
+    ):
+        mentioned_entity = re.search(
+            r"\b(?:chief\s+minister|prime\s+minister|governor|president|mayor|cm|pm)\s+"
+            r"(?:of|in)\s+([A-Z][A-Za-z ]+)", trailing, re.IGNORECASE,
+        )
+        if mentioned_entity and _canonical_entity(mentioned_entity.group(1)) != _canonical_entity(entity):
+            return False, {"reason": "citation_passage_has_competing_entity"}
+    if trailing.strip(" .,:;-\t\r\n") and not re.search(
+        r"\b(?:he|she|they|this|that|same|sworn|appointed|elected|leader|"
+        r"administration|office|party|government)\b",
+        trailing,
+        re.IGNORECASE,
+    ):
+        return False, {"reason": "citation_passage_subject_not_unambiguous"}
+    return True, {
+        "method": "trailing_same_subject_passage",
+        "passage": text[candidate_start:annotation_end][:800],
+        "passage_start": candidate_start,
+        "passage_end": annotation_end,
+    }
+
+
+def _is_citation_group(text: str) -> bool:
+    """Recognize only adjacent citation markers, not arbitrary nearby links."""
+    value = str(text or "").strip(" .,:;\t\r\n")
+    if not value:
         return False
-    return annotation_start < end and annotation_end > start
+    marker = r"(?:\[[^\]]{1,200}\](?:\(https?://[^)\s]+\))?|https?://\S{1,500})"
+    return bool(re.fullmatch(rf"{marker}(?:\s*(?:,|and)\s*{marker})*", value))
 
 
 def _offset_index(value: object, offset: int) -> object:

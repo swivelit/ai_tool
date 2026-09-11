@@ -281,8 +281,15 @@ def _validate_current_evidence_item(
     title = " ".join(str(payload.get("title") or "").split())
     retrieved_at = str(payload.get("retrieved_at") or "").strip()
     provenance = str(payload.get("provenance") or payload.get("source") or "").strip()
-    support_text = snippet or claim if payload.get("claim_support_type") == "cited_synthesis" else snippet
-    if not (re.match(r"^https?://\S+$", source_url) and title and (snippet or claim)):
+    # ``claim`` is the concise, citation-bound relation extracted by the
+    # adapter; ``synthesis`` is never used as evidence.  Responses source
+    # metadata does not consistently include a snippet, so a cited claim is
+    # allowed to use that bounded relation while retaining its distinct
+    # ``cited_synthesis`` provenance.  When a source passage is present it is
+    # authoritative for entity/value/temporal checks and can reject a stale
+    # or contradictory generated assertion.
+    support_text = snippet or claim
+    if not (re.match(r"^https?://\S+$", source_url) and title and support_text):
         return False, None, "evidence_missing_provenance"
     try:
         retrieved = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
@@ -312,7 +319,7 @@ def _validate_current_evidence_item(
     )
     if not provenance or not temporal_ok or payload.get("relevant") is False:
         return False, None, "evidence_missing_temporal_support"
-    claim_for_temporal_checks = " ".join((claim or snippet or synthesis).split())
+    claim_for_temporal_checks = " ".join((snippet or claim).split())
     if re.search(r"\b(?:not|never|former|previous|ex[- ]|no longer)\b", claim_for_temporal_checks, re.I):
         return False, None, "evidence_claim_not_supported"
     if freshness.scope == "current":
@@ -385,13 +392,21 @@ def _validate_current_evidence_item(
         ):
             evidence_role_supported = False
         if not role_supported or not evidence_role_supported:
-            return False, None, "evidence_not_relevant"
+            return False, None, (
+                "evidence_claim_not_supported"
+                if snippet and payload.get("claim_support_type") == "cited_synthesis"
+                else "evidence_not_relevant"
+            )
         entity_terms = _requested_entity_terms(query)
         entity_supported = entity_terms.issubset(evidence_terms)
         if "தமிழ்நாடு" in query or "தமிழ்நா" in query:
             entity_supported = entity_supported or bool(re.search(r"தமிழ்நா", support_text))
         if entity_terms and not entity_supported:
-            return False, None, "evidence_not_relevant"
+            return False, None, (
+                "evidence_claim_not_supported"
+                if snippet and payload.get("claim_support_type") == "cited_synthesis"
+                else "evidence_not_relevant"
+            )
         claim_text = claim or snippet
         answer_value = _claim_answer_value(payload, claim_text)
         if not answer_value:
@@ -401,14 +416,18 @@ def _validate_current_evidence_item(
         if any(ord(char) > 127 for char in answer_value):
             value_supported = answer_value.casefold() in support_text.casefold()
         if not value_supported:
-            return False, None, "evidence_missing_answer_value"
+            return False, None, (
+                "evidence_claim_not_supported"
+                if snippet and payload.get("claim_support_type") == "cited_synthesis"
+                else "evidence_missing_answer_value"
+            )
         # Keep the source title separate from the body. A matching title is
         # metadata about the page, not proof that the body associates the
         # requested entity with the identified value.
         # A page title is provenance metadata, not evidence that the body
         # associates the requested entity with the answer value. In particular,
         # a matching title plus a contradictory body must never pass.
-        support_basis = claim_text if payload.get("claim_support_type") == "cited_synthesis" else snippet
+        support_basis = snippet or claim
         support_clauses = re.split(r"(?<=[!?;])\s+|\n+", support_basis)
         def clause_value_supported(clause: str) -> bool:
             if any(ord(char) > 127 for char in answer_value):

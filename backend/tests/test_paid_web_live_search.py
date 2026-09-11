@@ -59,11 +59,12 @@ class _SearchClient:
 
 
 def _search_response(
-    *, completed: bool = True, with_source: bool = True, with_annotation: bool = False,
+    *, completed: bool = True, with_source: bool = True, with_annotation: bool = True,
 ):
     source = {
         "url": "https://example.test/tamil-nadu-directory",
         "title": "Tamil Nadu official directory",
+        "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
     }
     action = type("Action", (), {
         "type": "search",
@@ -79,6 +80,8 @@ def _search_response(
         "type": "url_citation",
         "url": source["url"],
         "title": source["title"],
+        "start_index": 0,
+        "end_index": 51,
     })()
     message = type("Message", (), {
         "type": "message",
@@ -106,6 +109,8 @@ def test_paid_adapter_requires_completed_search_and_normalizes_citations(monkeyp
     assert call["model"] == "gpt-4.1-mini"
     assert call["tools"] == [{"type": "web_search", "external_web_access": True}]
     assert call["tool_choice"] == "required"
+    assert "as of 2026-09-10" in call["input"]
+    assert "citation immediately after the sentence" in call["input"]
     assert validate_current_evidence(
         "Who is the CM of Tamil Nadu?", result.results, now=clock,
     )[0] is True
@@ -197,6 +202,8 @@ def test_paid_adapter_extracts_sdk_boundary_wording_and_localized_facts(
     clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
     response = _search_response()
     response.output_text = answer
+    response.output[1].annotations[0].end_index = len(answer)
+    response.output[0].action.sources[0]["snippet"] = answer
     result = WebSearchAgent(
         client=_SearchClient(response), clock=lambda: clock,
     ).search(query)
@@ -210,8 +217,14 @@ def test_paid_adapter_retains_bounded_diagnostics_when_extraction_fails(monkeypa
     monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
-    first = {"url": "https://example.test/first", "title": "First source"}
-    second = {"url": "https://example.test/second", "title": "Second source"}
+    first = {
+        "url": "https://example.test/first", "title": "First source",
+        "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
+    }
+    second = {
+        "url": "https://example.test/second", "title": "Second source",
+        "snippet": "Another Person is the Chief Minister of Tamil Nadu.",
+    }
     answer = "No reliable officeholder was identified in the returned material."
     annotation = type("Annotation", (), {
         "type": "url_citation", "url": second["url"], "title": second["title"],
@@ -255,6 +268,8 @@ def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypat
     fixture = {
         "format": "swico-paid-live-search-response-v1",
         "query": "Who is the CM of Tamil Nadu?",
+        "capture_clock": "2026-09-10T12:00:00+00:00",
+        "requested_as_of": "2026-09-10",
         "response": {
             "status": "completed",
             "output_text": "Example Person is the Chief Minister of Tamil Nadu.",
@@ -264,7 +279,17 @@ def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypat
                 "action": {"type": "search", "sources": [{
                     "url": "https://example.test/office",
                     "title": "Official office directory",
+                    "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
                 }]},
+            }, {
+                "type": "message",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.test/office",
+                    "title": "Official office directory",
+                    "start_index": 0,
+                    "end_index": 51,
+                }],
             }],
         },
     }
@@ -290,6 +315,7 @@ def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypat
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert '"offline_replay": true' in completed.stdout
     assert '"evidence_valid": true' in completed.stdout
+    assert '"requested_as_of": "2026-09-10"' in completed.stdout
     assert called is False
 
 
@@ -369,7 +395,7 @@ def test_paid_adapter_binds_claim_to_nested_citation_not_first_consulted_source(
         "type": "url_citation",
         "url_citation": type("Citation", (), {
             "url": supporting["url"], "title": supporting["title"],
-            "start_index": 0, "end_index": 60,
+                "start_index": 0, "end_index": 51,
         })(),
     })()
     response = type("Response", (), {
@@ -407,8 +433,14 @@ def test_paid_adapter_keeps_multiple_candidates_and_citation_associations(monkey
         "Example Person is the Chief Minister of Tamil Nadu. "
         "Another Person is the Chief Minister of Tamil Nadu."
     )
-    first = {"url": "https://example.test/first", "title": "First office source"}
-    second = {"url": "https://example.test/second", "title": "Second office source"}
+    first = {
+        "url": "https://example.test/first", "title": "First office source",
+        "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
+    }
+    second = {
+        "url": "https://example.test/second", "title": "Second office source",
+        "snippet": "Another Person is the Chief Minister of Tamil Nadu.",
+    }
     first_end = text.index(".") + 1
     second_start = text.index("Another")
     annotations = [
@@ -453,7 +485,10 @@ def test_paid_adapter_joins_multiple_response_content_blocks_before_citation_map
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
     claim = "Example Person is the Chief Minister of Tamil Nadu."
-    source = {"url": "https://example.test/office", "title": "Official office source"}
+    source = {
+        "url": "https://example.test/office", "title": "Official office source",
+        "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
+    }
     response = type("Response", (), {
         "output": [
             type("Call", (), {
@@ -484,6 +519,282 @@ def test_paid_adapter_joins_multiple_response_content_blocks_before_citation_map
     assert validate_current_evidence(
         "Who is the CM of Tamil Nadu?", result.results, now=clock,
     )[0] is True
+    assert len(result.diagnostics["text_blocks"]) == 2
+    assert result.diagnostics["aggregate_output_text_used"] is False
+
+
+def test_paid_adapter_maps_local_annotation_indices_across_output_messages(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    first_claim = "Example Person is the Chief Minister of Tamil Nadu."
+    second_claim = "Another Person is the Chief Minister of Tamil Nadu."
+    first = {
+        "url": "https://example.test/first-message",
+        "title": "First message source",
+        "snippet": first_claim,
+    }
+    second = {
+        "url": "https://example.test/second-message",
+        "title": "Second message source",
+        "snippet": second_claim,
+    }
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [first, second]})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": first_claim,
+                    "annotations": [type("Annotation", (), {
+                        "type": "url_citation", "url": first["url"],
+                        "title": first["title"], "start_index": 0,
+                        "end_index": len(first_claim),
+                    })()],
+                })()],
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": second_claim,
+                    "annotations": [type("Annotation", (), {
+                        "type": "url_citation", "url": second["url"],
+                        "title": second["title"], "start_index": 0,
+                        "end_index": len(second_claim),
+                    })()],
+                })()],
+            })(),
+        ],
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert [item["claim_sources"][0]["url"] for item in result.results] == [
+        first["url"], second["url"],
+    ]
+    assert [item["citation_annotations"][0]["original_start_index"] for item in result.results] == [0, 0]
+    assert result.results[1]["citation_annotations"][0]["start_index"] > len(first_claim)
+
+
+def test_paid_adapter_keeps_invalid_annotation_diagnostics_without_false_support(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    claim = "Example Person is the Chief Minister of Tamil Nadu."
+    source = {
+        "url": "https://example.test/office", "title": "Office source",
+        "snippet": claim,
+    }
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [source]})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": claim,
+                    "annotations": [type("Annotation", (), {
+                        "type": "url_citation", "url": source["url"],
+                        "title": source["title"], "start_index": 0,
+                        "end_index": len(claim) + 5,
+                    })()],
+                })()],
+            })(),
+        ],
+        "output_text": claim,
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert result.results == []
+    assert result.reason == "claim_has_no_supporting_citation"
+    assert result.diagnostics["invalid_annotations"][0]["reason"] == (
+        "annotation_range_invalid_or_truncated"
+    )
+    assert result.diagnostics["extraction"]["stage"] == "citation_association"
+
+
+def test_paid_adapter_does_not_require_synthetic_source_snippet(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    claim = "Example Person is the Chief Minister of Tamil Nadu."
+    source = {"url": "https://example.test/office", "title": "Office source"}
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [source]})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": claim,
+                    "annotations": [type("Annotation", (), {
+                        "type": "url_citation", "url": source["url"],
+                        "title": source["title"], "start_index": 0,
+                        "end_index": len(claim),
+                    })()],
+                })()],
+            })(),
+        ],
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )[0] is True
+
+
+def test_paid_adapter_associates_trailing_marker_with_bounded_supporting_passage(monkeypatch):
+    # Labeled reconstruction of the reported production shape; the response
+    # indices and fictional URLs were not captured from production.
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
+    prose = (
+        "As of September 11, 2026, the Chief Minister of Tamil Nadu is "
+        "C. Joseph Vijay, leader of the Tamilaga Vettri Kazhagam (TVK). "
+        "He was sworn in on May 10, 2026, following his party's victory. "
+        "[Onmanorama](https://example.test/onmanorama) "
+        "The administration's political history is discussed separately. "
+        "[NDTV](https://example.test/ndtv)"
+    )
+    onmanorama = {
+        "url": "https://example.test/onmanorama",
+        "title": "Onmanorama report",
+        "snippet": "The report describes the May swearing-in.",
+    }
+    ndtv = {
+        "url": "https://example.test/ndtv",
+        "title": "NDTV history",
+        "snippet": "The administration's political history.",
+    }
+    on_start = prose.index("[Onmanorama]")
+    ndtv_start = prose.index("[NDTV]")
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {
+                    "sources": [onmanorama, ndtv],
+                })(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text",
+                    "text": prose,
+                    "annotations": [
+                        type("Annotation", (), {
+                            "type": "url_citation", "url": onmanorama["url"],
+                            "title": onmanorama["title"],
+                            "start_index": on_start,
+                            "end_index": on_start + len("[Onmanorama]"),
+                        })(),
+                        type("Annotation", (), {
+                            "type": "url_citation", "url": ndtv["url"],
+                            "title": ndtv["title"],
+                            "start_index": ndtv_start,
+                            "end_index": ndtv_start + len("[NDTV]"),
+                        })(),
+                    ],
+                })()],
+            })(),
+        ],
+        "output_text": prose,
+        "usage": type("Usage", (), {"input_tokens": 8570, "output_tokens": 227})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results
+    bundle = result.results[0]
+    assert [item["url"] for item in bundle["claim_sources"]] == [onmanorama["url"]]
+    assert bundle["supporting_passages"][0]["association_method"] == (
+        "trailing_same_subject_passage"
+    )
+    assert "[Onmanorama]" in bundle["supporting_passages"][0]["marker_text"]
+    assert ndtv["url"] not in [item["url"] for item in bundle["claim_sources"]]
+    # Association succeeded, but the historical source snippet does not prove
+    # that the generated September status is current.
+    valid, _evidence, reason = validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )
+    assert valid is False
+    assert reason == "evidence_claim_not_supported"
+
+
+def test_paid_adapter_rejects_single_consulted_source_without_inline_support(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
+    response = _search_response(with_annotation=False)
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results == []
+    assert result.reason == "claim_has_no_supporting_citation"
+    assert result.diagnostics["extraction"]["stage"] == "citation_association"
+    assert result.diagnostics["extraction"]["associations"][0]["rejection_reason"] == (
+        "claim_has_no_supporting_citation"
+    )
+
+
+def test_paid_adapter_associates_adjacent_citation_group_without_cross_claim_leakage(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    claim = "Example Person is the Chief Minister of Tamil Nadu."
+    text = f"{claim} [Official](https://example.test/official) [Directory](https://example.test/directory)"
+    sources = [
+        {
+            "url": "https://example.test/official", "title": "Official",
+            "snippet": claim,
+        },
+        {
+            "url": "https://example.test/directory", "title": "Directory",
+            "snippet": claim,
+        },
+    ]
+    annotations = [
+        type("Annotation", (), {
+            "type": "url_citation", "url": source["url"],
+            "title": source["title"],
+            "start_index": text.index(f"[{source['title']}]"),
+            "end_index": text.index(f"[{source['title']}]") + len(f"[{source['title']}]"),
+        })()
+        for source in sources
+    ]
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": sources})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": text,
+                    "annotations": annotations,
+                })()],
+            })(),
+        ],
+        "output_text": text,
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert [source["url"] for source in result.results[0]["claim_sources"]] == [
+        source["url"] for source in sources
+    ]
+    assert {item["association_method"] for item in result.results[0]["supporting_passages"]} == {
+        "trailing_same_subject_passage", "trailing_citation_group",
+    }
 
 
 def test_current_date_prefix_is_not_rejected_as_historical(monkeypatch):
@@ -619,7 +930,7 @@ def test_paid_adapter_reports_missing_sources_timeout_and_missing_key(monkeypatc
     clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     no_sources = WebSearchAgent(
-        client=_SearchClient(_search_response(with_source=False)),
+        client=_SearchClient(_search_response(with_source=False, with_annotation=False)),
         clock=lambda: clock,
     ).search("Who is the CM of Tamil Nadu?")
     assert no_sources.reason == "no_usable_sources"
