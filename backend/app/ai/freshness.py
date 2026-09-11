@@ -315,11 +315,17 @@ def _validate_current_evidence_item(
     claim_for_temporal_checks = " ".join((claim or snippet or synthesis).split())
     if re.search(r"\b(?:not|never|former|previous|ex[- ]|no longer)\b", claim_for_temporal_checks, re.I):
         return False, None, "evidence_claim_not_supported"
-    if freshness.scope == "current" and re.search(
-        r"^(?:in|during|as\s+of)\s+\d{4}\b|\bwas\s+(?:the\s+)?(?:current\s+)?(?:chief|prime)\s+minister\b",
-        claim_for_temporal_checks, re.I,
-    ):
-        return False, None, "evidence_temporal_scope_mismatch"
+    if freshness.scope == "current":
+        dated_prefix = re.search(
+            r"^(?:in|during|as\s+of)\s+(\d{4})\b", claim_for_temporal_checks, re.I,
+        )
+        if dated_prefix and dated_prefix.group(1) != freshness.as_of[:4]:
+            return False, None, "evidence_temporal_scope_mismatch"
+        if re.search(
+            r"\bwas\s+(?:the\s+)?(?:current\s+)?(?:chief|prime)\s+minister\b",
+            claim_for_temporal_checks, re.I,
+        ) and not re.search(r"\b(?:today|now|currently|present)\b", claim_for_temporal_checks, re.I):
+            return False, None, "evidence_temporal_scope_mismatch"
     query_terms = {
         term.casefold() for term in re.findall(r"[A-Za-z]{3,}", query)
         if term.casefold() not in {
@@ -368,19 +374,33 @@ def _validate_current_evidence_item(
             evidence_role_supported = True
         if requested_roles:
             expected_roles = requested_roles
-        if expected_roles and not any(role in evidence_lower for role in expected_roles):
+        if expected_roles and not any(role in evidence_lower for role in expected_roles) and not (
+            "chief minister" in expected_roles and "முதலமைச்சர்" in support_text
+        ) and not (
+            "chief minister" in expected_roles and bool(re.search(r"\bcm\b", evidence_lower))
+        ) and not (
+            "prime minister" in expected_roles and "பிரதமர்" in support_text
+        ) and not (
+            "prime minister" in expected_roles and bool(re.search(r"\bpm\b", evidence_lower))
+        ):
             evidence_role_supported = False
         if not role_supported or not evidence_role_supported:
             return False, None, "evidence_not_relevant"
         entity_terms = _requested_entity_terms(query)
-        if entity_terms and not entity_terms.issubset(evidence_terms):
+        entity_supported = entity_terms.issubset(evidence_terms)
+        if "தமிழ்நாடு" in query or "தமிழ்நா" in query:
+            entity_supported = entity_supported or bool(re.search(r"தமிழ்நா", support_text))
+        if entity_terms and not entity_supported:
             return False, None, "evidence_not_relevant"
         claim_text = claim or snippet
         answer_value = _claim_answer_value(payload, claim_text)
         if not answer_value:
             return False, None, "evidence_missing_answer_value"
         value_terms = _normalized_terms(answer_value)
-        if not value_terms or not value_terms.issubset(evidence_terms):
+        value_supported = bool(value_terms) and value_terms.issubset(evidence_terms)
+        if any(ord(char) > 127 for char in answer_value):
+            value_supported = answer_value.casefold() in support_text.casefold()
+        if not value_supported:
             return False, None, "evidence_missing_answer_value"
         # Keep the source title separate from the body. A matching title is
         # metadata about the page, not proof that the body associates the
@@ -390,13 +410,24 @@ def _validate_current_evidence_item(
         # a matching title plus a contradictory body must never pass.
         support_basis = claim_text if payload.get("claim_support_type") == "cited_synthesis" else snippet
         support_clauses = re.split(r"(?<=[!?;])\s+|\n+", support_basis)
+        def clause_value_supported(clause: str) -> bool:
+            if any(ord(char) > 127 for char in answer_value):
+                return answer_value.casefold() in clause.casefold()
+            return value_terms.issubset(_normalized_terms(clause))
+
         if not any(
-            value_terms.issubset(_normalized_terms(clause))
-            and (not entity_terms or entity_terms.issubset(_normalized_terms(clause)))
+            clause_value_supported(clause)
+            and (
+                not entity_terms
+                or entity_terms.issubset(_normalized_terms(clause))
+                or (("தமிழ்நாடு" in query or "தமிழ்நா" in query) and bool(re.search(r"தமிழ்நா", clause)))
+            )
             and (
                 any(role in clause.casefold() for role in expected_roles)
                 or ("cm" in role_terms and bool(re.search(r"\b(?:cm|chief\s+minister)\b", clause, re.I)))
                 or ("pm" in role_terms and bool(re.search(r"\b(?:pm|prime\s+minister)\b", clause, re.I)))
+                or ("chief minister" in expected_roles and "முதலமைச்சர்" in clause)
+                or ("prime minister" in expected_roles and "பிரதமர்" in clause)
             )
             for clause in support_clauses
         ):
@@ -416,7 +447,7 @@ def _validate_current_evidence_item(
         }
         if subject_terms and not subject_terms.issubset(evidence_terms):
             return False, None, "evidence_not_relevant"
-    if not query_terms.intersection(evidence_terms):
+    if not query_terms.intersection(evidence_terms) and not _has_officeholder_subject(query):
         return False, None, "evidence_not_relevant"
     return True, {
         "title": title[:256], "snippet": snippet[:4_000],

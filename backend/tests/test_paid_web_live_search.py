@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -165,6 +170,165 @@ def test_paid_adapter_extracts_concise_cited_claim_from_realistic_synthesis(monk
 
 
 @pytest.mark.parametrize(
+    "query,answer",
+    (
+        ("Who is the CM of Tamil Nadu?", "Example Person is the current Chief Minister of Tamil Nadu."),
+        ("Who is the CM of Tamil Nadu?", "**Example Person** is the Chief Minister of Tamil Nadu."),
+        ("Who is the CM of Tamil Nadu?", "The Chief Minister of Tamil Nadu is **Example Person**."),
+        ("Who is the CM of Tamil Nadu?", "Currently, Example Person serves as Chief Minister of Tamil Nadu."),
+        ("Who is the CM of Tamil Nadu?", "Tamil Nadu's Chief Minister is Example Person."),
+        (
+            "Who is the CM of Tamil Nadu?",
+            "As of September 10, 2026, Example Person is the Chief Minister of Tamil Nadu.",
+        ),
+        (
+            "தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் யார்?",
+            "உதாரண நபர் தமிழ்நாட்டின் தற்போதைய முதலமைச்சர் ஆவார்.",
+        ),
+        ("Tamil Nadu la ippo CM yaaru?", "Example Person Tamil Nadu la ippo CM-a irukkaru."),
+    ),
+)
+def test_paid_adapter_extracts_sdk_boundary_wording_and_localized_facts(
+    monkeypatch, query, answer,
+):
+    """Exercise Responses-shaped normalization, not a patched search method."""
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    response = _search_response()
+    response.output_text = answer
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search(query)
+    assert result.reason == "openai_responses_web_search"
+    assert len(result.results) == 1
+    assert result.results[0]["answer_value"] in {"Example Person", "உதாரண நபர்"}
+    assert validate_current_evidence(query, result.results, now=clock)[0] is True
+
+
+def test_paid_adapter_retains_bounded_diagnostics_when_extraction_fails(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    first = {"url": "https://example.test/first", "title": "First source"}
+    second = {"url": "https://example.test/second", "title": "Second source"}
+    answer = "No reliable officeholder was identified in the returned material."
+    annotation = type("Annotation", (), {
+        "type": "url_citation", "url": second["url"], "title": second["title"],
+        "start_index": 0, "end_index": 10,
+    })()
+    response = type("Response", (), {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [first, second]})(),
+            })(),
+            type("Message", (), {
+                "type": "message",
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": answer,
+                    "annotations": [annotation],
+                })()],
+            })(),
+        ],
+        "output_text": answer,
+        "usage": type("Usage", (), {"input_tokens": 8570, "output_tokens": 227})(),
+    })()
+    result = WebSearchAgent(
+        client=_SearchClient(response), clock=lambda: clock,
+    ).search("Who is the CM of Tamil Nadu?")
+    assert result.results == []
+    assert result.reason == "search_claim_not_extractable"
+    assert result.usage == {"input_tokens": 8570, "output_tokens": 227, "search_calls": 1}
+    assert result.diagnostics is not None
+    assert len(result.diagnostics["consulted_sources"]) == 2
+    assert result.diagnostics["citation_annotations"][0]["url"] == second["url"]
+    assert result.diagnostics["text_blocks"][0]["text"] == answer
+    assert result.diagnostics["fixture_response"]["output"]
+    assert result.diagnostics["extraction"]["reason"] == "no_candidate_fact"
+
+
+def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypatch, tmp_path):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "false")
+    fixture = {
+        "format": "swico-paid-live-search-response-v1",
+        "query": "Who is the CM of Tamil Nadu?",
+        "response": {
+            "status": "completed",
+            "output_text": "Example Person is the Chief Minister of Tamil Nadu.",
+            "usage": {"input_tokens": 21, "output_tokens": 17},
+            "output": [{
+                "type": "web_search_call", "status": "completed",
+                "action": {"type": "search", "sources": [{
+                    "url": "https://example.test/office",
+                    "title": "Official office directory",
+                }]},
+            }],
+        },
+    }
+    path = tmp_path / "fixture.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    called = False
+
+    def fail(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("offline replay must not call OpenAI")
+
+    monkeypatch.setattr(openai, "OpenAI", fail)
+    completed = subprocess.run(
+        [
+            sys.executable, "backend/scripts/web_live_search_check.py",
+            "--replay-fixture", str(path), "--pretty",
+        ],
+        cwd=str(Path(__file__).parents[2]),
+        env={**dict(os.environ), "PYTHONPATH": "backend"},
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert '"offline_replay": true' in completed.stdout
+    assert '"evidence_valid": true' in completed.stdout
+    assert called is False
+
+
+def test_probe_debug_replay_reports_empty_result_diagnostics(tmp_path):
+    fixture = {
+        "format": "swico-paid-live-search-response-v1",
+        "query": "Who is the CM of Tamil Nadu?",
+        "response": {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output_text": "No reliable officeholder was identified.",
+            "usage": {"input_tokens": 8570, "output_tokens": 227},
+            "output": [{
+                "type": "web_search_call", "status": "completed",
+                "action": {"type": "search", "sources": [
+                    {"url": "https://example.test/consulted", "title": "Public source"},
+                ]},
+            }],
+        },
+    }
+    path = tmp_path / "failed-fixture.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable, "backend/scripts/web_live_search_check.py",
+            "--replay-fixture", str(path), "--debug-evidence", "--pretty",
+        ],
+        cwd=str(Path(__file__).parents[2]),
+        env={**dict(os.environ), "PYTHONPATH": "backend"},
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 1
+    assert '"consulted_source_count": 1' in completed.stdout
+    assert '"text_blocks"' in completed.stdout
+    assert '"no_candidate_fact"' in completed.stdout
+    assert '"reason": "max_output_tokens"' in completed.stdout
+
+
+@pytest.mark.parametrize(
     "answer",
     (
         "In 2021, Example Person was the Chief Minister of Tamil Nadu.",
@@ -235,6 +399,111 @@ def test_paid_adapter_binds_claim_to_nested_citation_not_first_consulted_source(
     )[0] is True
 
 
+def test_paid_adapter_keeps_multiple_candidates_and_citation_associations(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    text = (
+        "Example Person is the Chief Minister of Tamil Nadu. "
+        "Another Person is the Chief Minister of Tamil Nadu."
+    )
+    first = {"url": "https://example.test/first", "title": "First office source"}
+    second = {"url": "https://example.test/second", "title": "Second office source"}
+    first_end = text.index(".") + 1
+    second_start = text.index("Another")
+    annotations = [
+        type("Annotation", (), {
+            "type": "url_citation", "url": first["url"], "title": first["title"],
+            "start_index": 0, "end_index": first_end,
+        })(),
+        type("Annotation", (), {
+            "type": "url_citation", "url": second["url"], "title": second["title"],
+            "start_index": second_start, "end_index": len(text),
+        })(),
+    ]
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [first, second]})(),
+            })(),
+            type("Message", (), {
+                "content": [type("Text", (), {
+                    "type": "output_text", "text": text, "annotations": annotations,
+                })()],
+            })(),
+        ],
+        "output_text": text,
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert len(result.results) == 2
+    assert [item["claim_sources"][0]["url"] for item in result.results] == [
+        first["url"], second["url"],
+    ]
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )[2] == "evidence_stale_or_conflicting"
+
+
+def test_paid_adapter_joins_multiple_response_content_blocks_before_citation_mapping(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    claim = "Example Person is the Chief Minister of Tamil Nadu."
+    source = {"url": "https://example.test/office", "title": "Official office source"}
+    response = type("Response", (), {
+        "output": [
+            type("Call", (), {
+                "type": "web_search_call", "status": "completed",
+                "action": type("Action", (), {"sources": [source]})(),
+            })(),
+            type("Message", (), {
+                "content": [
+                    type("Text", (), {"type": "output_text", "text": "Context."})(),
+                    type("Text", (), {
+                        "type": "output_text", "text": claim,
+                        "annotations": [type("Annotation", (), {
+                            "type": "url_citation", "url": source["url"],
+                            "title": source["title"], "start_index": 0,
+                            "end_index": len(claim),
+                        })()],
+                    })(),
+                ],
+            })(),
+        ],
+        "usage": type("Usage", (), {"input_tokens": 21, "output_tokens": 17})(),
+    })()
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu?"
+    )
+    assert result.results
+    assert result.results[0]["claim_sources"][0]["url"] == source["url"]
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu?", result.results, now=clock,
+    )[0] is True
+
+
+def test_current_date_prefix_is_not_rejected_as_historical(monkeypatch):
+    monkeypatch.setenv("WEB_LIVE_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    clock = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
+    response = _search_response()
+    response.output_text = (
+        "As of 2026-09-10, Example Person is the Chief Minister of Tamil Nadu."
+    )
+    result = WebSearchAgent(client=_SearchClient(response), clock=lambda: clock).search(
+        "Who is the CM of Tamil Nadu as of 2026-09-10?"
+    )
+    assert result.results
+    assert validate_current_evidence(
+        "Who is the CM of Tamil Nadu as of 2026-09-10?",
+        result.results, now=clock,
+    )[0] is True
+
+
 def test_failed_paid_search_with_usage_persists_zero_customer_charge_and_replays(
     monkeypatch, client,
 ):
@@ -243,32 +512,26 @@ def test_failed_paid_search_with_usage_persists_zero_customer_charge_and_replays
     user = create_test_user("paid-search-fallback", "paid-search-fallback@example.com")
     _fund(int(user.id))
     request_id = str(uuid4())
+    response_fixture = _search_response()
+    response_fixture.output_text = "No reliable officeholder was identified in the returned material."
+    response_fixture.usage = type("Usage", (), {"input_tokens": 8570, "output_tokens": 235})()
     search_calls = 0
 
-    def failed_search(_self, _query):
-        nonlocal search_calls
-        search_calls += 1
-        return WebSearchResult(
-            enabled=True,
-            reason="openai_responses_web_search",
-            usage={"input_tokens": 8570, "output_tokens": 235, "search_calls": 1},
-            results=[{
-                "title": "Tamil Nadu travel guide",
-                "snippet": "Tamil Nadu has many historic temples and beaches.",
-                "claim": "Example Person is the Governor of Kerala.",
-                "answer_value": "Example Person",
-                "url": "https://example.test/unrelated",
-                "source": "openai_responses_web_search",
-                "provenance": "openai_responses_web_search",
-                "retrieved_at": "2026-09-10T12:00:00+00:00",
-                "temporal_as_of": "2026-09-10",
-                "temporal_support": "completed_live_search",
-                "search_call_completed": True,
-                "relevant": True,
-            }],
-        )
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = _Responses(response_fixture)
 
-    monkeypatch.setattr("app.web_api.chat_service.WebSearchAgent.search", failed_search)
+        @property
+        def responses(self):
+            return self._responses
+
+        @responses.setter
+        def responses(self, value):
+            nonlocal search_calls
+            search_calls += 1
+            self._responses = value
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
     generation_calls = []
     monkeypatch.setattr(
         "app.ai.providers.openai_provider.OpenAIProvider.stream_complete",
@@ -300,8 +563,8 @@ def test_failed_paid_search_with_usage_persists_zero_customer_charge_and_replays
                 WebChatMessage.role == "assistant",
             )
         ).one()
-        assert assistant.status == "complete"
-        assert "couldn’t verify" in assistant.content
+    assert assistant.status == "complete"
+    assert "couldn’t verify" in assistant.content
     replay = client.post(
         "/api/web/chat/stream",
         headers=auth_headers("paid-search-fallback", "paid-search-fallback@example.com"),
