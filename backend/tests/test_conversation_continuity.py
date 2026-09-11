@@ -6,6 +6,7 @@ from app.web_api.conversation_continuity import (
     decide_same_thread_continuity,
     normalize_same_thread_context_mode,
 )
+from app.ai.intent import classify_contextual_followup
 
 
 HISTORY = [{
@@ -176,3 +177,72 @@ def test_unicode_tamil_lexical_overlap_is_contextual():
     )
     assert decision.use_context is True
     assert decision.reason == "lexical_topic_overlap"
+
+
+OFFICEHOLDER_HISTORY = [{
+    "user": "Who is the CM of Tamil Nadu?",
+    "assistant": "Example Person is the Chief Minister of Tamil Nadu.",
+}]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Write a Python sorting function.",
+        "Capital of France?",
+        "What is a binary tree and how does it work?",
+        "Explain this Python code: print(2 + 2)",
+        "What is the first option in Python argparse?",
+        "chief minister of Kerala",
+        "கிரிக்கெட் என்றால் என்ன?",
+        "python code kudu",
+        "New topic: explain Python and how it works.",
+    ],
+)
+def test_adaptive_independent_subjects_do_not_reuse_officeholder_history(message):
+    decision = decide_same_thread_continuity(
+        message, OFFICEHOLDER_HISTORY, mode="adaptive",
+    )
+    assert decision.use_context is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Explain this Python code: print(2 + 2)",
+        "What is the first option in Python argparse?",
+    ],
+)
+def test_explicit_only_does_not_transform_a_subject_bound_reference(message):
+    assert classify_contextual_followup(message) is None
+    decision = decide_same_thread_continuity(
+        message, OFFICEHOLDER_HISTORY, mode="explicit_only",
+    )
+    assert decision.use_context is False
+
+
+def test_omitted_role_entity_switch_still_uses_context():
+    decision = decide_same_thread_continuity(
+        "What about Kerala?", OFFICEHOLDER_HISTORY, mode="adaptive",
+    )
+    assert decision.use_context is True
+
+
+def test_unresolved_person_pronoun_does_not_use_unrelated_history():
+    decision = decide_same_thread_continuity(
+        "How old is he?", [{
+            "user": "What is Python?",
+            "assistant": "Python is a programming language.",
+        }], mode="adaptive",
+    )
+    assert decision.use_context is False
+
+
+def test_person_pronoun_keeps_a_matching_person_antecedent():
+    history = [{
+        "user": "Who is Example Person?",
+        "assistant": "Example Person is a researcher.",
+    }]
+    assert decide_same_thread_continuity(
+        "How old is he?", history, mode="adaptive",
+    ).use_context is True

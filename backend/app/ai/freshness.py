@@ -67,6 +67,16 @@ _TANGLISH_OFFICEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONTEXTUAL_ENTITY_SWITCH_RE = re.compile(
+    r"^\s*(?:and\s+)?what\s+about\s+([A-Z][A-Za-z .'-]{1,80})[?.!]*\s*$",
+    re.IGNORECASE,
+)
+_CONTEXTUAL_ROLE_ENTITY_RE = re.compile(
+    r"\b(?P<role>chief\s+minister|prime\s+minister|president|governor|"
+    r"mayor|cm|pm)\s+of\s+(?P<entity>[A-Za-z][A-Za-z .'-]{1,80}?)(?=[?.!,;]|$)",
+    re.IGNORECASE,
+)
+
 
 def _has_officeholder_subject(text: str) -> bool:
     """Recognize identifying a role, not merely discussing that role."""
@@ -91,6 +101,27 @@ def _has_officeholder_subject(text: str) -> bool:
         r"chancellor|minister|secretary|leader|cm|pm|mp|mla)\s+of\s+[A-Za-z]",
         text, re.IGNORECASE,
     ))
+
+
+def resolve_freshness_query(message: str, *, context: str = "") -> str:
+    """Complete a bounded omitted-role entity switch from approved context."""
+    text = " ".join(str(message or "").split())
+    context_text = " ".join(str(context or "").split())
+    switch = _CONTEXTUAL_ENTITY_SWITCH_RE.match(text)
+    if not switch or not _has_officeholder_subject(context_text):
+        return text
+    subject = _CONTEXTUAL_ROLE_ENTITY_RE.search(context_text)
+    if not subject:
+        return text
+    role = subject.group("role").casefold()
+    canonical_role = {
+        "cm": "Chief Minister",
+        "pm": "Prime Minister",
+    }.get(role, subject.group("role").title())
+    entity = switch.group(1).strip(" .,!?:;")
+    if not entity:
+        return text
+    return f"Who is the {canonical_role} of {entity}?"
 
 
 def _normalized_terms(value: str) -> set[str]:
@@ -548,6 +579,7 @@ def _validate_current_evidence_item(
         **({"synthesis": synthesis[:4_000]} if synthesis else {}),
         "url": source_url[:2_000], "source": provenance[:128],
         "retrieved_at": retrieved_at[:128],
+        "temporal_as_of": temporal_as_of[:32],
         "sources": payload.get("sources") if isinstance(payload.get("sources"), list) else [],
         "claim_sources": claim_sources,
         "citation_annotations": citation_annotations,
@@ -568,8 +600,8 @@ def resolve_freshness(
     now: datetime | None = None,
 ) -> FreshnessDecision:
     """Classify temporal scope without naming or guessing a current fact."""
-    text = " ".join(str(message or "").split())
     context_text = " ".join(str(context or "").split())
+    text = resolve_freshness_query(message, context=context_text)
     subject_text = f"{text} {context_text}".strip()
     clock = now or datetime.now(timezone.utc)
     as_of = _requested_date(text, clock)

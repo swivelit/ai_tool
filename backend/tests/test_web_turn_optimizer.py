@@ -170,6 +170,59 @@ def test_adaptive_new_topic_and_first_message_send_no_history(monkeypatch):
     assert first.ai_request.context_turns == []
 
 
+@pytest.mark.parametrize("optimizer_enabled", ["true", "false"])
+def test_prepared_turn_keeps_independent_questions_out_of_all_downstream_context(
+    monkeypatch, optimizer_enabled,
+):
+    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
+    monkeypatch.setenv("WEB_TURN_OPTIMIZER_ENABLED", optimizer_enabled)
+    monkeypatch.setattr(
+        "app.web_api.chat_service.create_usage_reservation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("app.web_api.chat_service._cache_response", lambda *args, **kwargs: None)
+    user = create_test_user(
+        f"continuity-independent-{optimizer_enabled}",
+        f"continuity-independent-{optimizer_enabled}@example.com",
+    )
+    thread_id = _seed_thread(int(user.id), [(
+        "Who is the CM of Tamil Nadu?",
+        "Example Person is the Chief Minister of Tamil Nadu.",
+    )])
+
+    prepared = prepare_web_turn(
+        user_id=int(user.id),
+        message="Capital of France?",
+        request_id=f"continuity-independent-{optimizer_enabled}",
+        thread_id=thread_id,
+        reply_language="en",
+    )
+
+    assert prepared.ai_request.context_turns == []
+    assert prepared.ai_request.metadata["freshness_required"] is False
+    if prepared.coordinator_decision is not None:
+        assert prepared.coordinator_decision.sanitized_metadata[
+            "same_thread_context_turns_sent"
+        ] == 0
+    else:
+        assert prepared.optimization.metrics["context_turns_sent"] == 0
+    assert "Example Person" not in json.dumps(prepared.provider_messages or [])
+
+    followup = prepare_web_turn(
+        user_id=int(user.id),
+        message="What about Kerala?",
+        request_id=f"continuity-entity-switch-{optimizer_enabled}",
+        thread_id=thread_id,
+        reply_language="en",
+    )
+    assert followup.ai_request.context_turns
+    assert "Tamil Nadu" in json.dumps(followup.ai_request.context_turns)
+    assert followup.ai_request.metadata["freshness_required"] is True
+    assert followup.ai_request.metadata["freshness_query"] == (
+        "Who is the Chief Minister of Kerala?"
+    )
+
+
 def test_adaptive_context_obeys_turn_and_character_bounds(monkeypatch):
     monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
     monkeypatch.setenv("WEB_CONTEXT_MAX_TURNS", "2")

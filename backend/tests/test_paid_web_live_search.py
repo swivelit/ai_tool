@@ -281,7 +281,6 @@ def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypat
                 "action": {"type": "search", "sources": [{
                     "url": "https://example.test/office",
                     "title": "Official office directory",
-                    "snippet": "Example Person is the Chief Minister of Tamil Nadu.",
                 }]},
             }, {
                 "type": "message",
@@ -317,6 +316,8 @@ def test_paid_adapter_replays_sanitized_fixture_without_openai_request(monkeypat
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert '"offline_replay": true' in completed.stdout
     assert '"evidence_valid": true' in completed.stdout
+    assert '"verification_strength": "provider_cited_grounding"' in completed.stdout
+    assert '"independent_verification_valid": false' in completed.stdout
     assert '"requested_as_of": "2026-09-10"' in completed.stdout
     assert called is False
 
@@ -1276,6 +1277,7 @@ def test_captured_url_only_responses_fixture_shape_keeps_consulted_sources_and_g
     assert reason == "grounded_current_evidence"
     assert normalized["verification_strength"] == "provider_cited_grounding"
     assert normalized["independent_verification"] == "unavailable"
+    assert normalized["temporal_as_of"] == "2026-09-11"
     assert normalized["claim_sources"][0]["url"] == onmanorama
 
 
@@ -1343,6 +1345,7 @@ def test_freshness_pack_uses_only_claim_sources_and_quality_reports_provider_gro
     assert dict(pack.items[0].safe_attributes)["verification_strength"] == (
         "provider_cited_grounding"
     )
+    assert "Requested period: 2026-09-11" in pack.items[0].runtime_text
     quality = AnswerGuard().check(
         "Example Person is the Chief Minister of Tamil Nadu. [S1]",
         AnswerGuardContext(

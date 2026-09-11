@@ -70,7 +70,7 @@ def main() -> int:
     started = monotonic()
     result = WebSearchAgent(clock=lambda: capture_clock).search(args.query)
     elapsed_ms = int(round((monotonic() - started) * 1000))
-    valid, _evidence, reason = validate_current_evidence(
+    valid, normalized_evidence, reason = validate_current_evidence(
         args.query, result.results, now=capture_clock,
     )
     diagnostics = result.diagnostics or {}
@@ -89,16 +89,16 @@ def main() -> int:
             for item in bundles
             for source in (item.get("claim_sources") or [])
         )
-    associated_supporting = _source_urls(
-        source
-        for item in bundles
-        for source in (item.get("claim_sources") or [])
+    normalized_sources = (
+        normalized_evidence.get("claim_sources")
+        if isinstance(normalized_evidence, dict) else []
     )
+    associated_supporting = _source_urls(normalized_sources)
     independently_verified = _source_urls(
-        source
-        for item in bundles
-        if item.get("verification_strength") == "independently_source_supported"
-        for source in (item.get("claim_sources") or [])
+        normalized_sources
+        if isinstance(normalized_evidence, dict)
+        and normalized_evidence.get("verification_strength") == "independently_source_supported"
+        else []
     )
     report.update({
         "status": (
@@ -116,8 +116,8 @@ def main() -> int:
         "validated_supporting_source_count": len(associated_supporting) if valid else 0,
         "independently_verified_source_count": len(independently_verified),
         "verification_strength": (
-            str(bundles[0].get("verification_strength") or "")
-            if bundles else "unavailable"
+            str(normalized_evidence.get("verification_strength") or "")
+            if isinstance(normalized_evidence, dict) else "unavailable"
         ),
         "consulted_source_count": len(consulted),
         "cited_source_count": len(cited),
@@ -126,7 +126,11 @@ def main() -> int:
         "independent_verification_valid": bool(valid and independently_verified),
         "evidence_reason": reason,
         "capture_clock": capture_clock.isoformat(),
-        "requested_as_of": resolve_freshness(args.query, now=capture_clock).as_of,
+        "requested_as_of": (
+            str(normalized_evidence.get("temporal_as_of") or "")
+            if isinstance(normalized_evidence, dict)
+            else resolve_freshness(args.query, now=capture_clock).as_of
+        ),
         "freshness": resolve_freshness(args.query, now=capture_clock).__dict__,
         "usage": result.usage or {},
     })
@@ -149,9 +153,10 @@ def main() -> int:
     if args.debug_evidence:
         candidate_diagnostics = []
         for item in bundles[:8]:
-            accepted, _normalized, candidate_reason = _validate_current_evidence_item(
+            accepted, candidate_normalized, candidate_reason = _validate_current_evidence_item(
                 args.query, item, now=capture_clock,
             )
+            reported = candidate_normalized if accepted and candidate_normalized else item
             public_sources = []
             for source in (item.get("claim_sources") or item.get("sources") or [])[:8]:
                 if isinstance(source, dict) and source.get("url"):
@@ -164,7 +169,7 @@ def main() -> int:
                 "reason": candidate_reason,
                 "candidate_claim": str(item.get("claim") or "")[:500],
                 "answer_value": str(item.get("answer_value") or item.get("officeholder") or "")[:160],
-                "temporal_as_of": str(item.get("temporal_as_of") or item.get("as_of") or "")[:32],
+                "temporal_as_of": str(reported.get("temporal_as_of") or reported.get("as_of") or "")[:32],
                 "sources": public_sources,
                 "claim_sources": public_sources,
                 "supporting_passages": [
@@ -181,7 +186,7 @@ def main() -> int:
                     if isinstance(passage, dict)
                 ],
                 "claim_support_type": str(item.get("claim_support_type") or "")[:64],
-                "verification_strength": str(item.get("verification_strength") or "")[:64],
+                "verification_strength": str(reported.get("verification_strength") or "")[:64],
             })
         report["debug_evidence"] = {
             "completion_status": (
@@ -201,6 +206,28 @@ def main() -> int:
             "citation_association": (
                 diagnostics.get("extraction", {}).get("associations", [])[:16]
                 if isinstance(diagnostics.get("extraction"), dict) else []
+            ),
+            "normalized_evidence": (
+                {
+                    "verification_strength": str(
+                        normalized_evidence.get("verification_strength") or ""
+                    )[:64],
+                    "independent_verification": str(
+                        normalized_evidence.get("independent_verification") or ""
+                    )[:32],
+                    "temporal_as_of": str(
+                        normalized_evidence.get("temporal_as_of") or ""
+                    )[:32],
+                    "claim_sources": [
+                        {
+                            "title": str(source.get("title") or "")[:160],
+                            "url": str(source.get("url") or "")[:500],
+                        }
+                        for source in normalized_sources[:8]
+                        if isinstance(source, dict) and source.get("url")
+                    ],
+                }
+                if isinstance(normalized_evidence, dict) else None
             ),
             "sources": [
                 {
@@ -254,22 +281,22 @@ def _replay_fixture(args: argparse.Namespace) -> int:
     )._normalize_response(  # noqa: SLF001 - offline production replay.
         response, query, requested_as_of=requested_as_of,
     )
-    valid, _evidence, reason = validate_current_evidence(
+    valid, normalized_evidence, reason = validate_current_evidence(
         query, result.results, now=capture_clock,
     )
     diagnostics = result.diagnostics or {}
     consulted = _source_urls(diagnostics.get("consulted_sources"))
     cited = _source_urls(diagnostics.get("citation_annotations"))
-    associated_supporting = _source_urls(
-        source
-        for item in result.results
-        for source in (item.get("claim_sources") or [])
+    normalized_sources = (
+        normalized_evidence.get("claim_sources")
+        if isinstance(normalized_evidence, dict) else []
     )
+    associated_supporting = _source_urls(normalized_sources)
     independently_verified = _source_urls(
-        source
-        for item in result.results
-        if item.get("verification_strength") == "independently_source_supported"
-        for source in (item.get("claim_sources") or [])
+        normalized_sources
+        if isinstance(normalized_evidence, dict)
+        and normalized_evidence.get("verification_strength") == "independently_source_supported"
+        else []
     )
     report = {
         "status": (
@@ -288,15 +315,19 @@ def _replay_fixture(args: argparse.Namespace) -> int:
         "validated_supporting_source_count": len(associated_supporting) if valid else 0,
         "independently_verified_source_count": len(independently_verified),
         "verification_strength": (
-            str(result.results[0].get("verification_strength") or "")
-            if result.results else "unavailable"
+            str(normalized_evidence.get("verification_strength") or "")
+            if isinstance(normalized_evidence, dict) else "unavailable"
         ),
         "evidence_valid": valid,
         "provider_grounding_valid": valid,
         "independent_verification_valid": bool(valid and independently_verified),
         "evidence_reason": reason,
         "capture_clock": capture_clock.isoformat(),
-        "requested_as_of": resolve_freshness(query, now=capture_clock).as_of,
+        "requested_as_of": (
+            str(normalized_evidence.get("temporal_as_of") or "")
+            if isinstance(normalized_evidence, dict)
+            else resolve_freshness(query, now=capture_clock).as_of
+        ),
         "freshness": resolve_freshness(query, now=capture_clock).__dict__,
         "usage": result.usage or {},
     }
@@ -313,6 +344,28 @@ def _replay_fixture(args: argparse.Namespace) -> int:
             "citation_association": (
                 diagnostics.get("extraction", {}).get("associations", [])[:16]
                 if isinstance(diagnostics.get("extraction"), dict) else []
+            ),
+            "normalized_evidence": (
+                {
+                    "verification_strength": str(
+                        normalized_evidence.get("verification_strength") or ""
+                    )[:64],
+                    "independent_verification": str(
+                        normalized_evidence.get("independent_verification") or ""
+                    )[:32],
+                    "temporal_as_of": str(
+                        normalized_evidence.get("temporal_as_of") or ""
+                    )[:32],
+                    "claim_sources": [
+                        {
+                            "title": str(source.get("title") or "")[:160],
+                            "url": str(source.get("url") or "")[:500],
+                        }
+                        for source in normalized_sources[:8]
+                        if isinstance(source, dict) and source.get("url")
+                    ],
+                }
+                if isinstance(normalized_evidence, dict) else None
             ),
             "sources": [
                 {"title": str(source.get("title") or "")[:160], "url": str(source.get("url"))[:500]}

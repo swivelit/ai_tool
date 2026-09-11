@@ -576,7 +576,15 @@ def classify_contextual_followup(message: str) -> IntentDecision | None:
     for intent, pattern in _CONTEXTUAL_PATTERNS:
         if not pattern.search(text):
             continue
-        if intent != "contextual_reference" and _has_explicit_subject(text):
+        # A reference word is not enough to make a turn contextual.  If the
+        # same turn supplies a concrete subject ("this Python code" or "the
+        # first option in argparse"), route it as a standalone request.  A
+        # bare "what about Kerala?" remains an omitted-role entity switch and
+        # intentionally keeps context.
+        if _has_explicit_subject(text) and not (
+            intent == "contextual_reference"
+            and re.search(r"\bwhat\s+about\b", text, re.IGNORECASE)
+        ):
             continue
         return IntentDecision(intent=intent, route=intent, reason=f"{intent}_needs_recent_context")
     return None
@@ -595,6 +603,13 @@ def _has_explicit_subject(text: str) -> bool:
         r"\btranslate\b",
         r"\btranslation\b",
         r"\bmake\b",
+        r"\bmore\b",
+        r"\bsimply\b",
+        r"\bshort(?:er)?\b",
+        r"\bbrief(?:ly)?\b",
+        r"\bfix\b",
+        r"\bsection\b",
+        r"\badvantages?\b",
         r"\bit\b",
         r"\bthis\b",
         r"\bthat\b",

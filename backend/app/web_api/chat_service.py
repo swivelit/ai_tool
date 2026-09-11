@@ -18,7 +18,9 @@ from sqlalchemy import text as sql_text
 from sqlmodel import Session, select
 
 from ..ai.prompts import build_provider_messages, serialize_provider_messages
-from ..ai.freshness import resolve_freshness, validate_current_evidence
+from ..ai.freshness import (
+    resolve_freshness, resolve_freshness_query, validate_current_evidence,
+)
 from ..ai.agents.web_search_agent import (
     LiveSearchConfigurationError, WebSearchAgent, live_search_config,
     paid_live_search_allowed,
@@ -1862,14 +1864,29 @@ def prepare_web_turn(
                 model_message, all_context, mode=context_mode
             )
 
+        # ``all_context`` is only a bounded candidate set. Select the
+        # approved context once so rejected history cannot re-enter through
+        # task requirements, triage, freshness, or metadata consumers.
+        approved_context, approved_context_text = select_context_turns(
+            all_context,
+            contextual=continuity.use_context,
+            preferred_turn_count=continuity.preferred_turn_count,
+            current_message=model_message,
+            session=session,
+        )
+        approved_previous_topic = (
+            previous_safe_metadata.get("topic")
+            if continuity.use_context else None
+        )
+
         task_requirements = with_contextual_task_requirements(
             task_requirements,
             message=model_message,
-            context_turns=all_context,
+            context_turns=approved_context,
             use_context=continuity.use_context,
         )
 
-        fresh_thread = not all_context and continuation_row is None
+        fresh_thread = not approved_context and continuation_row is None
         if fresh_thread and not continuity.use_context:
             # Probe intent with a non-user placeholder because the continuity
             # classifier otherwise exits early when same-thread history is empty.
@@ -1918,7 +1935,7 @@ def prepare_web_turn(
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads) or repository_snapshot is not None,
-            previous_topic=previous_safe_metadata.get("topic"),
+            previous_topic=approved_previous_topic,
         )
         preliminary = _rollout_cache_policy(
             preliminary, rollout_decision
@@ -1986,7 +2003,7 @@ def prepare_web_turn(
         deterministic_scope = deterministic_scope_decision(
             model_message,
             answer_class=preliminary.answer_class,
-            previous_topic=previous_safe_metadata.get("topic"),
+            previous_topic=approved_previous_topic,
             emit_log=(
                 continuation_row is None
                 and _env_bool("WEB_DETERMINISTIC_TOOLS_ENABLED", False)
@@ -2075,7 +2092,7 @@ def prepare_web_turn(
             attachment_metadata = attachment_metadata_from_uploads(uploads)
             history_text = "\n".join(
                 value
-                for turn in all_context
+                for turn in approved_context
                 for value in (
                     str(turn.get("user") or ""),
                     str(turn.get("assistant") or ""),
@@ -2103,7 +2120,7 @@ def prepare_web_turn(
                     document_available_tokens=(
                         estimate_tokens(document_text) if document_text else 0
                     ),
-                    previous_topic=previous_safe_metadata.get("topic"),
+                    previous_topic=approved_previous_topic,
                     repository_available=repository_snapshot is not None,
                     persistent_knowledge_available_tokens=(
                         persistent_knowledge_tokens
@@ -2297,7 +2314,7 @@ def prepare_web_turn(
                 message=model_message,
                 reply_language=reply_language,
                 request_id=request_id,
-                previous_topic=previous_safe_metadata.get("topic"),
+                previous_topic=approved_previous_topic,
             )
             if deterministic is not None:
                 compliant_text = contract_compliant_candidate(
@@ -2660,12 +2677,12 @@ def prepare_web_turn(
         if enabled:
             coordinator_decision = coordinator.decide(
                 model_message, reply_language=reply_language,
-                context_turns=all_context, profile_context=profile_context,
+                context_turns=approved_context, profile_context=profile_context,
                 attachment_context=attachment_context,
                 memory_context=memory_context,
                 needs_memory=needs_memory,
                 has_attachments=bool(uploads) or repository_snapshot is not None,
-                previous_topic=previous_safe_metadata.get("topic"),
+                previous_topic=approved_previous_topic,
                 continuity=continuity,
                 session=session,
             )
@@ -2708,7 +2725,7 @@ def prepare_web_turn(
             memory_context = coordinator_decision.memory_context
         else:
             context_turns, formatted_context = select_context_turns(
-                all_context,
+                approved_context,
                 contextual=continuity.use_context,
                 preferred_turn_count=continuity.preferred_turn_count,
             )
@@ -2775,14 +2792,12 @@ def prepare_web_turn(
             channel="text", request_id=request_id, metadata=metadata,
             context_turns=context_turns,
         )
+        freshness_query = resolve_freshness_query(
+            model_message, context=approved_context_text,
+        )
         freshness = resolve_freshness(
-            model_message,
-            context="\n".join(
-                value
-                for turn in all_context[-4:]
-                for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
-                if value
-            ),
+            freshness_query,
+            context=approved_context_text,
             now=now,
         )
         base_metadata.update({
@@ -2791,6 +2806,7 @@ def prepare_web_turn(
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
             "freshness_historical_as_of": freshness.historical_as_of,
+            "freshness_query": freshness_query,
         })
         ai_request.metadata.update({
             "freshness_scope": freshness.scope,
@@ -2798,6 +2814,7 @@ def prepare_web_turn(
             "freshness_reason": freshness.reason,
             "freshness_as_of": freshness.as_of,
             "freshness_historical_as_of": freshness.historical_as_of,
+            "freshness_query": freshness_query,
         })
         route = AIProviderRouter().select_route(ai_request, now=now)
         freshness_precomputed: AIProviderResponse | None = None
@@ -3206,7 +3223,7 @@ def prepare_web_turn(
                             expansion_id="web_live_search:1",
                         )
                 freshness_search_reserved_micros = search_reserve.micros if search_reserve is not None else 0
-                search = WebSearchAgent().search(model_message)
+                search = WebSearchAgent().search(freshness_query)
                 if search is not None and isinstance(search.usage, dict):
                     observed_input = int(search.usage.get("input_tokens") or 0)
                     observed_output = int(search.usage.get("output_tokens") or 0)
@@ -3231,7 +3248,7 @@ def prepare_web_turn(
                         actual_cost_usd=float(observed_price.amount) if observed_input or observed_output else None,
                     )
                 valid, evidence, evidence_reason = validate_current_evidence(
-                    model_message, search.results, now=now,
+                    freshness_query, search.results, now=now,
                 )
             except Exception as exc:
                 valid, evidence = False, None
@@ -3285,7 +3302,7 @@ def prepare_web_turn(
             else:
                 freshness_pack = _freshness_evidence_pack(
                     user_id=user_id, request_id=request_id,
-                    query=model_message, evidence=evidence,
+                    query=freshness_query, evidence=evidence,
                 )
                 ai_request.metadata.update({
                     "freshness_evidence": evidence,

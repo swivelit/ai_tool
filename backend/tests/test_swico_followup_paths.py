@@ -6,7 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.ai.freshness import resolve_freshness, validate_current_evidence
+from app.ai.freshness import (
+    resolve_freshness, resolve_freshness_query, validate_current_evidence,
+)
 from app.ai.language import (
     WEB_REPLY_LANGUAGE_NAMES,
     WEB_REPLY_LANGUAGE_CODES,
@@ -690,6 +692,20 @@ def test_contextual_officeholder_followup_inherits_temporal_subject():
         now=datetime(2026, 9, 10, tzinfo=timezone.utc),
     )
     assert decision.requires_fresh_evidence is True
+
+
+def test_contextual_entity_switch_builds_complete_freshness_query():
+    context = (
+        "User: Who is the CM of Tamil Nadu?\n"
+        "Assistant: Example Person is the Chief Minister of Tamil Nadu."
+    )
+    query = resolve_freshness_query("What about Kerala?", context=context)
+    assert query == "Who is the Chief Minister of Kerala?"
+    decision = resolve_freshness("What about Kerala?", context=context, now=datetime(
+        2026, 9, 10, tzinfo=timezone.utc,
+    ))
+    assert decision.requires_fresh_evidence is True
+    assert decision.scope == "current"
 
 
 def test_weather_route_is_retrieval_gated_when_search_is_enabled(monkeypatch):
