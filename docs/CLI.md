@@ -10,17 +10,17 @@ Swico Free retains its existing eligibility and local-only inference rules.
 Customers install the public package without an npm account:
 
 ```bash
-npm install -g @swico/swico
+npm install -g @swiveltechnologies/swico
 swico login
 swico
 ```
 
-The previous development scope was `@swiveltechnologies/swico`; remove it
-before installing this package so the shared executable is unambiguous:
+An earlier unavailable scope was `@swico/swico`; remove it before installing
+the official package so the shared executable is unambiguous:
 
 ```bash
-npm uninstall -g @swiveltechnologies/swico
-npm install -g @swico/swico
+npm uninstall -g @swico/swico
+npm install -g @swiveltechnologies/swico
 ```
 
 From the repository root while developing:
@@ -54,6 +54,9 @@ platform credential store where available. On systems without one, choose
 `SWICO_CLI_CREDENTIAL_FILE` as an explicit protected fallback or use
 `--memory-only` deliberately; the CLI reports memory-only sessions instead of
 claiming durable login.
+The Node standard library has no dependency-free Windows Credential Manager
+API; until a reviewed OS-store adapter is approved, Windows persistent login
+requires the protected fallback rather than silently writing plaintext tokens.
 Do not put it in a repository, service environment, or child-process
 environment. Revoke sessions at `/settings/cli-sessions`.
 
@@ -102,7 +105,8 @@ configuration.
 
 ## Publisher commands
 
-After confirming that the publisher controls the `@swico` npm scope and that
+After confirming that the publisher controls the `@swiveltechnologies` npm
+scope and that
 the repository's approved license is included in the release, run explicitly.
 This checkout has no approved top-level LICENSE file, so the package allowlist
 does not reference a missing file; publication remains gated on the project's
@@ -116,11 +120,11 @@ npm test
 npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swico-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
 Use the artifact filename printed by `release:check` if the version changes.
-`npm whoami` proves identity, not write access to `@swico`; inspect package
+`npm whoami` proves identity, not write access to `@swiveltechnologies`; inspect package
 metadata after publication and then install the intended package from the
 public registry in a clean prefix. On Windows use `npm.cmd` and `swico.cmd`
 equivalents. Scope creation/joining and interactive publish authentication
@@ -130,7 +134,7 @@ For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swico-swico-0.1.0.tgz
+npm install -g ./swiveltechnologies-swico-0.1.0.tgz
 ```
 
 This is not a public-registry install and does not make the package available

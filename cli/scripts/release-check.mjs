@@ -51,7 +51,7 @@ try {
   const manifestBytes = entries.get('package/package.json')
   if (!manifestBytes) throw new Error('Package archive has no package.json')
   const manifest = JSON.parse(manifestBytes.toString('utf8'))
-  if (manifest.name !== '@swico/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
+  if (manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
   if (manifest.bin?.swico !== 'dist/cli.js') throw new Error('The swico executable does not map to dist/cli.js')
   const required = ['package/package.json', 'package/README.md', 'package/dist/cli.js', 'package/dist/config.js', 'package/dist/api.js']
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)

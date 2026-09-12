@@ -1,12 +1,15 @@
 {
-  "name": "@swico/swico",
+  "name": "@swiveltechnologies/swico",
   "version": "0.1.0",
-  "description": "Swico terminal client and bounded local coding agent",
+  "description": "Swico terminal client for authenticated Chat",
   "type": "module",
   "bin": {
     "swico": "dist/cli.js"
   },
-  "files": ["dist/**/*.js", "README.md"],
+  "files": [
+    "dist/**/*.js",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -25,5 +28,20 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swivelit/ai_tool.git",
+    "directory": "cli"
+  },
+  "homepage": "https://swico.in",
+  "bugs": {
+    "url": "https://github.com/swivelit/ai_tool/issues"
+  },
+  "keywords": [
+    "swico",
+    "ai",
+    "chat",
+    "terminal"
+  ]
 }

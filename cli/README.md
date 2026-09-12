@@ -1,4 +1,4 @@
-# @swico/swico
+# @swiveltechnologies/swico
 
 Swico CLI is a third client for existing Swico accounts. The terminal client
 uses the existing Swico account and Chat billing bucket.
@@ -11,7 +11,7 @@ rules.
 Customers do not need an npm account to download the public package:
 
 ```sh
-npm install -g @swico/swico
+npm install -g @swiveltechnologies/swico
 swico login
 swico
 ```
@@ -20,13 +20,13 @@ The production API is built in as `https://ai-tool-rrau.onrender.com`; browser
 approval remains on the server-controlled `https://swico.in` origin. Customers
 do not need Python, this repository, TypeScript, or provider keys.
 
-The previous development scope was `@swiveltechnologies/swico`. Remove only
-that old package before installing the new scope so both packages do not
-compete for `swico`; this does not remove Swico credentials:
+An earlier unavailable scope was `@swico/swico`. Remove only that old package
+before installing the official scope so both packages do not compete for
+`swico`; this does not remove Swico credentials:
 
 ```sh
-npm uninstall -g @swiveltechnologies/swico
-npm install -g @swico/swico
+npm uninstall -g @swico/swico
+npm install -g @swiveltechnologies/swico
 ```
 
 On Windows use `npm.cmd` and `swico.cmd` where command shims require them.
@@ -58,6 +58,9 @@ Production endpoints must use HTTPS. Tokens use macOS Keychain or Linux Secret
 Service when available. Windows and keychain-less systems require the explicit
 protected-file fallback `SWICO_CLI_CREDENTIAL_FILE`; `--memory-only` is an
 explicit non-persistent alternative and reports that it ends with the process.
+The Node standard library has no dependency-free Windows Credential Manager
+API, so do not claim default durable Windows login until a reviewed OS-store
+adapter is added; the protected fallback is the current secure Windows path.
 
 `swico login` opens `/cli/authorize`, displays a short-lived human code, and
 polls at the server-advertised interval. Browser approval is explicit.
