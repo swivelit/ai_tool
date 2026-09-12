@@ -54,7 +54,10 @@ class AgentAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     protocol_version: Literal[1]
     action_id: str = Field(min_length=8, max_length=64)
-    action_type: Literal["list_files", "search_text", "read_file", "apply_patch", "run_command"]
+    action_type: Literal[
+        "list_files", "search_text", "read_file", "read_file_range", "apply_patch",
+        "create_file", "delete_file", "move_file", "run_command", "git_status", "git_diff",
+    ]
     payload_hash: str | None = Field(default=None, min_length=64, max_length=64)
     payload: dict[str, object] | None = None
 

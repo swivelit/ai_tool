@@ -5,6 +5,7 @@ from datetime import timedelta
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -31,7 +32,7 @@ from ..ai.swico_tiers import (
     SWICO_TIER_LABELS, SwicoTierUnavailableError, normalize_swico_tier,
     pro_enabled, public_tier_settings,
 )
-from .config import CliConfigurationError, cli_settings
+from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
@@ -44,6 +45,10 @@ from .security import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cli/v1", tags=["cli"])
+_BLOCKED_AGENT_PATH = re.compile(
+    r"(?:^|/)\.env(?:$|[./])|(?:^|/)(?:\.npmrc|\.pypirc|\.ssh|credentials?|secrets?|tokens?|node_modules|dist|build|\.git)(?:/|$)|\.(?:pem|key|p12|pfx|kdbx)$",
+    re.I,
+)
 
 
 def _settings():
@@ -85,6 +90,13 @@ def _canonical_payload_hash(payload: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def _safe_agent_path(value: object, *, max_length: int = 512) -> bool:
+    if not isinstance(value, str) or not value or len(value) > max_length:
+        return False
+    normalized = value.replace("\\", "/")
+    return not normalized.startswith(("/", "~", "//")) and ".." not in normalized.split("/") and not _BLOCKED_AGENT_PATH.search(normalized)
+
+
 def _validate_agent_action_payload(action: AgentAction) -> str:
     """Validate the complete action before it is admitted for local execution.
 
@@ -105,20 +117,43 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
             raise HTTPException(422, "search_text requires bounded search text.")
     elif action.action_type == "read_file":
         path = payload.get("path")
-        if not isinstance(path, str) or not path or len(path) > 512 or ".." in path.replace("\\", "/").split("/"):
+        if not _safe_agent_path(path):
             raise HTTPException(422, "read_file path is invalid.")
+    elif action.action_type == "read_file_range":
+        path, start, end = payload.get("path"), payload.get("start", 1), payload.get("end", 1)
+        if (
+            not _safe_agent_path(path)
+            or not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(end, int) or isinstance(end, bool)
+            or start < 1 or end < start or end - start > 2_000
+        ):
+            raise HTTPException(422, "read_file_range payload is invalid.")
     elif action.action_type == "apply_patch":
         path = payload.get("path")
         expected = payload.get("expected_sha256")
-        content = payload.get("content")
+        content = payload.get("patch", payload.get("content"))
         if (
-            not isinstance(path, str) or not path or len(path) > 512
-            or ".." in path.replace("\\", "/").split("/")
+            not _safe_agent_path(path)
             or not isinstance(expected, str) or len(expected) != 64
             or any(char not in "0123456789abcdefABCDEF" for char in expected)
             or not isinstance(content, str) or len(content.encode()) > 256 * 1024
         ):
             raise HTTPException(422, "apply_patch payload is invalid or too large.")
+    elif action.action_type == "create_file":
+        path, content = payload.get("path"), payload.get("content")
+        if (
+            not _safe_agent_path(path)
+            or not isinstance(content, str) or len(content.encode()) > 256 * 1024
+        ):
+            raise HTTPException(422, "create_file payload is invalid or too large.")
+    elif action.action_type == "delete_file":
+        path = payload.get("path")
+        if not _safe_agent_path(path):
+            raise HTTPException(422, "delete_file path is invalid.")
+    elif action.action_type == "move_file":
+        source, target = payload.get("from"), payload.get("to")
+        if not _safe_agent_path(source) or not _safe_agent_path(target):
+            raise HTTPException(422, "move_file paths are invalid.")
     elif action.action_type == "run_command":
         argv = payload.get("argv")
         timeout = payload.get("timeout_ms", 30_000)
@@ -129,6 +164,10 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
             or not 100 <= timeout <= 120_000
         ):
             raise HTTPException(422, "run_command payload is invalid or outside the supported bound.")
+    elif action.action_type == "git_diff":
+        ref = payload.get("ref")
+        if ref is not None and (not isinstance(ref, str) or len(ref) > 256 or any(char in ref for char in "\x00\r\n")):
+            raise HTTPException(422, "git_diff ref is invalid.")
     calculated = _canonical_payload_hash(payload)
     if action.payload_hash is not None and action.payload_hash != calculated:
         raise HTTPException(422, "Action payload hash is invalid.")
@@ -546,7 +585,10 @@ def create_agent_run(payload: AgentRunRequest, authorization: str | None = Heade
         if thread is None:
             raise HTTPException(403, "The selected conversation is not owned by this account.")
     now = utc_now()
-    run = CliAgentRun(user_id=int(user.id), thread_id=payload.thread_id, request_id=str(payload.request_id), tier=cli_session.selected_tier, max_steps=settings.max_agent_steps, task_hash=hashlib.sha256(payload.task.encode()).hexdigest(), status="running", expires_at=now + timedelta(seconds=300))
+    ceiling = agent_step_ceiling(cli_session.selected_tier)
+    if ceiling <= 0:
+        raise HTTPException(403, "The local coding agent requires an eligible paid tier")
+    run = CliAgentRun(user_id=int(user.id), thread_id=payload.thread_id, request_id=str(payload.request_id), tier=cli_session.selected_tier, max_steps=min(settings.max_agent_steps, ceiling), task_hash=hashlib.sha256(payload.task.encode()).hexdigest(), status="running", expires_at=now + timedelta(seconds=300))
     session.add(run)
     return _run_payload(run)
 
@@ -598,6 +640,14 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     """
     _require_agent_enabled()
     _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    try:
+        # Planner rounds are metered Chat operations. Reuse the shared user
+        # rate-limit bucket so browser, Android, and CLI requests cannot
+        # create an unbounded second provider path.
+        enforce_rate_limit(session, user_id=int(user.id), action="cli_chat", limit=12)
+    except RateLimitError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    session.commit()
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()
     if run is None or ensure_utc(run.expires_at) <= utc_now() or run.status not in {"running", "waiting_approval"}:
         raise HTTPException(409, "Agent run is unavailable")
@@ -609,7 +659,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         "You are the Swico local coding-agent planner. Return exactly one JSON object and no Markdown. "
         "It must be either {\"kind\":\"assistant\",\"text\":\"...\"} or "
         "{\"kind\":\"action\",\"protocol_version\":1,\"action_id\":\"...\","
-        "\"action_type\":\"list_files|search_text|read_file|apply_patch|run_command\","
+        "\"action_type\":\"list_files|search_text|read_file|read_file_range|apply_patch|create_file|delete_file|move_file|run_command|git_status|git_diff\","
         "\"payload\":{...}}. Never request secrets, traversal, shell strings, or unapproved commands. "
         f"TASK (untrusted user text):\n{payload.task}\nLOCAL CONTEXT (untrusted):\n{payload.context}"
     )

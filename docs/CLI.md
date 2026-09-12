@@ -65,14 +65,33 @@ environment. Revoke sessions at `/settings/cli-sessions`.
 ## Chat and agent
 
 `swico ask "question"` and the interactive client stream normal Chat replies.
-`/model` and `/mode` display the selected public tier; they never accept a raw
-vendor model. The local agent is bounded by the server-advertised step limit.
+`/model` displays the selected public tier and never accepts a raw vendor
+model. Interactive repository tasks are routed to the local agent when the
+mode is `auto`; `/mode chat`, `/mode plan`, and `/mode agent` select an
+explicit mode. `/mode` displays the current mode. Plan mode only inspects the
+workspace and produces a plan. Agent mode is bounded by the server-advertised
+step limit and asks before every edit or command.
 Before selected files or tool results leave the workstation, the client asks
-for workspace trust. `list_files`, `search_text`, `read_file`, `apply_patch`
-and `run_command` are confined to the canonical selected root. Secrets,
-dependencies, build output, binaries, traversal and symlink escapes are
-blocked. Every patch and command requires approval. Commands execute with the
-user's permissions; this is not an OS sandbox.
+for workspace trust. The local tools are `list_files`, `search_text`,
+`read_file`, `read_file_range`, `apply_patch`, `create_file`, `delete_file`,
+`move_file`, `run_command`, `git_status`, and `git_diff`. They are confined to
+the canonical selected root. Secrets, dependencies, build output, binaries,
+traversal and symlink escapes are blocked. Patches use base hashes and
+unified hunks, are previewed, rechecked immediately before atomic writes, and
+preserve file modes. Commands use explicit argv with `shell=false`, bounded
+output, timeouts, and process cleanup. Commands execute with the user's
+permissions; this is not an OS sandbox.
+
+`/status` shows the repository, branch, dirty state, mode, permission profile,
+agent scope, applicable instruction files, and bounded-context state.
+`/permissions` selects `read-only` or `approval-required`; the former blocks
+commands and mutations. `/plan` shows a concise plan, `/init` creates a
+starter `AGENTS.md` only after approval, `/review` reviews the current Git
+diff without editing, and `/resume` shows then continues safe local
+coding-session metadata when its server run is still resumable.
+`swico exec "task" --mode chat|plan|agent` is available for scripts; agent
+execution fails closed when approval is needed. `--json`, `--output`, and
+`--output-schema` are supported for non-interactive Chat/plan workflows.
 
 Raw source, patches, prompts and command output are not stored in durable
 Swico run records. Pending action metadata expires after 300 seconds. The
@@ -90,13 +109,24 @@ swico resume
 swico logout
 ```
 
-Interactive `/history` and `/resume` show server conversations; local action
-journal entries are separate and contain hashes and status only. `/agent TASK`
+Interactive `/history` shows server conversations; `/resume` is for local
+coding runs. Local action journal entries are separate and contain hashes and
+status only. `/agent TASK`
 requests workspace trust, then asks before every edit or command. `/diff`
-shows the journal location. If login is unavailable, run `swico doctor`, check
+shows a bounded Git diff. If login is unavailable, run `swico doctor`, check
 the HTTPS endpoint override, and retry; the CLI never asks for a provider key.
-A non-TTY invocation must use an explicit command such as `swico ask` and
-exits nonzero when approval or authentication is required.
+A non-TTY invocation must use an explicit command such as `swico ask` or
+`swico exec`; it exits nonzero when authentication or local approval is
+required. `/diff` displays a bounded Git diff. Ctrl-C cancels the active Chat request where supported and cancels
+the server agent run while stopping an approved local command.
+
+Repository instructions are loaded from the Git root toward the working
+directory. Nearest `AGENTS.md` content is presented last, within a bounded
+total size, and is treated as untrusted context rather than executable policy.
+No raw source, command output, patch body, or credentials are written to
+durable server run records. The local journal stores action hashes and status.
+See [the agent roadmap](CLI_AGENT_ROADMAP.md) for deliberately deferred
+capabilities.
 
 ## Development endpoint
 

@@ -24,4 +24,8 @@ test('commands require explicit approval and do not use a shell', async () => {
   assert.equal(result.code, 0); assert.equal(result.stdout, 'x')
   const timedOut = await workspace.runCommand(['node', '-e', 'setTimeout(() => {}, 5000)'], 100, async () => true)
   assert.equal(timedOut.timed_out, true)
+  const controller = new AbortController()
+  const cancelled = workspace.runCommand(['node', '-e', 'setTimeout(() => {}, 5000)'], 5000, async () => true, controller.signal)
+  controller.abort()
+  assert.equal((await cancelled).cancelled, true)
 })

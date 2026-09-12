@@ -14,9 +14,17 @@ export type CliTokens = {
 export type AgentAction = {
   protocol_version: 1
   action_id: string
-  action_type: 'list_files' | 'search_text' | 'read_file' | 'apply_patch' | 'run_command'
+  action_type: 'list_files' | 'search_text' | 'read_file' | 'read_file_range' | 'apply_patch' | 'create_file' | 'delete_file' | 'move_file' | 'run_command' | 'git_status' | 'git_diff'
   payload: Record<string, unknown>
   payload_hash?: string
+}
+
+export const AGENT_ACTION_TYPES = [
+  'list_files', 'search_text', 'read_file', 'read_file_range', 'apply_patch',
+  'create_file', 'delete_file', 'move_file', 'run_command', 'git_status', 'git_diff',
+] as const
+export function isAgentActionType(value: unknown): value is AgentAction['action_type'] {
+  return typeof value === 'string' && (AGENT_ACTION_TYPES as readonly string[]).includes(value)
 }
 
 export type AgentResult = { status: 'succeeded' | 'failed' | 'unknown'; result: unknown }

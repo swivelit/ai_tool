@@ -56,9 +56,10 @@ export async function refresh(refreshToken: string, env = process.env): Promise<
   return json<CliTokens>('/token', { method: 'POST', body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }) }, undefined, env)
 }
 
-export async function streamChat(tokens: CliTokens, message: string, threadId?: string, onEvent?: (event: SSEEvent) => void, env = process.env): Promise<{ threadId: string | null; text: string }> {
+export async function streamChat(tokens: CliTokens, message: string, threadId?: string, onEvent?: (event: SSEEvent) => void, env = process.env, options: { signal?: AbortSignal; onRequestId?: (requestId: string) => void } = {}): Promise<{ threadId: string | null; text: string }> {
   const requestId = randomUUID()
-  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', headers: { Authorization: `Bearer ${tokens.access_token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text' }) })
+  options.onRequestId?.(requestId)
+  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${tokens.access_token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text' }) })
   if (!response.ok || !response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
   const parser = new SSEParser(); const decoder = new TextDecoder(); let text = ''; let resolvedThread: string | null = null; let done = false
   for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
@@ -75,11 +76,18 @@ export async function streamChat(tokens: CliTokens, message: string, threadId?: 
   return { threadId: resolvedThread, text }
 }
 
-export async function createAgentRun(tokens: CliTokens, task: string, threadId?: string, env = process.env) {
-  return json<{ run_id: string; max_steps: number }>('/agent/runs', { method: 'POST', body: JSON.stringify({ request_id: randomUUID(), task, thread_id: threadId }) }, tokens.access_token, env)
+export async function cancelChat(tokens: CliTokens, requestId: string, env = process.env): Promise<void> {
+  await json(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' }, tokens.access_token, env)
 }
-export async function planAgentStep(tokens: CliTokens, runId: string, task: string, context: string, env = process.env) {
-  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }) }, tokens.access_token, env)
+
+export async function createAgentRun(tokens: CliTokens, task: string, threadId?: string, env = process.env) {
+  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>('/agent/runs', { method: 'POST', body: JSON.stringify({ request_id: randomUUID(), task, thread_id: threadId }) }, tokens.access_token, env)
+}
+export async function getAgentRun(tokens: CliTokens, runId: string, env = process.env) {
+  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>(`/agent/runs/${encodeURIComponent(runId)}`, {}, tokens.access_token, env)
+}
+export async function planAgentStep(tokens: CliTokens, runId: string, task: string, context: string, env = process.env, signal?: AbortSignal) {
+  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, tokens.access_token, env)
 }
 export async function completeAgentRun(tokens: CliTokens, runId: string, env = process.env) {
   return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/complete`, { method: 'POST' }, tokens.access_token, env)

@@ -39,6 +39,13 @@ class CliSettings:
     action_retention_seconds: int = 300
 
 
+TIER_AGENT_STEP_CEILINGS = {"lite": 12, "standard": 20, "pro": 32, "free": 0}
+
+
+def agent_step_ceiling(tier: str) -> int:
+    return TIER_AGENT_STEP_CEILINGS.get(tier, 0)
+
+
 def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     values = environ if environ is not None else os.environ
     enabled = _bool("SWICO_CLI_ENABLED", False, values)

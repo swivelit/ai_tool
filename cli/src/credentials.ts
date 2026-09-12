@@ -190,3 +190,11 @@ export function credentialStorageDescription(env = process.env): string {
   if (process.platform === 'linux') return 'Linux Secret Service (native keyring)'
   return 'no automatic OS store; explicit protected fallback required'
 }
+
+export async function credentialStorageStatus(env = process.env): Promise<string> {
+  if (credentialStorageMode(env) === 'memory') return 'memory-only (this process)'
+  if (env.SWICO_CLI_CREDENTIAL_FILE) return 'explicit protected file'
+  const store = await nativeStore()
+  if (store) return `${store.storage} (native secure store available)`
+  return 'unavailable (native secure store could not be opened)'
+}

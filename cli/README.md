@@ -66,6 +66,15 @@ mode. These choices are reported accurately and are never made implicitly.
 `swico login` opens `/cli/authorize`, displays a short-lived human code, and
 polls at the server-advertised interval. Browser approval is explicit.
 
+Inside an interactive repository, `swico` automatically routes coding-shaped
+requests to the bounded local agent after workspace trust and, when needed,
+an explicit browser approval for the additional `agent` scope. Use `/mode`
+to select `chat`, `plan`, or `agent`; `/status`, `/plan`, `/permissions`, and
+`/review` expose the local workflow state. Commands and edits always require
+approval, and the local runner uses the user's permissions rather than an OS
+sandbox. Production keeps `SWICO_CLI_AGENT_ENABLED=false` until its separate
+rollout gates pass.
+
 The bounded agent asks for workspace trust before sending selected content to
 Swico, requires approval for every edit/command, confines files to the chosen
 root, rejects secrets/symlinks/binaries, and runs commands with user

@@ -53,10 +53,17 @@ try {
   const manifest = JSON.parse(manifestBytes.toString('utf8'))
   if (manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
   if (manifest.bin?.swico !== 'dist/cli.js') throw new Error('The swico executable does not map to dist/cli.js')
-  const required = ['package/package.json', 'package/README.md', 'package/dist/cli.js', 'package/dist/config.js', 'package/dist/api.js']
+  const required = [
+    'package/package.json', 'package/README.md',
+    'package/dist/cli.js', 'package/dist/api.js', 'package/dist/config.js',
+    'package/dist/agent.js', 'package/dist/contracts.js', 'package/dist/context.js',
+    'package/dist/credentials.js', 'package/dist/journal.js', 'package/dist/local_sessions.js',
+    'package/dist/permissions.js', 'package/dist/plan.js', 'package/dist/repository.js',
+    'package/dist/session.js', 'package/dist/sse.js', 'package/dist/workspace.js',
+  ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
   for (const entry of entries.keys()) {
-    if (entry.startsWith('package/src/') || entry.startsWith('package/test/') || entry.startsWith('package/node_modules/') || entry.startsWith('package/bin/')) {
+    if (entry.startsWith('package/src/') || entry.startsWith('package/test/') || entry.startsWith('package/node_modules/') || entry.startsWith('package/bin/') || entry.endsWith('.map') || /(^|\/)(?:\.env[^/]*|\.npmrc|\.pypirc|\.swico|credentials\.json|action-journal)/i.test(entry)) {
       throw new Error(`Unwanted file in release archive: ${entry}`)
     }
   }

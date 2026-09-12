@@ -3,6 +3,7 @@ import type { AgentAction, AgentResult } from './contracts.js'
 import { json } from './api.js'
 import { Workspace } from './workspace.js'
 import { ActionJournal } from './journal.js'
+import type { PermissionProfile } from './permissions.js'
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -14,11 +15,14 @@ function canonical(value: unknown): string {
 export function actionHash(action: AgentAction): string { return createHash('sha256').update(canonical(action.payload)).digest('hex') }
 export class LocalAgent {
   private readonly journal: ActionJournal
-  constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env) {
+  constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal) {
     this.journal = new ActionJournal(env.SWICO_CLI_JOURNAL_FILE ?? `${workspace.root}/.swico/action-journal.jsonl`)
   }
   async execute(runId: string, action: AgentAction, approve: (description: string) => Promise<boolean>): Promise<AgentResult> {
     const payloadHash = action.payload_hash ?? actionHash(action)
+    const previous = await this.journal.latest(action.action_id, payloadHash)
+    if (previous === 'succeeded' || previous === 'failed' || previous === 'unknown') return { status: previous, result: `This action was already recorded as ${previous}; it was not run again.` }
+    if (this.profile === 'read-only' && ['apply_patch', 'create_file', 'delete_file', 'move_file', 'run_command'].includes(action.action_type)) return { status: 'failed', result: 'The read-only permission profile blocks mutations and commands.' }
     await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'prepared' })
     const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: 1, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash }) }, this.accessToken, this.env)
     if (accepted.action_id !== action.action_id) throw new Error('Server returned a different action identity.')
@@ -30,12 +34,19 @@ export class LocalAgent {
     await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'executing' })
     try {
       if (action.action_type === 'list_files') result = await this.workspace.listFiles(Number(action.payload.limit ?? 200))
-      else if (action.action_type === 'search_text') result = await this.workspace.searchText(String(action.payload.term ?? ''))
+      else if (action.action_type === 'search_text') result = await this.workspace.searchText(String(action.payload.term ?? ''), Number(action.payload.limit ?? 50), { regex: action.payload.regex === true, glob: typeof action.payload.glob === 'string' ? action.payload.glob : undefined, contextLines: Number(action.payload.context_lines ?? 0) })
       else if (action.action_type === 'read_file') result = await this.workspace.readFile(String(action.payload.path ?? ''))
-      else if (action.action_type === 'apply_patch') result = await this.workspace.applyPatch(String(action.payload.path ?? ''), String(action.payload.expected_sha256 ?? ''), String(action.payload.content ?? ''), description => approve(description))
+      else if (action.action_type === 'read_file_range') result = await this.workspace.readFileRange(String(action.payload.path ?? ''), Number(action.payload.start ?? 1), Number(action.payload.end ?? 1))
+      else if (action.action_type === 'git_status') result = await this.workspace.gitStatus()
+      else if (action.action_type === 'git_diff') result = await this.workspace.gitDiff(typeof action.payload.ref === 'string' ? action.payload.ref : undefined)
+      else if (action.action_type === 'apply_patch') result = await this.workspace.applyPatch(String(action.payload.path ?? ''), String(action.payload.expected_sha256 ?? ''), String(action.payload.patch ?? action.payload.content ?? ''), description => approve(description))
+      else if (action.action_type === 'create_file') result = await this.workspace.createFile(String(action.payload.path ?? ''), String(action.payload.content ?? ''), description => approve(description))
+      else if (action.action_type === 'delete_file') result = await this.workspace.deleteFile(String(action.payload.path ?? ''), description => approve(description))
+      else if (action.action_type === 'move_file') result = await this.workspace.moveFile(String(action.payload.from ?? ''), String(action.payload.to ?? ''), description => approve(description))
       else {
-        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), () => approve(`Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`))
+        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), () => approve(`Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal)
         if (result && typeof result === 'object' && 'timed_out' in result && result.timed_out === true) throw new Error('The approved command exceeded its time limit.')
+        if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) throw new Error('The approved command was cancelled.')
       }
       const resultHash = createHash('sha256').update(JSON.stringify(result)).digest('hex')
       try {
