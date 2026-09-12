@@ -62,6 +62,9 @@ def test_device_flow_is_proof_bound_one_time_and_refresh_rotation(client: TestCl
     assert exchanged.status_code == 200
     tokens = exchanged.json()
     assert client.get("/api/cli/v1/me", headers={"Authorization": f"Bearer {tokens['access_token']}"}).status_code == 200
+    usage = client.get("/api/cli/v1/usage", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert usage.status_code == 200, usage.text
+    assert usage.json()["wallet"]["credit_bucket"] == "chat"
     website_sessions = client.get("/api/web/cli/sessions", headers=auth_headers(user.firebase_uid, user.email))
     assert website_sessions.status_code == 200
     assert website_sessions.json()["items"][0]["device_description"] == "Test terminal"
@@ -191,3 +194,47 @@ def test_cli_chat_stream_uses_shared_preparation_and_terminal_events(client: Tes
     assert "event: delta" in result.text and "Hello from shared Chat" in result.text
     assert "event: done" in result.text
     assert captured["forced_swico_tier"] == "lite"
+
+
+def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    user = create_test_user("cli-planner-user", "planner@example.com")
+    raw_access = "p" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("z" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat","agent"]', device_description="planner test",
+        ))
+        session.commit()
+    task = "inspect a project"
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": task})
+    assert run.status_code == 201, run.text
+    content = json.dumps({
+        "kind": "action", "protocol_version": 1, "action_id": "planner-action",
+        "action_type": "list_files", "payload": {"limit": 3},
+    })
+    response = AIProviderResponse(
+        text=content, provider="openai", model="test-model", route="test", reason="test",
+        language="en", intent="coding", input_tokens=11, output_tokens=7,
+        raw={"completion_status": "complete"},
+    )
+    message = CompletedWebMessage(
+        id="planner-message", content=content, status="complete", swico_tier="lite",
+        usage_source="actual", charge_micros=0, provider="openai", model="test-model",
+        request_id="planner-request", replaces_message_id=None, revision_number=1,
+    )
+    completed = CompletedWebTurn(None, message, {"available_micros": 0}, response)
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", lambda **kwargs: SimpleNamespace(request_id="planner-request"))
+    monkeypatch.setattr("app.cli_api.router.execute_web_turn", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
+    planned = client.post(
+        f"/api/cli/v1/agent/runs/{run.json()['run_id']}/plan",
+        headers={"Authorization": f"Bearer {raw_access}"},
+        json={"task": task, "context": "src/main.py"},
+    )
+    assert planned.status_code == 200, planned.text
+    assert planned.json()["action_type"] == "list_files"
+    assert planned.json()["usage"] == 18

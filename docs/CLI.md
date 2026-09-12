@@ -7,6 +7,22 @@ Swico Free retains its existing eligibility and local-only inference rules.
 
 ## Rollout and installation
 
+Customers install the public package without an npm account:
+
+```bash
+npm install -g @swico/swico
+swico login
+swico
+```
+
+The previous development scope was `@swiveltechnologies/swico`; remove it
+before installing this package so the shared executable is unambiguous:
+
+```bash
+npm uninstall -g @swiveltechnologies/swico
+npm install -g @swico/swico
+```
+
 From the repository root while developing:
 
 ```bash
@@ -16,28 +32,28 @@ npm --prefix cli link
 swico --help
 ```
 
-The package can be packed without publishing:
+The package can be built, packed, checked, and installed into a clean local
+prefix without publishing:
 
 ```bash
 cd cli
-npm pack --dry-run
-npm pack
-npm install --global ./swiveltechnologies-swico-0.1.0.tgz
+npm run release:check
 ```
 
-Customers do not need Python, this repository, or provider keys. A future
-public release requires verification that `@swiveltechnologies` is owned:
-`npm login`, `npm publish --access public` from a reviewed package, and then
-the normal release announcement. This repository does not publish it.
+Customers do not need Python, this repository, TypeScript, or provider keys.
+The production API is built into the client; browser approval remains on the
+server-controlled `https://swico.in` origin.
 
 ## Login and sessions
 
 `swico login` starts a short-lived proof-bound device request, prints a fixed
 HTTPS Swico verification URL and human code, and opens the browser when
 possible. The website requires an authenticated, verified account and an
-explicit approval. The code is not a bearer credential. Tokens are kept in
-memory by default; an explicit `SWICO_CLI_CREDENTIAL_FILE` is a protected-file
-fallback for environments without a keychain and must be chosen by the user.
+explicit approval. The code is not a bearer credential. Tokens use the
+platform credential store where available. On systems without one, choose
+`SWICO_CLI_CREDENTIAL_FILE` as an explicit protected fallback or use
+`--memory-only` deliberately; the CLI reports memory-only sessions instead of
+claiming durable login.
 Do not put it in a repository, service environment, or child-process
 environment. Revoke sessions at `/settings/cli-sessions`.
 
@@ -79,7 +95,46 @@ exits nonzero when approval or authentication is required.
 
 ## Development endpoint
 
-Set `SWICO_API_BASE_URL` to an explicit HTTPS API origin. For localhost-only
+Set `SWICO_API_BASE_URL` to an explicit HTTPS development API origin. For localhost-only
 development, set `SWICO_CLI_ALLOW_INSECURE_LOCAL=1`; never use that override in
 production. `SWICO_CLI_CREDENTIAL_FILE` is intentionally not set by project
 configuration.
+
+## Publisher commands
+
+After confirming that the publisher controls the `@swico` npm scope and that
+the repository's approved license is included in the release, run explicitly.
+This checkout has no approved top-level LICENSE file, so the package allowlist
+does not reference a missing file; publication remains gated on the project's
+licensing decision rather than inventing terms here.
+
+```bash
+cd cli
+npm ci
+npm run build
+npm test
+npm run release:check -- --keep-artifact
+npm login --registry=https://registry.npmjs.org/
+npm whoami --registry=https://registry.npmjs.org/
+npm publish ./swico-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+```
+
+Use the artifact filename printed by `release:check` if the version changes.
+`npm whoami` proves identity, not write access to `@swico`; inspect package
+metadata after publication and then install the intended package from the
+public registry in a clean prefix. On Windows use `npm.cmd` and `swico.cmd`
+equivalents. Scope creation/joining and interactive publish authentication
+belong to the publisher, not customers or Render.
+
+For a reviewed local tarball, including transfer to a tester without the
+repository, install the exact filename emitted by `npm pack --json`:
+
+```bash
+npm install -g ./swico-swico-0.1.0.tgz
+```
+
+This is not a public-registry install and does not make the package available
+to customers.
+
+The initial Chat release keeps `SWICO_CLI_AGENT_ENABLED=false`; agent release
+gates are separate from package installation.

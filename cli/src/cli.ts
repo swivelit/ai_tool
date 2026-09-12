@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
 import { createInterface, type Interface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { clearTokens, loadTokens, saveTokens } from './credentials.js'
-import { cancelAgentRun, completeAgentRun, createAgentRun, createDevice, exchangeDevice, json, planAgentStep, refresh, streamChat } from './api.js'
+import { clearTokens, credentialStorageDescription, loadTokens, saveTokens, CredentialStorageUnavailableError } from './credentials.js'
+import { cancelAgentRun, completeAgentRun, createAgentRun, createDevice, exchangeDevice, json, planAgentStep, probeEndpoint, streamChat } from './api.js'
 import type { AgentAction, CliTokens } from './contracts.js'
 import { LocalAgent } from './agent.js'
 import { Workspace } from './workspace.js'
 import type { SSEEvent } from './sse.js'
+import { ensureTokens } from './session.js'
+import { credentialKey } from './config.js'
 
 const exec = promisify(execFile)
-const VERSION = '0.1.0'
+const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
+const VERSION = packageJson.version ?? 'unknown'
 function showStreamEvent(event: SSEEvent) {
   if (event.event === 'status') process.stdout.write(`\n[${JSON.stringify(event.data)}] `)
   if (event.event === 'sources' && event.data && typeof event.data === 'object' && 'sources' in event.data) {
@@ -29,15 +33,22 @@ async function openBrowser(url: string) {
   try { if (process.platform === 'darwin') await exec('open', [url]); else if (process.platform === 'win32') await exec('cmd', ['/c', 'start', '', url]); else await exec('xdg-open', [url]) } catch { /* manual URL is always displayed */ }
 }
 function verifier() { return randomBytes(48).toString('base64url') }
-async function login(env = process.env, scopes = ['chat']): Promise<CliTokens> {
+async function login(env = process.env, scopes = ['chat'], options: { memoryOnly?: boolean } = {}): Promise<CliTokens> {
   const value = verifier(); const device = await createDevice(value, scopes, env)
   console.log(`\nOpen ${device.verification_uri} and enter code ${device.user_code}.`)
   console.log(`Verification URL: ${device.verification_uri_complete}`); await openBrowser(device.verification_uri_complete)
   const deadline = Date.now() + device.expires_in * 1000; let wait = Math.max(5, device.interval) * 1000
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, wait))
-    try { const tokens = await exchangeDevice(device.device_code, value, env); await saveTokens(tokens, env); console.log(`Signed in as ${tokens.account.email ?? tokens.account.name} (${tokens.tier_label}).`); return tokens }
+    try {
+      const tokens = await exchangeDevice(device.device_code, value, env)
+      const storage = await saveTokens(tokens, env, options)
+      console.log(`Signed in as ${tokens.account.email ?? tokens.account.name} (${tokens.tier_label}).`)
+      console.log(storage === 'memory' ? 'Session storage: memory only; it will not survive process exit.' : `Session storage: ${storage}.`)
+      return tokens
+    }
     catch (error) {
+      if (error instanceof CredentialStorageUnavailableError) throw error
       const body = error && typeof error === 'object' && 'body' in error ? (error as { body?: unknown }).body : null
       const code = typeof body === 'object' && body && 'detail' in body && typeof (body as { detail: unknown }).detail === 'object' ? String(((body as { detail: { error?: unknown } }).detail).error ?? '') : ''
       if (code === 'authorization_pending') continue
@@ -48,11 +59,6 @@ async function login(env = process.env, scopes = ['chat']): Promise<CliTokens> {
     }
   }
   throw new Error('The sign-in request expired. Run swico login again.')
-}
-async function ensureTokens(env = process.env): Promise<CliTokens> {
-  const stored = await loadTokens(env); if (!stored) throw new Error('Sign in first with `swico login`.')
-  try { return await json<CliTokens>('/me', {}, stored.access_token, env).then(() => stored) }
-  catch (error) { if ((error as { status?: number }).status !== 401) throw error; const updated = await refresh(stored.refresh_token, env); await saveTokens(updated, env); return updated }
 }
 async function interactive(tokens: CliTokens, env = process.env) {
   const line = createInterface({ input, output }); let thread: string | undefined
@@ -116,9 +122,19 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (argv.includes('--help') || argv.includes('-h')) { console.log(help); return 0 }
   if (argv.includes('--version') || argv.includes('-v')) { console.log(VERSION); return 0 }
   const command = argv[0]
-  if (command === 'login') { await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat']); return 0 }
+  if (command === 'login') { await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat'], { memoryOnly: argv.includes('--memory-only') }); return 0 }
   if (command === 'logout') { const tokens = await loadTokens(env); if (tokens) await json('/logout', { method: 'POST' }, tokens.access_token, env).catch(() => undefined); await clearTokens(env); console.log('Signed out.'); return 0 }
-  if (command === 'doctor') { console.log(JSON.stringify({ endpoint: env.SWICO_API_BASE_URL ?? env.SWICO_API_URL ?? 'default', signed_in: Boolean(await loadTokens(env)) }, null, 2)); return 0 }
+  if (command === 'doctor') {
+    const endpoint = (() => { try { return credentialKey(env) } catch (error) { return error instanceof Error ? `invalid: ${error.message}` : 'invalid' } })()
+    const tokens = await loadTokens(env)
+    const api = env.SWICO_CLI_DOCTOR_OFFLINE === '1' ? { status: 0, state: 'not_checked', detail: 'offline artifact check' } : await probeEndpoint(env)
+    let auth: 'not_configured' | 'valid' | 'expired_or_revoked' | 'network_error' = tokens ? 'expired_or_revoked' : 'not_configured'
+    if (tokens) {
+      try { await json('/me', {}, tokens.access_token, env); auth = 'valid' }
+      catch (error) { auth = (error as { status?: number }).status === 401 ? 'expired_or_revoked' : 'network_error' }
+    }
+    console.log(JSON.stringify({ endpoint, api, auth, credential_storage: credentialStorageDescription(env) }, null, 2)); return 0
+  }
   const tokens = await ensureTokens(env)
   if (command === 'whoami') { console.log(JSON.stringify(await json('/me', {}, tokens.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { console.log(JSON.stringify(await json('/threads', {}, tokens.access_token, env), null, 2)); return 0 }

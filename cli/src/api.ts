@@ -1,10 +1,29 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { cliApi } from './config.js'
+import { apiBaseUrl, cliApi } from './config.js'
 import { SSEParser, type SSEEvent } from './sse.js'
 import type { CliTokens, PublicTier } from './contracts.js'
 
 export class CliApiError extends Error {
   constructor(public status: number, message: string, public body?: unknown) { super(message) }
+}
+
+export async function probeEndpoint(env = process.env): Promise<{ status: number; state: 'enabled' | 'disabled' | 'unavailable' | 'unexpected'; detail?: string }> {
+  try {
+    const response = await fetch(`${apiBaseUrl(env)}/api/cli/v1/device/__doctor__`, { headers: { Accept: 'application/json' }, redirect: 'error' })
+    const text = (await response.text()).slice(0, 500)
+    if (text.trimStart().startsWith('<')) return { status: response.status, state: 'unexpected', detail: 'The endpoint returned HTML instead of the Swico API.' }
+    let detail = ''
+    try {
+      const body = JSON.parse(text) as { detail?: { code?: string; message?: string } | string }
+      detail = typeof body.detail === 'string' ? body.detail : body.detail?.message ?? body.detail?.code ?? ''
+      if (body.detail && typeof body.detail === 'object' && body.detail.code === 'cli_disabled') return { status: response.status, state: 'disabled', detail }
+    } catch { /* HTML/proxy responses are classified below */ }
+    if (response.status === 404) return { status: response.status, state: 'enabled', detail: detail || 'CLI endpoint responded; authentication is required.' }
+    if (response.ok) return { status: response.status, state: 'enabled', detail: detail || 'Endpoint responded.' }
+    return { status: response.status, state: 'unexpected', detail: detail || `HTTP ${response.status}` }
+  } catch (error) {
+    return { status: 0, state: 'unavailable', detail: error instanceof Error ? error.message.slice(0, 160) : 'Network request failed.' }
+  }
 }
 
 export async function json<T>(path: string, init: RequestInit = {}, accessToken?: string, env = process.env): Promise<T> {

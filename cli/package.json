@@ -1,19 +1,29 @@
 {
-  "name": "@swiveltechnologies/swico",
+  "name": "@swico/swico",
   "version": "0.1.0",
   "description": "Swico terminal client and bounded local coding agent",
   "type": "module",
-  "bin": { "swico": "dist/cli.js" },
-  "files": ["dist", "README.md", "LICENSE"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "swico": "dist/cli.js"
+  },
+  "files": ["dist/**/*.js", "README.md"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build",
+    "release:check": "npm run build && node scripts/release-check.mjs"
   },
   "devDependencies": {
     "@types/node": "22.10.7",
     "typescript": "5.7.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

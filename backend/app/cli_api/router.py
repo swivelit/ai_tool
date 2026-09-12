@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user
 from ..billing.errors import RateLimitError
-from ..billing.service import enforce_rate_limit, release_swico_free_usage
+from ..billing.service import enforce_rate_limit, get_wallet_summary, release_swico_free_usage
 from ..database import SessionLocal, get_session
 from ..models import (
     CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession,
@@ -641,12 +641,19 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         text_value = str(parsed.get("text") or "")
         if not text_value or len(text_value) > 8_000:
             raise HTTPException(422, "The planner assistant response is invalid.")
-        return {"kind": "assistant", "text": text_value, "usage": completed.message.input_tokens + completed.message.output_tokens}
-    action = AgentAction.model_validate(parsed)
+        return {"kind": "assistant", "text": text_value, "usage": completed.response.input_tokens + completed.response.output_tokens}
+    # `kind` is the planner envelope discriminator, not an AgentAction field.
+    # Validate the inner action after removing it so the strict extra-field
+    # contract remains enabled for submitted actions.
+    action_data = {key: value for key, value in parsed.items() if key != "kind"}
+    try:
+        action = AgentAction.model_validate(action_data)
+    except Exception as exc:
+        raise HTTPException(422, "The planner response did not contain a complete structured action.") from exc
     if action.payload is None:
         raise HTTPException(422, "Structured actions must include a payload.")
     payload_hash = _validate_agent_action_payload(action)
-    return {"kind": "action", "protocol_version": 1, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.message.input_tokens + completed.message.output_tokens}
+    return {"kind": "action", "protocol_version": 1, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.response.input_tokens + completed.response.output_tokens}
 
 
 @router.post("/agent/runs/{run_id}/actions")

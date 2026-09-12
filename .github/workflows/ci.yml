@@ -89,6 +89,6 @@ jobs:
       - name: Build and test CLI
         run: npm test
         working-directory: cli
-      - name: Inspect package contents
-        run: npm pack --dry-run
+      - name: Build, pack, inspect, and install release artifact
+        run: npm run release:check
         working-directory: cli
