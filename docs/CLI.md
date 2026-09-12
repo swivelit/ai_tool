@@ -135,6 +135,40 @@ development, set `SWICO_CLI_ALLOW_INSECURE_LOCAL=1`; never use that override in
 production. `SWICO_CLI_CREDENTIAL_FILE` is intentionally not set by project
 configuration.
 
+## Stage 2 local extensions
+
+The CLI can read a user configuration at `~/.config/swico/config.toml` (or
+the Windows per-user Swico config directory) and a project `.swico/config.toml`.
+Project configuration is untrusted and can only narrow safe behavior. Use
+`swico config show|path|validate` to inspect it; credentials and provider keys
+never belong there.
+
+`swico mcp add NAME COMMAND [ARGS...]`, `mcp list`, `mcp get NAME`, and
+`mcp test NAME` support explicitly configured stdio MCP servers. HTTPS
+Streamable HTTP servers can be configured with environment-variable header
+references. Unknown or side-effecting calls require approval, credentials are
+not sent to Swico, and project MCP entries are inspection-only. `swico
+mcp-server` exposes only read-only repository status, file listing, and diff
+over stdio. Legacy MCP SSE is not enabled in this release.
+
+`swico skills list|show NAME` discovers bounded `SKILL.md` descriptions from
+user/project locations; full instructions load only after selection.
+`swico plugins` only validates local declarative `swico-plugin.json` files and
+never executes plugin code. `swico completion bash|zsh|fish|powershell`
+prints static scripts without network access. Hook events exist as an
+in-process abstraction, but executable hooks are disabled until Stage 3.
+`--search`/`--no-search` and `/search auto|on|off` request server-controlled
+web-search behavior, and `--image PATH`/`/image PATH` uses the existing
+temporary, owner-scoped paid image upload policy; Free remains text-only.
+
+The initial Stage 2 subagent helper is bounded read-only local inspection
+(maximum four, depth one); it cannot mutate the shared workspace. Provider
+parallelism, remote plugins, executable hooks, mutating MCP, and sandboxed
+execution remain deferred. Agent planning may request a bounded `web_search`
+action; it returns through the authenticated shared Chat endpoint with
+`search_mode=on`, so the backend remains authoritative for eligibility,
+evidence, billing, and limits.
+
 ## Publisher commands
 
 After confirming that the publisher controls the `@swiveltechnologies` npm

@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { AgentAction, AgentResult } from './contracts.js'
-import { json } from './api.js'
+import { json, streamChat } from './api.js'
 import { Workspace } from './workspace.js'
 import { ActionJournal } from './journal.js'
 import type { PermissionProfile } from './permissions.js'
+import type { McpManager } from './mcp.js'
+import { HookBus } from './hooks.js'
+import { ReadOnlySubagents } from './subagents.js'
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -15,16 +18,19 @@ function canonical(value: unknown): string {
 export function actionHash(action: AgentAction): string { return createHash('sha256').update(canonical(action.payload)).digest('hex') }
 export class LocalAgent {
   private readonly journal: ActionJournal
-  constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal) {
+  private readonly subagents: ReadOnlySubagents
+  constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal, private readonly mcp?: McpManager, private readonly hooks = new HookBus()) {
     this.journal = new ActionJournal(env.SWICO_CLI_JOURNAL_FILE ?? `${workspace.root}/.swico/action-journal.jsonl`)
+    this.subagents = new ReadOnlySubagents(workspace)
   }
   async execute(runId: string, action: AgentAction, approve: (description: string) => Promise<boolean>): Promise<AgentResult> {
+    await this.hooks.emit({ event: 'pre_tool', run_id: runId, action_type: action.action_type })
     const payloadHash = action.payload_hash ?? actionHash(action)
     const previous = await this.journal.latest(action.action_id, payloadHash)
     if (previous === 'succeeded' || previous === 'failed' || previous === 'unknown') return { status: previous, result: `This action was already recorded as ${previous}; it was not run again.` }
     if (this.profile === 'read-only' && ['apply_patch', 'create_file', 'delete_file', 'move_file', 'run_command'].includes(action.action_type)) return { status: 'failed', result: 'The read-only permission profile blocks mutations and commands.' }
     await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'prepared' })
-    const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: 1, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash }) }, this.accessToken, this.env)
+    const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: action.protocol_version, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash }) }, this.accessToken, this.env)
     if (accepted.action_id !== action.action_id) throw new Error('Server returned a different action identity.')
     if (accepted.status && accepted.status !== 'accepted') {
       await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: accepted.status === 'succeeded' ? 'succeeded' : accepted.status === 'failed' ? 'failed' : 'unknown' })
@@ -43,7 +49,15 @@ export class LocalAgent {
       else if (action.action_type === 'create_file') result = await this.workspace.createFile(String(action.payload.path ?? ''), String(action.payload.content ?? ''), description => approve(description))
       else if (action.action_type === 'delete_file') result = await this.workspace.deleteFile(String(action.payload.path ?? ''), description => approve(description))
       else if (action.action_type === 'move_file') result = await this.workspace.moveFile(String(action.payload.from ?? ''), String(action.payload.to ?? ''), description => approve(description))
-      else {
+      else if (action.action_type === 'mcp_tool') {
+        if (!this.mcp) throw new Error('MCP is not configured for this session.')
+        result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal)
+      } else if (action.action_type === 'spawn_subagent') {
+        result = await this.subagents.inspect(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [], this.signal)
+      } else if (action.action_type === 'web_search') {
+        const answer = await streamChat({ access_token: this.accessToken }, String(action.payload.query ?? ''), undefined, undefined, this.env, { signal: this.signal, searchMode: 'on' })
+        result = answer.text
+      } else {
         result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), () => approve(`Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal)
         if (result && typeof result === 'object' && 'timed_out' in result && result.timed_out === true) throw new Error('The approved command exceeded its time limit.')
         if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) throw new Error('The approved command was cancelled.')
@@ -56,6 +70,7 @@ export class LocalAgent {
         return { status: 'unknown', result: 'The local action finished, but Swico did not confirm its result. Inspect the journal before deciding whether to reconnect.' }
       }
       await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'succeeded' })
+      await this.hooks.emit({ event: 'post_tool', run_id: runId, action_type: action.action_type, summary: 'succeeded' })
       return { status: 'succeeded', result }
     } catch (error) {
       const resultHash = createHash('sha256').update(String(error)).digest('hex')
@@ -66,6 +81,7 @@ export class LocalAgent {
         return { status: 'unknown', result: 'The local action outcome could not be recorded. Inspect the journal before retrying.' }
       }
       await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'failed' })
+      await this.hooks.emit({ event: 'post_tool', run_id: runId, action_type: action.action_type, summary: 'failed' })
       return { status: 'failed', result: error instanceof Error ? error.message : 'Local action failed.' }
     }
   }

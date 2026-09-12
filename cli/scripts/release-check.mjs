@@ -60,6 +60,9 @@ try {
     'package/dist/credentials.js', 'package/dist/journal.js', 'package/dist/local_sessions.js',
     'package/dist/permissions.js', 'package/dist/plan.js', 'package/dist/repository.js',
     'package/dist/session.js', 'package/dist/sse.js', 'package/dist/workspace.js',
+    'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
+    'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
+    'package/dist/skills.js', 'package/dist/subagents.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
   for (const entry of entries.keys()) {

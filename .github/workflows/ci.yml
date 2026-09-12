@@ -87,7 +87,7 @@ jobs:
         run: npm ci
         working-directory: cli
       - name: Build and test CLI
-        run: npm test
+        run: npm run typecheck && npm run lint && npm test
         working-directory: cli
       - name: Build, pack, inspect, and install release artifact
         run: npm run release:check

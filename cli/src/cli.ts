@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { createInterface, type Interface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { clearTokens, credentialStorageStatus, loadTokens, saveTokens, CredentialStorageUnavailableError } from './credentials.js'
-import { cancelAgentRun, cancelChat, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat } from './api.js'
+import { cancelAgentRun, cancelChat, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat, uploadImage } from './api.js'
 import { isAgentActionType, type AgentAction, type CliTokens } from './contracts.js'
 import { LocalAgent } from './agent.js'
 import { Workspace } from './workspace.js'
@@ -19,6 +19,12 @@ import { findLocalSession, listLocalSessions, saveLocalSession, type LocalSessio
 import type { SSEEvent } from './sse.js'
 import { ensureTokens } from './session.js'
 import { credentialKey } from './config.js'
+import { configSummary, loadConfig, saveUserConfig, validateMcpDefinition, userConfigPath, type McpServerDefinition } from './configuration.js'
+import { McpManager } from './mcp.js'
+import { listSkills, selectSkill } from './skills.js'
+import { hookStatus } from './hooks.js'
+import { completion } from './completion.js'
+import { runMcpServer } from './mcp_server.js'
 
 const exec = promisify(execFile)
 const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
@@ -28,6 +34,8 @@ let activeInterrupt: (() => void) | null = null
 let interruptCount = 0
 
 const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /exit`
+
+const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server'
 
 function showStreamEvent(event: SSEEvent, jsonOutput = false) {
   if (jsonOutput) { process.stdout.write(`${JSON.stringify(event)}\n`); return }
@@ -98,11 +106,11 @@ async function runPlan(task: string, env = process.env): Promise<void> {
   console.log('\nNo files were changed and no commands were executed.')
 }
 
-async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false): Promise<{ text: string; threadId: string | null }> {
+async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false, searchMode: 'auto' | 'on' | 'off' = 'auto', attachmentIds: string[] = []): Promise<{ text: string; threadId: string | null }> {
   const controller = new AbortController(); let requestId: string | undefined
   activeInterrupt = () => { controller.abort(); if (requestId) void cancelChat(tokens, requestId, env).catch(() => undefined) }
   try {
-    const answer = await streamChat(tokens, message, thread, event => showStreamEvent(event, jsonOutput), env, { signal: controller.signal, onRequestId: value => { requestId = value } })
+    const answer = await streamChat(tokens, message, thread, event => showStreamEvent(event, jsonOutput), env, { signal: controller.signal, onRequestId: value => { requestId = value }, searchMode, attachmentIds })
     if (!jsonOutput) console.log(`\n${answer.text}`)
     return { text: answer.text, threadId: answer.threadId }
   } finally { if (activeInterrupt) activeInterrupt = null }
@@ -131,7 +139,11 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
     activeInterrupt = cancelOperation
     const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [`Resumed session with bounded local context.`], summary: undefined as string | undefined }
-    const agent = new LocalAgent(info.workspace, currentTokens.access_token, env, profile, controller.signal)
+    const config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
+    const mcp = new McpManager(config.effective)
+    const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
+    if (skill) console.log(`Using skill: ${skill.name}`)
+    const agent = new LocalAgent(info.workspace, currentTokens.access_token, env, profile, controller.signal, mcp)
     const sessionId = resume?.id ?? run.run_id
     const actions = [...(resume?.actions ?? [])]
     await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
@@ -144,7 +156,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       const next = await planAgentStep(currentTokens, run.run_id, task, promptContext, env, controller.signal)
       if (next.kind === 'assistant') { plan.advance(); console.log(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }); return currentTokens }
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
-      const action: AgentAction = { protocol_version: 1, action_id: next.action_id, action_type: next.action_type, payload: next.payload, payload_hash: next.payload_hash }
+      const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash }
       console.log(`\nTool: ${action.action_type}`)
       const result = await agent.execute(run.run_id, action, async description => profile === 'approval-required' ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : false)
       context.observations.push(`${action.action_type}: ${JSON.stringify(result.result).slice(0, 10_000)}`)
@@ -179,8 +191,26 @@ async function showReview(tokens: CliTokens, env = process.env, line?: Interface
 }
 
 async function showStatus(tokens: CliTokens, mode: Mode, profile: PermissionProfile, env = process.env): Promise<void> {
-  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd())
-  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Context: bounded structured context`].join('\n'))
+  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
+  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Skills: ${skills.length}`, `MCP servers: ${config.effective.mcp.length}`, `Hooks: ${hookStatus(config.effective.hooksEnabled).execution}`, `Web search: server-controlled`, `Images: server-controlled`, `Context: bounded structured context`].join('\n'))
+}
+
+async function configCommand(args: string[], env = process.env): Promise<void> {
+  const loaded = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), action = args[1] ?? 'show'
+  if (action === 'path') { console.log(loaded.user?.path ?? userConfigPath(env)); return }
+  if (action === 'validate') { console.log('Configuration is valid.'); return }
+  console.log(JSON.stringify({ effective: configSummary(loaded.effective), user: loaded.user && configSummary(loaded.user), project: loaded.project && configSummary(loaded.project) }, null, 2))
+}
+
+async function mcpCommand(args: string[], env = process.env): Promise<void> {
+  const loaded = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), action = args[1] ?? 'list', name = args[2]
+  if (action === 'list') { for (const item of loaded.effective.mcp) console.log(`${item.name}\t${item.transport}\t${item.source}${item.trusted ? '' : '\t(untrusted project config)'}`); return }
+  if (action === 'get') { const item = loaded.effective.mcp.find(value => value.name === name); if (!item) throw new Error('MCP server not found.'); console.log(JSON.stringify({ ...item, headers: Object.keys(item.headers ?? {}).reduce((result, key) => ({ ...result, [key]: '[environment reference]' }), {} as Record<string, string>) }, null, 2)); return }
+  if (!name) throw new Error('MCP server name is required.')
+  if (action === 'remove') { const user = loaded.user; if (!user) return; user.mcp = user.mcp.filter(item => item.name !== name); await saveUserConfig(user, env); console.log(`Removed MCP server ${name}.`); return }
+  if (action === 'add') { const command = args[3]; if (!command) throw new Error('Usage: swico mcp add NAME COMMAND [ARGS...]'); const server: McpServerDefinition = { name, transport: 'stdio', command, args: args.slice(4), source: 'user', trusted: true }; validateMcpDefinition(server, true); const user = loaded.user ?? { source: 'user' as const, path: '', searchMode: 'auto' as const, defaultMode: 'auto' as const, autoSkills: true, hooksEnabled: false, mcp: [] }; user.mcp = [...user.mcp.filter(item => item.name !== name), server]; await saveUserConfig(user, env); console.log(`Added MCP server ${name}.`); return }
+  if (action === 'test') { const manager = new McpManager(loaded.effective); const tools = await manager.discover(name); console.log(`${name}: ready (${tools.length} tools discovered)`); await manager.close(); return }
+  throw new Error('MCP command must be list, get, add, remove, or test.')
 }
 
 async function showHistory(tokens: CliTokens, env = process.env): Promise<void> {
@@ -212,7 +242,7 @@ async function resumeSession(line: Interface, tokens: CliTokens, id: string | un
 }
 
 async function interactive(tokens: CliTokens, env = process.env) {
-  const line = createInterface({ input, output }); let thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile()
+  const line = createInterface({ input, output }); let thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile(), searchMode: 'auto' | 'on' | 'off' = 'auto', images: string[] = []
   console.log(`Swico ${VERSION} · ${tokens.account.email ?? 'account'} · ${tokens.tier_label} · ${process.cwd()} · session ${tokens.session_id} · mode ${mode}`)
   try {
     for (;;) {
@@ -223,6 +253,11 @@ async function interactive(tokens: CliTokens, env = process.env) {
       if (value === '/mode') { console.log(`Mode: ${mode} (chat, agent, plan; auto routes repository tasks)`); continue }
       if (value.startsWith('/mode ')) { const requested = value.slice(6).trim() as Mode; if (!['chat', 'agent', 'plan'].includes(requested)) throw new Error('Mode must be chat, agent, or plan.'); mode = requested; console.log(`Mode: ${mode}`); continue }
       if (value === '/status') { await showStatus(tokens, mode, profile, env); continue }
+      if (value.startsWith('/search')) { const requested = value.split(/\s+/)[1] as 'auto' | 'on' | 'off' | undefined; if (!requested || !['auto', 'on', 'off'].includes(requested)) console.log(`Search: ${searchMode}`); else { searchMode = requested; console.log(`Search: ${searchMode} (server eligibility still applies)`); } continue }
+      if (value.startsWith('/image ')) { const uploaded = await uploadImage(tokens, value.slice(7).trim(), env); images.push(uploaded.id); console.log(`Image attached: ${uploaded.name}`); continue }
+      if (value === '/config') { await configCommand(['config', 'show'], env); continue }
+      if (value === '/mcp' || value === '/mcp list') { await mcpCommand(['mcp', 'list'], env); continue }
+      if (value === '/skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()); for (const skill of await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)) console.log(`${skill.name}\t${skill.description}`); continue }
       if (value === '/plan') { await runPlan('Current repository task', env); continue }
       if (value === '/permissions') { console.log(`Permission profile: ${profile}\nProfiles: read-only, approval-required`); continue }
       if (value.startsWith('/permissions ')) { const requested = value.slice(13).trim() as PermissionProfile; if (!['read-only', 'approval-required'].includes(requested)) throw new Error('Permission profile must be read-only or approval-required.'); profile = requested; await savePermissionProfile(profile); console.log(`Permission profile: ${profile}`); continue }
@@ -240,7 +275,8 @@ async function interactive(tokens: CliTokens, env = process.env) {
         if (!task) { console.log('Usage: /agent TASK'); continue }
         tokens = await runAgent(tokens, task, env, line, profile); continue
       }
-      const answer = await runChat(tokens, value, thread, env)
+      const answer = await runChat(tokens, value, thread, env, false, searchMode, images)
+      images = []
       thread = answer.threadId ?? thread
     }
   } finally { line.close() }
@@ -261,7 +297,8 @@ async function nonInteractive(tokens: CliTokens, task: string, args: string[], e
   if (!['chat', 'agent', 'plan'].includes(mode)) throw new Error('--mode must be chat, agent, or plan.')
   if (mode === 'plan') { await runPlan(task, env); return 0 }
   if (mode === 'agent') throw new Error('Non-interactive agent execution fails closed because local approval is required; use an interactive terminal.')
-  const answer = await runChat(tokens, task, undefined, env, jsonOutput)
+  const image = option(args, '--image'), attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []
+  const answer = await runChat(tokens, task, undefined, env, jsonOutput, argsSearchMode(args), attachmentIds)
   if (outputFile) await writeFile(outputFile, answer.text + '\n', { flag: 'wx' })
   const schema = option(args, '--output-schema')
   if (schema) { const definition = JSON.parse(await (await import('node:fs/promises')).readFile(schema, 'utf8')) as { type?: string }; if (definition.type && definition.type !== 'string') throw new Error('The text result does not match --output-schema.') }
@@ -269,10 +306,16 @@ async function nonInteractive(tokens: CliTokens, task: string, args: string[], e
 }
 
 async function main(argv = process.argv.slice(2), env = process.env) {
-  if (argv.includes('--help') || argv.includes('-h')) { console.log(help); return 0 }
+  if (argv.includes('--help') || argv.includes('-h')) { console.log(help + stage2Commands); return 0 }
   if (argv.includes('--version') || argv.includes('-v')) { console.log(VERSION); return 0 }
   const cwd = option(argv, '--cwd'); if (cwd) env = { ...env, SWICO_CLI_WORKSPACE: cwd }
   const command = argv.find(value => !value.startsWith('--') && value !== cwd) ?? ''
+  if (command === 'config') { await configCommand(argv.slice(argv.indexOf(command)), env); return 0 }
+  if (command === 'mcp-server') { await runMcpServer(); return 0 }
+  if (command === 'mcp') { await mcpCommand(argv.slice(argv.indexOf(command)), env); return 0 }
+  if (command === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), items = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env); if (argv[1] === 'show' && argv[2]) console.log((await (await import('./skills.js')).showSkill(argv[2], metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions); else for (const item of items) console.log(`${item.name}\t${item.description}`); return 0 }
+  if (command === 'plugins') { const { metadata } = await repositoryInfo(env); if (argv[1] === 'inspect' && argv[2]) console.log(JSON.stringify(await (await import('./plugins.js')).inspectPlugin(argv[2]), null, 2)); else console.log(JSON.stringify(await (await import('./plugins.js')).listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), null, 2)); return 0 }
+  if (command === 'completion') { console.log(completion(argv[1] ?? 'bash')); return 0 }
   if (command === 'login') { await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat'], { memoryOnly: argv.includes('--memory-only') }); return 0 }
   if (command === 'logout') { const stored = await loadTokens(env); if (stored) await json('/logout', { method: 'POST' }, stored.access_token, env).catch(() => undefined); await clearTokens(env); console.log('Signed out.'); return 0 }
   if (command === 'doctor') {
@@ -280,18 +323,21 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     const api = env.SWICO_CLI_DOCTOR_OFFLINE === '1' ? { status: 0, state: 'not_checked', detail: 'offline artifact check' } : await probeEndpoint(env)
     let auth: 'not_configured' | 'valid' | 'expired_or_revoked' | 'network_error' = stored ? 'expired_or_revoked' : 'not_configured'
     if (stored) { try { await json('/me', {}, stored.access_token, env); auth = 'valid' } catch (error) { auth = (error as { status?: number }).status === 401 ? 'expired_or_revoked' : 'network_error' } }
-    console.log(JSON.stringify({ endpoint, api, auth, credential_storage: await credentialStorageStatus(env) }, null, 2)); return 0
+    const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
+    console.log(JSON.stringify({ endpoint, api, auth, credential_storage: await credentialStorageStatus(env), workspace: metadata.root, git: metadata.gitAvailable ? (metadata.dirty ? 'available (dirty)' : 'available (clean)') : 'unavailable', cli_configuration: configSummary(config.effective), mcp: { count: config.effective.mcp.length, status: 'not connected by doctor' }, skills: { count: skills.length }, hooks: hookStatus(config.effective.hooksEnabled), images: 'server-controlled; no provider request made', web_search: 'server-controlled; no provider request made' }, null, 2)); return 0
   }
   const tokens = await ensureTokens(env)
   if (command === 'whoami') { console.log(JSON.stringify(await json('/me', {}, tokens.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { if (!input.isTTY) throw new Error('Resume requires an interactive terminal so repository and run choices cannot be implicit.'); const line = createInterface({ input, output }); try { await resumeSession(line, tokens, positionalAfter(argv, 'resume') || undefined, env) } finally { line.close() }; return 0 }
   if (command === 'review') { if (!input.isTTY) throw new Error('Review requires an interactive terminal to approve sending the bounded diff.'); const line = createInterface({ input, output }); try { await showReview(tokens, env, line) } finally { line.close() }; return 0 }
-  if (command === 'ask') { await runChat(tokens, positionalAfter(argv, 'ask'), undefined, env); return 0 }
+  if (command === 'ask') { const image = option(argv, '--image'), attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []; await runChat(tokens, positionalAfter(argv, 'ask'), undefined, env, false, argsSearchMode(argv), attachmentIds); return 0 }
   if (command === 'exec') return nonInteractive(tokens, positionalAfter(argv, 'exec'), argv, env)
   if (command === 'agent') { if (!input.isTTY) throw new Error('Agent mode requires an interactive terminal because local edits and commands always need approval.'); await runAgent(tokens, positionalAfter(argv, 'agent'), env); return 0 }
   if (!input.isTTY) throw new Error('This terminal is non-interactive. Use `swico ask "your question"` or `swico exec "your task"`.')
   await interactive(tokens, env); return 0
 }
+
+function argsSearchMode(args: string[]): 'auto' | 'on' | 'off' { return args.includes('--search') ? 'on' : args.includes('--no-search') ? 'off' : 'auto' }
 
 process.on('SIGINT', () => {
   if (activeInterrupt) { interruptCount += 1; activeInterrupt(); if (interruptCount > 1) process.exitCode = 130; else console.error('\nStopping the active Swico operation...'); return }

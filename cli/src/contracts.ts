@@ -12,9 +12,9 @@ export type CliTokens = {
 }
 
 export type AgentAction = {
-  protocol_version: 1
+  protocol_version: 1 | 2
   action_id: string
-  action_type: 'list_files' | 'search_text' | 'read_file' | 'read_file_range' | 'apply_patch' | 'create_file' | 'delete_file' | 'move_file' | 'run_command' | 'git_status' | 'git_diff'
+  action_type: 'list_files' | 'search_text' | 'read_file' | 'read_file_range' | 'apply_patch' | 'create_file' | 'delete_file' | 'move_file' | 'run_command' | 'git_status' | 'git_diff' | 'mcp_tool' | 'spawn_subagent' | 'web_search'
   payload: Record<string, unknown>
   payload_hash?: string
 }
@@ -22,6 +22,9 @@ export type AgentAction = {
 export const AGENT_ACTION_TYPES = [
   'list_files', 'search_text', 'read_file', 'read_file_range', 'apply_patch',
   'create_file', 'delete_file', 'move_file', 'run_command', 'git_status', 'git_diff',
+  'mcp_tool',
+  'spawn_subagent',
+  'web_search',
 ] as const
 export function isAgentActionType(value: unknown): value is AgentAction['action_type'] {
   return typeof value === 'string' && (AGENT_ACTION_TYPES as readonly string[]).includes(value)

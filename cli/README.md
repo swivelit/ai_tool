@@ -84,3 +84,23 @@ The initial public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` until
 durable budgeting, cancellation/recovery, sensitive-path and local-side-effect
 recovery gates are verified. `swico login --agent` requests the additional
 scope but does not bypass the server gate or tier eligibility.
+
+## Stage 2 local extensions
+
+`swico config show|path|validate` reads the user TOML configuration and the
+untrusted project `.swico/config.toml`; project settings can only narrow
+behavior. `swico mcp list|get|add|remove|test` manages explicit local MCP
+servers using the maintained MCP SDK. stdio and HTTPS Streamable HTTP are
+supported, with bounded discovery/results and approval for unknown or
+side-effecting tools. `swico mcp-server` is a read-only stdio server for
+status, file listing and diff; it exposes no mutation tools before Stage 3.
+
+`swico skills list|show`, `swico plugins list|inspect`, and static
+`swico completion bash|zsh|fish|powershell` are available without network
+requests. Skills are untrusted, description-first `SKILL.md` files; plugins
+are declarative manifests only and are never executed. `/search auto|on|off`
+selects a server-controlled search policy and `--image PATH` uploads a
+bounded, owner-scoped temporary image for paid Chat/vision flows. Free stays
+text-only. Stage 2 subagents are bounded read-only local inspections (four
+maximum, depth one); provider-backed parallel subagents, executable hooks,
+remote plugins, mutating MCP and sandboxed execution are deferred.

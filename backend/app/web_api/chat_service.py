@@ -1365,6 +1365,7 @@ def prepare_web_turn(
     resume_accepted_queue: bool = False,
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
+    search_mode: Literal["auto", "on", "off"] = "auto",
     now: datetime | None = None,
 ) -> PreparedWebTurn:
     request_triag_settings = triag_settings
@@ -2831,7 +2832,7 @@ def prepare_web_turn(
         freshness_pack: EvidencePack | None = None
         freshness_search_pending = False
         freshness_search_reserved_micros = 0
-        if freshness.requires_fresh_evidence and route.intent not in {
+        if freshness.requires_fresh_evidence and search_mode != "off" and route.intent not in {
             "unsafe_or_sensitive", "urgent_medical_emergency",
             "harmful_credential_abuse", "swico_brand",
         }:

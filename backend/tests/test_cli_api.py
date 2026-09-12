@@ -194,6 +194,7 @@ def test_cli_chat_stream_uses_shared_preparation_and_terminal_events(client: Tes
     assert "event: delta" in result.text and "Hello from shared Chat" in result.text
     assert "event: done" in result.text
     assert captured["forced_swico_tier"] == "lite"
+    assert captured["search_mode"] == "auto"
 
 
 def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -264,3 +265,27 @@ def test_agent_protocol_accepts_bounded_repository_actions_and_rejects_secret_pa
     bad = {"protocol_version": 1, "action_id": "secret-action-1", "action_type": "create_file", "payload": bad_payload, "payload_hash": hashlib.sha256(json.dumps(bad_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
     rejected = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=bad)
     assert rejected.status_code == 422
+
+
+def test_agent_protocol_v2_requires_and_bounds_mcp_actions(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    user = create_test_user("cli-mcp-protocol", "mcp-protocol@example.com")
+    raw_access = "m" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("n" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat","agent"]', device_description="mcp protocol",
+        ))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "inspect MCP"})
+    assert run.status_code == 201
+    run_id = run.json()["run_id"]
+    payload = {"server_name": "local", "tool_name": "status", "arguments": {}}
+    action = {"protocol_version": 2, "action_id": "mcp-action-1", "action_type": "mcp_tool", "payload": payload, "payload_hash": hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+    accepted = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action)
+    assert accepted.status_code == 200, accepted.text
+    legacy = {**action, "protocol_version": 1, "action_id": "mcp-action-2"}
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=legacy).status_code == 422

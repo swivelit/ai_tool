@@ -34,6 +34,7 @@ class CliChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=16_000)
     thread_id: str | None = Field(default=None, max_length=36)
     input_mode: Literal["text"] = "text"
+    search_mode: Literal["auto", "on", "off"] = "auto"
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     repository_id: str | None = Field(default=None, max_length=36)
 
@@ -52,11 +53,14 @@ class AgentRunRequest(BaseModel):
 
 class AgentAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    protocol_version: Literal[1]
+    protocol_version: Literal[1, 2]
     action_id: str = Field(min_length=8, max_length=64)
     action_type: Literal[
         "list_files", "search_text", "read_file", "read_file_range", "apply_patch",
         "create_file", "delete_file", "move_file", "run_command", "git_status", "git_diff",
+        "mcp_tool",
+        "spawn_subagent",
+        "web_search",
     ]
     payload_hash: str | None = Field(default=None, min_length=64, max_length=64)
     payload: dict[str, object] | None = None

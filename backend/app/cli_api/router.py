@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import timedelta
 import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
 from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user
@@ -25,6 +29,13 @@ from ..web_api.chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, PromptBudgetExceeded,
     execute_web_turn, prepare_web_turn, record_web_turn_lifecycle,
 )
+from ..web_api.document_extraction import (
+    DocumentValidationError, image_max_file_bytes,
+    image_uploads_enabled, is_image_extension,
+    sanitize_filename, validate_content_signature, validate_extension_and_mime,
+)
+from ..web_api.router import _save_temporary_upload
+from ..web_api.upload_store import EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store, upload_ttl_seconds, utc_iso
 from ..web_api.router import SwicoFreeLimitError, _enforce_swico_free_limits
 from ..web_api.swico_free_access import swico_free_eligible
 from ..web_api.usage_service import selected_swico_tier
@@ -168,6 +179,29 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
         ref = payload.get("ref")
         if ref is not None and (not isinstance(ref, str) or len(ref) > 256 or any(char in ref for char in "\x00\r\n")):
             raise HTTPException(422, "git_diff ref is invalid.")
+    elif action.action_type == "mcp_tool":
+        if action.protocol_version != 2:
+            raise HTTPException(422, "MCP actions require protocol version 2.")
+        server_name, tool_name, arguments = payload.get("server_name"), payload.get("tool_name"), payload.get("arguments", {})
+        if (not isinstance(server_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", server_name)
+                or not isinstance(tool_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tool_name)
+                or not isinstance(arguments, dict) or len(json.dumps(arguments, separators=(",", ":"))) > 32 * 1024):
+            raise HTTPException(422, "MCP action payload is invalid or too large.")
+    elif action.action_type == "spawn_subagent":
+        if action.protocol_version != 2:
+            raise HTTPException(422, "Subagent actions require protocol version 2.")
+        tasks = payload.get("tasks")
+        if (not isinstance(tasks, list) or not 1 <= len(tasks) <= 4
+                or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                       or not isinstance(item.get("task"), str) or len(item["task"]) > 2_000
+                       for item in tasks)):
+            raise HTTPException(422, "Subagent tasks must be a bounded list of read-only tasks.")
+    elif action.action_type == "web_search":
+        if action.protocol_version != 2:
+            raise HTTPException(422, "Web search actions require protocol version 2.")
+        query = payload.get("query")
+        if not isinstance(query, str) or not 1 <= len(query.strip()) <= 2_000:
+            raise HTTPException(422, "Web search query is outside the supported bound.")
     calculated = _canonical_payload_hash(payload)
     if action.payload_hash is not None and action.payload_hash != calculated:
         raise HTTPException(422, "Action payload hash is invalid.")
@@ -441,6 +475,59 @@ def list_cli_threads(authorization: str | None = Header(default=None), session: 
     return {"items": [{"id": item.id, "title": item.title, "updated_at": item.updated_at.isoformat()} for item in rows]}
 
 
+@router.post("/uploads", status_code=201)
+async def upload_cli_attachment(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
+    """CLI-authenticated temporary upload, reusing the website's bounded store.
+
+    The CLI bearer session is resolved before any bytes are retained. Free
+    sessions remain text-only and the upload keeps the ordinary 300-second
+    ownership/expiry semantics.
+    """
+    with SessionLocal() as session:
+        row, user = _cli_session_from_header(authorization, session)
+        if row.selected_tier == "free":
+            await file.close()
+            raise HTTPException(422, "Swico Free supports text only. Switch to a paid Swico tier for attachments.")
+    safe_name = sanitize_filename(file.filename or "attachment")
+    try:
+        extension, media_type = validate_extension_and_mime(safe_name, file.content_type)
+        if not is_image_extension(extension):
+            raise DocumentValidationError(415, "cli_image_required", "CLI image input currently accepts image files only.")
+        if not image_uploads_enabled():
+            raise DocumentValidationError(503, "image_uploads_disabled", "Image attachments are not enabled.")
+        temp_path, size = await _save_temporary_upload(file, limit=image_max_file_bytes(), suffix=extension)
+        try:
+            validate_content_signature(temp_path, extension)
+            binary_base64 = base64.b64encode(Path(temp_path).read_bytes()).decode("ascii")
+        finally:
+            os.remove(temp_path)
+        upload = EphemeralUpload(
+            id=str(uuid4()), owner_user_id=int(user.id), name=safe_name,
+            extension=extension, media_type=media_type, size_bytes=size, created_at=utc_iso(),
+            expires_at=expiration_iso(upload_ttl_seconds()), chunks=[], source_locators=[], warnings=[],
+            binary_base64=binary_base64,
+        )
+        get_upload_store().put(upload)
+        return JSONResponse(status_code=201, content=upload.display_metadata(), headers={"Cache-Control": "no-store"})
+    except DocumentValidationError as exc:
+        await file.close()
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message}) from exc
+    except UploadStoreUnavailable as exc:
+        raise HTTPException(503, {"code": "attachment_cache_unavailable", "message": "Temporary attachments are unavailable."}) from exc
+
+
+@router.delete("/uploads/{upload_id}", status_code=204)
+def delete_cli_attachment(upload_id: str, authorization: str | None = Header(default=None)):
+    with SessionLocal() as session:
+        _row, user = _cli_session_from_header(authorization, session)
+    upload = get_upload_store().get(upload_id)
+    if upload is not None and upload.owner_user_id != int(user.id):
+        raise HTTPException(404, "Attachment not found.")
+    if upload is not None:
+        get_upload_store().delete(upload_id)
+    return None
+
+
 def _sse_event(name: str, payload: dict[str, Any]) -> str:
     return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
@@ -463,6 +550,7 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
             repository_id=payload.repository_id, forced_swico_tier=tier,
             swico_free_eligible=swico_free_eligible(int(user.id)),
             input_mode="text", billing_credit_bucket="chat",
+            search_mode=payload.search_mode,
         )
     except (AttachmentRequestError, PromptBudgetExceeded) as exc:
         raise HTTPException(exc.status_code, {"code": getattr(exc, "code", "request_invalid"), "message": str(exc)}) from exc
@@ -658,8 +746,8 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     prompt = (
         "You are the Swico local coding-agent planner. Return exactly one JSON object and no Markdown. "
         "It must be either {\"kind\":\"assistant\",\"text\":\"...\"} or "
-        "{\"kind\":\"action\",\"protocol_version\":1,\"action_id\":\"...\","
-        "\"action_type\":\"list_files|search_text|read_file|read_file_range|apply_patch|create_file|delete_file|move_file|run_command|git_status|git_diff\","
+        "{\"kind\":\"action\",\"protocol_version\":1 or 2,\"action_id\":\"...\","
+        "\"action_type\":\"list_files|search_text|read_file|read_file_range|apply_patch|create_file|delete_file|move_file|run_command|git_status|git_diff|mcp_tool|spawn_subagent|web_search\","
         "\"payload\":{...}}. Never request secrets, traversal, shell strings, or unapproved commands. "
         f"TASK (untrusted user text):\n{payload.task}\nLOCAL CONTEXT (untrusted):\n{payload.context}"
     )
@@ -703,7 +791,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     if action.payload is None:
         raise HTTPException(422, "Structured actions must include a payload.")
     payload_hash = _validate_agent_action_payload(action)
-    return {"kind": "action", "protocol_version": 1, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.response.input_tokens + completed.response.output_tokens}
+    return {"kind": "action", "protocol_version": action.protocol_version, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.response.input_tokens + completed.response.output_tokens}
 
 
 @router.post("/agent/runs/{run_id}/actions")

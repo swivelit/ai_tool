@@ -56,10 +56,10 @@ export async function refresh(refreshToken: string, env = process.env): Promise<
   return json<CliTokens>('/token', { method: 'POST', body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }) }, undefined, env)
 }
 
-export async function streamChat(tokens: CliTokens, message: string, threadId?: string, onEvent?: (event: SSEEvent) => void, env = process.env, options: { signal?: AbortSignal; onRequestId?: (requestId: string) => void } = {}): Promise<{ threadId: string | null; text: string }> {
+export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, message: string, threadId?: string, onEvent?: (event: SSEEvent) => void, env = process.env, options: { signal?: AbortSignal; onRequestId?: (requestId: string) => void; searchMode?: 'auto' | 'on' | 'off'; attachmentIds?: string[] } = {}): Promise<{ threadId: string | null; text: string }> {
   const requestId = randomUUID()
   options.onRequestId?.(requestId)
-  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${tokens.access_token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text' }) })
+  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${tokens.access_token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text', search_mode: options.searchMode ?? 'auto', attachment_ids: options.attachmentIds ?? [] }) })
   if (!response.ok || !response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
   const parser = new SSEParser(); const decoder = new TextDecoder(); let text = ''; let resolvedThread: string | null = null; let done = false
   for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
@@ -79,6 +79,16 @@ export async function streamChat(tokens: CliTokens, message: string, threadId?: 
 export async function cancelChat(tokens: CliTokens, requestId: string, env = process.env): Promise<void> {
   await json(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' }, tokens.access_token, env)
 }
+
+export async function uploadImage(tokens: CliTokens, filename: string, env = process.env): Promise<{ id: string; name: string; expires_at: string }> {
+  const form = new FormData(); const bytes = await (await import('node:fs/promises')).readFile(filename)
+  form.append('file', new Blob([bytes]), filename)
+  const response = await fetch(cliApi('/uploads', env), { method: 'POST', body: form, redirect: 'error', headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/json' } })
+  const body = await response.json().catch(() => ({})) as { id?: string; name?: string; expires_at?: string; detail?: unknown }
+  if (!response.ok || !body.id) throw new CliApiError(response.status, typeof body.detail === 'string' ? body.detail : 'Swico could not upload that image.')
+  return { id: body.id, name: body.name ?? filename, expires_at: body.expires_at ?? '' }
+}
+export async function deleteImage(tokens: CliTokens, id: string, env = process.env): Promise<void> { await json(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }, tokens.access_token, env) }
 
 export async function createAgentRun(tokens: CliTokens, task: string, threadId?: string, env = process.env) {
   return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>('/agent/runs', { method: 'POST', body: JSON.stringify({ request_id: randomUUID(), task, thread_id: threadId }) }, tokens.access_token, env)

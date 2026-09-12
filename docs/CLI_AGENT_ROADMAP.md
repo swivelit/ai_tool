@@ -18,13 +18,22 @@ Implemented in the current release boundary:
   metadata, read-only/approval-required profiles, and non-interactive
   `exec` fail-closed behavior for agent mutations.
 
-Stage 2/3 work remains intentionally out of scope: MCP, skills/plugins,
-hooks, image input, web search, subagents, worktrees, cloud execution or
-handoff, and an OS-enforced sandbox. Each requires a reviewed protocol,
-explicit capability negotiation, owner-scoped billing, bounded data flow,
-approval and cancellation semantics, and platform security tests before it
-can be enabled. Full-auto or dangerous modes are not planned until a real
-platform-enforced sandbox exists.
+Stage 2 foundations now present in the CLI are deliberately bounded: local
+TOML configuration (project files can only narrow behavior), an official MCP
+SDK client for stdio and Streamable HTTP with explicit approval for unknown or
+side-effecting tools, a read-only stdio `swico mcp-server`, description-first
+SKILL.md discovery, declarative plugin inspection, an in-process lifecycle
+hook bus with executable hooks disabled, static shell completion, CLI search
+mode/temporary image attachment fields, and bounded read-only subagent
+inspection. These do not create a second provider or billing path.
+
+Stage 3 remains intentionally deferred: sandboxing, unattended mutating MCP
+tools, worktrees, cloud execution/handoff, remote plugin installation,
+executable hooks, image workflows requiring a new server capability, and
+provider-backed parallel subagents. Each requires reviewed capability
+negotiation, owner-scoped billing, bounded data flow, approval and
+cancellation semantics, and platform security tests. Full-auto or dangerous
+modes are not planned until a real platform-enforced sandbox exists.
 
 The production rollout remains `SWICO_CLI_AGENT_ENABLED=false` until the
 agent's provider budgeting, cancellation/recovery, and cross-platform local
