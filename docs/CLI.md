@@ -81,11 +81,15 @@ unified hunks, are previewed, rechecked immediately before atomic writes, and
 preserve file modes. Commands use explicit argv with `shell=false`, bounded
 output, timeouts, and process cleanup. When a reviewed OS runtime is
 available, commands additionally run inside an OS-enforced sandbox: macOS
-uses Seatbelt `sandbox-exec`, and Linux uses `bubblewrap`. If the runtime is
-missing or the host refuses it, the CLI fails closed rather than claiming
-isolation. Windows has no bundled supported runtime in this release, so local
-agent execution is unavailable there until a reviewed Windows implementation
-is selected. This is not a sandbox for the API service.
+uses Seatbelt `sandbox-exec`, and Linux uses `bubblewrap`. The runtime probe
+is not a security proof: `swico sandbox verify` runs hostile, disposable
+probes for filesystem, network, environment, process, and symlink boundaries.
+Agent execution requires those probes to pass. If the runtime is missing, the
+host refuses policy application, or any probe fails, the CLI fails closed
+rather than claiming isolation. Windows has no bundled supported runtime in
+this release, so local agent execution is unavailable there until a reviewed
+Windows implementation is selected. This is not a sandbox for the API
+service.
 
 Sandbox and approval are separate dimensions. User configuration may choose
 `sandbox_policy = "read-only"` or `"workspace-write"`; project config can
@@ -180,7 +184,8 @@ bounded local observations and cannot mutate the shared workspace. `swico worktr
 create|list|clean` provides explicit Swico-owned detached Git worktrees for
 future isolated work and never stashes or resets the primary tree. Mutating
 subagents and automatic merge remain disabled. `swico sandbox
-status|doctor|setup` reports actual platform readiness. Agent planning may request a bounded `web_search`
+status|doctor|setup` reports runtime readiness; `swico sandbox verify [--json]`
+is the explicit hostile-boundary check. Agent planning may request a bounded `web_search`
 action; it returns through the authenticated shared Chat endpoint with
 `search_mode=on`, so the backend remains authoritative for eligibility,
 evidence, billing, and limits.
@@ -189,6 +194,22 @@ Cloud commands are explicit (`swico cloud exec|status|resume|cancel`). They
 currently return `cloud_execution_unavailable`: no isolated runner or job
 capability service is configured, and repository code is never executed in
 the API process. There is no fallback to Render.
+
+## Sandbox verification and platform support
+
+The current adapter intentionally has no unsandboxed fallback. The macOS
+adapter uses the system Seatbelt interface on both Intel and Apple Silicon,
+but this development Intel host returns `sandbox_apply: Operation not
+permitted`; it is therefore unavailable here. Linux uses system bubblewrap
+and requires usable unprivileged user/mount namespaces. Windows is
+fail-closed: no reviewed native filesystem/network runtime is bundled.
+
+`swico sandbox verify` creates only temporary fake files, a local loopback
+test server, and a fake environment secret. It never reads real credentials.
+It must pass before a local agent can run. A successful `sandbox status` only
+means that the system runtime's basic readiness probe succeeded; it does not
+mean that the boundary is verified. Network-enabled commands are an explicit
+separate policy and are not enabled by default.
 
 ## Publisher commands
 

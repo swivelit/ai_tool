@@ -25,7 +25,8 @@ import { listSkills, selectSkill } from './skills.js'
 import { hookStatus } from './hooks.js'
 import { completion } from './completion.js'
 import { runMcpServer } from './mcp_server.js'
-import { createSandboxAdapter } from './sandbox.js'
+import { createSandboxAdapter, verifySandbox } from './sandbox.js'
+import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
 import { cloudCancel, cloudExec, cloudStatus } from './cloud.js'
 
@@ -36,7 +37,7 @@ type Mode = 'auto' | 'chat' | 'agent' | 'plan'
 let activeInterrupt: (() => void) | null = null
 let interruptCount = 0
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /sandbox /worktree /cloud /exit`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness  Run local, non-charging release gates\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /sandbox /worktree /cloud /exit`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -139,6 +140,8 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
     const sandbox = createSandboxAdapter(info.metadata.root)
     if (!sandbox.status().available) throw new Error(`Local agent unavailable: ${sandbox.status().reason}`)
+    const verification = await verifySandbox(info.metadata.root)
+    if (!verification.verified) throw new Error(`Local agent unavailable: sandbox verification did not pass (${verification.diagnostic}). Run \`swico sandbox verify\` for probe details.`)
     const run = resume?.run_id ? await getAgentRun(currentTokens, resume.run_id, env) : await createAgentRun(currentTokens, task, undefined, env)
     if (run.status !== 'running' && run.status !== 'waiting_approval') throw new Error(`Agent session is already ${run.status}; start a new task.`)
     runId = run.run_id
@@ -198,14 +201,31 @@ async function showReview(tokens: CliTokens, env = process.env, line?: Interface
 
 async function showStatus(tokens: CliTokens, mode: Mode, profile: PermissionProfile, env = process.env): Promise<void> {
   const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), sandbox = createSandboxAdapter(metadata.root).status()
-  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Skills: ${skills.length}`, `MCP servers: ${config.effective.mcp.length}`, `Hooks: ${hookStatus(config.effective.hooksEnabled).execution}`, `Sandbox: ${sandbox.implementation} (${sandbox.available ? 'ready' : 'unavailable'})`, `Network: ${sandbox.network}`, `Web search: server-controlled`, `Images: server-controlled`, `Context: bounded structured context`].join('\n'))
+  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Skills: ${skills.length}`, `MCP servers: ${config.effective.mcp.length}`, `Hooks: ${hookStatus(config.effective.hooksEnabled).execution}`, `Sandbox: ${sandbox.implementation} (${sandbox.available ? 'runtime available; verification required' : 'unavailable'})`, `Sandbox diagnostic: ${sandbox.diagnostic}`, `Network: ${sandbox.network}`, `Web search: server-controlled`, `Images: server-controlled`, `Context: bounded structured context`].join('\n'))
 }
 
 async function sandboxCommand(args: string[], env = process.env): Promise<void> {
   const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), status = createSandboxAdapter(metadata.root).status(), action = args[1] ?? 'status'
-  if (action === 'setup') { console.log(status.available ? `Sandbox ready: ${status.implementation}.` : `${status.reason} Install and configure a reviewed OS runtime, then rerun this command. No unsandboxed fallback is offered.`); return }
-  if (action !== 'status' && action !== 'doctor') throw new Error('Sandbox command must be status, doctor, or setup.')
+  if (action === 'setup') { console.log(status.available ? `Sandbox runtime detected: ${status.implementation}. Run \`swico sandbox verify\` before agent use; readiness alone is not a security proof.` : `${status.reason} Install and configure a reviewed OS runtime, then rerun this command. No unsandboxed fallback is offered.`); return }
+  if (action === 'verify') {
+    const report = await verifySandbox(metadata.root)
+    if (args.includes('--json')) console.log(JSON.stringify(report, null, 2)); else {
+      console.log(`Sandbox verification: ${report.verified ? 'passed' : 'NOT PASSED'} (${report.implementation}; ${report.diagnostic})`)
+      for (const probe of report.probes) console.log(`${probe.passed ? 'PASS' : 'FAIL'} ${probe.name}: expected ${probe.expected}, observed ${probe.observed} — ${probe.detail}`)
+      console.log(`Runtime: ${report.runtime.platform}/${report.runtime.architecture} ${report.runtime.node}`)
+    }
+    const unavailableOnly = report.probes.every(probe => probe.observed === 'not_run')
+    if (!report.verified && !(args.includes('--ci') && unavailableOnly)) throw new Error('Sandbox verification did not pass; unsandboxed agent execution remains disabled.')
+    return
+  }
+  if (action !== 'status' && action !== 'doctor') throw new Error('Sandbox command must be status, doctor, verify, or setup.')
   console.log(JSON.stringify(status, null, 2))
+}
+
+async function releaseReadinessCommand(args: string[], env = process.env): Promise<number> {
+  const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), report = await releaseReadiness(metadata.root)
+  if (args.includes('--json')) console.log(JSON.stringify(report, null, 2)); else console.log(formatReadiness(report))
+  return report.required_blockers.length ? 2 : 0
 }
 
 async function configCommand(args: string[], env = process.env): Promise<void> {
@@ -343,6 +363,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   const cwd = option(argv, '--cwd'); if (cwd) env = { ...env, SWICO_CLI_WORKSPACE: cwd }
   const command = argv.find(value => !value.startsWith('--') && value !== cwd) ?? ''
   if (command === 'config') { await configCommand(argv.slice(argv.indexOf(command)), env); return 0 }
+  if (command === 'release-readiness') return releaseReadinessCommand(argv.slice(argv.indexOf(command)), env)
   if (command === 'mcp-server') { await runMcpServer(); return 0 }
   if (command === 'sandbox') { await sandboxCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'worktree') {
@@ -384,4 +405,4 @@ process.on('SIGINT', () => {
   if (activeInterrupt) { interruptCount += 1; activeInterrupt(); if (interruptCount > 1) process.exitCode = 130; else console.error('\nStopping the active Swico operation...'); return }
   process.exitCode = 130
 })
-main().catch(error => { console.error(error instanceof Error ? error.message : 'Swico failed.'); process.exitCode = 1 })
+main().then(code => { if (typeof code === 'number') process.exitCode = code }).catch(error => { console.error(error instanceof Error ? error.message : 'Swico failed.'); process.exitCode = 1 })

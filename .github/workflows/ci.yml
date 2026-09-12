@@ -92,6 +92,9 @@ jobs:
       - name: Inspect local sandbox capability (fail-closed readiness only)
         run: node dist/cli.js sandbox status
         working-directory: cli
+      - name: Run hostile sandbox verification or assert fail-closed capability
+        run: node dist/cli.js sandbox verify --json --ci
+        working-directory: cli
       - name: Build, pack, inspect, and install release artifact
         run: npm run release:check
         working-directory: cli

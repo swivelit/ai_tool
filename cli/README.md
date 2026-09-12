@@ -77,8 +77,10 @@ rollout gates pass.
 
 The bounded agent asks for workspace trust before sending selected content to
 Swico, requires approval for every edit/command, confines files to the chosen
-root, rejects secrets/symlinks/binaries, and runs commands with user
-permissions. It is not an OS sandbox or full Codex replacement.
+root, rejects secrets/symlinks/binaries, and uses an OS-enforced sandbox only
+after `swico sandbox verify` passes. It is not a full Codex replacement. If
+verification fails, agent execution is refused rather than falling back to
+unsandboxed commands.
 
 The initial public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` until
 durable budgeting, cancellation/recovery, sensitive-path and local-side-effect
@@ -106,5 +108,7 @@ maximum, depth one) using the shared authenticated billing path; they receive
 only bounded local observations and cannot mutate the workspace. Parallel
 subagents, executable hooks,
 remote plugins and mutating MCP remain deferred. Local agent commands use an
-OS-enforced sandbox when the platform runtime is actually available; otherwise
-the agent fails closed. Use `swico sandbox status` to inspect readiness.
+OS-enforced sandbox only when the platform runtime is available and the
+hostile verification passes; otherwise the agent fails closed. Use `swico
+sandbox status` for runtime diagnostics and `swico sandbox verify` for the
+actual boundary check.

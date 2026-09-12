@@ -6,9 +6,10 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
-import { createSandboxAdapter } from '../dist/sandbox.js'
+import { createSandboxAdapter, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { Workspace } from '../dist/workspace.js'
+import { releaseReadiness } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
 
 const run = promisify(execFile)
@@ -60,6 +61,35 @@ test('sandbox readiness exposes why a platform is unavailable instead of claimin
     const status = createSandboxAdapter(root).status()
     assert.ok(['ready', 'binary_missing', 'profile_rejected', 'sandbox_apply_denied', 'namespace_unavailable', 'unsupported_platform'].includes(status.diagnostic))
     if (!status.available) assert.notEqual(status.diagnostic, 'ready')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('sandbox verify uses real hostile probes and never turns runtime detection into a proof', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-verify-'))
+  try {
+    const report = await verifySandbox(root)
+    assert.equal(report.runtime.architecture, process.arch)
+    assert.equal(report.probes.length, 9)
+    assert.ok(report.probes.every(item => item.name && item.detail))
+    if (createSandboxAdapter(root).status().available) {
+      assert.equal(report.verified, true)
+      assert.ok(report.probes.every(item => item.passed))
+    } else {
+      assert.equal(report.verified, false)
+      assert.ok(report.probes.every(item => item.observed === 'not_run'))
+    }
+    assert.doesNotMatch(JSON.stringify(report), /fake verification secret|SWICO_VERIFY_SECRET/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('release readiness reports sandbox proof as a required local-agent gate without network calls', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-readiness-'))
+  try {
+    const report = await releaseReadiness(root)
+    assert.equal(report.checks.chat_ready, 'ready')
+    assert.equal(report.checks.cloud_ready, 'disabled-optional')
+    assert.ok(report.required_blockers.some(item => /sandbox/i.test(item)))
+    assert.equal(report.checks.agent_sandbox_ready, report.sandbox.verified ? 'ready' : 'blocked')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

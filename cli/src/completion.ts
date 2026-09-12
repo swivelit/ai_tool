@@ -1,7 +1,7 @@
 export const TOP_LEVEL_COMMANDS = [
   'login', 'logout', 'whoami', 'ask', 'exec', 'agent', 'review', 'resume',
   'doctor', 'config', 'mcp', 'mcp-server', 'skills', 'plugins', 'completion',
-  'sandbox', 'worktree', 'cloud',
+  'sandbox', 'worktree', 'cloud', 'release-readiness',
 ] as const
 
 const commandWords = TOP_LEVEL_COMMANDS.join(' ')

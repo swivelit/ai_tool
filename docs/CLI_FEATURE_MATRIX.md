@@ -26,11 +26,11 @@ production browser, native-device, or every OS security boundary was tested.
 | Images | PARTIAL | CLI upload reuses temporary paid image path; live/device verification pending |
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; no live provider test |
-| macOS sandbox | FAIL-CLOSED / DISABLED | Intel host refuses sandbox_apply; no enforcement claim |
-| Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap path is fail-closed until runtime proof on a supported host |
+| macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and hostile verification are present; this Intel host refuses sandbox_apply |
+| Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap plus hostile verification; no real Linux host was available in this audit |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
-| Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plumbing; hostile runtime proof pending |
-| Secret environment isolation | IMPLEMENTED + UNVERIFIED | Minimal child environment plumbing; cross-platform runtime proof pending |
+| Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
+| Secret environment isolation | IMPLEMENTED + UNVERIFIED | Cleared/minimal child environment plus fake-secret probe; cross-platform proof pending |
 | Worktrees | IMPLEMENTED + VERIFIED | Owned detached worktrees preserve dirty primary tree |
 | Mutating subagents | NOT IMPLEMENTED | No shared-tree mutation or automatic merge |
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
@@ -38,6 +38,12 @@ production browser, native-device, or every OS security boundary was tested.
 | Doctor/readiness | IMPLEMENTED + VERIFIED | No-cost public health endpoint and offline diagnostics |
 | npm package | IMPLEMENTED + VERIFIED | Packed artifact inspected locally; not published |
 | License | FAIL-CLOSED / DISABLED | No approved top-level LICENSE; publication decision required |
+
+`swico sandbox verify --json` is the authoritative local hostile-boundary
+check. `swico release-readiness --json` reports `agent_sandbox_ready` as
+blocked until that check passes; it does not make cloud readiness a local
+agent blocker. On the current Intel macOS host the verification probes are
+correctly not run because `sandbox_apply` is refused.
 
 The initial production controls remain `SWICO_CLI_AGENT_ENABLED=false` and
 `SWICO_CLI_CLOUD_AGENT_ENABLED=false`.

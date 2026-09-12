@@ -63,7 +63,7 @@ try {
     'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
     'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
     'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js',
-    'package/dist/worktrees.js', 'package/dist/cloud.js',
+    'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
   for (const entry of entries.keys()) {
@@ -78,8 +78,14 @@ try {
   const help = await exec(executable, ['--help'], { cwd: work, maxBuffer: 512 * 1024 })
   const version = await exec(executable, ['--version'], { cwd: work, maxBuffer: 512 * 1024 })
   const doctor = await exec(executable, ['doctor'], { cwd: work, env: { ...process.env, SWICO_CLI_DOCTOR_OFFLINE: '1' }, maxBuffer: 512 * 1024 })
+  const config = await exec(executable, ['config', 'validate'], { cwd: work, maxBuffer: 512 * 1024 })
+  const completion = await exec(executable, ['completion', 'bash'], { cwd: work, maxBuffer: 512 * 1024 })
+  const sandbox = await exec(executable, ['sandbox', 'status'], { cwd: work, maxBuffer: 512 * 1024 })
   if (!help.stdout.includes('Usage: swico')) throw new Error('Installed --help output is invalid')
   if (version.stdout.trim() !== manifest.version) throw new Error(`Installed version mismatch: ${version.stdout.trim()}`)
+  if (!config.stdout.includes('Configuration is valid')) throw new Error('Installed config validation output is invalid')
+  if (!completion.stdout.includes('swico')) throw new Error('Installed completion output is invalid')
+  if (!sandbox.stdout.includes('"diagnostic"')) throw new Error('Installed sandbox status output is invalid')
   const digest = createHash('sha256').update(archive).digest('hex')
   if (keepArtifact) await copyFile(archivePath, join(root, record.filename))
   console.log(JSON.stringify({
@@ -88,7 +94,7 @@ try {
     filename: record.filename,
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
-    installed_checks: { help: 'passed', version: 'passed', doctor: 'passed (offline)' },
+    installed_checks: { help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),
   }, null, 2))
