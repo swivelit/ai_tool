@@ -26,6 +26,8 @@ export type SwicoConfig = {
   defaultMode: 'chat' | 'agent' | 'plan' | 'auto'
   autoSkills: boolean
   permissionProfile?: PermissionProfile
+  sandboxPolicy: 'read-only' | 'workspace-write'
+  approvalPolicy: 'on-request' | 'always'
   hooksEnabled: boolean
   mcp: McpServerDefinition[]
 }
@@ -67,7 +69,7 @@ function scalar(value: string): string | boolean | string[] {
 }
 
 function parseToml(text: string, source: ConfigSource, path: string): SwicoConfig {
-  const base: SwicoConfig = { source, path, searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, mcp: [] }
+  const base: SwicoConfig = { source, path, searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write', approvalPolicy: 'always', mcp: [] }
   let section = ''
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
@@ -99,6 +101,8 @@ function parseToml(text: string, source: ConfigSource, path: string): SwicoConfi
     } else if (key === 'search_mode' && (value === 'auto' || value === 'on' || value === 'off')) base.searchMode = value
     else if (key === 'default_mode' && (value === 'auto' || value === 'chat' || value === 'agent' || value === 'plan')) base.defaultMode = value
     else if (key === 'permission_profile' && (value === 'read-only' || value === 'approval-required')) base.permissionProfile = value
+    else if (key === 'sandbox_policy' && (value === 'read-only' || value === 'workspace-write')) base.sandboxPolicy = value
+    else if (key === 'approval_policy' && (value === 'on-request' || value === 'always')) base.approvalPolicy = value
     else throw new Error(`Unsupported or invalid setting '${key}' in ${path}.`)
   }
   if (base.mcp.length > MAX_MCP) throw new Error(`MCP server count exceeds ${MAX_MCP}.`)
@@ -106,6 +110,8 @@ function parseToml(text: string, source: ConfigSource, path: string): SwicoConfi
   if (source === 'project') {
     base.hooksEnabled = false
     base.permissionProfile = base.permissionProfile === 'read-only' ? 'read-only' : undefined
+    base.sandboxPolicy = 'read-only'
+    base.approvalPolicy = 'always'
     for (const server of base.mcp) server.trusted = false
   }
   return base
@@ -145,7 +151,7 @@ export async function loadConfig(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
   const metadata = await discoverRepository(cwd)
   const localPath = projectConfigPath(metadata.root)
   const project = await readConfig(localPath, 'project')
-  const effective: SwicoConfig = user ? { ...user, mcp: [...user.mcp] } : { source: 'user', path: userConfigPath(env), searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, mcp: [] }
+  const effective: SwicoConfig = user ? { ...user, mcp: [...user.mcp] } : { source: 'user', path: userConfigPath(env), searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write', approvalPolicy: 'always', mcp: [] }
   if (project) {
     // Project configuration can narrow behavior, but never grants trust or
     // raises permissions. Project MCP entries are inspection-only until the
@@ -154,6 +160,8 @@ export async function loadConfig(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
     if (project.defaultMode === 'chat' || project.defaultMode === 'plan') effective.defaultMode = project.defaultMode
     if (project.autoSkills === false) effective.autoSkills = false
     if (project.permissionProfile === 'read-only') effective.permissionProfile = 'read-only'
+    if (project.sandboxPolicy === 'read-only') effective.sandboxPolicy = 'read-only'
+    if (project.approvalPolicy === 'always') effective.approvalPolicy = 'always'
     effective.mcp.push(...project.mcp)
   }
   return { effective, user, project }
@@ -161,7 +169,7 @@ export async function loadConfig(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
 
 function quote(value: string): string { return JSON.stringify(value) }
 function renderConfig(config: SwicoConfig): string {
-  const lines = [`search_mode = ${quote(config.searchMode)}`, `default_mode = ${quote(config.defaultMode)}`]
+  const lines = [`search_mode = ${quote(config.searchMode)}`, `default_mode = ${quote(config.defaultMode)}`, `sandbox_policy = ${quote(config.sandboxPolicy)}`, `approval_policy = ${quote(config.approvalPolicy)}`]
   lines.push('', '[skills]', `auto = ${config.autoSkills ? 'true' : 'false'}`, '', '[hooks]', 'enabled = false')
   for (const server of config.mcp.filter(item => item.source === 'user')) {
     lines.push('', `[mcp.${quote(server.name)}]`, `transport = ${quote(server.transport)}`)
@@ -183,5 +191,5 @@ export async function saveUserConfig(config: SwicoConfig, env: NodeJS.ProcessEnv
 }
 
 export function configSummary(value: SwicoConfig): Record<string, unknown> {
-  return { source: value.source, path: value.path, search_mode: value.searchMode, default_mode: value.defaultMode, auto_skills: value.autoSkills, permission_profile: value.permissionProfile ?? 'approval-required', hooks_enabled: value.hooksEnabled, mcp: value.mcp.map(item => ({ name: item.name, transport: item.transport, source: item.source, trusted: item.trusted })) }
+  return { source: value.source, path: value.path, search_mode: value.searchMode, default_mode: value.defaultMode, sandbox_policy: value.sandboxPolicy, approval_policy: value.approvalPolicy, auto_skills: value.autoSkills, permission_profile: value.permissionProfile ?? 'approval-required', hooks_enabled: value.hooksEnabled, mcp: value.mcp.map(item => ({ name: item.name, transport: item.transport, source: item.source, trusted: item.trusted })) }
 }

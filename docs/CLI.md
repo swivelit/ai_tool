@@ -79,8 +79,20 @@ the canonical selected root. Secrets, dependencies, build output, binaries,
 traversal and symlink escapes are blocked. Patches use base hashes and
 unified hunks, are previewed, rechecked immediately before atomic writes, and
 preserve file modes. Commands use explicit argv with `shell=false`, bounded
-output, timeouts, and process cleanup. Commands execute with the user's
-permissions; this is not an OS sandbox.
+output, timeouts, and process cleanup. When a reviewed OS runtime is
+available, commands additionally run inside an OS-enforced sandbox: macOS
+uses Seatbelt `sandbox-exec`, and Linux uses `bubblewrap`. If the runtime is
+missing or the host refuses it, the CLI fails closed rather than claiming
+isolation. Windows has no bundled supported runtime in this release, so local
+agent execution is unavailable there until a reviewed Windows implementation
+is selected. This is not a sandbox for the API service.
+
+Sandbox and approval are separate dimensions. User configuration may choose
+`sandbox_policy = "read-only"` or `"workspace-write"`; project config can
+only narrow to read-only. `approval_policy` is limited to `on-request` and
+`always`, and there is no unsandboxed/full-auto setting. Network access is
+disabled for local commands and stdio MCP processes, and child processes
+receive only basic runtime variables rather than host credentials.
 
 `/status` shows the repository, branch, dirty state, mode, permission profile,
 agent scope, applicable instruction files, and bounded-context state.
@@ -156,18 +168,26 @@ user/project locations; full instructions load only after selection.
 `swico plugins` only validates local declarative `swico-plugin.json` files and
 never executes plugin code. `swico completion bash|zsh|fish|powershell`
 prints static scripts without network access. Hook events exist as an
-in-process abstraction, but executable hooks are disabled until Stage 3.
+in-process abstraction; executable hooks remain disabled because a reviewed
+sandboxed hook runner is not available yet.
 `--search`/`--no-search` and `/search auto|on|off` request server-controlled
 web-search behavior, and `--image PATH`/`/image PATH` uses the existing
 temporary, owner-scoped paid image upload policy; Free remains text-only.
 
-The initial Stage 2 subagent helper is bounded read-only local inspection
-(maximum four, depth one); it cannot mutate the shared workspace. Provider
-parallelism, remote plugins, executable hooks, mutating MCP, and sandboxed
-execution remain deferred. Agent planning may request a bounded `web_search`
+The subagent helper is bounded read-only local inspection (maximum four,
+depth one); it cannot mutate the shared workspace. `swico worktree
+create|list|clean` provides explicit Swico-owned detached Git worktrees for
+future isolated work and never stashes or resets the primary tree. Mutating
+subagents and automatic merge remain disabled. `swico sandbox
+status|doctor|setup` reports actual platform readiness. Agent planning may request a bounded `web_search`
 action; it returns through the authenticated shared Chat endpoint with
 `search_mode=on`, so the backend remains authoritative for eligibility,
 evidence, billing, and limits.
+
+Cloud commands are explicit (`swico cloud exec|status|resume|cancel`). They
+currently return `cloud_execution_unavailable`: no isolated runner or job
+capability service is configured, and repository code is never executed in
+the API process. There is no fallback to Render.
 
 ## Publisher commands
 

@@ -29,7 +29,8 @@ test('MCP manager uses the official stdio transport, discovers tools and gates u
   try {
     const definition = { name: 'fake', transport: 'stdio', command: process.execPath, args: [join(process.cwd(), 'test/fixtures/fake-mcp.mjs')], source: 'user', trusted: true }
     validateMcpDefinition(definition, true)
-    const manager = new McpManager({ source: 'user', path: '', searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, mcp: [definition] }, join(root, 'journal.jsonl'))
+    const testSandbox = { status: () => ({ implementation: 'test', available: true, reason: 'test adapter', policy: 'read-only', network: 'disabled', writable_roots: [] }), wrap: argv => ({ command: argv[0], args: argv.slice(1) }) }
+    const manager = new McpManager({ source: 'user', path: '', searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write', approvalPolicy: 'always', mcp: [definition] }, join(root, 'journal.jsonl'), testSandbox)
     const tools = await manager.discover('fake')
     assert.deepEqual(tools.map(item => [item.name, item.capability]), [['echo', 'read'], ['write_note', 'unknown']])
     assert.equal(await manager.call('fake', 'echo', { value: 'ok' }, async () => false), '[{"type":"text","text":"ok"}]')

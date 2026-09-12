@@ -1270,6 +1270,7 @@ SWICO_CLI_AGENT_ENABLED=false
 SWICO_CLI_WEB_ORIGIN=https://swico.in
 SWICO_CLI_ALLOWED_EMAILS=
 SWICO_CLI_MAX_AGENT_STEPS=8
+SWICO_CLI_CLOUD_AGENT_ENABLED=false
 ```
 
 Deploy the API and `swico-web` from the same tested commit, run the API-owned
@@ -1280,6 +1281,9 @@ that account. Remove the allowlist only for a wider rollout. Roll back by
 setting either feature flag to `false`; retain schema and billing records.
 There is no new Render service, database, browser localhost origin, or
 provider credential. `/cli/authorize` is served by the existing SPA rewrite.
+Cloud remains disabled and fail-closed: no repository code may run in the API
+or web process until a separately isolated runner and short-lived job
+capability service are reviewed and deployed.
 
 Readiness check (no paid provider call):
 

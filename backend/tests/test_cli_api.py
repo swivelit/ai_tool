@@ -112,6 +112,25 @@ def test_cli_disabled_is_fail_closed_and_settings_are_safe(monkeypatch: pytest.M
         validate_cli_configuration()
 
 
+def test_cloud_execution_is_explicitly_unavailable_without_an_isolated_runner(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
+    user = create_test_user("cli-cloud-owner", "cloud-owner@example.com")
+    raw_access = "c" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("d" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="pro", scopes_json='["chat","agent"]', device_description="cloud test",
+        ))
+        session.commit()
+    response = client.post("/api/cli/v1/cloud/jobs", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "inspect"})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "cloud_execution_unavailable"
+
+
 def test_agent_action_result_is_owner_scoped_idempotent_and_recoverable(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
     monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")

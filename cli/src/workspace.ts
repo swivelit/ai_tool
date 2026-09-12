@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { dirname, join, relative, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
+import type { NetworkPolicy, SandboxAdapter, SandboxPolicy } from './sandbox.js'
 
 const MAX_FILE = 256 * 1024
 const MAX_SEARCH_OUTPUT = 128 * 1024
@@ -56,7 +57,7 @@ function hash(data: Uint8Array | string): string { return createHash('sha256').u
 
 export class Workspace {
   readonly root: string
-  constructor(root: string) { this.root = realpathSync(resolve(root)) }
+  constructor(root: string, private readonly sandbox?: SandboxAdapter, private readonly sandboxPolicy: SandboxPolicy = 'workspace-write') { this.root = realpathSync(resolve(root)) }
 
   private lexicalPath(input: string): string {
     const candidate = resolve(this.root, input)
@@ -211,14 +212,17 @@ export class Workspace {
     catch { throw new Error('Git is unavailable or this workspace is not a repository.') }
   }
 
-  async runCommand(argv: string[], timeoutMs: number, approve: () => Promise<boolean>, signal?: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string; timed_out: boolean; cancelled: boolean; elapsed_ms: number }> {
+  async runCommand(argv: string[], timeoutMs: number, approve: (description?: string) => Promise<boolean>, signal?: AbortSignal, network: NetworkPolicy = 'disabled'): Promise<{ code: number | null; stdout: string; stderr: string; timed_out: boolean; cancelled: boolean; elapsed_ms: number }> {
     if (!argv.length || argv.length > 32 || argv.some(value => value.length > 512)) throw new Error('Command arguments are outside the bounded policy.')
-    if (!await approve()) throw new Error('Command was not approved.')
+    if (!await approve(`Run ${argv.join(' ')} in ${this.root} (network: ${network})?`)) throw new Error('Command was not approved.')
     const started = Date.now()
     return new Promise((resolveResult, reject) => {
       let child: ChildProcess
       try {
-        child = spawn(argv[0], argv.slice(1), { cwd: this.root, shell: false, detached: process.platform !== 'win32', env: { PATH: process.env.PATH ?? '', LANG: process.env.LANG ?? 'C.UTF-8', SystemRoot: process.env.SystemRoot ?? '', ComSpec: process.env.ComSpec ?? '' } })
+        const environment = { PATH: process.env.PATH ?? '', LANG: process.env.LANG ?? 'C.UTF-8', SystemRoot: process.env.SystemRoot ?? '', ComSpec: process.env.ComSpec ?? '' }
+        child = this.sandbox
+          ? this.sandbox.spawn([argv[0], ...argv.slice(1)], { cwd: this.root, shell: false, detached: process.platform !== 'win32', env: environment, policy: this.sandboxPolicy, network })
+          : spawn(argv[0], argv.slice(1), { cwd: this.root, shell: false, detached: process.platform !== 'win32', env: environment })
       } catch (error) { reject(error); return }
       let stdout = '', stderr = '', timedOut = false, cancelled = false, settled = false
       const cap = 128 * 1024

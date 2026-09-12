@@ -58,7 +58,8 @@ export class LocalAgent {
         const answer = await streamChat({ access_token: this.accessToken }, String(action.payload.query ?? ''), undefined, undefined, this.env, { signal: this.signal, searchMode: 'on' })
         result = answer.text
       } else {
-        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), () => approve(`Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal)
+        const network = action.payload.network === 'allowed' ? 'allowed' : 'disabled'
+        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), description => approve(description ?? `Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal, network)
         if (result && typeof result === 'object' && 'timed_out' in result && result.timed_out === true) throw new Error('The approved command exceeded its time limit.')
         if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) throw new Error('The approved command was cancelled.')
       }

@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { McpServerDefinition, SwicoConfig } from './configuration.js'
 import { validateMcpDefinition } from './configuration.js'
 import { ActionJournal } from './journal.js'
+import { createSandboxAdapter, type SandboxAdapter } from './sandbox.js'
 
 export type McpCapability = 'read' | 'write' | 'network' | 'unknown'
 export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; capability: McpCapability }
@@ -34,7 +35,7 @@ function redacted(value: unknown): string {
 export class McpManager {
   private readonly clients = new Map<string, { client: Client; transport: StdioClientTransport | StreamableHTTPClientTransport; tools: McpTool[] }>()
   private readonly journal: ActionJournal
-  constructor(private readonly config: SwicoConfig, journalFile?: string) { this.journal = new ActionJournal(journalFile ?? `${process.cwd()}/.swico/mcp-action-journal.jsonl`) }
+  constructor(private readonly config: SwicoConfig, journalFile?: string, private readonly sandbox: SandboxAdapter = createSandboxAdapter(process.cwd())) { this.journal = new ActionJournal(journalFile ?? `${process.cwd()}/.swico/mcp-action-journal.jsonl`) }
   definitions(): McpServerDefinition[] { return this.config.mcp.slice(0, 32) }
   private definition(name: string): McpServerDefinition { const item = this.config.mcp.find(value => value.name === name); if (!item) throw new Error(`MCP server '${name}' is not configured.`); validateMcpDefinition(item, item.source === 'user'); if (!item.trusted) throw new Error(`MCP server '${name}' is project configuration and must be explicitly added by the user before use.`); return item }
   private async connect(definition: McpServerDefinition): Promise<{ client: Client; tools: McpTool[] }> {
@@ -42,7 +43,9 @@ export class McpManager {
     const client = new Client({ name: 'swico', version: '0.1.0' }, { capabilities: {} })
     let transport: StdioClientTransport | StreamableHTTPClientTransport
     if (definition.transport === 'stdio') {
-      transport = new StdioClientTransport({ command: definition.command as string, args: definition.args ?? [], cwd: definition.cwd, env: safeEnv(definition.env), stderr: 'pipe', maxBufferSize: MAX_RESULT })
+      if (!this.sandbox.status().available) throw new Error(`MCP server requires a local sandbox: ${this.sandbox.status().reason}`)
+      const wrapped = this.sandbox.wrap([definition.command as string, ...(definition.args ?? [])], 'read-only', 'disabled')
+      transport = new StdioClientTransport({ command: wrapped.command, args: wrapped.args, cwd: definition.cwd, env: safeEnv(definition.env), stderr: 'pipe', maxBufferSize: MAX_RESULT })
     } else {
       const url = new URL(definition.url as string)
       const headers: Record<string, string> = {}

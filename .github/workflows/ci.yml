@@ -89,6 +89,9 @@ jobs:
       - name: Build and test CLI
         run: npm run typecheck && npm run lint && npm test
         working-directory: cli
+      - name: Inspect local sandbox capability (fail-closed readiness only)
+        run: node dist/cli.js sandbox status
+        working-directory: cli
       - name: Build, pack, inspect, and install release artifact
         run: npm run release:check
         working-directory: cli

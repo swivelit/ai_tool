@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.cli_api.config import CliConfigurationError, cli_settings  # noqa: E402
+from app.cli_api.config import CliConfigurationError, validate_cli_configuration  # noqa: E402
 from app.database import engine  # noqa: E402
 from app.alembic_utils import repository_alembic_head  # noqa: E402
 from sqlalchemy import inspect, text  # noqa: E402
@@ -25,11 +25,13 @@ def main() -> int:
     args = parser.parse_args()
     output: dict[str, object] = {"check": "swico_cli", "paid_provider_request": False}
     try:
-        settings = cli_settings()
+        settings = validate_cli_configuration()
         output.update({
             "status": "ready" if settings.enabled else "disabled",
             "enabled": settings.enabled,
             "agent_enabled": settings.agent_enabled,
+            "cloud_agent_enabled": settings.cloud_agent_enabled,
+            "cloud_runner": "not configured; API never executes repository code",
             "web_origin": settings.web_origin,
             "allowlist_configured": bool(settings.allowed_emails),
             "max_agent_steps": settings.max_agent_steps,
@@ -54,7 +56,7 @@ def main() -> int:
         output["status"] = "not_ready" if output.get("enabled") else output["status"]
         print(json.dumps(output, indent=2 if args.pretty else None, sort_keys=True))
         return 1 if output.get("enabled") else 0
-    ready = len(present) == 5 and db_revision == repository_alembic_head()
+    ready = len(present) == 5 and db_revision == repository_alembic_head() and not settings.cloud_agent_enabled
     output["ready"] = ready if output.get("enabled") else None
     if output.get("enabled") and not ready:
         output["status"] = "not_ready"

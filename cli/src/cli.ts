@@ -25,6 +25,9 @@ import { listSkills, selectSkill } from './skills.js'
 import { hookStatus } from './hooks.js'
 import { completion } from './completion.js'
 import { runMcpServer } from './mcp_server.js'
+import { createSandboxAdapter } from './sandbox.js'
+import { WorktreeManager } from './worktrees.js'
+import { cloudCancel, cloudExec, cloudStatus } from './cloud.js'
 
 const exec = promisify(execFile)
 const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
@@ -33,9 +36,9 @@ type Mode = 'auto' | 'chat' | 'agent' | 'plan'
 let activeInterrupt: (() => void) | null = null
 let interruptCount = 0
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /exit`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /sandbox /worktree /cloud /exit`
 
-const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server'
+const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
 function showStreamEvent(event: SSEEvent, jsonOutput = false) {
   if (jsonOutput) { process.stdout.write(`${JSON.stringify(event)}\n`); return }
@@ -133,17 +136,20 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     currentTokens = await ensureAgentScope(currentTokens, env, line)
     const plan = new PlanTracker(); if (resume?.plan?.length) plan.restore(resume.plan); else plan.start(task)
     console.log(`\nMode: agent · permission: ${profile}\n${repositoryLine(info.metadata)}\n\n${plan.render()}`)
+    const config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
+    const sandbox = createSandboxAdapter(info.metadata.root)
+    if (!sandbox.status().available) throw new Error(`Local agent unavailable: ${sandbox.status().reason}`)
     const run = resume?.run_id ? await getAgentRun(currentTokens, resume.run_id, env) : await createAgentRun(currentTokens, task, undefined, env)
     if (run.status !== 'running' && run.status !== 'waiting_approval') throw new Error(`Agent session is already ${run.status}; start a new task.`)
     runId = run.run_id
     const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
     activeInterrupt = cancelOperation
     const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [`Resumed session with bounded local context.`], summary: undefined as string | undefined }
-    const config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
-    const mcp = new McpManager(config.effective)
+    const mcp = new McpManager(config.effective, undefined, sandbox)
     const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
     if (skill) console.log(`Using skill: ${skill.name}`)
-    const agent = new LocalAgent(info.workspace, currentTokens.access_token, env, profile, controller.signal, mcp)
+    const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
+    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy), currentTokens.access_token, env, profile, controller.signal, mcp)
     const sessionId = resume?.id ?? run.run_id
     const actions = [...(resume?.actions ?? [])]
     await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
@@ -158,7 +164,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
       const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash }
       console.log(`\nTool: ${action.action_type}`)
-      const result = await agent.execute(run.run_id, action, async description => profile === 'approval-required' ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : false)
+      const result = await agent.execute(run.run_id, action, async description => (profile === 'approval-required' || config.effective.approvalPolicy === 'always') ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : false)
       context.observations.push(`${action.action_type}: ${JSON.stringify(result.result).slice(0, 10_000)}`)
       actions.push({ action_id: action.action_id, payload_hash: next.payload_hash ?? '', status: result.status })
       plan.advance(result.status === 'succeeded' ? 'completed' : 'blocked')
@@ -191,8 +197,15 @@ async function showReview(tokens: CliTokens, env = process.env, line?: Interface
 }
 
 async function showStatus(tokens: CliTokens, mode: Mode, profile: PermissionProfile, env = process.env): Promise<void> {
-  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
-  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Skills: ${skills.length}`, `MCP servers: ${config.effective.mcp.length}`, `Hooks: ${hookStatus(config.effective.hooksEnabled).execution}`, `Web search: server-controlled`, `Images: server-controlled`, `Context: bounded structured context`].join('\n'))
+  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), sandbox = createSandboxAdapter(metadata.root).status()
+  console.log([`Swico ${VERSION}`, `Account: ${tokens.account.email ?? tokens.account.name}`, `Tier: ${tokens.tier_label}`, `Mode: ${mode}`, repositoryLine(metadata), `Permission profile: ${profile}`, `Agent scope: ${tokens.scopes.includes('agent') ? 'authorized' : 'not authorized (consent required)'}`, `Instructions: ${instructions.files.length ? instructions.files.join(', ') : 'none'}`, `Skills: ${skills.length}`, `MCP servers: ${config.effective.mcp.length}`, `Hooks: ${hookStatus(config.effective.hooksEnabled).execution}`, `Sandbox: ${sandbox.implementation} (${sandbox.available ? 'ready' : 'unavailable'})`, `Network: ${sandbox.network}`, `Web search: server-controlled`, `Images: server-controlled`, `Context: bounded structured context`].join('\n'))
+}
+
+async function sandboxCommand(args: string[], env = process.env): Promise<void> {
+  const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), status = createSandboxAdapter(metadata.root).status(), action = args[1] ?? 'status'
+  if (action === 'setup') { console.log(status.available ? `Sandbox ready: ${status.implementation}.` : `${status.reason} Install and configure a reviewed OS runtime, then rerun this command. No unsandboxed fallback is offered.`); return }
+  if (action !== 'status' && action !== 'doctor') throw new Error('Sandbox command must be status, doctor, or setup.')
+  console.log(JSON.stringify(status, null, 2))
 }
 
 async function configCommand(args: string[], env = process.env): Promise<void> {
@@ -202,13 +215,29 @@ async function configCommand(args: string[], env = process.env): Promise<void> {
   console.log(JSON.stringify({ effective: configSummary(loaded.effective), user: loaded.user && configSummary(loaded.user), project: loaded.project && configSummary(loaded.project) }, null, 2))
 }
 
+async function worktreeCommand(args: string[], env = process.env, line?: Interface): Promise<void> {
+  const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), manager = new WorktreeManager(metadata, env), action = args[1] ?? 'list'
+  if (action === 'list') { const items = await manager.list(); console.log(items.length ? items.map(item => `${item.id}\t${item.cleanup_status}\t${item.path}\tbase ${item.base_commit}`).join('\n') : 'No Swico-owned worktrees.'); return }
+  if (action === 'create') { const item = await manager.create(args[2]); console.log(`Created isolated worktree ${item.id}: ${item.path}\nBase: ${item.base_commit}`); return }
+  if (action === 'clean') { const id = args[2]; if (!id) throw new Error('Usage: swico worktree clean ID'); await manager.clean(id, async () => line ? /^y(?:es)?$/i.test((await line.question(`Remove Swico-owned worktree ${id}? (y/N) `)).trim()) : false); console.log(`Cleaned worktree ${id}.`); return }
+  throw new Error('Worktree command must be list, create, or clean.')
+}
+
+async function cloudCommand(args: string[], tokens: CliTokens, env = process.env, line?: Interface): Promise<void> {
+  const action = args[1] ?? 'status'
+  if (action === 'exec') { const task = args.slice(2).join(' '); if (!task) throw new Error('Usage: swico cloud exec TASK'); console.log(JSON.stringify(await cloudExec(tokens, task, env), null, 2)); return }
+  if (action === 'status' || action === 'resume') { const id = args[2]; if (!id) throw new Error('Usage: swico cloud status JOB'); console.log(JSON.stringify(await cloudStatus(tokens, id, env), null, 2)); return }
+  if (action === 'cancel') { const id = args[2]; if (!id) throw new Error('Usage: swico cloud cancel JOB'); if (line && !/^y(?:es)?$/i.test((await line.question(`Cancel cloud job ${id}? (y/N) `)).trim())) throw new Error('Cloud cancellation was not approved.'); console.log(JSON.stringify(await cloudCancel(tokens, id, env), null, 2)); return }
+  throw new Error('Cloud command must be exec, status, resume, or cancel.')
+}
+
 async function mcpCommand(args: string[], env = process.env): Promise<void> {
   const loaded = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), action = args[1] ?? 'list', name = args[2]
   if (action === 'list') { for (const item of loaded.effective.mcp) console.log(`${item.name}\t${item.transport}\t${item.source}${item.trusted ? '' : '\t(untrusted project config)'}`); return }
   if (action === 'get') { const item = loaded.effective.mcp.find(value => value.name === name); if (!item) throw new Error('MCP server not found.'); console.log(JSON.stringify({ ...item, headers: Object.keys(item.headers ?? {}).reduce((result, key) => ({ ...result, [key]: '[environment reference]' }), {} as Record<string, string>) }, null, 2)); return }
   if (!name) throw new Error('MCP server name is required.')
   if (action === 'remove') { const user = loaded.user; if (!user) return; user.mcp = user.mcp.filter(item => item.name !== name); await saveUserConfig(user, env); console.log(`Removed MCP server ${name}.`); return }
-  if (action === 'add') { const command = args[3]; if (!command) throw new Error('Usage: swico mcp add NAME COMMAND [ARGS...]'); const server: McpServerDefinition = { name, transport: 'stdio', command, args: args.slice(4), source: 'user', trusted: true }; validateMcpDefinition(server, true); const user = loaded.user ?? { source: 'user' as const, path: '', searchMode: 'auto' as const, defaultMode: 'auto' as const, autoSkills: true, hooksEnabled: false, mcp: [] }; user.mcp = [...user.mcp.filter(item => item.name !== name), server]; await saveUserConfig(user, env); console.log(`Added MCP server ${name}.`); return }
+  if (action === 'add') { const command = args[3]; if (!command) throw new Error('Usage: swico mcp add NAME COMMAND [ARGS...]'); const server: McpServerDefinition = { name, transport: 'stdio', command, args: args.slice(4), source: 'user', trusted: true }; validateMcpDefinition(server, true); const user = loaded.user ?? { source: 'user' as const, path: '', searchMode: 'auto' as const, defaultMode: 'auto' as const, autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write' as const, approvalPolicy: 'always' as const, mcp: [] }; user.mcp = [...user.mcp.filter(item => item.name !== name), server]; await saveUserConfig(user, env); console.log(`Added MCP server ${name}.`); return }
   if (action === 'test') { const manager = new McpManager(loaded.effective); const tools = await manager.discover(name); console.log(`${name}: ready (${tools.length} tools discovered)`); await manager.close(); return }
   throw new Error('MCP command must be list, get, add, remove, or test.')
 }
@@ -253,6 +282,9 @@ async function interactive(tokens: CliTokens, env = process.env) {
       if (value === '/mode') { console.log(`Mode: ${mode} (chat, agent, plan; auto routes repository tasks)`); continue }
       if (value.startsWith('/mode ')) { const requested = value.slice(6).trim() as Mode; if (!['chat', 'agent', 'plan'].includes(requested)) throw new Error('Mode must be chat, agent, or plan.'); mode = requested; console.log(`Mode: ${mode}`); continue }
       if (value === '/status') { await showStatus(tokens, mode, profile, env); continue }
+      if (value === '/sandbox') { await sandboxCommand(['sandbox', 'status'], env); continue }
+      if (value === '/worktree') { await worktreeCommand(['worktree', 'list'], env, line); continue }
+      if (value === '/cloud') { await cloudCommand(['cloud'], tokens, env, line); continue }
       if (value.startsWith('/search')) { const requested = value.split(/\s+/)[1] as 'auto' | 'on' | 'off' | undefined; if (!requested || !['auto', 'on', 'off'].includes(requested)) console.log(`Search: ${searchMode}`); else { searchMode = requested; console.log(`Search: ${searchMode} (server eligibility still applies)`); } continue }
       if (value.startsWith('/image ')) { const uploaded = await uploadImage(tokens, value.slice(7).trim(), env); images.push(uploaded.id); console.log(`Image attached: ${uploaded.name}`); continue }
       if (value === '/config') { await configCommand(['config', 'show'], env); continue }
@@ -312,6 +344,8 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   const command = argv.find(value => !value.startsWith('--') && value !== cwd) ?? ''
   if (command === 'config') { await configCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'mcp-server') { await runMcpServer(); return 0 }
+  if (command === 'sandbox') { await sandboxCommand(argv.slice(argv.indexOf(command)), env); return 0 }
+  if (command === 'worktree') { await worktreeCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'mcp') { await mcpCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), items = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env); if (argv[1] === 'show' && argv[2]) console.log((await (await import('./skills.js')).showSkill(argv[2], metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions); else for (const item of items) console.log(`${item.name}\t${item.description}`); return 0 }
   if (command === 'plugins') { const { metadata } = await repositoryInfo(env); if (argv[1] === 'inspect' && argv[2]) console.log(JSON.stringify(await (await import('./plugins.js')).inspectPlugin(argv[2]), null, 2)); else console.log(JSON.stringify(await (await import('./plugins.js')).listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), null, 2)); return 0 }
@@ -324,9 +358,10 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     let auth: 'not_configured' | 'valid' | 'expired_or_revoked' | 'network_error' = stored ? 'expired_or_revoked' : 'not_configured'
     if (stored) { try { await json('/me', {}, stored.access_token, env); auth = 'valid' } catch (error) { auth = (error as { status?: number }).status === 401 ? 'expired_or_revoked' : 'network_error' } }
     const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
-    console.log(JSON.stringify({ endpoint, api, auth, credential_storage: await credentialStorageStatus(env), workspace: metadata.root, git: metadata.gitAvailable ? (metadata.dirty ? 'available (dirty)' : 'available (clean)') : 'unavailable', cli_configuration: configSummary(config.effective), mcp: { count: config.effective.mcp.length, status: 'not connected by doctor' }, skills: { count: skills.length }, hooks: hookStatus(config.effective.hooksEnabled), images: 'server-controlled; no provider request made', web_search: 'server-controlled; no provider request made' }, null, 2)); return 0
+    console.log(JSON.stringify({ endpoint, api, auth, credential_storage: await credentialStorageStatus(env), workspace: metadata.root, git: metadata.gitAvailable ? (metadata.dirty ? 'available (dirty)' : 'available (clean)') : 'unavailable', sandbox: createSandboxAdapter(metadata.root).status(), cli_configuration: configSummary(config.effective), mcp: { count: config.effective.mcp.length, status: 'not connected by doctor' }, skills: { count: skills.length }, hooks: hookStatus(config.effective.hooksEnabled), images: 'server-controlled; no provider request made', web_search: 'server-controlled; no provider request made', cloud: 'disabled or unavailable; no cloud job requested' }, null, 2)); return 0
   }
   const tokens = await ensureTokens(env)
+  if (command === 'cloud') { await cloudCommand(argv.slice(argv.indexOf(command)), tokens, env); return 0 }
   if (command === 'whoami') { console.log(JSON.stringify(await json('/me', {}, tokens.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { if (!input.isTTY) throw new Error('Resume requires an interactive terminal so repository and run choices cannot be implicit.'); const line = createInterface({ input, output }); try { await resumeSession(line, tokens, positionalAfter(argv, 'resume') || undefined, env) } finally { line.close() }; return 0 }
   if (command === 'review') { if (!input.isTTY) throw new Error('Review requires an interactive terminal to approve sending the bounded diff.'); const line = createInterface({ input, output }); try { await showReview(tokens, env, line) } finally { line.close() }; return 0 }

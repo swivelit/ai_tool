@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { discoverRepository } from './repository.js'
 import { Workspace } from './workspace.js'
 
-/** Safe, read-only MCP surface. Mutating local tools remain unavailable until Stage 3 sandboxing. */
+/** Safe, read-only MCP surface. Mutating local tools remain unavailable until a reviewed runner exists. */
 export async function runMcpServer(): Promise<void> {
   const metadata = await discoverRepository(process.env.SWICO_CLI_WORKSPACE ?? process.cwd()), workspace = new Workspace(metadata.root)
   const server = new McpServer({ name: 'swico', version: '0.1.0' })

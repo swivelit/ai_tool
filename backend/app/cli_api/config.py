@@ -37,6 +37,7 @@ class CliSettings:
     access_token_seconds: int = 900
     session_max_seconds: int = 30 * 24 * 60 * 60
     action_retention_seconds: int = 300
+    cloud_agent_enabled: bool = False
 
 
 TIER_AGENT_STEP_CEILINGS = {"lite": 12, "standard": 20, "pro": 32, "free": 0}
@@ -50,6 +51,7 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     values = environ if environ is not None else os.environ
     enabled = _bool("SWICO_CLI_ENABLED", False, values)
     agent_enabled = _bool("SWICO_CLI_AGENT_ENABLED", False, values)
+    cloud_agent_enabled = _bool("SWICO_CLI_CLOUD_AGENT_ENABLED", False, values)
     origin = values.get("SWICO_CLI_WEB_ORIGIN", "https://swico.in").strip().rstrip("/")
     parsed = urlparse(origin)
     if parsed.scheme != "https" or parsed.hostname not in {"swico.in", "www.swico.in"} or parsed.username or parsed.password:
@@ -70,6 +72,7 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         web_origin=origin,
         allowed_emails=allowlist,
         max_agent_steps=max_steps,
+        cloud_agent_enabled=cloud_agent_enabled,
     )
 
 
@@ -77,4 +80,6 @@ def validate_cli_configuration(environ: dict[str, str] | None = None) -> CliSett
     settings = cli_settings(environ)
     if settings.agent_enabled and not settings.enabled:
         raise CliConfigurationError("SWICO_CLI_AGENT_ENABLED requires SWICO_CLI_ENABLED.")
+    if settings.cloud_agent_enabled and not settings.enabled:
+        raise CliConfigurationError("SWICO_CLI_CLOUD_AGENT_ENABLED requires SWICO_CLI_ENABLED.")
     return settings

@@ -44,6 +44,11 @@ class CliTierRequest(BaseModel):
     tier: Literal["free", "lite", "standard", "pro"]
 
 
+class CloudJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task: str = Field(min_length=1, max_length=8_000)
+
+
 class AgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID

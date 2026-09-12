@@ -103,4 +103,6 @@ selects a server-controlled search policy and `--image PATH` uploads a
 bounded, owner-scoped temporary image for paid Chat/vision flows. Free stays
 text-only. Stage 2 subagents are bounded read-only local inspections (four
 maximum, depth one); provider-backed parallel subagents, executable hooks,
-remote plugins, mutating MCP and sandboxed execution are deferred.
+remote plugins and mutating MCP remain deferred. Local agent commands use an
+OS-enforced sandbox when the platform runtime is actually available; otherwise
+the agent fails closed. Use `swico sandbox status` to inspect readiness.

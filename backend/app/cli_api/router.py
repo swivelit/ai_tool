@@ -47,12 +47,13 @@ from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
-    DeviceTokenRequest,
+    DeviceTokenRequest, CloudJobRequest,
 )
 from .security import (
     digest, human_code, random_secret, valid_code_challenge,
     valid_code_verifier, verify_code_challenge,
 )
+from .isolated_runner import configured_isolated_runner
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cli/v1", tags=["cli"])
@@ -60,6 +61,18 @@ _BLOCKED_AGENT_PATH = re.compile(
     r"(?:^|/)\.env(?:$|[./])|(?:^|/)(?:\.npmrc|\.pypirc|\.ssh|credentials?|secrets?|tokens?|node_modules|dist|build|\.git)(?:/|$)|\.(?:pem|key|p12|pfx|kdbx)$",
     re.I,
 )
+
+
+def _cloud_unavailable() -> None:
+    """Cloud control-plane placeholder: never execute repository code in API workers."""
+    runner = configured_isolated_runner()
+    raise HTTPException(
+        503,
+        {
+            "code": "cloud_execution_unavailable",
+            "message": f"Cloud execution unavailable: {getattr(runner, 'reason', 'no isolated runner is configured')}.",
+        },
+    )
 
 
 def _settings():
@@ -81,6 +94,29 @@ def _require_agent_enabled():
     if not settings.agent_enabled:
         raise HTTPException(404, {"code": "cli_agent_disabled", "message": "The local coding agent is not enabled."})
     return settings
+
+
+@router.post("/cloud/jobs")
+def create_cloud_job(payload: CloudJobRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    """Reserve no work and fail closed until a separately isolated runner exists."""
+    _cli_session_from_header(authorization, session, required_scope="agent")
+    _cloud_unavailable()
+
+
+@router.get("/cloud/jobs/{job_id}")
+def get_cloud_job(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    if not job_id or len(job_id) > 128:
+        raise HTTPException(404, "Cloud job not found")
+    _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    _cloud_unavailable()
+
+
+@router.post("/cloud/jobs/{job_id}/cancel")
+def cancel_cloud_job(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    if not job_id or len(job_id) > 128:
+        raise HTTPException(404, "Cloud job not found")
+    _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    _cloud_unavailable()
 
 
 def _grant_error(code: str, description: str, status: int = 400):
@@ -168,11 +204,13 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
     elif action.action_type == "run_command":
         argv = payload.get("argv")
         timeout = payload.get("timeout_ms", 30_000)
+        network = payload.get("network", "disabled")
         if (
             not isinstance(argv, list) or not argv or len(argv) > 32
             or any(not isinstance(value, str) or not value or len(value) > 512 for value in argv)
             or not isinstance(timeout, int) or isinstance(timeout, bool)
             or not 100 <= timeout <= 120_000
+            or network not in {"disabled", "allowed"}
         ):
             raise HTTPException(422, "run_command payload is invalid or outside the supported bound.")
     elif action.action_type == "git_diff":
