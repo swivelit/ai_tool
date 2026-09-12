@@ -8,7 +8,20 @@ import { McpManager } from '../dist/mcp.js'
 import { completion } from '../dist/completion.js'
 import { listSkills, selectSkill } from '../dist/skills.js'
 import { inspectPlugin } from '../dist/plugins.js'
-import { streamChat } from '../dist/api.js'
+import { probeEndpoint, streamChat } from '../dist/api.js'
+
+test('doctor probes the explicit no-cost rollout health contract', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(String(url))
+    return new Response(JSON.stringify({ status: 'ok', cli_enabled: false, agent_enabled: false, cloud_agent_enabled: false, message: 'Swico CLI is disabled.' }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    assert.deepEqual(await probeEndpoint({ SWICO_API_BASE_URL: 'https://api.example.test' }), { status: 200, state: 'disabled', detail: 'Swico CLI is disabled.' })
+    assert.match(calls[0], /\/api\/cli\/v1\/health$/)
+  } finally { globalThis.fetch = originalFetch }
+})
 
 test('project configuration can narrow but cannot trust an MCP server or enable hooks', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-config-'))
@@ -50,6 +63,7 @@ test('skills load descriptions before bounded instructions and completion is off
     assert.equal(selectSkill('fix test failures', skills)?.name, 'testing')
     assert.match(completion('bash'), /complete -F/)
     assert.throws(() => completion('unknown'), /bash, zsh/)
+    for (const shell of ['bash', 'zsh', 'fish', 'powershell']) for (const command of ['sandbox', 'worktree', 'cloud', 'mcp-server']) assert.match(completion(shell), new RegExp(command.replace('-', '\\-')))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

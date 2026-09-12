@@ -9,18 +9,14 @@ export class CliApiError extends Error {
 
 export async function probeEndpoint(env = process.env): Promise<{ status: number; state: 'enabled' | 'disabled' | 'unavailable' | 'unexpected'; detail?: string }> {
   try {
-    const response = await fetch(`${apiBaseUrl(env)}/api/cli/v1/device/__doctor__`, { headers: { Accept: 'application/json' }, redirect: 'error' })
+    const response = await fetch(`${apiBaseUrl(env)}/api/cli/v1/health`, { headers: { Accept: 'application/json' }, redirect: 'error' })
     const text = (await response.text()).slice(0, 500)
     if (text.trimStart().startsWith('<')) return { status: response.status, state: 'unexpected', detail: 'The endpoint returned HTML instead of the Swico API.' }
-    let detail = ''
-    try {
-      const body = JSON.parse(text) as { detail?: { code?: string; message?: string } | string }
-      detail = typeof body.detail === 'string' ? body.detail : body.detail?.message ?? body.detail?.code ?? ''
-      if (body.detail && typeof body.detail === 'object' && body.detail.code === 'cli_disabled') return { status: response.status, state: 'disabled', detail }
-    } catch { /* HTML/proxy responses are classified below */ }
-    if (response.status === 404) return { status: response.status, state: 'enabled', detail: detail || 'CLI endpoint responded; authentication is required.' }
-    if (response.ok) return { status: response.status, state: 'enabled', detail: detail || 'Endpoint responded.' }
-    return { status: response.status, state: 'unexpected', detail: detail || `HTTP ${response.status}` }
+    let body: { cli_enabled?: unknown; message?: unknown; detail?: unknown } = {}
+    try { body = JSON.parse(text) as typeof body } catch { return { status: response.status, state: 'unexpected', detail: 'The readiness endpoint returned invalid JSON.' } }
+    if (!response.ok) return { status: response.status, state: 'unexpected', detail: typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}` }
+    if (typeof body.cli_enabled !== 'boolean') return { status: response.status, state: 'unexpected', detail: 'The readiness endpoint returned no CLI rollout state.' }
+    return { status: response.status, state: body.cli_enabled ? 'enabled' : 'disabled', detail: typeof body.message === 'string' ? body.message : undefined }
   } catch (error) {
     return { status: 0, state: 'unavailable', detail: error instanceof Error ? error.message.slice(0, 160) : 'Network request failed.' }
   }
@@ -98,6 +94,9 @@ export async function getAgentRun(tokens: CliTokens, runId: string, env = proces
 }
 export async function planAgentStep(tokens: CliTokens, runId: string, task: string, context: string, env = process.env, signal?: AbortSignal) {
   return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, tokens.access_token, env)
+}
+export async function runSubagents(tokens: Pick<CliTokens, 'access_token'>, runId: string, actionId: string, tasks: Array<{ id: string; task: string }>, context: string, env = process.env, signal?: AbortSignal) {
+  return json<{ run_id: string; results: Array<{ id: string; summary: string; usage: number }>; active: number; max_active: number }>(`/agent/runs/${encodeURIComponent(runId)}/subagents`, { method: 'POST', body: JSON.stringify({ action_id: actionId, tasks, context: context.slice(0, 8_000) }), signal }, tokens.access_token, env)
 }
 export async function completeAgentRun(tokens: CliTokens, runId: string, env = process.env) {
   return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/complete`, { method: 'POST' }, tokens.access_token, env)

@@ -174,8 +174,9 @@ sandboxed hook runner is not available yet.
 web-search behavior, and `--image PATH`/`/image PATH` uses the existing
 temporary, owner-scoped paid image upload policy; Free remains text-only.
 
-The subagent helper is bounded read-only local inspection (maximum four,
-depth one); it cannot mutate the shared workspace. `swico worktree
+Read-only subagents are bounded model-backed analysis rounds (maximum four,
+depth one) through the authenticated, metered Chat path. They receive only
+bounded local observations and cannot mutate the shared workspace. `swico worktree
 create|list|clean` provides explicit Swico-owned detached Git worktrees for
 future isolated work and never stashes or resets the primary tree. Mutating
 subagents and automatic merge remain disabled. `swico sandbox

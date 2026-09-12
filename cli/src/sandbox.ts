@@ -5,9 +5,11 @@ import { dirname, join, relative } from 'node:path'
 
 export type SandboxPolicy = 'read-only' | 'workspace-write'
 export type NetworkPolicy = 'disabled' | 'allowed'
+export type SandboxDiagnostic = 'ready' | 'binary_missing' | 'profile_rejected' | 'sandbox_apply_denied' | 'namespace_unavailable' | 'unsupported_platform'
 export type SandboxStatus = {
   implementation: 'macos-sandbox-exec' | 'linux-bubblewrap' | 'unavailable'
   available: boolean
+  diagnostic: SandboxDiagnostic
   reason: string
   policy: SandboxPolicy
   network: NetworkPolicy
@@ -21,11 +23,28 @@ export type SandboxAdapter = {
 
 function commandExists(value: string): boolean { try { execFileSync('sh', ['-c', `command -v ${value}`], { stdio: 'ignore' }); return true } catch { return false } }
 function safeRoot(value: string): string { return realpathSync(value) }
-function macRuntimeReady(): boolean {
-  try { execFileSync('/usr/bin/sandbox-exec', ['-p', '(version 1) (allow process-exec)', '/usr/bin/true'], { stdio: 'ignore', timeout: 2_000 }); return true } catch { return false }
+function errorOutput(error: unknown): string {
+  if (!error || typeof error !== 'object') return ''
+  const value = error as { stderr?: unknown; stdout?: unknown; message?: unknown }
+  return [value.stderr, value.stdout, value.message].filter(item => typeof item === 'string').join('\n').slice(0, 500)
 }
-function bubblewrapReady(): boolean {
-  try { execFileSync('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--', '/usr/bin/true'], { stdio: 'ignore', timeout: 2_000 }); return true } catch { return false }
+function macRuntimeDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
+  try { execFileSync('/usr/bin/sandbox-exec', ['-p', '(version 1) (allow process-exec)', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'macOS sandbox-exec policy enforcement is available.' } }
+  catch (error) {
+    const detail = errorOutput(error)
+    if (/syntax|parse|invalid|malformed|unknown operation/i.test(detail)) return { ready: false, diagnostic: 'profile_rejected', reason: `sandbox-exec rejected its readiness profile${detail ? `: ${detail}` : '.'}` }
+    // Some macOS/container hosts suppress sandbox-exec stderr for a denied
+    // sandbox_apply. A failed valid-profile probe with no parse diagnostic is
+    // therefore an application denial, never evidence that the policy works.
+    return { ready: false, diagnostic: 'sandbox_apply_denied', reason: 'sandbox-exec is installed but the host refused to apply an OS sandbox policy.' }
+  }
+}
+function bubblewrapDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
+  try { execFileSync('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create a mount, user, PID, and network namespace.' } }
+  catch (error) {
+    const detail = errorOutput(error)
+    return { ready: false, diagnostic: 'namespace_unavailable', reason: `bubblewrap is installed but user/mount namespaces are unavailable on this host${detail ? `: ${detail}` : '.'}` }
+  }
 }
 function macProfile(root: string, policy: SandboxPolicy, network: NetworkPolicy, writable: string): string {
   const files = `(subpath ${JSON.stringify(root)})`, writes = policy === 'workspace-write' ? `(subpath ${JSON.stringify(root)})` : `(subpath ${JSON.stringify(writable)})`
@@ -34,7 +53,7 @@ function macProfile(root: string, policy: SandboxPolicy, network: NetworkPolicy,
 
 class MacSandbox implements SandboxAdapter {
   constructor(private readonly root: string) {}
-  status(): SandboxStatus { return { implementation: 'macos-sandbox-exec', available: true, reason: 'macOS sandbox-exec policy enforcement is available.', policy: 'workspace-write', network: 'disabled', writable_roots: [this.root, join(tmpdir(), 'swico-sandbox')] } }
+  status(): SandboxStatus { return { implementation: 'macos-sandbox-exec', available: true, diagnostic: 'ready', reason: 'macOS sandbox-exec policy enforcement is available.', policy: 'workspace-write', network: 'disabled', writable_roots: [this.root, join(tmpdir(), 'swico-sandbox')] } }
   wrap(argv: string[], policy: SandboxPolicy = 'workspace-write', network: NetworkPolicy = 'disabled'): { command: string; args: string[] } { const writable = join(tmpdir(), 'swico-sandbox'); mkdirSync(writable, { recursive: true, mode: 0o700 }); return { command: '/usr/bin/sandbox-exec', args: ['-p', macProfile(this.root, policy, network, writable), argv[0], ...argv.slice(1)] } }
   spawn(argv: string[], options: SpawnOptions & { policy?: SandboxPolicy; network?: NetworkPolicy }): ChildProcess {
     const wrapped = this.wrap(argv, options.policy, options.network)
@@ -44,7 +63,7 @@ class MacSandbox implements SandboxAdapter {
 
 class LinuxBubblewrap implements SandboxAdapter {
   constructor(private readonly workspaceRoot: string) {}
-  status(): SandboxStatus { return { implementation: 'linux-bubblewrap', available: true, reason: 'bubblewrap is installed and will create a mount, user, PID, and network namespace.', policy: 'workspace-write', network: 'disabled', writable_roots: ['/workspace', '/tmp'] } }
+  status(): SandboxStatus { return { implementation: 'linux-bubblewrap', available: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create a mount, user, PID, and network namespace.', policy: 'workspace-write', network: 'disabled', writable_roots: ['/workspace', '/tmp'] } }
   private args(argv: string[], policy: SandboxPolicy, network: NetworkPolicy): string[] {
     const root = safeRoot(this.workspaceRoot), args = ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--ro-bind', '/usr', '/usr']
     for (const path of ['/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/usr/local']) {
@@ -63,8 +82,8 @@ class LinuxBubblewrap implements SandboxAdapter {
 }
 
 class UnavailableSandbox implements SandboxAdapter {
-  constructor(private readonly reason: string, private readonly root: string) {}
-  status(): SandboxStatus { return { implementation: 'unavailable', available: false, reason: this.reason, policy: 'read-only', network: 'disabled', writable_roots: [] } }
+  constructor(private readonly reason: string, private readonly root: string, private readonly diagnostic: SandboxDiagnostic = 'unsupported_platform') {}
+  status(): SandboxStatus { return { implementation: 'unavailable', available: false, diagnostic: this.diagnostic, reason: this.reason, policy: 'read-only', network: 'disabled', writable_roots: [] } }
   wrap(): { command: string; args: string[] } { throw new Error(`Swico sandbox unavailable: ${this.reason}. Refusing unsandboxed execution.`) }
   spawn(): ChildProcess { throw new Error(`Swico sandbox unavailable: ${this.reason}. Refusing unsandboxed command execution.`) }
 }
@@ -72,14 +91,16 @@ class UnavailableSandbox implements SandboxAdapter {
 export function createSandboxAdapter(root: string, platform = process.platform): SandboxAdapter {
   const resolved = safeRoot(root)
   if (platform === 'darwin' && commandExists('sandbox-exec')) {
-    if (macRuntimeReady()) return new MacSandbox(resolved)
-    return new UnavailableSandbox('sandbox-exec is installed but the host refused to apply an OS sandbox policy.', resolved)
+    const probe = macRuntimeDiagnostic()
+    if (probe.ready) return new MacSandbox(resolved)
+    return new UnavailableSandbox(probe.reason, resolved, probe.diagnostic)
   }
   if (platform === 'linux' && commandExists('bwrap')) {
-    if (bubblewrapReady()) return new LinuxBubblewrap(resolved)
-    return new UnavailableSandbox('bubblewrap is installed but user/mount namespaces are unavailable on this host.', resolved)
+    const probe = bubblewrapDiagnostic()
+    if (probe.ready) return new LinuxBubblewrap(resolved)
+    return new UnavailableSandbox(probe.reason, resolved, probe.diagnostic)
   }
-  return new UnavailableSandbox(platform === 'win32' ? 'Windows requires a reviewed native sandbox runtime; none is bundled.' : 'No supported OS-enforced sandbox runtime is installed.', resolved)
+  return new UnavailableSandbox(platform === 'win32' ? 'Windows requires a reviewed native sandbox runtime; none is bundled.' : 'No supported OS-enforced sandbox runtime is installed.', resolved, platform === 'win32' ? 'unsupported_platform' : 'binary_missing')
 }
 
 export function sandboxPathSummary(root: string): { workspace: string; home: string; outside_workspace: string } { return { workspace: safeRoot(root), home: homedir(), outside_workspace: relative(root, dirname(root)) } }

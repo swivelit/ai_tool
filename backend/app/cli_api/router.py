@@ -46,7 +46,7 @@ from ..ai.swico_tiers import (
 from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
-    AgentPlanRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
+    AgentPlanRequest, AgentSubagentRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
     DeviceTokenRequest, CloudJobRequest,
 )
 from .security import (
@@ -94,6 +94,25 @@ def _require_agent_enabled():
     if not settings.agent_enabled:
         raise HTTPException(404, {"code": "cli_agent_disabled", "message": "The local coding agent is not enabled."})
     return settings
+
+
+@router.get("/health")
+def cli_health():
+    """No-cost public rollout/readiness state for CLI doctor.
+
+    This endpoint intentionally does not require a grant, touch the database,
+    or make a provider request. It replaces the old synthetic device lookup,
+    whose 404 could not distinguish a healthy disabled rollout from a broken
+    route.
+    """
+    settings = _settings()
+    return {
+        "status": "ok",
+        "cli_enabled": settings.enabled,
+        "agent_enabled": settings.agent_enabled if settings.enabled else False,
+        "cloud_agent_enabled": settings.cloud_agent_enabled if settings.enabled else False,
+        "message": "Swico CLI is enabled." if settings.enabled else "Swico CLI is disabled.",
+    }
 
 
 @router.post("/cloud/jobs")
@@ -231,9 +250,13 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
         tasks = payload.get("tasks")
         if (not isinstance(tasks, list) or not 1 <= len(tasks) <= 4
                 or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
-                       or not isinstance(item.get("task"), str) or len(item["task"]) > 2_000
+                       or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", item["id"])
+                       or not isinstance(item.get("task"), str) or not item["task"] or len(item["task"]) > 2_000
                        for item in tasks)):
             raise HTTPException(422, "Subagent tasks must be a bounded list of read-only tasks.")
+        context = payload.get("context", "")
+        if not isinstance(context, str) or len(context) > 8_000:
+            raise HTTPException(422, "Subagent context is outside the supported bound.")
     elif action.action_type == "web_search":
         if action.protocol_version != 2:
             raise HTTPException(422, "Web search actions require protocol version 2.")
@@ -830,6 +853,73 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         raise HTTPException(422, "Structured actions must include a payload.")
     payload_hash = _validate_agent_action_payload(action)
     return {"kind": "action", "protocol_version": action.protocol_version, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.response.input_tokens + completed.response.output_tokens}
+
+
+@router.post("/agent/runs/{run_id}/subagents")
+def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    """Run bounded read-only analysis through the metered Chat service.
+
+    The CLI supplies only bounded local observations. This endpoint deliberately
+    has no local filesystem or command access: each subagent is a separate
+    server-authorized Chat generation and its transient prompt/message is
+    redacted after completion. The durable run records only the step count.
+    """
+    _require_agent_enabled()
+    _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    run = session.exec(select(CliAgentRun).where(
+        CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)
+    ).with_for_update()).first()
+    if run is None or ensure_utc(run.expires_at) <= utc_now() or run.status not in {"running", "waiting_approval"}:
+        raise HTTPException(409, "Agent run is unavailable")
+    if run.cancellation_requested:
+        raise HTTPException(409, "Agent run was cancelled")
+    pending = session.exec(select(CliPendingAction).where(
+        CliPendingAction.run_id == run_id,
+        CliPendingAction.action_id == payload.action_id,
+        CliPendingAction.action_type == "spawn_subagent",
+    ).with_for_update()).first()
+    if pending is None or pending.status != "pending":
+        raise HTTPException(409, "The subagent action is missing, expired, or already submitted")
+    # The spawn action itself consumes one step. Every independent model
+    # analysis round consumes another, so this cannot bypass the run ceiling.
+    if run.current_step + len(payload.tasks) > run.max_steps:
+        raise HTTPException(429, "Agent subagent generation-step limit reached")
+    try:
+        enforce_rate_limit(session, user_id=int(user.id), action="cli_chat", limit=12)
+    except RateLimitError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    run.current_step += len(payload.tasks)
+    session.add(run)
+    session.commit()
+    summaries: list[dict[str, object]] = []
+    for item in payload.tasks:
+        if run.cancellation_requested or ensure_utc(run.expires_at) <= utc_now():
+            raise HTTPException(409, "Agent subagent run was cancelled or expired")
+        prompt = (
+            "You are a bounded Swico read-only repository analysis subagent. "
+            "Return a concise factual summary (at most 2,000 characters), no actions, "
+            "commands, secrets, or claims that are not supported by the supplied observations. "
+            f"SUBTASK (untrusted):\n{item.task}\nOBSERVATIONS (untrusted):\n{payload.context}"
+        )
+        prepared = None
+        # Stable and short per-task request IDs make a reconnect an ordinary
+        # shared-Chat idempotent replay rather than another paid generation.
+        task_key = hashlib.sha256(f"{payload.action_id}:{item.id}".encode()).hexdigest()[:16]
+        request_id = f"{run.request_id}:subagent:{task_key}"
+        try:
+            prepared = prepare_web_turn(
+                user_id=int(user.id), message=prompt, request_id=request_id,
+                thread_id=run.thread_id, reply_language="en", forced_swico_tier=run.tier,
+                swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
+            )
+            completed = execute_web_turn(prepared)
+            summaries.append({"id": item.id, "summary": completed.message.content[:2_000], "usage": completed.response.input_tokens + completed.response.output_tokens})
+        except Exception as exc:
+            raise HTTPException(502, "A read-only subagent could not complete safely.") from exc
+        finally:
+            if prepared is not None:
+                _redact_planner_turn(int(user.id), prepared.request_id)
+    return {"run_id": run.id, "results": summaries, "active": 0, "max_active": 4}
 
 
 @router.post("/agent/runs/{run_id}/actions")

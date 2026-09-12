@@ -77,6 +77,19 @@ class AgentPlanRequest(BaseModel):
     context: str = Field(default="", max_length=20_000)
 
 
+class AgentSubagentTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    task: str = Field(min_length=1, max_length=2_000)
+
+
+class AgentSubagentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_id: str = Field(min_length=8, max_length=64)
+    tasks: list[AgentSubagentTask] = Field(min_length=1, max_length=4)
+    context: str = Field(default="", max_length=8_000)
+
+
 class AgentResultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action_id: str = Field(min_length=8, max_length=64)

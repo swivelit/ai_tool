@@ -345,7 +345,13 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (command === 'config') { await configCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'mcp-server') { await runMcpServer(); return 0 }
   if (command === 'sandbox') { await sandboxCommand(argv.slice(argv.indexOf(command)), env); return 0 }
-  if (command === 'worktree') { await worktreeCommand(argv.slice(argv.indexOf(command)), env); return 0 }
+  if (command === 'worktree') {
+    const worktreeArgs = argv.slice(argv.indexOf(command)), needsApproval = worktreeArgs[1] === 'clean'
+    if (needsApproval && !input.isTTY) throw new Error('Worktree cleanup requires an interactive terminal and explicit approval.')
+    const line = needsApproval ? createInterface({ input, output }) : undefined
+    try { await worktreeCommand(worktreeArgs, env, line) } finally { line?.close() }
+    return 0
+  }
   if (command === 'mcp') { await mcpCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), items = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env); if (argv[1] === 'show' && argv[2]) console.log((await (await import('./skills.js')).showSkill(argv[2], metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions); else for (const item of items) console.log(`${item.name}\t${item.description}`); return 0 }
   if (command === 'plugins') { const { metadata } = await repositoryInfo(env); if (argv[1] === 'inspect' && argv[2]) console.log(JSON.stringify(await (await import('./plugins.js')).inspectPlugin(argv[2]), null, 2)); else console.log(JSON.stringify(await (await import('./plugins.js')).listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), null, 2)); return 0 }

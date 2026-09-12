@@ -156,7 +156,11 @@ export async function loadConfig(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
     // Project configuration can narrow behavior, but never grants trust or
     // raises permissions. Project MCP entries are inspection-only until the
     // user explicitly adds an equivalent server to user config.
-    if (project.searchMode !== 'auto') effective.searchMode = project.searchMode
+    // Search is a network/billing capability. A checked-out repository is
+    // untrusted, so its config may narrow the user's setting but never raise
+    // it (off -> auto/on and auto -> on are both forbidden).
+    const searchRank: Record<SearchMode, number> = { off: 0, auto: 1, on: 2 }
+    if (searchRank[project.searchMode] < searchRank[effective.searchMode]) effective.searchMode = project.searchMode
     if (project.defaultMode === 'chat' || project.defaultMode === 'plan') effective.defaultMode = project.defaultMode
     if (project.autoSkills === false) effective.autoSkills = false
     if (project.permissionProfile === 'read-only') effective.permissionProfile = 'read-only'

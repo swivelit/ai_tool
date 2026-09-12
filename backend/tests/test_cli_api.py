@@ -29,6 +29,24 @@ def _challenge(value: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(value.encode()).digest()).rstrip(b"=").decode()
 
 
+def test_cli_health_reports_public_rollout_without_device_or_provider_request(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "false")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
+    response = client.get("/api/cli/v1/health")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "ok", "cli_enabled": False, "agent_enabled": False,
+        "cloud_agent_enabled": False, "message": "Swico CLI is disabled.",
+    }
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    enabled = client.get("/api/cli/v1/health")
+    assert enabled.status_code == 200
+    assert enabled.json()["cli_enabled"] is True
+    assert enabled.json()["agent_enabled"] is True
+    assert enabled.json()["cloud_agent_enabled"] is True
+
+
 def _start(client: TestClient, *, scopes: list[str] | None = None):
     verifier = _verifier()
     response = client.post("/api/cli/v1/device", json={
@@ -258,6 +276,49 @@ def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(c
     assert planned.status_code == 200, planned.text
     assert planned.json()["action_type"] == "list_files"
     assert planned.json()["usage"] == 18
+
+
+def test_subagent_action_uses_independent_metered_chat_rounds_and_bounded_context(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    user = create_test_user("cli-subagent-user", "subagent@example.com")
+    raw_access = "u" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("v" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat","agent"]', device_description="subagent test",
+        ))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "inspect authentication"})
+    assert run.status_code == 201, run.text
+    run_id = run.json()["run_id"]
+    tasks = [{"id": "auth", "task": "Inspect the authentication boundary."}, {"id": "tests", "task": "Identify the focused tests."}]
+    action_payload = {"tasks": tasks, "context": "bounded repository observations only"}
+    action = {"protocol_version": 2, "action_id": "spawn-action-1", "action_type": "spawn_subagent", "payload": action_payload}
+    action["payload_hash"] = hashlib.sha256(json.dumps(action_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    accepted = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action)
+    assert accepted.status_code == 200, accepted.text
+    calls: list[dict[str, object]] = []
+    response = AIProviderResponse(text="Independent bounded analysis", provider="openai", model="test-model", route="test", reason="test", language="en", intent="coding", input_tokens=5, output_tokens=7, raw={"completion_status": "complete"})
+    message = CompletedWebMessage(id="subagent-message", content=response.text, status="complete", swico_tier="lite", usage_source="actual", charge_micros=0, provider="openai", model="test-model", request_id="subagent-request", replaces_message_id=None, revision_number=1)
+    completed = CompletedWebTurn(None, message, {"available_micros": 0}, response)
+    def fake_prepare(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(request_id=kwargs["request_id"])
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", fake_prepare)
+    monkeypatch.setattr("app.cli_api.router.execute_web_turn", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
+    result = client.post(f"/api/cli/v1/agent/runs/{run_id}/subagents", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "spawn-action-1", **action_payload})
+    assert result.status_code == 200, result.text
+    assert [item["id"] for item in result.json()["results"]] == ["auth", "tests"]
+    assert len(calls) == 2
+    assert all(call["forced_swico_tier"] == "lite" and call["billing_credit_bucket"] == "chat" for call in calls)
+    assert all("bounded repository observations only" in call["message"] for call in calls)
+    replay = client.post(f"/api/cli/v1/agent/runs/{run_id}/subagents", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "spawn-action-1", **action_payload})
+    assert replay.status_code == 200
+    assert [call["request_id"] for call in calls[2:]] == [call["request_id"] for call in calls[:2]]
 
 
 def test_agent_protocol_accepts_bounded_repository_actions_and_rejects_secret_paths(client: TestClient, monkeypatch: pytest.MonkeyPatch):

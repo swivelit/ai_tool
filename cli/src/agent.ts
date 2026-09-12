@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { AgentAction, AgentResult } from './contracts.js'
-import { json, streamChat } from './api.js'
+import { json, runSubagents, streamChat } from './api.js'
 import { Workspace } from './workspace.js'
 import { ActionJournal } from './journal.js'
 import type { PermissionProfile } from './permissions.js'
 import type { McpManager } from './mcp.js'
 import { HookBus } from './hooks.js'
-import { ReadOnlySubagents } from './subagents.js'
+import { boundedSubagentTasks } from './subagents.js'
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -18,10 +18,8 @@ function canonical(value: unknown): string {
 export function actionHash(action: AgentAction): string { return createHash('sha256').update(canonical(action.payload)).digest('hex') }
 export class LocalAgent {
   private readonly journal: ActionJournal
-  private readonly subagents: ReadOnlySubagents
   constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal, private readonly mcp?: McpManager, private readonly hooks = new HookBus()) {
     this.journal = new ActionJournal(env.SWICO_CLI_JOURNAL_FILE ?? `${workspace.root}/.swico/action-journal.jsonl`)
-    this.subagents = new ReadOnlySubagents(workspace)
   }
   async execute(runId: string, action: AgentAction, approve: (description: string) => Promise<boolean>): Promise<AgentResult> {
     await this.hooks.emit({ event: 'pre_tool', run_id: runId, action_type: action.action_type })
@@ -53,7 +51,8 @@ export class LocalAgent {
         if (!this.mcp) throw new Error('MCP is not configured for this session.')
         result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal)
       } else if (action.action_type === 'spawn_subagent') {
-        result = await this.subagents.inspect(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [], this.signal)
+        const tasks = boundedSubagentTasks(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [])
+        result = await runSubagents({ access_token: this.accessToken }, runId, action.action_id, tasks, typeof action.payload.context === 'string' ? action.payload.context : '', this.env, this.signal)
       } else if (action.action_type === 'web_search') {
         const answer = await streamChat({ access_token: this.accessToken }, String(action.payload.query ?? ''), undefined, undefined, this.env, { signal: this.signal, searchMode: 'on' })
         result = answer.text

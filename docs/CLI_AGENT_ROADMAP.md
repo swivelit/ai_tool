@@ -25,12 +25,15 @@ SDK client for stdio and Streamable HTTP with explicit approval for unknown or
 side-effecting tools, a read-only stdio `swico mcp-server`, description-first
 SKILL.md discovery, declarative plugin inspection, an in-process lifecycle
 hook bus with executable hooks disabled, static shell completion, CLI search
-mode/temporary image attachment fields, and bounded read-only subagent
-inspection. These do not create a second provider or billing path.
+mode/temporary image attachment fields, and bounded read-only model-backed
+subagents. Each subagent is a separate short Chat round through the existing
+server billing path; only bounded local observations are sent and the root
+agent remains the sole mutating actor. These do not create a second provider
+or billing path.
 
 Stage 3 remains intentionally bounded: unattended mutating MCP tools, remote
 plugin installation, executable hooks, image workflows requiring a new
-server capability, and provider-backed parallel subagents remain deferred.
+server capability, and mutating/parallel worktree subagents remain deferred.
 Each requires reviewed capability negotiation, owner-scoped billing, bounded
 data flow, approval and cancellation semantics, and platform security tests.
 Full-auto or dangerous modes are not planned until a real platform-enforced
