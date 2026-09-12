@@ -25,7 +25,11 @@ def selected_swico_tier(session: Session, user_id: int) -> str:
     row = session.exec(
         select(WebUsagePreferences).where(WebUsagePreferences.user_id == int(user_id))
     ).first()
-    return normalize_swico_tier(row.assistant_tier if row else default_swico_tier())
+    # Keep the persisted public choice observable even while Free is
+    # unavailable. Request admission performs the eligibility check and must
+    # return an explicit unavailable response instead of silently routing paid.
+    selected = row.assistant_tier if row else default_swico_tier()
+    return normalize_swico_tier(selected)
 
 
 def _period_bounds(

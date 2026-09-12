@@ -86,7 +86,7 @@ test('release readiness reports sandbox proof as a required local-agent gate wit
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-readiness-'))
   try {
     const report = await releaseReadiness(root)
-    assert.equal(report.checks.chat_ready, 'ready')
+    assert.equal(report.checks.chat_ready, 'unverified')
     assert.equal(report.checks.cloud_ready, 'disabled-optional')
     assert.ok(report.required_blockers.some(item => /sandbox/i.test(item)))
     assert.equal(report.checks.agent_sandbox_ready, report.sandbox.verified ? 'ready' : 'blocked')

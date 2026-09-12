@@ -961,6 +961,11 @@ def submit_agent_result(run_id: str, action_id: str, payload: AgentResultRequest
         if step.result_hash == payload.result_hash:
             return {"status": run.status, "run_id": run.id, "action_id": action_id, "replayed": True}
         raise HTTPException(409, "Conflicting result for an already submitted action")
+    if run.status in {"cancelled", "completed", "failed", "expired"} or run.cancellation_requested:
+        # A result may arrive after cancellation or terminal completion. It is
+        # evidence of what happened locally, but must not reopen the run or
+        # grant another model/action opportunity.
+        raise HTTPException(409, "The agent run is terminal; this action result cannot be accepted")
     step.status, step.result_hash = payload.status, payload.result_hash
     pending.status, pending.resolved_at = "submitted", utc_now()
     run.status, run.terminal_reason = ("running", None) if payload.status == "succeeded" else ("failed", "local_action_failed_or_unknown")

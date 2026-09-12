@@ -9,6 +9,15 @@ import { completion } from '../dist/completion.js'
 import { listSkills, selectSkill } from '../dist/skills.js'
 import { inspectPlugin } from '../dist/plugins.js'
 import { probeEndpoint, streamChat } from '../dist/api.js'
+import { parseTaskArguments, taskText } from '../dist/arguments.js'
+
+test('task parser keeps boolean search switches from consuming the prompt', () => {
+  const parsed = parseTaskArguments(['ask', '--search', 'latest', 'status'], 'ask')
+  assert.equal(taskText(parsed), 'latest status')
+  assert.equal(parsed.flags.has('--search'), true)
+  assert.throws(() => parseTaskArguments(['exec', '--search', '--no-search', 'task'], 'exec'), /cannot be used together/)
+  assert.throws(() => parseTaskArguments(['ask', '--unknown', 'task'], 'ask'), /Unknown option/)
+})
 
 test('doctor probes the explicit no-cost rollout health contract', async () => {
   const originalFetch = globalThis.fetch
@@ -73,11 +82,12 @@ test('declarative plugin inspection rejects executable manifests', async () => {
 })
 
 test('CLI chat carries server-controlled search mode and temporary attachments through the real stream client', async () => {
-  const originalFetch = globalThis.fetch; let payload
+  const originalFetch = globalThis.fetch; let payload; const events = []
   globalThis.fetch = async (_url, init = {}) => { payload = JSON.parse(String(init.body)); return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('event: thread\ndata: {"thread_id":"t1"}\n\nevent: delta\ndata: {"text":"ok"}\n\nevent: done\ndata: {}\n\n')); controller.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }
   try {
     const tokens = { access_token: 'opaque', refresh_token: 'opaque', expires_in: 900, session_id: 's', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'test@example.com', name: 'Test' } }
-    const answer = await streamChat(tokens, 'latest status', undefined, undefined, { SWICO_API_BASE_URL: 'https://api.example.test' }, { searchMode: 'on', attachmentIds: ['upload-1'] })
+    const answer = await streamChat(tokens, 'latest status', undefined, event => events.push(event), { SWICO_API_BASE_URL: 'https://api.example.test' }, { searchMode: 'on', attachmentIds: ['upload-1'] })
     assert.equal(answer.text, 'ok'); assert.deepEqual(payload.attachment_ids, ['upload-1']); assert.equal(payload.search_mode, 'on')
+    assert.deepEqual(events.map(event => event.event), ['thread', 'delta', 'done'])
   } finally { globalThis.fetch = originalFetch }
 })

@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { credentialStorageStatus } from './credentials.js'
 import { createSandboxAdapter, verifySandbox, type SandboxVerification } from './sandbox.js'
+import { loadConfig } from './configuration.js'
 
 export type ReadinessState = 'ready' | 'blocked' | 'unverified' | 'disabled-optional'
 export type ReleaseReadiness = {
@@ -28,16 +29,26 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   const status = createSandboxAdapter(root).status()
   const sandbox = await verifySandbox(root)
   const credential = await credentialStorageStatus()
+  const config = await loadConfig(root)
   const sandboxReady: ReadinessState = sandbox.verified ? 'ready' : 'blocked'
-  const license = existsSync(join(root, 'LICENSE')) || existsSync(join(root, 'LICENSE.md')) ? 'ready' : 'blocked'
+  // Check the package being released, not an unrelated license at the
+  // workspace root. The current package intentionally has no license until
+  // the owner makes that decision.
+  let packageLicense = ''
+  try { packageLicense = String((JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { license?: unknown }).license ?? '').trim() } catch { /* reported as blocked */ }
+  const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' ? 'ready' : 'blocked'
   const required_blockers: string[] = []
   if (!sandbox.verified) required_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
   if (license === 'blocked') required_blockers.push('No approved top-level LICENSE is present; public npm release requires an explicit licensing decision.')
+  const mcpHasStdio = config.effective.mcp.some(item => item.transport === 'stdio')
   const checks: ReleaseReadiness['checks'] = {
-    chat_ready: 'ready',
+    // An offline check cannot prove an authenticated end-to-end Chat turn.
+    chat_ready: 'unverified',
     credential_store_ready: /unavailable/i.test(credential) ? 'blocked' : 'ready',
     agent_sandbox_ready: sandboxReady,
-    mcp_ready: sandbox.verified ? 'ready' : 'blocked',
+    // HTTP MCP does not become ready merely because a local sandbox passed;
+    // stdio MCP additionally requires a verified local runtime.
+    mcp_ready: mcpHasStdio && !sandbox.verified ? 'blocked' : 'unverified',
     images_ready: 'unverified',
     search_ready: 'unverified',
     subagents_ready: 'unverified',
@@ -52,6 +63,7 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
     required_blockers,
     optional_notes: [
       `Sandbox readiness probe: ${status.implementation} (${status.diagnostic}).`,
+      'Chat readiness is unverified offline; use doctor and a controlled authenticated smoke test to prove the deployed API path.',
       'Images, web search, and model-backed subagents have no live-provider verification in this check.',
       'Cloud execution is optional and remains fail-closed until an isolated runner is configured.',
     ],

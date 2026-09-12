@@ -4,6 +4,35 @@ This is the release-readiness status of the current checkout. “Verified”
 means covered by local tests and checks; it does not mean a live provider,
 production browser, native-device, or every OS security boundary was tested.
 
+## Dated parity baseline
+
+Reviewed 2026-09-12 against the current official Codex CLI feature,
+reference, and security documentation:
+
+- https://developers.openai.com/codex/cli/features
+- https://developers.openai.com/codex/cli/reference
+- https://developers.openai.com/codex/security
+
+This is a capability comparison, not a claim of Codex parity. Swico keeps
+server-owned public tiers and shared Swico billing instead of exposing vendor
+model selectors. Stable Codex workflows that Swico implements are listed
+below; beta/experimental or infrastructure-dependent workflows remain
+explicitly bounded.
+
+| Workflow area | Swico status | Current boundary |
+|---|---|---|
+| Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route; no live-provider proof in this check |
+| Repository instructions, planning, local edits | PARTIAL | Bounded agent protocol; local agent blocked unless hostile sandbox proof passes |
+| Approvals and local permissions | IMPLEMENTED + VERIFIED | Read-only/approval-required only; no full-auto mode |
+| Skills, declarative plugins, hooks | PARTIAL | Skills and inspection work; executable hooks/plugins remain disabled |
+| MCP | PARTIAL | Explicit stdio/HTTPS configuration; local stdio needs verified sandbox |
+| Review, exec, completion | IMPLEMENTED + VERIFIED | Read-only review and bounded command paths; schema/agent automation remains limited |
+| Sessions, resume, worktrees | PARTIAL | Owner-scoped metadata and detached worktrees; no automatic merge |
+| Images and web search | IMPLEMENTED + UNVERIFIED | Server-controlled paid capabilities; live/device acceptance still pending |
+| Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
+| Sandboxed local execution | FAIL-CLOSED / DISABLED | macOS Intel host refuses Seatbelt application; Linux/Windows not proven here |
+| Cloud tasks | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
+
 | Capability | Status | Boundary / evidence |
 |---|---|---|
 | Authentication and device approval | IMPLEMENTED + VERIFIED | Proof-bound device flow, rotation, revocation tests |

@@ -86,8 +86,10 @@ def normalize_swico_tier(value: object, *, enforce_availability: bool = True) ->
     normalized = str(value or "").strip().lower()
     tier = cast(SwicoTier, normalized) if normalized in SWICO_TIER_IDS else "lite"
     if enforce_availability:
-        if tier == "free" and not free_enabled():
-            return "lite"
+        # Free availability is an account/rollout decision made by the web
+        # service. Never turn a deliberately saved Free selection into a paid
+        # tier merely because the Free runtime is down; callers must surface
+        # the unavailable selection and reject the request without billing.
         if tier == "pro" and not pro_enabled():
             return "lite"
     return tier
@@ -122,13 +124,13 @@ def configured_model_ladder(tier: SwicoTier) -> list[str]:
 def public_tier_settings(tier: object, *, free_available: bool | None = None) -> dict[str, object]:
     free_is_available = free_enabled() if free_available is None else bool(free_available)
     current = normalize_swico_tier(tier)
-    if current == "free" and not free_is_available:
-        current = "lite"
+    free_unavailable = current == "free" and not free_is_available
     return {
         "tier": current,
         "tier_label": SWICO_TIER_LABELS[current],
         "tier_description": SWICO_TIER_DESCRIPTIONS[current],
         "tier_selection_enabled": tier_selection_enabled(),
+        "availability_reason": "Swico Free is temporarily unavailable." if free_unavailable else None,
         "tiers": [
             {
                 "id": item,

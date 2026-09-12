@@ -916,8 +916,6 @@ def bootstrap(
         int(user.id), internal_account=billing_exempt,
     )
     swico_tier = selected_swico_tier(session, int(user.id))
-    if swico_tier == "free" and not free_available:
-        swico_tier = "lite"
     uploads = _uploads_public_config()
     rollout, triag_settings = _web_rollout(auth, user)
     validation_capability = "static_only"
@@ -2450,8 +2448,6 @@ def get_assistant_settings(
         int(user.id), internal_account=internal_account,
     )
     tier = selected_swico_tier(session, int(user.id))
-    if tier == "free" and not free_available:
-        tier = "lite"
     return public_tier_settings(tier, free_available=free_available)
 
 
@@ -3411,8 +3407,6 @@ async def upload_document(
     free_available = swico_free_eligible(
         int(user.id), internal_account=billing_exempt,
     )
-    if swico_tier == "free" and not free_available:
-        swico_tier = "lite"
     if swico_tier == "free":
         await file.close()
         return _temporary_error(

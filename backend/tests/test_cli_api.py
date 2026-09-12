@@ -176,6 +176,13 @@ def test_agent_action_result_is_owner_scoped_idempotent_and_recoverable(client: 
     assert result.status_code == 200 and result.json()["status"] == "running"
     second_result = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions/action-123456/result", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "action-123456", "result_hash": "c" * 64, "status": "succeeded"})
     assert second_result.status_code == 200 and second_result.json()["replayed"] is True
+    late_action_payload = {"path": "src/other.py"}
+    late_action = {"protocol_version": 1, "action_id": "action-late", "action_type": "read_file", "payload": late_action_payload, "payload_hash": hashlib.sha256(json.dumps(late_action_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=late_action).status_code == 200
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/cancel", headers={"Authorization": f"Bearer {raw_access}"}).status_code == 200
+    late_result = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions/action-late/result", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "action-late", "result_hash": "d" * 64, "status": "succeeded"})
+    assert late_result.status_code == 409
+    assert client.get(f"/api/cli/v1/agent/runs/{run_id}", headers={"Authorization": f"Bearer {raw_access}"}).json()["status"] == "cancelled"
     assert client.get(f"/api/cli/v1/agent/runs/{run_id}", headers=auth_headers(other.firebase_uid, other.email)).status_code == 401
 
 

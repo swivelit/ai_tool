@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
-import { chmod, lstat, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, link, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -9,7 +9,7 @@ import type { NetworkPolicy, SandboxAdapter, SandboxPolicy } from './sandbox.js'
 
 const MAX_FILE = 256 * 1024
 const MAX_SEARCH_OUTPUT = 128 * 1024
-const blocked = /(?:^|\/)\.env(?:$|[./])|(?:^|\/)(?:\.npmrc|\.pypirc|\.ssh|id_(?:rsa|ed25519)|credentials?|secrets?|tokens?|node_modules|dist|build|\.git)(?:\/|$)|\.(?:pem|key|p12|pfx|kdbx)$/i
+const blocked = /(?:^|\/)\.env(?:$|[./])|(?:^|\/)(?:\.npmrc|\.pypirc|\.ssh|id_(?:rsa|ed25519)|credentials?|secrets?|tokens?|node_modules|dist|build|\.swico|\.git)(?:\/|$)|\.(?:pem|key|p12|pfx|kdbx)$/i
 const cleanTerminal = (value: string) => value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')
 const execFileAsync = promisify(execFile)
 const slash = (value: string) => value.replaceAll('\\', '/')
@@ -34,17 +34,21 @@ function unifiedPatch(original: string, patch: string): string {
     const header = lines[cursor++]
     const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header)
     if (!match) throw new Error('Patch hunk header is invalid.')
-    const start = Number(match[1]) - 1 + offset
-    const oldCount = Number(match[2] ?? 1), replacement: string[] = []
+    const oldStart = Number(match[1]), start = (oldStart === 0 ? 0 : oldStart - 1) + offset
+    const oldCount = Number(match[2] ?? 1), newCount = Number(match[4] ?? 1), replacement: string[] = [], consumed: string[] = []
     let oldSeen = 0
     while (cursor < lines.length && !lines[cursor].startsWith('@@ ')) {
       const line = lines[cursor++]
+      if (line === '' && cursor === lines.length) break
       if (line === '\\ No newline at end of file') continue
       if (!/^[ +\-]/.test(line)) throw new Error('Patch contains an invalid hunk line.')
-      if (line[0] !== '+') oldSeen += 1
+      if (line[0] !== '+') { oldSeen += 1; consumed.push(line.slice(1)) }
       if (line[0] !== '-') replacement.push(line.slice(1))
     }
-    if (oldSeen !== oldCount || start < 0 || start + oldCount > source.length) throw new Error('Patch hunk does not match the base file.')
+    if (oldSeen !== oldCount || replacement.length !== newCount || start < 0 || start + oldCount > source.length) throw new Error('Patch hunk does not match the base file.')
+    for (let index = 0; index < consumed.length; index += 1) {
+      if (source[start + index] !== consumed[index]) throw new Error('Patch context does not match the base file.')
+    }
     source.splice(start, oldCount, ...replacement)
     offset += replacement.length - oldCount
   }
@@ -82,6 +86,10 @@ export class Workspace {
     }
   }
 
+  private assertWritable(): void {
+    if (this.sandboxPolicy === 'read-only') throw new Error('The read-only sandbox policy blocks workspace mutations.')
+  }
+
   async listFiles(limit = 200): Promise<string[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('File listing limit is outside the supported bound.')
     const output: string[] = []
@@ -117,23 +125,28 @@ export class Workspace {
 
   async searchText(term: string, limit = 50, options: SearchOptions = {}): Promise<string[]> {
     if (!term.trim() || term.length > 512 || !Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('Search request is outside the supported bound.')
-    const args = [options.regex ? '--regexp' : '--fixed-strings', '--line-number', '--column', '--no-heading', '--color', 'never', '--max-count', String(limit)]
+    const args = [options.regex ? '-e' : '--fixed-strings', ...(options.regex ? [] : ['-e']), term, '--line-number', '--column', '--no-heading', '--color', 'never', '--no-config', '--max-count', String(limit)]
     if (options.contextLines) args.push('-C', String(Math.min(5, Math.max(0, options.contextLines))))
     if (options.glob) {
       if (options.glob.length > 128 || blocked.test(options.glob.replaceAll('\\', '/'))) throw new Error('Search path filter is blocked.')
       args.push('--glob', options.glob)
     }
-    args.push('--glob', '!**/.env*', '--glob', '!**/.git/**', '--glob', '!**/node_modules/**', term, '.')
+    args.push('--glob', '!**/.env*', '--glob', '!**/.git/**', '--glob', '!**/.swico/**', '--glob', '!**/node_modules/**', '--glob', '!**/dist/**', '--glob', '!**/build/**', '--glob', '!**/.ssh/**', '--glob', '!**/.npmrc', '--glob', '!**/.pypirc', '--glob', '!**/*credential*/**', '--glob', '!**/*secret*/**', '--glob', '!**/*token*/**', '--glob', '!**/*.{pem,key,p12,pfx,kdbx}', '--', '.')
     try {
-      const result = await execFileAsync('rg', args, { cwd: this.root, windowsHide: true, maxBuffer: MAX_SEARCH_OUTPUT })
+      const result = await execFileAsync('rg', args, { cwd: this.root, windowsHide: true, maxBuffer: MAX_SEARCH_OUTPUT, timeout: 10_000, env: commandEnvironment({ RIPGREP_CONFIG_PATH: process.platform === 'win32' ? 'NUL' : '/dev/null' }) })
       return cleanTerminal(result.stdout).split(/\r?\n/).filter(Boolean).slice(0, limit)
     } catch (error) {
       const failure = error as NodeJS.ErrnoException & { code?: number; stdout?: string }
       if (failure.code === 1) return []
+      if (failure.code === 'ETIMEDOUT') throw new Error('Repository search timed out.')
       if (failure.code !== 'ENOENT') throw new Error('Repository search failed.')
     }
     const hits: string[] = []
-    const expression = options.regex ? new RegExp(term) : null
+    let expression: RegExp | null = null
+    if (options.regex) {
+      if (/(?:\([^)]{0,256}[+*][^)]*\)|\.\*|\.\+).*(?:[+*]|\.\*|\.\+)/.test(term)) throw new Error('Regex search is too complex for the bounded fallback.')
+      try { expression = new RegExp(term, 'u') } catch { throw new Error('Regex search pattern is invalid.') }
+    }
     for (const path of await this.listFiles(500)) {
       if (hits.length >= limit) break
       try {
@@ -146,18 +159,23 @@ export class Workspace {
     return hits
   }
 
-  private async writeAtomic(path: string, content: string): Promise<{ path: string; sha256: string }> {
+  private async writeAtomic(path: string, content: string, noClobber = false): Promise<{ path: string; sha256: string }> {
     const target = await this.confined(path, true)
     const existing = await stat(target).catch(() => null)
     const mode = existing?.mode ? existing.mode & 0o7777 : 0o600
     const temporary = `${target}.swico-${process.pid}-${Date.now()}.tmp`
     await writeFile(temporary, content, { mode: mode & 0o7777, flag: 'wx' })
-    try { await chmod(temporary, mode & 0o7777); await rename(temporary, target) }
+    try {
+      await chmod(temporary, mode & 0o7777)
+      if (noClobber) { await link(temporary, target); await unlink(temporary) }
+      else await rename(temporary, target)
+    }
     catch (error) { await unlink(temporary).catch(() => undefined); throw error }
     return { path, sha256: hash(content) }
   }
 
   async applyPatch(path: string, expectedSha256: string, patch: string, approve: (description: string) => Promise<boolean>): Promise<{ path: string; sha256: string }> {
+    this.assertWritable()
     if (patch.length > MAX_FILE) throw new Error('Patch is too large.')
     const current = await this.readFile(path)
     if (current.sha256 !== expectedSha256) throw new Error('File changed since the patch was prepared; refresh context.')
@@ -171,24 +189,39 @@ export class Workspace {
   }
 
   async createFile(path: string, content: string, approve: (description: string) => Promise<boolean>): Promise<{ path: string; sha256: string }> {
+    this.assertWritable()
     if (Buffer.byteLength(content) > MAX_FILE) throw new Error('File is too large.')
     const target = await this.confined(path, true)
     if (await lstat(target).then(() => true).catch(() => false)) throw new Error('The file already exists; use a patch instead.')
     if (!await approve(`Create ${path}?`)) throw new Error('File creation was not approved.')
-    return this.writeAtomic(path, content)
+    const latest = await this.confined(path, true)
+    if (await lstat(latest).then(() => true).catch(() => false)) throw new Error('The file was created while approval was pending; refresh context.')
+    return this.writeAtomic(path, content, true)
   }
 
   async deleteFile(path: string, approve: (description: string) => Promise<boolean>): Promise<void> {
-    const target = await this.confined(path)
+    this.assertWritable()
+    const current = await this.readFile(path)
     if (!await approve(`Delete ${path}? This cannot be undone by Swico.`)) throw new Error('File deletion was not approved.')
-    await unlink(target)
+    const latest = await this.readFile(path)
+    if (latest.sha256 !== current.sha256) throw new Error('File changed while deletion was awaiting approval; refresh context.')
+    await unlink(await this.confined(path))
   }
 
   async moveFile(from: string, to: string, approve: (description: string) => Promise<boolean>): Promise<void> {
-    const source = await this.confined(from), target = await this.confined(to, true)
+    this.assertWritable()
+    const current = await this.readFile(from), source = await this.confined(from), target = await this.confined(to, true)
     if (await lstat(target).then(() => true).catch(() => false)) throw new Error('The destination already exists.')
     if (!await approve(`Move ${from} to ${to}?`)) throw new Error('File move was not approved.')
-    await rename(source, target)
+    const latest = await this.readFile(from)
+    if (latest.sha256 !== current.sha256) throw new Error('File changed while move was awaiting approval; refresh context.')
+    const destination = await this.confined(to, true)
+    if (await lstat(destination).then(() => true).catch(() => false)) throw new Error('The destination was created while move was awaiting approval; refresh context.')
+    // A hard-link followed by unlink gives regular-file moves no-clobber
+    // semantics across the approval boundary. Directory moves are deliberately
+    // unsupported until an equivalent atomic, cross-platform primitive exists.
+    await link(source, destination)
+    try { await unlink(source) } catch (error) { await unlink(destination).catch(() => undefined); throw error }
   }
 
   async gitStatus(): Promise<GitStatus> {
@@ -204,11 +237,11 @@ export class Workspace {
 
   async gitDiff(ref?: string): Promise<string> {
     if (ref !== undefined && (!ref || ref.startsWith('-') || ref.length > 256 || /[\u0000\r\n]/.test(ref))) throw new Error('Git diff reference is invalid.')
-    return this.git(ref ? ['diff', '--no-ext-diff', ref] : ['diff', '--no-ext-diff'])
+    return this.git(ref ? ['-c', 'core.pager=cat', '-c', 'diff.external=', 'diff', '--no-ext-diff', ref] : ['-c', 'core.pager=cat', '-c', 'diff.external=', 'diff', '--no-ext-diff'])
   }
 
   private async git(args: string[]): Promise<string> {
-    try { return (await execFileAsync('git', args, { cwd: this.root, windowsHide: true, maxBuffer: MAX_SEARCH_OUTPUT })).stdout.trim() }
+    try { return (await execFileAsync('git', args, { cwd: this.root, windowsHide: true, maxBuffer: MAX_SEARCH_OUTPUT, timeout: 10_000, env: commandEnvironment({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_CONFIG_SYSTEM: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_ATTR_NOSYSTEM: '1' }) })).stdout.trim() }
     catch { throw new Error('Git is unavailable or this workspace is not a repository.') }
   }
 
@@ -224,23 +257,39 @@ export class Workspace {
           ? this.sandbox.spawn([argv[0], ...argv.slice(1)], { cwd: this.root, shell: false, detached: process.platform !== 'win32', env: environment, policy: this.sandboxPolicy, network })
           : spawn(argv[0], argv.slice(1), { cwd: this.root, shell: false, detached: process.platform !== 'win32', env: environment })
       } catch (error) { reject(error); return }
-      let stdout = '', stderr = '', timedOut = false, cancelled = false, settled = false
+      let stdout = '', stderr = '', timedOut = false, cancelled = false, settled = false, forceTimer: NodeJS.Timeout | undefined
       const cap = 128 * 1024
       const stop = (reason: 'timeout' | 'cancel') => {
         if (reason === 'timeout') timedOut = true
         if (reason === 'cancel') cancelled = true
         if (process.platform === 'win32') child.kill()
         else if (child.pid) { try { process.kill(-child.pid, 'SIGTERM') } catch { child.kill('SIGTERM') } }
+        forceTimer = setTimeout(() => {
+          if (process.platform === 'win32' && child.pid) execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, () => undefined)
+          else if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { child.kill('SIGKILL') } }
+        }, 750)
       }
       const timer = setTimeout(() => stop('timeout'), Math.max(100, Math.min(timeoutMs, 120_000)))
       const abort = () => stop('cancel')
       if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true })
       child.stdout?.on('data', chunk => { stdout = (stdout + cleanTerminal(String(chunk))).slice(0, cap) })
       child.stderr?.on('data', chunk => { stderr = (stderr + cleanTerminal(String(chunk))).slice(0, cap) })
-      child.on('error', error => { if (!settled) { settled = true; clearTimeout(timer); reject(error) } })
-      child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); resolveResult({ code, stdout, stderr, timed_out: timedOut, cancelled, elapsed_ms: Date.now() - started }) })
+      child.on('error', error => { if (!settled) { settled = true; clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); reject(error) } })
+      child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); signal?.removeEventListener('abort', abort); resolveResult({ code, stdout, stderr, timed_out: timedOut, cancelled, elapsed_ms: Date.now() - started }) })
     })
   }
+}
+
+function commandEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH ?? '',
+    LANG: process.env.LANG ?? 'C.UTF-8',
+    LC_ALL: process.env.LC_ALL ?? process.env.LANG ?? 'C.UTF-8',
+    HOME: process.env.HOME ?? '',
+    SystemRoot: process.env.SystemRoot ?? '',
+    ...extra,
+  }
+  return Object.fromEntries(Object.entries(environment).filter(([, value]) => value !== ''))
 }
 
 export { cleanTerminal }

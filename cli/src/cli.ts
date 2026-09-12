@@ -29,6 +29,7 @@ import { createSandboxAdapter, verifySandbox } from './sandbox.js'
 import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
 import { cloudCancel, cloudExec, cloudStatus } from './cloud.js'
+import { parseTaskArguments, positionalAfter, taskText } from './arguments.js'
 
 const exec = promisify(execFile)
 const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
@@ -113,9 +114,16 @@ async function runPlan(task: string, env = process.env): Promise<void> {
 async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false, searchMode: 'auto' | 'on' | 'off' = 'auto', attachmentIds: string[] = []): Promise<{ text: string; threadId: string | null }> {
   const controller = new AbortController(); let requestId: string | undefined
   activeInterrupt = () => { controller.abort(); if (requestId) void cancelChat(tokens, requestId, env).catch(() => undefined) }
+  let renderedDelta = false
   try {
-    const answer = await streamChat(tokens, message, thread, event => showStreamEvent(event, jsonOutput), env, { signal: controller.signal, onRequestId: value => { requestId = value }, searchMode, attachmentIds })
-    if (!jsonOutput) console.log(`\n${answer.text}`)
+    const answer = await streamChat(tokens, message, thread, event => {
+      showStreamEvent(event, jsonOutput)
+      if (!jsonOutput && event.event === 'delta' && event.data && typeof event.data === 'object') {
+        const text = String((event.data as { text?: unknown }).text ?? '')
+        if (text) { process.stdout.write(text); renderedDelta = true }
+      }
+    }, env, { signal: controller.signal, onRequestId: value => { requestId = value }, searchMode, attachmentIds })
+    if (!jsonOutput) { if (renderedDelta) process.stdout.write('\n'); else console.log(`\n${answer.text}`) }
     return { text: answer.text, threadId: answer.threadId }
   } finally { if (activeInterrupt) activeInterrupt = null }
 }
@@ -335,25 +343,17 @@ async function interactive(tokens: CliTokens, env = process.env) {
 }
 
 function option(args: string[], name: string): string | undefined { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined }
-function positionalAfter(args: string[], command: string): string {
-  const start = args.indexOf(command), values: string[] = []
-  for (let index = start + 1; index < args.length; index += 1) {
-    const value = args[index]
-    if (value.startsWith('--')) { if (index + 1 < args.length && !args[index + 1].startsWith('--')) index += 1; continue }
-    values.push(value)
-  }
-  return values.join(' ')
-}
-async function nonInteractive(tokens: CliTokens, task: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
-  const mode = (option(args, '--mode') ?? 'chat') as Exclude<Mode, 'auto'>, jsonOutput = args.includes('--json'), outputFile = option(args, '--output')
+async function nonInteractive(tokens: CliTokens, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  const parsed = parseTaskArguments(args, 'exec'), task = taskText(parsed), mode = (parsed.values['--mode'] ?? 'chat') as Exclude<Mode, 'auto'>, jsonOutput = parsed.flags.has('--json'), outputFile = parsed.values['--output']
   if (!['chat', 'agent', 'plan'].includes(mode)) throw new Error('--mode must be chat, agent, or plan.')
+  if (!task) throw new Error('A task is required.')
   if (mode === 'plan') { await runPlan(task, env); return 0 }
   if (mode === 'agent') throw new Error('Non-interactive agent execution fails closed because local approval is required; use an interactive terminal.')
-  const image = option(args, '--image'), attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []
-  const answer = await runChat(tokens, task, undefined, env, jsonOutput, argsSearchMode(args), attachmentIds)
-  if (outputFile) await writeFile(outputFile, answer.text + '\n', { flag: 'wx' })
-  const schema = option(args, '--output-schema')
+  const image = parsed.values['--image'], attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []
+  const answer = await runChat(tokens, task, undefined, env, jsonOutput, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds)
+  const schema = parsed.values['--output-schema']
   if (schema) { const definition = JSON.parse(await (await import('node:fs/promises')).readFile(schema, 'utf8')) as { type?: string }; if (definition.type && definition.type !== 'string') throw new Error('The text result does not match --output-schema.') }
+  if (outputFile) await writeFile(outputFile, answer.text + '\n', { flag: 'wx' })
   return 0
 }
 
@@ -392,8 +392,8 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (command === 'whoami') { console.log(JSON.stringify(await json('/me', {}, tokens.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { if (!input.isTTY) throw new Error('Resume requires an interactive terminal so repository and run choices cannot be implicit.'); const line = createInterface({ input, output }); try { await resumeSession(line, tokens, positionalAfter(argv, 'resume') || undefined, env) } finally { line.close() }; return 0 }
   if (command === 'review') { if (!input.isTTY) throw new Error('Review requires an interactive terminal to approve sending the bounded diff.'); const line = createInterface({ input, output }); try { await showReview(tokens, env, line) } finally { line.close() }; return 0 }
-  if (command === 'ask') { const image = option(argv, '--image'), attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []; await runChat(tokens, positionalAfter(argv, 'ask'), undefined, env, false, argsSearchMode(argv), attachmentIds); return 0 }
-  if (command === 'exec') return nonInteractive(tokens, positionalAfter(argv, 'exec'), argv, env)
+  if (command === 'ask') { const parsed = parseTaskArguments(argv, 'ask'), task = taskText(parsed), image = parsed.values['--image'], attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []; if (!task) throw new Error('A question is required.'); await runChat(tokens, task, undefined, env, false, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds); return 0 }
+  if (command === 'exec') return nonInteractive(tokens, argv, env)
   if (command === 'agent') { if (!input.isTTY) throw new Error('Agent mode requires an interactive terminal because local edits and commands always need approval.'); await runAgent(tokens, positionalAfter(argv, 'agent'), env); return 0 }
   if (!input.isTTY) throw new Error('This terminal is non-interactive. Use `swico ask "your question"` or `swico exec "your task"`.')
   await interactive(tokens, env); return 0
