@@ -53,11 +53,13 @@ explicit approval. The code is not a bearer credential. Tokens use the
 platform credential store where available. On systems without one, choose
 `SWICO_CLI_CREDENTIAL_FILE` as an explicit protected fallback or use
 `--memory-only` deliberately; the CLI reports memory-only sessions instead of
-claiming durable login.
-The Node standard library has no dependency-free Windows Credential Manager
-API; until a reviewed OS-store adapter is approved, Windows persistent login
-requires the protected fallback rather than silently writing plaintext tokens.
-Do not put it in a repository, service environment, or child-process
+claiming durable login. Normal supported desktop installations use the native
+OS store supplied by `@napi-rs/keyring`: macOS Keychain, Windows Credential
+Manager, or Linux Secret Service. Its supported packages contain prebuilt
+bindings, so users do not need Rust or a compiler. If a native store is
+unavailable, the CLI fails closed; use the explicit protected-file fallback or
+`--memory-only` rather than silently writing plaintext tokens. Do not put
+credentials in a repository, service environment, or child-process
 environment. Revoke sessions at `/settings/cli-sessions`.
 
 ## Chat and agent

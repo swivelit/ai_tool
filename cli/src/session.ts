@@ -1,5 +1,5 @@
 import { credentialKey } from './config.js'
-import { loadTokens, saveTokens } from './credentials.js'
+import { credentialStorageMode, loadTokens, saveTokens } from './credentials.js'
 import { json, refresh } from './api.js'
 import type { CliTokens } from './contracts.js'
 
@@ -13,7 +13,9 @@ async function refreshStored(stored: CliTokens, env = process.env): Promise<CliT
     const latest = await loadTokens(env)
     if (latest && latest.refresh_token !== stored.refresh_token) return latest
     const updated = await refresh(stored.refresh_token, env)
-    await saveTokens(updated, env)
+    // Keep the storage selected when the session was created. In particular,
+    // a --memory-only session must not become durable during rotation.
+    await saveTokens(updated, env, { memoryOnly: credentialStorageMode(env) === 'memory' })
     return updated
   })()
   refreshLocks.set(lockKey, operation)

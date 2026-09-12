@@ -1,54 +1,83 @@
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CliTokens } from './contracts.js'
 import { credentialKey } from './config.js'
 
-const memory = new Map<string, CliTokens>()
-const exec = promisify(execFile)
-const STORE_TIMEOUT_MS = 2_000
+const SERVICE_NAME = 'swico-cli'
+const memory = new Map<string, { tokens: CliTokens; storage: CredentialStorage }>()
+
+export type CredentialStorage = 'keychain' | 'credential-manager' | 'secret-service' | 'protected-file' | 'memory'
+type NativeStorage = Exclude<CredentialStorage, 'protected-file' | 'memory'>
+
+export type NativeCredentialStore = {
+  storage: NativeStorage
+  save(account: string, value: string): void | Promise<void>
+  load(account: string): string | null | undefined | Promise<string | null | undefined>
+  delete(account: string): boolean | void | Promise<boolean | void>
+}
+
+let nativeStoreOverride: NativeCredentialStore | null | undefined
+
 function key(env = process.env) { return credentialKey(env) }
 function filePath(env = process.env) { return env.SWICO_CLI_CREDENTIAL_FILE ?? join(homedir(), '.config', 'swico', 'credentials.json') }
 
-export type CredentialStorage = 'keychain' | 'secret-service' | 'protected-file' | 'memory'
 export class CredentialStorageUnavailableError extends Error {
-  constructor() { super('No supported OS credential store is available. Set SWICO_CLI_CREDENTIAL_FILE to an explicit protected path, or use --memory-only for a non-persistent session.') }
+  constructor() {
+    super('No supported OS credential store is available. Set SWICO_CLI_CREDENTIAL_FILE to an explicit protected path, or use --memory-only for a non-persistent session.')
+    this.name = 'CredentialStorageUnavailableError'
+  }
 }
 
-async function command(name: string, args: string[], options: { input?: string } = {}) {
-  return exec(name, args, { ...options, timeout: STORE_TIMEOUT_MS, windowsHide: true })
-}
-
-async function saveOsStore(value: string, env: NodeJS.ProcessEnv): Promise<CredentialStorage | null> {
-  if (process.platform === 'darwin') {
-    await command('security', ['add-generic-password', '-U', '-s', `swico-cli:${key(env)}`, '-a', key(env), '-w', value])
-    return 'keychain'
-  }
-  if (process.platform === 'linux') {
-    await command('secret-tool', ['store', '--label=Swico CLI', 'service', 'swico-cli', 'endpoint', key(env)], { input: value })
-    return 'secret-service'
-  }
+function storageForPlatform(): NativeStorage | null {
+  if (process.platform === 'darwin') return 'keychain'
+  if (process.platform === 'win32') return 'credential-manager'
+  if (process.platform === 'linux') return 'secret-service'
   return null
 }
 
-async function loadOsStore(env: NodeJS.ProcessEnv): Promise<{ tokens: CliTokens; storage: CredentialStorage } | null> {
+/** Test seam for exercising the production storage lifecycle without a desktop keyring. */
+export function setNativeCredentialStoreForTests(store: NativeCredentialStore | null): void {
+  nativeStoreOverride = store
+}
+
+async function nativeStore(): Promise<NativeCredentialStore | null> {
+  if (nativeStoreOverride !== undefined) return nativeStoreOverride
+  const storage = storageForPlatform()
+  if (!storage) return null
   try {
-    let value = ''
-    let storage: CredentialStorage
-    if (process.platform === 'darwin') {
-      value = (await command('security', ['find-generic-password', '-s', `swico-cli:${key(env)}`, '-a', key(env), '-w'])).stdout
-      storage = 'keychain'
-    } else if (process.platform === 'linux') {
-      value = (await command('secret-tool', ['lookup', 'service', 'swico-cli', 'endpoint', key(env)])).stdout
-      storage = 'secret-service'
-    } else return null
-    const tokens = JSON.parse(value.trim()) as CliTokens
-    if (tokens.access_token && tokens.refresh_token) return { tokens, storage }
-  } catch { /* an unavailable/unconfigured store is handled by the caller */ }
-  return null
+    const { AsyncEntry } = await import('@napi-rs/keyring')
+    return {
+      storage,
+      save: (account, value) => new AsyncEntry(SERVICE_NAME, account).setPassword(value),
+      load: account => new AsyncEntry(SERVICE_NAME, account).getPassword(),
+      delete: account => new AsyncEntry(SERVICE_NAME, account).deletePassword(),
+    }
+  } catch {
+    // Missing optional native bindings and an unavailable desktop service are
+    // deliberately indistinguishable to callers: both fail closed.
+    return null
+  }
+}
+
+function validTokens(value: unknown): value is CliTokens {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<CliTokens>
+  return typeof candidate.access_token === 'string' && candidate.access_token.length > 0
+    && typeof candidate.refresh_token === 'string' && candidate.refresh_token.length > 0
+    && typeof candidate.expires_in === 'number' && typeof candidate.session_id === 'string'
+    && (candidate.tier === 'free' || candidate.tier === 'lite' || candidate.tier === 'standard' || candidate.tier === 'pro')
+    && typeof candidate.tier_label === 'string' && Array.isArray(candidate.scopes)
+    && !!candidate.account && typeof candidate.account === 'object'
+}
+
+function parseStored(value: string | null | undefined): CliTokens | null {
+  if (!value) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return validTokens(parsed) ? parsed : null
+  } catch { return null }
 }
 
 async function saveProtectedFile(tokens: CliTokens, env: NodeJS.ProcessEnv) {
@@ -63,7 +92,9 @@ async function saveProtectedFile(tokens: CliTokens, env: NodeJS.ProcessEnv) {
     if (process.platform === 'win32') {
       const account = env.USERDOMAIN && env.USERNAME ? `${env.USERDOMAIN}\\${env.USERNAME}` : env.USERNAME
       if (!account) throw new Error('Windows user identity is unavailable for credential-file ACL protection.')
-      await command('icacls', [temporary, '/inheritance:r', '/grant:r', `${account}:(R,W)`])
+      // Only the path/account are passed to icacls; credential JSON never is.
+      const { execFile } = await import('node:child_process')
+      await new Promise<void>((resolve, reject) => execFile('icacls', [temporary, '/inheritance:r', '/grant:r', `${account}:(R,W)`], { windowsHide: true }, error => error ? reject(error) : resolve()))
     }
     await rename(temporary, target)
     if (process.platform !== 'win32') await chmod(target, 0o600)
@@ -75,45 +106,87 @@ async function saveProtectedFile(tokens: CliTokens, env: NodeJS.ProcessEnv) {
 }
 
 export async function saveTokens(tokens: CliTokens, env = process.env, options: { memoryOnly?: boolean } = {}): Promise<CredentialStorage> {
+  const account = key(env)
   let storage: CredentialStorage | null = null
   if (!options.memoryOnly) {
-    // An explicitly selected file is the user's deliberate fallback and
-    // avoids probing a desktop keychain that may block on a headless host.
+    // An explicit path is a deliberate advanced fallback and takes precedence
+    // over native storage. It is never selected implicitly.
     if (env.SWICO_CLI_CREDENTIAL_FILE) storage = await saveProtectedFile(tokens, env).catch(() => null)
     else {
-      try { storage = await saveOsStore(JSON.stringify(tokens), env) } catch { /* report unavailable below */ }
+      const store = await nativeStore()
+      if (store) {
+        try {
+          await store.save(account, JSON.stringify(tokens))
+          storage = store.storage
+        } catch { storage = null }
+      }
     }
   }
   if (!storage && !options.memoryOnly) throw new CredentialStorageUnavailableError()
   storage ??= 'memory'
-  memory.set(key(env), tokens)
+  memory.set(account, { tokens, storage })
   return storage
 }
+
+export function credentialStorageMode(env = process.env): CredentialStorage | null {
+  return memory.get(key(env))?.storage ?? null
+}
+
 export async function loadTokens(env = process.env): Promise<CliTokens | null> {
-  const found = memory.get(key(env)); if (found) return found
-  const osValue = env.SWICO_CLI_CREDENTIAL_FILE ? null : await loadOsStore(env)
-  if (osValue) { memory.set(key(env), osValue.tokens); return osValue.tokens }
-  if (!env.SWICO_CLI_CREDENTIAL_FILE) return null
+  const account = key(env)
+  const cached = memory.get(account)
+  if (cached) return cached.tokens
+
+  if (env.SWICO_CLI_CREDENTIAL_FILE) {
+    try {
+      const value = JSON.parse(await readFile(filePath(env), 'utf8')) as { endpoint?: string; tokens?: unknown }
+      if (value.endpoint !== account || !validTokens(value.tokens)) return null
+      memory.set(account, { tokens: value.tokens, storage: 'protected-file' })
+      return value.tokens
+    } catch { return null }
+  }
+
+  const store = await nativeStore()
+  if (!store) return null
   try {
-    const value = JSON.parse(await readFile(filePath(env), 'utf8')) as { endpoint?: string; tokens?: CliTokens }
-    if (value.endpoint !== key(env) || !value.tokens?.access_token || !value.tokens.refresh_token) return null
-    memory.set(key(env), value.tokens)
-    return value.tokens
+    const tokens = parseStored(await store.load(account))
+    if (!tokens) return null
+    memory.set(account, { tokens, storage: store.storage })
+    return tokens
   } catch { return null }
 }
+
 export async function clearTokens(env = process.env): Promise<void> {
-  memory.delete(key(env))
-  if (process.platform === 'darwin') await command('security', ['delete-generic-password', '-s', `swico-cli:${key(env)}`, '-a', key(env)]).catch(() => undefined)
-  if (process.platform === 'linux') await command('secret-tool', ['clear', 'service', 'swico-cli', 'endpoint', key(env)]).catch(() => undefined)
-  if (env.SWICO_CLI_CREDENTIAL_FILE) await unlink(filePath(env)).catch(() => undefined)
+  const account = key(env)
+  const cached = memory.get(account)
+  memory.delete(account)
+  if (env.SWICO_CLI_CREDENTIAL_FILE) {
+    await unlink(filePath(env)).catch(() => undefined)
+    return
+  }
+  // Logout must remove the native credential. A missing store is harmless,
+  // but an actual delete failure is surfaced rather than claiming success.
+  if (cached?.storage === 'memory') return
+  const store = await nativeStore()
+  if (store) {
+    try { await store.delete(account) }
+    catch (error) {
+      // With no loaded credential there is no evidence that a native record
+      // exists; keep logout idempotent. A known loaded record must surface a
+      // deletion failure so logout cannot claim it was removed.
+      if (cached) throw error
+    }
+  }
 }
 
 export function credentialStorageDescription(env = process.env): string {
   let endpoint: string
   try { endpoint = key(env) } catch { return 'unavailable (invalid endpoint)' }
-  if (memory.has(endpoint)) return 'memory-only (this process)'
+  const cached = memory.get(endpoint)
+  if (cached?.storage === 'memory') return 'memory-only (this process)'
   if (env.SWICO_CLI_CREDENTIAL_FILE) return 'explicit protected file (used if the path is writable)'
-  if (process.platform === 'darwin') return 'macOS Keychain'
-  if (process.platform === 'linux') return 'Linux Secret Service (secret-tool)'
+  if (process.platform === 'darwin') return 'macOS Keychain (native keyring)'
+  if (process.platform === 'win32') return 'Windows Credential Manager (native keyring)'
+  if (process.platform === 'linux') return 'Linux Secret Service (native keyring)'
   return 'no automatic OS store; explicit protected fallback required'
 }

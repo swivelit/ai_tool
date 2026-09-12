@@ -54,13 +54,14 @@ Pass `--keep-artifact` when an operator needs the checked tarball for a later
 publish command; the default check removes its temporary artifact.
 
 Set `SWICO_API_BASE_URL` only for an approved HTTPS development endpoint.
-Production endpoints must use HTTPS. Tokens use macOS Keychain or Linux Secret
-Service when available. Windows and keychain-less systems require the explicit
-protected-file fallback `SWICO_CLI_CREDENTIAL_FILE`; `--memory-only` is an
-explicit non-persistent alternative and reports that it ends with the process.
-The Node standard library has no dependency-free Windows Credential Manager
-API, so do not claim default durable Windows login until a reviewed OS-store
-adapter is added; the protected fallback is the current secure Windows path.
+Production endpoints must use HTTPS. On supported desktop installations,
+credentials use the native OS store through `@napi-rs/keyring`: macOS
+Keychain, Windows Credential Manager, or Linux Secret Service. The package
+ships prebuilt native bindings for supported Node/OS/architecture triples, so
+Rust is not required for an ordinary installation. If the native store is
+unavailable, the CLI fails closed; choose the explicit protected-file fallback
+`SWICO_CLI_CREDENTIAL_FILE` or the deliberately non-persistent `--memory-only`
+mode. These choices are reported accurately and are never made implicitly.
 
 `swico login` opens `/cli/authorize`, displays a short-lived human code, and
 polls at the server-advertised interval. Browser approval is explicit.
