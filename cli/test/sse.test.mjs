@@ -9,3 +9,9 @@ test('SSE parser handles split UTF-8 frames, comments and additive events', () =
   assert.equal(events.length, 2)
   assert.deepEqual(events[0], { event: 'delta', data: { text: 'தமிழ்' } })
 })
+
+test('SSE parser flushes a buffered final frame using the same reducer input', () => {
+  const parser = new SSEParser()
+  assert.deepEqual(parser.feed('event: done\ndata: {"completion_status":"complete"}'), [])
+  assert.deepEqual(parser.finish(), [{ event: 'done', data: { completion_status: 'complete' } }])
+})

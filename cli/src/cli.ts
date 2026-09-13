@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { createInterface, type Interface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { clearTokens, credentialStorageStatus, loadTokens, saveTokens, CredentialStorageUnavailableError } from './credentials.js'
-import { cancelAgentRun, cancelChat, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat, uploadImage } from './api.js'
+import { cancelAgentRun, cancelChat, CliApiError, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat, uploadImage } from './api.js'
 import { isAgentActionType, type AgentAction, type CliTokens } from './contracts.js'
 import { LocalAgent } from './agent.js'
 import { Workspace } from './workspace.js'
@@ -45,12 +45,20 @@ const stage2Commands = '\n  config      Show or validate local configuration\n  
 
 function showStreamEvent(event: SSEEvent, jsonOutput = false) {
   if (jsonOutput) { process.stdout.write(`${JSON.stringify(event)}\n`); return }
-  if (event.event === 'status') process.stdout.write(`\n[${JSON.stringify(event.data)}] `)
+  if (event.event === 'status' && event.data && typeof event.data === 'object') {
+    const phase = String((event.data as { phase?: unknown }).phase ?? 'progress')
+    process.stderr.write(`[${phase}]\n`)
+  }
   if (event.event === 'sources' && event.data && typeof event.data === 'object' && 'sources' in event.data) {
     const sources = (event.data as { sources?: unknown }).sources
-    if (Array.isArray(sources)) process.stdout.write(`\nSources: ${sources.map(source => source && typeof source === 'object' ? String((source as { label?: unknown }).label ?? '') : '').filter(Boolean).join(', ') || 'available'} `)
+    if (Array.isArray(sources)) process.stderr.write(`Sources: ${sources.map(source => source && typeof source === 'object' ? String((source as { label?: unknown }).label ?? '') : '').filter(Boolean).join(', ') || 'available'}\n`)
   }
-  if (event.event === 'quality' && event.data && typeof event.data === 'object' && 'status' in event.data) process.stdout.write(`\nQuality: ${String((event.data as { status?: unknown }).status ?? 'reported')} `)
+  if (event.event === 'quality' && event.data && typeof event.data === 'object' && 'status' in event.data) process.stderr.write(`Quality: ${String((event.data as { status?: unknown }).status ?? 'reported')}\n`)
+  if (event.event === 'error' && event.data && typeof event.data === 'object') {
+    const value = event.data as { code?: unknown; message?: unknown; request_id?: unknown; retryable?: unknown }
+    const suffix = [value.code, value.request_id && `request ${value.request_id}`, typeof value.retryable === 'boolean' && (value.retryable ? 'retryable' : 'do not retry')].filter(Boolean).join('; ')
+    process.stderr.write(`Error: ${String(value.message ?? 'Swico request failed.')}${suffix ? ` (${suffix})` : ''}\n`)
+  }
 }
 
 async function openBrowser(url: string) {
@@ -462,4 +470,10 @@ process.on('SIGINT', () => {
   if (activeInterrupt) { interruptCount += 1; activeInterrupt(); if (interruptCount > 1) process.exitCode = 130; else console.error('\nStopping the active Swico operation...'); return }
   process.exitCode = 130
 })
-main().then(code => { if (typeof code === 'number') process.exitCode = code }).catch(error => { console.error(error instanceof Error ? error.message : 'Swico failed.'); process.exitCode = 1 })
+main().then(code => { if (typeof code === 'number') process.exitCode = code }).catch(error => {
+  if (error instanceof CliApiError) {
+    const suffix = [error.code, error.requestId && `request ${error.requestId}`, typeof error.retryable === 'boolean' && (error.retryable ? 'retryable' : 'do not retry')].filter(Boolean).join('; ')
+    console.error(`${error.message}${suffix ? ` (${suffix})` : ''}`)
+  } else console.error(error instanceof Error ? error.message : 'Swico failed.')
+  process.exitCode = 1
+})

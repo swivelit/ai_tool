@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/useAuth'
 import { ChatPage } from './pages/ChatPage'
 import { GuestChatPage } from './pages/GuestChatPage'
@@ -11,12 +11,19 @@ const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ defau
 
 export function App() {
   const { user, loading } = useAuth()
+  const location = useLocation()
   if (loading) return <div className="app-loading"><div className="orb">S</div></div>
-  const returnTo = new URLSearchParams(window.location.search).get('returnTo')
-  const safeReturnTo = returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/'
+  const returnTo = new URLSearchParams(location.search).get('returnTo')
+  const safeReturnTo = (() => {
+    if (!returnTo || !returnTo.startsWith('/') || returnTo.startsWith('//') || returnTo.startsWith('/\\') || returnTo.includes('\\')) return '/'
+    try {
+      const parsed = new URL(returnTo, window.location.origin)
+      return parsed.origin === window.location.origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : '/'
+    } catch { return '/' }
+  })()
   return <Routes>
     <Route path="/cli/authorize" element={<CliAuthorizePage />} />
-    <Route path="/settings/cli-sessions" element={user ? <CliSessionsPage /> : <Navigate to="/login" replace />} />
+    <Route path="/settings/cli-sessions" element={user ? <CliSessionsPage /> : <Navigate to={`/login?returnTo=${encodeURIComponent(`${location.pathname}${location.search}`)}`} replace />} />
     <Route path="/legal/:page" element={<Suspense fallback={<div className="app-loading">Loading…</div>}><LegalPage /></Suspense>} />
     <Route path="/terms" element={<Navigate to="/legal/terms" replace />} />
     <Route path="/privacy" element={<Navigate to="/legal/privacy" replace />} />

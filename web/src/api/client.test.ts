@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, ApiNetworkError, authorizedFetch, endVoiceSession, publicApiJson, SSEStreamError, streamChat } from './client'
+import { ApiError, ApiNetworkError, authorizedFetch, endVoiceSession, publicApiJson, revokeCliSession, SSEStreamError, streamChat } from './client'
 
 describe('authorizedFetch', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -33,6 +33,18 @@ it('ends the authenticated Voice session with DELETE', async () => {
   await endVoiceSession(user as never)
 
   expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/web/voice/sessions')
+  expect(fetchMock.mock.calls[0][1]?.method).toBe('DELETE')
+})
+
+it('revokes the selected terminal session with an encoded DELETE path', async () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ status:'revoked' }), { status:200 }),
+  )
+  const user = { getIdToken:vi.fn().mockResolvedValue('firebase-token') }
+
+  await revokeCliSession(user as never, 'terminal/123')
+
+  expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/web/cli/sessions/terminal%2F123')
   expect(fetchMock.mock.calls[0][1]?.method).toBe('DELETE')
 })
 

@@ -582,7 +582,7 @@ class PreparedWebTurn:
 class CompletedWebTurn:
     thread_id: str
     message: CompletedWebMessage
-    wallet: dict[str, int]
+    wallet: dict[str, object]
     response: AIProviderResponse
 
 

@@ -106,6 +106,47 @@ test('CLI chat carries server-controlled search mode and temporary attachments t
   } finally { globalThis.fetch = originalFetch }
 })
 
+test('streamChat uses one event reducer for final flush, empty answers, and UTF-8 chunks', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      controller.enqueue(encoder.encode('event: thread\ndata: {"thread_id":"flush-thread"}\r\n\r\nevent: delta\ndata: {"text":"தமிழ்"}\n\n'.slice(0, 18)))
+      controller.enqueue(encoder.encode('event: thread\ndata: {"thread_id":"flush-thread"}\r\n\r\nevent: delta\ndata: {"text":"தமிழ்"}\n\nevent: done\ndata: {"completion_status":"complete"}'.slice(18)))
+      controller.close()
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  try {
+    const events = []
+    const result = await streamChat({ access_token: 'opaque' }, 'hello', undefined, event => events.push(event), { SWICO_API_BASE_URL: 'https://api.example.test' }, { testTokenProvider: async () => 'opaque' })
+    assert.equal(result.threadId, 'flush-thread')
+    assert.equal(result.text, 'தமிழ்')
+    assert.deepEqual(events.map(event => event.event), ['thread', 'delta', 'done'])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('streamChat preserves safe stream errors and rejects cancelled or contradictory terminals', async () => {
+  const originalFetch = globalThis.fetch
+  const tokens = { access_token: 'opaque' }
+  const responseFor = (body) => new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  try {
+    globalThis.fetch = async () => responseFor('event: delta\ndata: {"text":"partial"}\n\nevent: error\ndata: {"code":"delivery_failed","message":"recorded result","request_id":"request-1","retryable":false}\n\n')
+    await assert.rejects(() => streamChat(tokens, 'hello', undefined, undefined, { SWICO_API_BASE_URL: 'https://api.example.test' }, { testTokenProvider: async () => 'opaque' }), error => error.code === 'delivery_failed' && error.requestId === 'request-1' && error.retryable === false)
+    globalThis.fetch = async () => responseFor('event: done\ndata: {"cancelled":true}\n\n')
+    await assert.rejects(() => streamChat(tokens, 'hello', undefined, undefined, { SWICO_API_BASE_URL: 'https://api.example.test' }, { testTokenProvider: async () => 'opaque' }), error => error.code === 'cancelled')
+    globalThis.fetch = async () => responseFor('event: done\ndata: {}\n\nevent: done\ndata: {}\n\n')
+    await assert.rejects(() => streamChat(tokens, 'hello', undefined, undefined, { SWICO_API_BASE_URL: 'https://api.example.test' }, { testTokenProvider: async () => 'opaque' }), /more than one terminal/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('streamChat parses structured non-2xx details before SSE begins', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: { code: 'insufficient_budget', message: 'Not enough Chat credit.', request_id: 'request-2', retryable: false } }), { status: 402, headers: { 'content-type': 'application/json' } })
+  try {
+    await assert.rejects(() => streamChat({ access_token: 'opaque' }, 'hello', undefined, undefined, { SWICO_API_BASE_URL: 'https://api.example.test' }, { testTokenProvider: async () => 'opaque' }), error => error.status === 402 && error.code === 'insufficient_budget' && error.requestId === 'request-2' && error.retryable === false)
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('materially different output schemas are carried as distinct bounded requests', async () => {
   const originalFetch = globalThis.fetch
   const payloads = []

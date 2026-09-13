@@ -461,6 +461,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .data-control { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: transparent; text-align: left; cursor: pointer }
 .data-control span { display: grid; gap: 4px }
 .data-control small, .data-note { color: var(--muted); font-size: 11px; line-height: 1.5 }
+.terminal-session-card { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 11px; text-align: left }
+.terminal-session-card h2 { margin: 0 0 12px; font-size: 16px }
+.terminal-session-card dl { display: grid; gap: 7px; margin: 0 0 14px; font-size: 12px }
+.terminal-session-card dl div { display: flex; justify-content: space-between; gap: 12px }
+.terminal-session-card dt { color: var(--muted) }
+.terminal-session-card dd { margin: 0; overflow-wrap: anywhere; text-align: right }
 .memory-controls { display: grid; gap: 10px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 11px }
 .memory-controls h4, .memory-controls p { margin: 0 }
 .memory-controls > small { color: var(--muted); line-height: 1.5 }
@@ -776,7 +782,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   background: #000000 !important;
   color: #ffffff !important;
 }*/
-
 
 
 

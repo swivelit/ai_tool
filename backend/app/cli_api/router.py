@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
@@ -624,8 +625,25 @@ def delete_cli_attachment(upload_id: str, authorization: str | None = Header(def
     return None
 
 
+def _public_sse_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Encode only the already-shaped public event DTO.
+
+    Wallet/token metadata contains timezone-aware datetimes. FastAPI's encoder
+    is the single boundary for those values; monetary fields remain the
+    integer micro-unit values produced by the billing service. The final JSON
+    check rejects NaN/infinity and unsupported values without exposing ORM or
+    provider objects in a streamed event.
+    """
+    encoded = jsonable_encoder(payload)
+    if not isinstance(encoded, dict):
+        raise TypeError("SSE payload must be an object")
+    json.dumps(encoded, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return encoded
+
+
 def _sse_event(name: str, payload: dict[str, Any]) -> str:
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    public_payload = _public_sse_payload(payload)
+    return f"event: {name}\ndata: {json.dumps(public_payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False)}\n\n"
 
 
 @router.post("/chat/stream")
@@ -680,6 +698,8 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
         loop = asyncio.get_running_loop()
         def delta(value: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, value)
+        completed = None
+        delivery_stage = "generation"
         try:
             task = asyncio.create_task(asyncio.to_thread(execute_web_turn, prepared, on_delta=delta))
             while not task.done() or not queue.empty():
@@ -692,11 +712,15 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
                         cancellation.cancel(reason="client_disconnected")
                         return
             completed = await task
+            delivery_stage = "sources"
             if completed.message.sources:
                 yield _sse_event("sources", {"sources": list(completed.message.sources)})
+            delivery_stage = "quality"
             if completed.message.quality:
                 yield _sse_event("quality", completed.message.quality)
+            delivery_stage = "usage"
             yield _sse_event("usage", {"tier": tier, "tier_label": SWICO_TIER_LABELS.get(tier, "Swico"), **completed.wallet})
+            delivery_stage = "done"
             yield _sse_event("done", {
                 "message_id": completed.message.id,
                 "thread_id": completed.thread_id,
@@ -711,8 +735,30 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
             yield _sse_event("status", {"phase": "stopped"})
             yield _sse_event("done", {"message_id": None, "thread_id": prepared.thread_id, "cancelled": True, "completion_status": "cancelled"})
         except Exception:
-            logger.exception("cli_chat_execution_failed", extra={"request_id": str(payload.request_id)})
-            yield _sse_event("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry.", "retryable": True})
+            durable = completed is not None and completed.message.status == "complete"
+            outcome = "completed_delivery_failed" if durable else "generation_failed"
+            logger.exception(
+                "cli_chat_execution_failed",
+                extra={
+                    "request_id": str(payload.request_id),
+                    "stage": delivery_stage,
+                    "outcome": outcome,
+                },
+            )
+            if durable:
+                message = "Swico completed this request but could not deliver all response metadata. The result is recorded; do not retry automatically."
+                retryable = False
+            else:
+                message = "Swico could not complete this request. Please retry."
+                retryable = True
+            yield _sse_event("error", {
+                "code": "delivery_failed" if durable else "generation_failed",
+                "message": message,
+                "request_id": str(payload.request_id)[:64],
+                "stage": delivery_stage,
+                "outcome": outcome,
+                "retryable": retryable,
+            })
         finally:
             unregister_generation(prepared.request_id)
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

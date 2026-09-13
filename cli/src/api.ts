@@ -5,7 +5,28 @@ import type { CliTokens, PublicTier } from './contracts.js'
 import { ensureTokens } from './session.js'
 
 export class CliApiError extends Error {
-  constructor(public status: number, message: string, public body?: unknown) { super(message) }
+  constructor(
+    public status: number,
+    message: string,
+    public body?: unknown,
+    public details: { code?: string; request_id?: string; retryable?: boolean; stage?: string } = {},
+  ) { super(message) }
+
+  get code(): string | undefined { return this.details.code }
+  get requestId(): string | undefined { return this.details.request_id }
+  get retryable(): boolean | undefined { return this.details.retryable }
+}
+
+function errorDetails(value: unknown): { message: string; code?: string; request_id?: string; retryable?: boolean; stage?: string } {
+  const object = value && typeof value === 'object' ? value as Record<string, unknown> : undefined
+  const detail = object?.detail && typeof object.detail === 'object' ? object.detail as Record<string, unknown> : object
+  return {
+    message: typeof detail?.message === 'string' ? detail.message : typeof object?.message === 'string' ? object.message : 'Swico request failed.',
+    code: typeof detail?.code === 'string' ? detail.code : typeof object?.code === 'string' ? object.code : undefined,
+    request_id: typeof detail?.request_id === 'string' ? detail.request_id : typeof object?.request_id === 'string' ? object.request_id : undefined,
+    retryable: typeof detail?.retryable === 'boolean' ? detail.retryable : typeof object?.retryable === 'boolean' ? object.retryable : undefined,
+    stage: typeof detail?.stage === 'string' ? detail.stage : typeof object?.stage === 'string' ? object.stage : undefined,
+  }
 }
 
 export async function probeEndpoint(env = process.env): Promise<{ status: number; state: 'enabled' | 'disabled' | 'unavailable' | 'unexpected'; detail?: string; agent_enabled?: boolean }> {
@@ -31,9 +52,8 @@ export async function json<T>(path: string, init: RequestInit = {}, accessToken?
   const response = await fetch(cliApi(path, env), { ...init, headers, redirect: 'error' })
   const body = await response.json().catch(() => ({})) as unknown
   if (!response.ok) {
-    const detail = typeof body === 'object' && body && 'detail' in body ? (body as { detail: unknown }).detail : body
-    const message = typeof detail === 'string' ? detail : typeof detail === 'object' && detail && 'message' in detail ? String((detail as { message: unknown }).message) : `Swico request failed (${response.status})`
-    throw new CliApiError(response.status, message, body)
+    const details = errorDetails(body)
+    throw new CliApiError(response.status, details.message || `Swico request failed (${response.status})`, body, details)
   }
   return body as T
 }
@@ -65,19 +85,46 @@ export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, messag
   const requestId = randomUUID()
   options.onRequestId?.(requestId)
   const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${await accessTokenFor(env, options.testTokenProvider)}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text', search_mode: options.searchMode ?? 'auto', attachment_ids: options.attachmentIds ?? [], ...(options.outputSchema ? { output_schema: options.outputSchema } : {}) }) })
-  if (!response.ok || !response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
-  const parser = new SSEParser(); const decoder = new TextDecoder(); let text = ''; let resolvedThread: string | null = null; let done = false
-  for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-    for (const event of parser.feed(decoder.decode(chunk, { stream: true }))) {
-      onEvent?.(event)
-      if (event.event === 'thread' && typeof event.data === 'object' && event.data) resolvedThread = String((event.data as { thread_id?: unknown }).thread_id ?? '') || null
-      if (event.event === 'delta' && typeof event.data === 'object' && event.data) text += String((event.data as { text?: unknown }).text ?? '')
-      if (event.event === 'done') done = true
-      if (event.event === 'error') throw new CliApiError(502, typeof event.data === 'object' && event.data && 'message' in event.data ? String((event.data as { message: unknown }).message) : 'Swico could not complete this request.')
-    }
+  if (!response.ok) {
+    const bodyText = (await response.text()).slice(0, 4_096)
+    let body: unknown = {}
+    try { body = JSON.parse(bodyText) } catch { body = { message: bodyText || `Swico could not start the chat request (${response.status}).` } }
+    const details = errorDetails(body)
+    throw new CliApiError(response.status, details.message || `Swico could not start the chat request (${response.status}).`, body, details)
   }
-  for (const event of parser.feed(decoder.decode()).concat(parser.finish())) { onEvent?.(event); if (event.event === 'done') done = true; if (event.event === 'delta' && typeof event.data === 'object' && event.data) text += String((event.data as { text?: unknown }).text ?? '') }
-  if (!done) throw new CliApiError(502, 'The Swico stream ended before completion.')
+  if (!response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
+  const parser = new SSEParser(); const decoder = new TextDecoder('utf-8', { fatal: true }); let text = ''; let resolvedThread: string | null = null; let terminal: 'done' | 'error' | null = null
+  const consume = (event: SSEEvent) => {
+    const known = new Set(['thread', 'status', 'delta', 'sources', 'quality', 'usage', 'done', 'error'])
+    const object = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : undefined
+    if (!known.has(event.event)) { onEvent?.(event); return }
+    if (!object) throw new CliApiError(502, `The Swico stream sent malformed ${event.event} metadata.`, event.data)
+    if (terminal) throw new CliApiError(502, 'The Swico stream sent more than one terminal event.', event.data)
+    if (event.event === 'thread') {
+      if (typeof object.thread_id !== 'string' || !object.thread_id) throw new CliApiError(502, 'The Swico stream sent an invalid thread event.', event.data)
+      resolvedThread = object.thread_id
+    } else if (event.event === 'delta') {
+      if (typeof object.text !== 'string') throw new CliApiError(502, 'The Swico stream sent an invalid delta event.', event.data)
+      text += object.text
+    } else if (event.event === 'error') {
+      const details = errorDetails(object)
+      terminal = 'error'
+      onEvent?.(event)
+      throw new CliApiError(502, details.message || 'Swico could not complete this request.', event.data, details)
+    } else if (event.event === 'done') {
+      terminal = 'done'
+      if (object.cancelled === true) throw new CliApiError(499, 'The Swico request was cancelled.', event.data, { code: 'cancelled', request_id: typeof object.request_id === 'string' ? object.request_id : undefined, retryable: true })
+    }
+    onEvent?.(event)
+  }
+  for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+    let decoded: string
+    try { decoded = decoder.decode(chunk, { stream: true }) } catch { throw new CliApiError(502, 'The Swico stream contained invalid UTF-8.') }
+    for (const event of parser.feed(decoded)) consume(event)
+  }
+  try { decoder.decode() } catch { throw new CliApiError(502, 'The Swico stream ended with incomplete UTF-8.') }
+  for (const event of parser.finish()) consume(event)
+  if (terminal !== 'done') throw new CliApiError(502, 'The Swico stream ended before completion.')
   return { threadId: resolvedThread, text }
 }
 

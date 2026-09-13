@@ -10,7 +10,7 @@ from sqlmodel import select
 from app.ai.prompts import APP_CONTEXT_PROMPT, build_system_instructions
 from app.ai.types import AIProviderResponse, AIRequest, AIRoute
 from app.database import SessionLocal
-from app.models import UsageCharge, WebChatMessage
+from app.models import UsageCharge, WalletAccount, WebChatMessage
 from app.web_api.swico_brand import (
     SWICO_PUBLIC_PROFILE,
     SWICO_PUBLIC_PROFILE_VERSION,
@@ -295,8 +295,16 @@ def test_brand_query_ignores_old_restricted_approved_cache_answer(client, monkey
     assert "OpenAI" not in text
 
 
-def test_contextual_brand_followup_uses_only_previous_safe_topic(client):
-    create_test_user("brand-user", "brand-user@example.com")
+def test_contextual_brand_followup_uses_only_previous_safe_topic(client, monkeypatch):
+    user = create_test_user("brand-user", "brand-user@example.com")
+    # This test is about safe-topic carryover, so give the ordinary paid
+    # fixture disposable Chat credit instead of masking the behavior with a
+    # zero-wallet admission response.
+    monkeypatch.setenv("WEB_DETERMINISTIC_TOOLS_ENABLED", "true")
+    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
+    with SessionLocal() as session:
+        session.add(WalletAccount(user_id=int(user.id), credit_bucket="chat", balance_micros=100_000_000))
+        session.commit()
     first = _post(client, "Tell me about Swico", 3)
     thread_id = _sse_events(first, "thread")[0]["thread_id"]
     second = _post(client, "Who created it?", 4, thread_id=thread_id)

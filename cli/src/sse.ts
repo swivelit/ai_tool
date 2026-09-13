@@ -1,5 +1,12 @@
 export type SSEEvent = { event: string; data: unknown }
 
+export class SSEParseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SSEParseError'
+  }
+}
+
 export class SSEParser {
   private buffer = ''
   private event = ''
@@ -31,5 +38,10 @@ export class SSEParser {
     }
     return events
   }
-  finish(): SSEEvent[] { return this.feed('\n') }
+  finish(): SSEEvent[] {
+    // A streamed response may end immediately after its final data line.
+    // Feed the same delimiter used by ordinary input so final-frame handling
+    // cannot diverge from parser.feed().
+    return this.feed('\n\n')
+  }
 }

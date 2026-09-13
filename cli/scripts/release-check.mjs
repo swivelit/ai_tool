@@ -92,7 +92,7 @@ try {
   // Artifact smoke tests must never inspect the operator's real keychain,
   // config, state, or sessions. Use an isolated empty state rooted in the
   // temporary release directory.
-  const requestBodies = [], control = { refreshed: false, cancelled: 0, loggedOut: false, device: null }
+  const requestBodies = [], chatStreams = [], control = { refreshed: false, cancelled: 0, loggedOut: false, device: null }
   controlledServer = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(Buffer.from(chunk))
@@ -129,11 +129,23 @@ try {
         response.writeHead(200, { 'content-type': 'text/event-stream' }); response.end('event: error\ndata: {"message":"temporary controlled failure"}\n\n'); return
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' })
-      response.write('event: thread\ndata: {"thread_id":"installed-thread"}\n\n')
+      const stream = { requestId: body.request_id, events: [] }
+      chatStreams.push(stream)
+      const emit = (event, payload) => {
+        stream.events.push(event)
+        response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+      }
+      emit('thread', { thread_id: 'installed-thread', request_id: body.request_id })
+      emit('status', { phase: 'generating' })
       if (String(body.message).includes('cancel me')) { setTimeout(() => response.end(), 5_000); return }
       const schema = body.output_schema
       const text = schema?.required?.includes('answer') ? '{"answer":"installed"}' : String(body.message).includes('plan') ? '1. Produce a task-only plan.\n2. Confirm the requested checks.' : 'installed stream response'
-      response.end(`event: delta\ndata: ${JSON.stringify({ text })}\n\nevent: done\ndata: {}\n\n`)
+      emit('delta', { text })
+      emit('quality', { status: 'best_effort', checks: [] })
+      emit('usage', { tier: 'standard', input_tokens: 3, output_tokens: 4, charged_micros: 12, usage_source: 'estimated' })
+      emit('wallet', { available_micros: 999988, reserved_micros: 0, token_estimate: { pricing_as_of: '2026-09-13T12:34:56.789Z', input_micros: 1, output_micros: 2 } })
+      emit('done', { request_id: body.request_id, completion_status: 'complete', cancelled: false })
+      response.end()
       return
     }
     jsonResponse(404, { detail: 'controlled endpoint not found' })
@@ -161,6 +173,11 @@ try {
   await writeFile(join(work, 'AGENTS.md'), 'AGENTS_SECRET_MARKER must never be sent by a task-only plan.')
   const streamed = await run('installed streaming with current-token refresh', executable, ['ask', 'hello installed'], smokeOptions)
   if (!streamed.stdout.includes('installed stream response') || !control.refreshed) throw new Error('Installed stream/refresh smoke failed')
+  const normalStream = chatStreams.find(item => item.requestId && requestBodies.some(request => request.body.request_id === item.requestId && request.body.message === 'hello installed'))
+  if (!normalStream || normalStream.events.join(',') !== 'thread,status,delta,quality,usage,wallet,done' || normalStream.events.filter(event => event === 'done').length !== 1 || normalStream.events.includes('error')) throw new Error('Controlled paid stream did not exercise the complete public event envelope')
+  const normalRequestId = normalStream.requestId
+  if (typeof normalRequestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(normalRequestId)) throw new Error('Controlled paid stream did not preserve a usable request correlation')
+  if (!streamed.stderr.includes('Quality: best_effort\n')) throw new Error('Best-effort quality was not rendered as a readable stderr diagnostic')
   const structured = await run('installed validated structured output', executable, ['exec', 'return an answer', '--output-schema', join(work, 'schema.json')], smokeOptions)
   if (JSON.parse(structured.stdout).answer !== 'installed') throw new Error('Installed structured output smoke failed')
   const planned = await run('installed task-only plan consent', executable, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
@@ -217,6 +234,7 @@ try {
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
     installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', cancellation: 'passed', logout_revocation: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
+    installed_executable: executable,
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),
   }, null, 2))

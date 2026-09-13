@@ -63,6 +63,8 @@ _ALLOWED_KEYS = frozenset(
         "source_locator",
         "source_kind",
         "claim_support_type",
+        "unsupported_claim_count",
+        "cited_claim_count",
         "verification_strength",
         "independent_verification",
         "temporal_support_strength",
@@ -360,6 +362,10 @@ def allowed_metadata_keys() -> frozenset[str]:
 
 
 def _validate_semantic_value(key: str, value: object) -> None:
+    if key in {"unsupported_claim_count", "cited_claim_count"} and (
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+    ):
+        raise UnsafeMetadataError(f"{key} must be a non-negative integer")
     if key == "policy_version":
         if not isinstance(value, str) or not re.fullmatch(
             r"v[1-9][0-9]{0,3}", value
