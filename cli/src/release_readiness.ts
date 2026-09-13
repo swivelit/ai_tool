@@ -24,6 +24,36 @@ export type ReleaseReadiness = {
   optional_notes: string[]
 }
 
+// Keep this deliberately small and syntax-focused. The owner still has to
+// choose the terms; an arbitrary non-empty package.json string is not a
+// licensing decision.
+const SPDX_IDS = new Set(['0BSD', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'MIT', 'MPL-2.0', 'Unicode-DFS-2016', 'Unlicense'])
+
+export function validPackageLicense(value: string): boolean {
+  const license = value.trim()
+  const reference = /^SEE LICENSE IN ([A-Za-z0-9._-]+)$/i.exec(license)
+  if (reference) return reference[1].toLowerCase() !== 'package.json'
+  const tokens = license.match(/AND|OR|WITH|[A-Za-z0-9.-]+|\(|\)/g)
+  if (!tokens || tokens.join('') !== license.replace(/\s+/g, '')) return false
+  let expectExpression = true
+  let depth = 0
+  for (const token of tokens) {
+    if (expectExpression) {
+      if (token === '(') { depth += 1; continue }
+      if (!SPDX_IDS.has(token)) return false
+      expectExpression = false
+    } else if (token === ')') {
+      if (depth === 0) return false
+      depth -= 1
+    } else if (token === 'AND' || token === 'OR') {
+      expectExpression = true
+    } else if (token === 'WITH') {
+      expectExpression = true
+    } else return false
+  }
+  return !expectExpression && depth === 0
+}
+
 /** Readiness is deliberately local and non-charging. It never contacts the API. */
 export async function releaseReadiness(root: string): Promise<ReleaseReadiness> {
   const status = createSandboxAdapter(root).status()
@@ -35,8 +65,15 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   // workspace root. The current package intentionally has no license until
   // the owner makes that decision.
   let packageLicense = ''
-  try { packageLicense = String((JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { license?: unknown }).license ?? '').trim() } catch { /* reported as blocked */ }
-  const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' ? 'ready' : 'blocked'
+  let licenseReferenceExists = false
+  try {
+    const packageRoot = new URL('../', import.meta.url)
+    const packageManifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { license?: unknown }
+    packageLicense = String(packageManifest.license ?? '').trim()
+    const reference = /^SEE LICENSE IN ([A-Za-z0-9._-]+)$/i.exec(packageLicense)
+    licenseReferenceExists = Boolean(reference && await readFile(new URL(reference[1], packageRoot), 'utf8').then(text => text.trim().length > 0).catch(() => false))
+  } catch { /* reported as blocked */ }
+  const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' && validPackageLicense(packageLicense) && (!/^SEE LICENSE IN /i.test(packageLicense) || licenseReferenceExists) ? 'ready' : 'blocked'
   const required_blockers: string[] = []
   if (!sandbox.verified) required_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
   if (license === 'blocked') required_blockers.push('No approved top-level LICENSE is present; public npm release requires an explicit licensing decision.')

@@ -40,7 +40,7 @@ test('doctor probes the explicit no-cost rollout health contract', async () => {
     return new Response(JSON.stringify({ status: 'ok', cli_enabled: false, agent_enabled: false, cloud_agent_enabled: false, message: 'Swico CLI is disabled.' }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
   try {
-    assert.deepEqual(await probeEndpoint({ SWICO_API_BASE_URL: 'https://api.example.test' }), { status: 200, state: 'disabled', detail: 'Swico CLI is disabled.' })
+    assert.deepEqual(await probeEndpoint({ SWICO_API_BASE_URL: 'https://api.example.test' }), { status: 200, state: 'disabled', agent_enabled: false, detail: 'Swico CLI is disabled.' })
     assert.match(calls[0], /\/api\/cli\/v1\/health$/)
   } finally { globalThis.fetch = originalFetch }
 })
@@ -65,10 +65,11 @@ test('MCP manager uses the official stdio transport, discovers tools and gates u
     const definition = { name: 'fake', transport: 'stdio', command: process.execPath, args: [join(process.cwd(), 'test/fixtures/fake-mcp.mjs')], source: 'user', trusted: true }
     validateMcpDefinition(definition, true)
     const testSandbox = { status: () => ({ implementation: 'test', available: true, reason: 'test adapter', policy: 'read-only', network: 'disabled', writable_roots: [] }), wrap: argv => ({ command: argv[0], args: argv.slice(1) }) }
-    const manager = new McpManager({ source: 'user', path: '', searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write', approvalPolicy: 'always', mcp: [definition] }, join(root, 'journal.jsonl'), testSandbox)
+    const manager = new McpManager({ source: 'user', path: '', searchMode: 'auto', defaultMode: 'auto', autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write', approvalPolicy: 'always', mcp: [definition] }, join(root, 'journal.jsonl'), testSandbox, true)
     const tools = await manager.discover('fake')
     assert.deepEqual(tools.map(item => [item.name, item.capability]), [['echo', 'read'], ['write_note', 'unknown']])
-    assert.equal(await manager.call('fake', 'echo', { value: 'ok' }, async () => false), '[{"type":"text","text":"ok"}]')
+    await assert.rejects(() => manager.call('fake', 'echo', { value: 'ok' }, async () => false), /not approved/)
+    assert.equal(await manager.call('fake', 'echo', { value: 'ok' }, async () => true), '[{"type":"text","text":"ok"}]')
     await assert.rejects(() => manager.call('fake', 'write_note', { value: 'x' }, async () => false), /not approved/)
     await manager.close()
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -99,8 +100,26 @@ test('CLI chat carries server-controlled search mode and temporary attachments t
   globalThis.fetch = async (_url, init = {}) => { payload = JSON.parse(String(init.body)); return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('event: thread\ndata: {"thread_id":"t1"}\n\nevent: delta\ndata: {"text":"ok"}\n\nevent: done\ndata: {}\n\n')); controller.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }
   try {
     const tokens = { access_token: 'opaque', refresh_token: 'opaque', expires_in: 900, session_id: 's', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'test@example.com', name: 'Test' } }
-    const answer = await streamChat(tokens, 'latest status', undefined, event => events.push(event), { SWICO_API_BASE_URL: 'https://api.example.test' }, { searchMode: 'on', attachmentIds: ['upload-1'] })
+    const answer = await streamChat(tokens, 'latest status', undefined, event => events.push(event), { SWICO_API_BASE_URL: 'https://api.example.test' }, { searchMode: 'on', attachmentIds: ['upload-1'], testTokenProvider: async () => tokens.access_token })
     assert.equal(answer.text, 'ok'); assert.deepEqual(payload.attachment_ids, ['upload-1']); assert.equal(payload.search_mode, 'on')
     assert.deepEqual(events.map(event => event.event), ['thread', 'delta', 'done'])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('materially different output schemas are carried as distinct bounded requests', async () => {
+  const originalFetch = globalThis.fetch
+  const payloads = []
+  globalThis.fetch = async (_url, init = {}) => {
+    payloads.push(JSON.parse(String(init.body)))
+    return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('event: done\ndata: {}\n\n')); controller.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  try {
+    const tokens = { access_token: 'opaque', refresh_token: 'opaque', expires_in: 900, session_id: 'schemas', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'test@example.com', name: 'Test' } }
+    const env = { SWICO_API_BASE_URL: 'https://api.example.test' }
+    await streamChat(tokens, 'return data', undefined, undefined, env, { outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false }, testTokenProvider: async () => tokens.access_token })
+    await streamChat(tokens, 'return data', undefined, undefined, env, { outputSchema: { type: 'object', required: ['count'], properties: { count: { type: 'integer' } }, additionalProperties: false }, testTokenProvider: async () => tokens.access_token })
+    assert.notDeepEqual(payloads[0].output_schema, payloads[1].output_schema)
+    assert.equal(payloads[0].output_schema.required[0], 'answer')
+    assert.equal(payloads[1].output_schema.required[0], 'count')
   } finally { globalThis.fetch = originalFetch }
 })

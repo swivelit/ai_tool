@@ -6,10 +6,10 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
-import { createSandboxAdapter, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
+import { createSandboxAdapter, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { Workspace } from '../dist/workspace.js'
-import { releaseReadiness } from '../dist/release_readiness.js'
+import { releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
 
 const run = promisify(execFile)
@@ -64,6 +64,15 @@ test('sandbox readiness exposes why a platform is unavailable instead of claimin
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('macOS diagnostic does not turn a valid-profile crash into sandbox_apply denial', () => {
+  const diagnostic = macRuntimeDiagnostic((_command, args) => {
+    if (args[1] === '(version 1') throw Object.assign(new Error('syntax error in malformed control'), { stderr: 'syntax error in malformed control' })
+    throw Object.assign(new Error('killed'), { signal: 'SIGKILL' })
+  })
+  assert.equal(diagnostic.ready, false)
+  assert.equal(diagnostic.diagnostic, 'unknown_failure')
+})
+
 test('sandbox verify uses real hostile probes and never turns runtime detection into a proof', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-verify-'))
   try {
@@ -94,6 +103,22 @@ test('sandbox verification treats a crashed or malformed probe as an error, not 
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('sandbox verification rejects a missing deny fixture and an unavailable network control', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-missing-fixture-'))
+  try {
+    const adapter = { spawn: (argv, options) => spawn(argv[0], argv.slice(1), options) }
+    const paths = { workspace: join(root, 'workspace.txt'), outside: join(root, 'missing-outside.txt'), homeSecret: join(root, 'missing-home.txt'), link: join(root, 'missing-link'), port: 0 }
+    const probe = await runSandboxProbe(adapter, root, 'outside_workspace_read', 'deny', paths, 'read-only')
+    assert.equal(probe.passed, false)
+    assert.equal(probe.observed, 'error')
+    assert.match(probe.detail, /fixture_missing/)
+    const network = await runSandboxProbe(adapter, root, 'network_outbound', 'deny', paths, 'read-only')
+    assert.equal(network.passed, false)
+    assert.equal(network.observed, 'error')
+    assert.match(network.detail, /test_server_unavailable/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('release readiness reports sandbox proof as a required local-agent gate without network calls', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-readiness-'))
   try {
@@ -103,6 +128,12 @@ test('release readiness reports sandbox proof as a required local-agent gate wit
     assert.ok(report.required_blockers.some(item => /sandbox/i.test(item)))
     assert.equal(report.checks.agent_sandbox_ready, report.sandbox.verified ? 'ready' : 'blocked')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('release licensing gate rejects arbitrary strings and accepts only bounded SPDX/reference forms', () => {
+  assert.equal(validPackageLicense('not-an-owner-decision'), false)
+  assert.equal(validPackageLicense('MIT OR Apache-2.0'), true)
+  assert.equal(validPackageLicense('SEE LICENSE IN LICENSE'), true)
 })
 
 test('workspace commands pass the independent sandbox and network policies to the adapter', async () => {

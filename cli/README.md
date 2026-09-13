@@ -77,8 +77,8 @@ requests to the bounded local agent after workspace trust and, when needed,
 an explicit browser approval for the additional `agent` scope. Use `/mode`
 to select `chat`, `plan`, or `agent`; `/status`, `/plan`, `/permissions`, and
 `/review` expose the local workflow state. Commands and edits always require
-approval, and the local runner uses the user's permissions rather than an OS
-sandbox. Production keeps `SWICO_CLI_AGENT_ENABLED=false` until its separate
+approval. Agent commands require the OS-enforced sandbox verification described
+below; there is no unsandboxed fallback. Production keeps `SWICO_CLI_AGENT_ENABLED=false` until its separate
 rollout gates pass.
 
 The bounded agent asks for workspace trust before sending selected content to

@@ -1000,11 +1000,15 @@ def _cache_compatibility_hash(
     prompt_schema_version: str,
     policy_version: str,
     output_contract: OutputContract,
+    output_schema: dict[str, Any] | None = None,
 ) -> str:
     payload = json.dumps({
         "prompt_schema_version": str(prompt_schema_version or "v1")[:80],
         "policy_version": str(policy_version or "unknown")[:80],
         "output_contract_hash": output_contract_hash(output_contract),
+        "structured_output_schema_hash": hashlib.sha256(
+            json.dumps(output_schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest() if output_schema is not None else None,
         "answer_guard_version": ANSWER_GUARD_VERSION,
     }, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1366,6 +1370,7 @@ def prepare_web_turn(
     rollout_decision: WebRolloutDecision | None = None,
     triag_settings: TriagSettings | None = None,
     search_mode: Literal["auto", "on", "off"] = "auto",
+    output_schema: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> PreparedWebTurn:
     request_triag_settings = triag_settings
@@ -2062,6 +2067,7 @@ def prepare_web_turn(
             "minimum_visible_output_tokens": (
                 output_contract.minimum_visible_output_tokens
             ),
+            "structured_output_schema": output_schema,
             "task_requirements": task_requirements.as_metadata(),
             "task_requirements_hash": task_requirements.hash,
             "vision_inputs": [
@@ -2077,6 +2083,7 @@ def prepare_web_turn(
             prompt_schema_version=str(base_metadata["prompt_cache_version"]),
             policy_version=request_triag_settings.policy_version,
             output_contract=output_contract,
+            output_schema=output_schema,
         )
         base_metadata["cache_compatibility_hash"] = cache_compatibility_hash
         if rollout_decision is not None:

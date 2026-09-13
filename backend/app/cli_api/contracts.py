@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DeviceAuthorizationRequest(BaseModel):
@@ -38,6 +39,18 @@ class CliChatRequest(BaseModel):
     search_mode: Literal["auto", "on", "off"] = "auto"
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     repository_id: str | None = Field(default=None, max_length=36)
+    output_schema: dict[str, Any] | None = None
+
+    @field_validator("output_schema")
+    @classmethod
+    def validate_output_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) > 64 * 1024:
+            raise ValueError("output_schema exceeds the 64 KiB limit")
+        if not value:
+            raise ValueError("output_schema must be a non-empty JSON Schema object")
+        return value
 
 
 class CliTierRequest(BaseModel):

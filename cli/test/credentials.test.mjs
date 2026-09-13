@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -150,6 +150,122 @@ test('rotating a memory-only session remains memory-only', async () => {
   } finally {
     await credentialModule.clearTokens(env)
     await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('a memory-only account switch never reloads or refreshes the saved durable account', async () => {
+  const records = new Map()
+  const store = {
+    storage: 'keychain',
+    save(account, value) { records.set(account, value) },
+    load(account) { return records.get(account) },
+    delete(account) { return records.delete(account) },
+  }
+  const durable = { ...tokens, session_id: 'session-a', access_token: 'durable-access', refresh_token: 'durable-refresh' }
+  const selected = { ...tokens, session_id: 'session-b', access_token: 'memory-access', refresh_token: 'memory-refresh', expires_in: 1 }
+  const rotated = { ...selected, access_token: 'memory-access-rotated', refresh_token: 'memory-refresh-rotated' }
+  const calls = []
+  const server = createServer((request, response) => {
+    calls.push(request.url)
+    if (request.url.endsWith('/me')) { response.writeHead(401); response.end('{}'); return }
+    if (request.url.endsWith('/token')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(rotated)); return }
+    response.writeHead(404); response.end()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const env = { SWICO_API_BASE_URL: `http://127.0.0.1:${server.address().port}`, SWICO_CLI_ALLOW_INSECURE_LOCAL: '1' }
+  credentialModule.setNativeCredentialStoreForTests(store)
+  try {
+    await credentialModule.saveTokens(durable, env)
+    await credentialModule.saveTokens(selected, env, { memoryOnly: true })
+    assert.deepEqual(await sessionModule.ensureTokens(env), rotated)
+    assert.deepEqual(JSON.parse(records.get(env.SWICO_API_BASE_URL)), durable)
+    assert.deepEqual(calls, ['/api/cli/v1/me', '/api/cli/v1/token'])
+    assert.equal(credentialModule.credentialStorageMode(env), 'memory')
+  } finally {
+    await credentialModule.clearTokens(env)
+    records.clear()
+    credentialModule.setNativeCredentialStoreForTests(null)
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('a durable refresh rejects an intentional account switch instead of adopting it', async () => {
+  const records = new Map()
+  const store = {
+    storage: 'secret-service',
+    save(account, value) { records.set(account, value) },
+    load(account) { return records.get(account) },
+    delete(account) { return records.delete(account) },
+  }
+  const accountA = { ...tokens, session_id: 'session-a-switch', refresh_token: 'refresh-a-switch' }
+  const accountC = { ...tokens, session_id: 'session-c-switch', refresh_token: 'refresh-c-switch' }
+  const calls = []
+  const server = createServer((request, response) => {
+    calls.push(request.url)
+    if (request.url.endsWith('/me')) { records.set(env.SWICO_API_BASE_URL, JSON.stringify(accountC)); response.writeHead(401); response.end('{}'); return }
+    if (request.url.endsWith('/token')) { response.writeHead(500); response.end('{}'); return }
+    response.writeHead(404); response.end()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const env = { SWICO_API_BASE_URL: `http://127.0.0.1:${server.address().port}`, SWICO_CLI_ALLOW_INSECURE_LOCAL: '1' }
+  credentialModule.setNativeCredentialStoreForTests(store)
+  try {
+    await credentialModule.saveTokens(accountA, env)
+    await assert.rejects(() => sessionModule.ensureTokens(env), /selected Swico session changed/)
+    assert.deepEqual(calls, ['/api/cli/v1/me'])
+    assert.deepEqual(await credentialModule.loadTokens(env), accountC)
+  } finally {
+    await credentialModule.clearTokens(env)
+    credentialModule.setNativeCredentialStoreForTests(null)
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('freshness uses a bounded interval and does not probe every immediate operation', async () => {
+  const calls = []
+  const server = createServer((request, response) => {
+    calls.push(request.url)
+    if (request.url.endsWith('/me')) { response.writeHead(200); response.end('{}'); return }
+    response.writeHead(404); response.end()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const env = { SWICO_API_BASE_URL: `http://127.0.0.1:${server.address().port}`, SWICO_CLI_ALLOW_INSECURE_LOCAL: '1' }
+  try {
+    await credentialModule.saveTokens({ ...tokens, session_id: 'fresh-session', expires_in: 60 }, env, { memoryOnly: true })
+    await sessionModule.ensureTokens(env)
+    await sessionModule.ensureTokens(env)
+    assert.deepEqual(calls, ['/api/cli/v1/me'])
+  } finally {
+    await credentialModule.clearTokens(env)
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('offline doctor does not call the endpoint even when credentials are populated', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'swico-doctor-offline-'))
+  const file = join(directory, 'credentials.json')
+  const calls = []
+  const server = createServer((request, response) => { calls.push(request.url); response.writeHead(500); response.end('unexpected request') })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const env = {
+    SWICO_API_BASE_URL: `http://127.0.0.1:${server.address().port}`,
+    SWICO_CLI_ALLOW_INSECURE_LOCAL: '1',
+    SWICO_CLI_CREDENTIAL_FILE: file,
+    SWICO_CLI_DOCTOR_OFFLINE: '1',
+    SWICO_CLI_STATE_DIR: join(directory, 'state'),
+    SWICO_CLI_CONFIG_FILE: join(directory, 'config.toml'),
+    XDG_CONFIG_HOME: join(directory, 'xdg'),
+  }
+  try {
+    await writeFile(file, JSON.stringify({ endpoint: env.SWICO_API_BASE_URL, tokens }))
+    const result = await exec(process.execPath, ['dist/cli.js', 'doctor'], { cwd, env: { ...process.env, ...env }, maxBuffer: 256 * 1024 })
+    const report = JSON.parse(result.stdout)
+    assert.equal(report.api.state, 'not_checked')
+    assert.equal(report.auth, 'not_checked')
+    assert.deepEqual(calls, [])
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    await rm(directory, { recursive: true, force: true })
   }
 })
 

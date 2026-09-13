@@ -32,6 +32,7 @@ class CliSettings:
     web_origin: str
     allowed_emails: frozenset[str]
     max_agent_steps: int
+    agent_run_seconds: int = 300
     device_grant_seconds: int = 600
     poll_interval_seconds: int = 5
     access_token_seconds: int = 900
@@ -64,6 +65,7 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         if item.strip()
     )
     max_steps = _int("SWICO_CLI_MAX_AGENT_STEPS", 8, 1, 32, values)
+    agent_run_seconds = _int("SWICO_CLI_AGENT_RUN_SECONDS", 300, 60, 1800, values)
     # A disabled rollout is safe, but malformed limits must still be visible
     # to release checks instead of silently becoming an unlimited capability.
     return CliSettings(
@@ -72,6 +74,7 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         web_origin=origin,
         allowed_emails=allowlist,
         max_agent_steps=max_steps,
+        agent_run_seconds=agent_run_seconds,
         cloud_agent_enabled=cloud_agent_enabled,
     )
 

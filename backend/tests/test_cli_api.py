@@ -305,13 +305,35 @@ def test_cli_chat_stream_uses_shared_preparation_and_terminal_events(client: Tes
     result = client.post(
         "/api/cli/v1/chat/stream",
         headers={"Authorization": f"Bearer {raw_access}"},
-        json={"request_id": str(uuid4()), "message": "hello"},
+        json={"request_id": str(uuid4()), "message": "hello", "output_schema": {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}, "additionalProperties": False}},
     )
     assert result.status_code == 200, result.text
     assert "event: delta" in result.text and "Hello from shared Chat" in result.text
     assert "event: done" in result.text
     assert captured["forced_swico_tier"] == "lite"
     assert captured["search_mode"] == "auto"
+    assert captured["output_schema"]["required"] == ["answer"]
+
+
+def test_cli_output_schema_is_bounded_and_rejects_invalid_payload(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    user = create_test_user("cli-schema-validation", "schema-validation@example.com")
+    raw_access = "y" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("x" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat"]', device_description="schema validation",
+        ))
+        session.commit()
+    too_large = {"description": "x" * (65 * 1024)}
+    rejected = client.post(
+        "/api/cli/v1/chat/stream",
+        headers={"Authorization": f"Bearer {raw_access}"},
+        json={"request_id": str(uuid4()), "message": "hello", "output_schema": too_large},
+    )
+    assert rejected.status_code == 422
 
 
 def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -345,7 +367,14 @@ def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(c
         request_id="planner-request", replaces_message_id=None, revision_number=1,
     )
     completed = CompletedWebTurn(None, message, {"available_micros": 0}, response)
-    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", lambda **kwargs: SimpleNamespace(request_id="planner-request"))
+    observed_steps: list[int] = []
+    def fake_prepare(**kwargs):
+        with SessionLocal() as inspect_session:
+            observed = inspect_session.get(CliAgentRun, run.json()["run_id"])
+            assert observed is not None
+            observed_steps.append(observed.current_step)
+        return SimpleNamespace(request_id="planner-request")
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", fake_prepare)
     monkeypatch.setattr("app.cli_api.router.execute_web_turn", lambda *_args, **_kwargs: completed)
     monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
     planned = client.post(
@@ -356,6 +385,44 @@ def test_agent_planner_validates_inner_action_envelope_and_uses_response_usage(c
     assert planned.status_code == 200, planned.text
     assert planned.json()["action_type"] == "list_files"
     assert planned.json()["usage"] == 18
+    assert observed_steps == [1]
+
+
+def test_agent_planner_rechecks_cancellation_after_model_io_without_authorizing_result(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    user = create_test_user("cli-planner-cancel", "planner-cancel@example.com")
+    raw_access = "k" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("l" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat","agent"]', device_description="planner cancellation",
+        ))
+        session.commit()
+    task = "inspect a project"
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": task})
+    assert run.status_code == 201, run.text
+    run_id = run.json()["run_id"]
+    content = json.dumps({"kind": "assistant", "text": "finished"})
+    response = AIProviderResponse(text=content, provider="openai", model="test-model", route="test", reason="test", language="en", intent="coding", input_tokens=1, output_tokens=1, raw={"completion_status": "complete"})
+    message = CompletedWebMessage(id="planner-cancel-message", content=content, status="complete", swico_tier="lite", usage_source="actual", charge_micros=0, provider="openai", model="test-model", request_id="planner-cancel-request", replaces_message_id=None, revision_number=1)
+    completed = CompletedWebTurn(None, message, {"available_micros": 0}, response)
+    def fake_prepare(**kwargs):
+        with SessionLocal() as cancel_session:
+            current = cancel_session.get(CliAgentRun, run_id)
+            assert current is not None
+            current.status, current.cancellation_requested, current.terminal_reason = "cancelled", True, "test_cancelled_during_model_io"
+            cancel_session.add(current)
+            cancel_session.commit()
+        return SimpleNamespace(request_id="planner-cancel-request")
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", fake_prepare)
+    monkeypatch.setattr("app.cli_api.router.execute_web_turn", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
+    planned = client.post(f"/api/cli/v1/agent/runs/{run_id}/plan", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": task, "context": "bounded"})
+    assert planned.status_code == 409, planned.text
+    assert client.get(f"/api/cli/v1/agent/runs/{run_id}", headers={"Authorization": f"Bearer {raw_access}"}).json()["status"] == "cancelled"
 
 
 def test_subagent_action_uses_independent_metered_chat_rounds_and_bounded_context(client: TestClient, monkeypatch: pytest.MonkeyPatch):

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 const MAX_SCHEMA_BYTES = 64 * 1024
 const MAX_OUTPUT_BYTES = 256 * 1024
 
-export type OutputValidator = { validate(value: unknown): void }
+export type OutputValidator = { schema: Record<string, unknown>; validate(value: unknown): void }
 
 export async function loadOutputValidator(path: string): Promise<OutputValidator> {
   const bytes = await readFile(path)
@@ -18,6 +18,7 @@ export async function loadOutputValidator(path: string): Promise<OutputValidator
   try { compiled = new Ajv({ allErrors: false, strict: true }).compile(schema) }
   catch (error) { throw new Error(`--output-schema is not a supported JSON Schema: ${error instanceof Error ? error.message : 'schema compilation failed'}`) }
   return {
+    schema: schema as Record<string, unknown>,
     validate(value: unknown) {
       if (!compiled(value)) throw new Error(`The response did not match --output-schema${compiled.errors?.[0]?.instancePath ? ` at ${compiled.errors[0].instancePath}` : ''}.`)
     },

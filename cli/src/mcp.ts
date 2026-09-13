@@ -35,7 +35,7 @@ function redacted(value: unknown): string {
 export class McpManager {
   private readonly clients = new Map<string, { client: Client; transport: StdioClientTransport | StreamableHTTPClientTransport; tools: McpTool[] }>()
   private readonly journal: ActionJournal
-  constructor(private readonly config: SwicoConfig, journalFile?: string, private readonly sandbox: SandboxAdapter = createSandboxAdapter(process.cwd())) { this.journal = new ActionJournal(journalFile ?? `${process.cwd()}/.swico/mcp-action-journal.jsonl`) }
+  constructor(private readonly config: SwicoConfig, journalFile?: string, private readonly sandbox: SandboxAdapter = createSandboxAdapter(process.cwd()), private readonly sandboxVerified = false, private readonly allowReadOnlyTools = false) { this.journal = new ActionJournal(journalFile ?? `${process.cwd()}/.swico/mcp-action-journal.jsonl`) }
   definitions(): McpServerDefinition[] { return this.config.mcp.slice(0, 32) }
   private definition(name: string): McpServerDefinition { const item = this.config.mcp.find(value => value.name === name); if (!item) throw new Error(`MCP server '${name}' is not configured.`); validateMcpDefinition(item, item.source === 'user'); if (!item.trusted) throw new Error(`MCP server '${name}' is project configuration and must be explicitly added by the user before use.`); return item }
   private async connect(definition: McpServerDefinition): Promise<{ client: Client; tools: McpTool[] }> {
@@ -43,7 +43,7 @@ export class McpManager {
     const client = new Client({ name: 'swico', version: '0.1.0' }, { capabilities: {} })
     let transport: StdioClientTransport | StreamableHTTPClientTransport
     if (definition.transport === 'stdio') {
-      if (!this.sandbox.status().available) throw new Error(`MCP server requires a local sandbox: ${this.sandbox.status().reason}`)
+      if (!this.sandbox.status().available || !this.sandboxVerified) throw new Error(`MCP server requires verified local confinement before stdio discovery or calls: ${this.sandbox.status().reason}`)
       const wrapped = this.sandbox.wrap([definition.command as string, ...(definition.args ?? [])], 'read-only', 'disabled')
       transport = new StdioClientTransport({ command: wrapped.command, args: wrapped.args, cwd: definition.cwd, env: safeEnv(definition.env), stderr: 'pipe', maxBufferSize: MAX_RESULT })
     } else {
@@ -72,7 +72,7 @@ export class McpManager {
     if (Buffer.byteLength(JSON.stringify(args)) > MAX_ARGS) throw new Error('MCP arguments exceed the supported bound.')
     const { client, tools } = await this.connect(this.definition(name)), tool = tools.find(item => item.name === toolName)
     if (!tool) throw new Error(`MCP tool '${toolName}' is not available on '${name}'.`)
-    if (tool.capability !== 'read' && !await approve(`MCP ${name}:${toolName} (${tool.capability}) with arguments ${redacted(args)}?`)) throw new Error('MCP tool call was not approved.')
+    if ((!this.allowReadOnlyTools || tool.capability !== 'read') && !await approve(`MCP ${name}:${toolName} (${tool.capability}) with arguments ${redacted(args)}?`)) throw new Error('MCP tool call was not approved.')
     const actionId = `mcp:${name}:${toolName}`, payloadHash = createHash('sha256').update(JSON.stringify(args)).digest('hex')
     const previous = await this.journal.latest(actionId, payloadHash); if (previous === 'succeeded') return 'This MCP call was already completed; its result was not run again.'
     await this.journal.record({ action_id: actionId, action_type: 'mcp_tool', payload_hash: payloadHash, status: 'executing' })

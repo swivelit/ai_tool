@@ -628,7 +628,7 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
             repository_id=payload.repository_id, forced_swico_tier=tier,
             swico_free_eligible=swico_free_eligible(int(user.id)),
             input_mode="text", billing_credit_bucket="chat",
-            search_mode=payload.search_mode,
+            search_mode=payload.search_mode, output_schema=payload.output_schema,
         )
     except (AttachmentRequestError, PromptBudgetExceeded) as exc:
         raise HTTPException(exc.status_code, {"code": getattr(exc, "code", "request_invalid"), "message": str(exc)}) from exc
@@ -730,6 +730,24 @@ def _redact_planner_turn(user_id: int, request_id: str) -> None:
         redact_session.commit()
 
 
+def _fail_agent_run(run_id: str, reason: str) -> None:
+    """Record a planner failure without retaining a request-time row lock."""
+    with SessionLocal() as failure_session:
+        run = failure_session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id).with_for_update()).first()
+        if run is not None and run.status in {"running", "waiting_approval"}:
+            run.status, run.terminal_reason = "failed", reason
+            failure_session.add(run)
+            failure_session.commit()
+
+
+def _active_agent_run(run_id: str, user_id: int) -> CliAgentRun | None:
+    with SessionLocal() as check_session:
+        run = check_session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == user_id)).first()
+        if run is None or ensure_utc(run.expires_at) <= utc_now() or run.status not in {"running", "waiting_approval"} or run.cancellation_requested:
+            return None
+        return run
+
+
 @router.post("/agent/runs", status_code=201)
 def create_agent_run(payload: AgentRunRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     settings = _require_enabled()
@@ -753,7 +771,7 @@ def create_agent_run(payload: AgentRunRequest, authorization: str | None = Heade
     ceiling = agent_step_ceiling(cli_session.selected_tier)
     if ceiling <= 0:
         raise HTTPException(403, "The local coding agent requires an eligible paid tier")
-    run = CliAgentRun(user_id=int(user.id), thread_id=payload.thread_id, request_id=str(payload.request_id), tier=cli_session.selected_tier, max_steps=min(settings.max_agent_steps, ceiling), task_hash=hashlib.sha256(payload.task.encode()).hexdigest(), status="running", expires_at=now + timedelta(seconds=300))
+    run = CliAgentRun(user_id=int(user.id), thread_id=payload.thread_id, request_id=str(payload.request_id), tier=cli_session.selected_tier, max_steps=min(settings.max_agent_steps, ceiling), task_hash=hashlib.sha256(payload.task.encode()).hexdigest(), status="running", expires_at=now + timedelta(seconds=settings.agent_run_seconds))
     session.add(run)
     return _run_payload(run)
 
@@ -821,6 +839,18 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         raise HTTPException(409, "Agent task does not match the original run")
     if run.current_step >= run.max_steps:
         raise HTTPException(429, "Agent generation-step limit reached")
+    # Reserve the planner round atomically, then release the database lock
+    # before any model I/O. A competing cancel/complete can therefore win
+    # while the provider is running and is rechecked before the result is
+    # accepted.
+    run_id_value = run.id
+    run_request_id = run.request_id
+    run_thread_id = run.thread_id
+    run_tier = run.tier
+    step_number = run.current_step + 1
+    run.current_step = step_number
+    session.add(run)
+    session.commit()
     prompt = (
         "You are the Swico local coding-agent planner. Return exactly one JSON object and no Markdown. "
         "It must be either {\"kind\":\"assistant\",\"text\":\"...\"} or "
@@ -829,18 +859,17 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         "\"payload\":{...}}. Never request secrets, traversal, shell strings, or unapproved commands. "
         f"TASK (untrusted user text):\n{payload.task}\nLOCAL CONTEXT (untrusted):\n{payload.context}"
     )
-    request_id = f"{run.request_id}:agent:{run.current_step + 1}"
+    request_id = f"{run_request_id}:agent:{step_number}"
     prepared = None
     try:
         prepared = prepare_web_turn(
             user_id=int(user.id), message=prompt, request_id=request_id,
-            thread_id=run.thread_id, reply_language="en", forced_swico_tier=run.tier,
+            thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
             swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
         )
         completed = execute_web_turn(prepared)
     except Exception as exc:
-        run.status, run.terminal_reason = "failed", "planner_generation_failed"
-        session.add(run)
+        _fail_agent_run(run_id_value, "planner_generation_failed")
         raise HTTPException(502, "The coding-agent planner could not complete safely.") from exc
     finally:
         if prepared is not None:
@@ -848,9 +877,10 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     try:
         parsed = json.loads(completed.message.content)
     except (TypeError, ValueError) as exc:
-        run.status, run.terminal_reason = "failed", "planner_returned_unstructured_output"
-        session.add(run)
+        _fail_agent_run(run_id_value, "planner_returned_unstructured_output")
         raise HTTPException(422, "The selected model did not return a supported structured action.") from exc
+    if _active_agent_run(run_id_value, int(user.id)) is None:
+        raise HTTPException(409, "The agent run was cancelled or became terminal while planning.")
     if not isinstance(parsed, dict) or parsed.get("kind") not in {"assistant", "action"}:
         raise HTTPException(422, "The planner response did not match the supported agent protocol.")
     if parsed["kind"] == "assistant":
@@ -909,9 +939,13 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
     run.current_step += len(payload.tasks)
     session.add(run)
     session.commit()
+    run_id_value = run.id
+    run_thread_id = run.thread_id
+    run_tier = run.tier
+    run_request_id = run.request_id
     summaries: list[dict[str, object]] = []
     for item in payload.tasks:
-        if run.cancellation_requested or ensure_utc(run.expires_at) <= utc_now():
+        if _active_agent_run(run_id_value, int(user.id)) is None:
             raise HTTPException(409, "Agent subagent run was cancelled or expired")
         prompt = (
             "You are a bounded Swico read-only repository analysis subagent. "
@@ -923,11 +957,11 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
         # Stable and short per-task request IDs make a reconnect an ordinary
         # shared-Chat idempotent replay rather than another paid generation.
         task_key = hashlib.sha256(f"{payload.action_id}:{item.id}".encode()).hexdigest()[:16]
-        request_id = f"{run.request_id}:subagent:{task_key}"
+        request_id = f"{run_request_id}:subagent:{task_key}"
         try:
             prepared = prepare_web_turn(
                 user_id=int(user.id), message=prompt, request_id=request_id,
-                thread_id=run.thread_id, reply_language="en", forced_swico_tier=run.tier,
+                thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
                 swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
             )
             completed = execute_web_turn(prepared)
@@ -937,6 +971,8 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
         finally:
             if prepared is not None:
                 _redact_planner_turn(int(user.id), prepared.request_id)
+    if _active_agent_run(run_id_value, int(user.id)) is None:
+        raise HTTPException(409, "Agent subagent run was cancelled or expired")
     return {"run_id": run.id, "results": summaries, "active": 0, "max_active": 4}
 
 

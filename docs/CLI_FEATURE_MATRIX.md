@@ -6,7 +6,7 @@ production browser, native-device, or every OS security boundary was tested.
 
 ## Dated parity baseline
 
-Reviewed 2026-09-12 against the current official Codex CLI feature,
+Reviewed 2026-09-13 against the current official Codex CLI feature,
 reference, and security documentation:
 
 - https://developers.openai.com/codex/cli/features
@@ -36,7 +36,7 @@ explicitly bounded.
 | Capability | Status | Boundary / evidence |
 |---|---|---|
 | Authentication and device approval | IMPLEMENTED + VERIFIED | Proof-bound device flow, rotation, revocation tests |
-| Native credential persistence | IMPLEMENTED + VERIFIED | Keyring adapter and macOS persistence verified; platform CI still required |
+| Native credential persistence | IMPLEMENTED + UNVERIFIED | Credential protocol and fake-store lifecycle are tested; native keyring save/load/delete acceptance is not run |
 | Chat, streaming, billing, tiers | IMPLEMENTED + VERIFIED | Shared CLI Chat route and focused backend/client tests |
 | Repository discovery and Git status/diff | IMPLEMENTED + VERIFIED | Local repository tests |
 | AGENTS.md instructions | IMPLEMENTED + VERIFIED | Bounded, nearest-directory precedence and symlink checks |
@@ -44,7 +44,7 @@ explicitly bounded.
 | Patch, create/delete/move | IMPLEMENTED + VERIFIED | Approval, hash and atomic workspace tests |
 | Commands and cancellation | IMPLEMENTED + VERIFIED | Explicit approval, bounded output and cleanup tests |
 | Permission profiles | IMPLEMENTED + VERIFIED | Read-only and approval-required behavior |
-| Plans and context compaction | IMPLEMENTED + VERIFIED | Bounded local metadata/context tests |
+| Plans and context compaction | IMPLEMENTED + VERIFIED | Task-only noninteractive plans; repository context requires explicit workspace consent |
 | Resume and review | IMPLEMENTED + VERIFIED | Owner/workspace checks and read-only review |
 | Non-interactive exec | IMPLEMENTED + VERIFIED | Agent mutations fail closed without approval |
 | MCP stdio | PARTIAL | SDK transport and sandbox gate; host sandbox is unavailable here |
@@ -54,7 +54,7 @@ explicitly bounded.
 | Hooks | FAIL-CLOSED / DISABLED | Event bus exists; executable hooks remain disabled |
 | Images | PARTIAL | CLI upload reuses temporary paid image path; live/device verification pending |
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
-| Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; no live provider test |
+| Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
 | macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and hostile verification are present; this Intel host refuses sandbox_apply |
 | Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap plus hostile verification; no real Linux host was available in this audit |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
@@ -64,8 +64,8 @@ explicitly bounded.
 | Mutating subagents | NOT IMPLEMENTED | No shared-tree mutation or automatic merge |
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
-| Doctor/readiness | IMPLEMENTED + VERIFIED | No-cost public health endpoint and offline diagnostics |
-| npm package | IMPLEMENTED + VERIFIED | Packed artifact inspected locally; not published |
+| Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
+| npm package | IMPLEMENTED + VERIFIED (installed path) | Final artifact passed clean-prefix checks against a controlled API; not published |
 | License | FAIL-CLOSED / DISABLED | No approved top-level LICENSE; publication decision required |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary

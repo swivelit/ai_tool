@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { gunzipSync } from 'node:zlib'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -50,6 +52,7 @@ async function run(label, command, args, options = {}) {
 }
 
 const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
+let controlledServer
 try {
   const packed = await run('pack', npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
   const records = JSON.parse(packed.stdout)
@@ -89,14 +92,92 @@ try {
   // Artifact smoke tests must never inspect the operator's real keychain,
   // config, state, or sessions. Use an isolated empty state rooted in the
   // temporary release directory.
+  const requestBodies = [], control = { refreshed: false, cancelled: 0, loggedOut: false, device: null }
+  controlledServer = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(Buffer.from(chunk))
+    const bodyText = Buffer.concat(chunks).toString('utf8')
+    let body = {}
+    try { body = bodyText ? JSON.parse(bodyText) : {} } catch { body = {} }
+    requestBodies.push({ path: request.url, body })
+    const jsonResponse = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
+    if (request.url === '/api/cli/v1/device' && request.method === 'POST') {
+      control.device = body
+      jsonResponse(200, { device_code: 'controlled-device', user_code: 'CTRL-123', verification_uri: 'https://swico.in/cli/authorize', verification_uri_complete: 'https://swico.in/cli/authorize?user_code=CTRL-123', expires_in: 30, interval: 5 })
+      return
+    }
+    if (request.url === '/api/cli/v1/token' && request.method === 'POST') {
+      if (body.grant_type === 'refresh_token') {
+        control.refreshed = true
+        jsonResponse(200, { access_token: 'installed-access-new', refresh_token: 'installed-refresh-new', expires_in: 900, session_id: 'installed-session', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'installed@example.test', name: 'Installed' } })
+      } else jsonResponse(200, { access_token: 'installed-login-access', refresh_token: 'installed-login-refresh', expires_in: 900, session_id: 'installed-login-session', tier: 'standard', tier_label: 'Swico', scopes: ['chat'], account: { email: 'login@example.test', name: 'Login' } })
+      return
+    }
+    if (request.url === '/api/cli/v1/me') {
+      if (request.headers.authorization === 'Bearer installed-access-old') { jsonResponse(401, { detail: 'expired' }); return }
+      jsonResponse(control.loggedOut ? 401 : 200, { email: 'installed@example.test', tier: 'lite' })
+      return
+    }
+    if (request.url?.startsWith('/api/cli/v1/chat/requests/') && request.url.endsWith('/cancel')) {
+      control.cancelled += 1; jsonResponse(200, { status: 'cancelling' }); return
+    }
+    if (request.url === '/api/cli/v1/logout' && request.method === 'POST') { control.loggedOut = true; jsonResponse(200, { status: 'revoked' }); return }
+    if (request.url === '/api/cli/v1/chat/stream' && request.method === 'POST') {
+      if (String(body.message).includes('force recoverable error')) {
+        response.writeHead(200, { 'content-type': 'text/event-stream' }); response.end('event: error\ndata: {"message":"temporary controlled failure"}\n\n'); return
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write('event: thread\ndata: {"thread_id":"installed-thread"}\n\n')
+      if (String(body.message).includes('cancel me')) { setTimeout(() => response.end(), 5_000); return }
+      const schema = body.output_schema
+      const text = schema?.required?.includes('answer') ? '{"answer":"installed"}' : String(body.message).includes('plan') ? '1. Produce a task-only plan.\n2. Confirm the requested checks.' : 'installed stream response'
+      response.end(`event: delta\ndata: ${JSON.stringify({ text })}\n\nevent: done\ndata: {}\n\n`)
+      return
+    }
+    jsonResponse(404, { detail: 'controlled endpoint not found' })
+  })
+  await new Promise((resolve, reject) => { controlledServer.once('error', reject); controlledServer.listen(0, '127.0.0.1', resolve) })
+  const controlOrigin = `http://127.0.0.1:${controlledServer.address().port}`
   const isolatedEnv = {
     ...process.env,
+    SWICO_API_BASE_URL: controlOrigin,
+    SWICO_CLI_ALLOW_INSECURE_LOCAL: '1',
+    SWICO_CLI_NO_BROWSER: '1',
     SWICO_CLI_CREDENTIAL_FILE: join(work, 'empty-credentials.json'),
     SWICO_CLI_STATE_DIR: join(work, 'state'),
     SWICO_CLI_CONFIG_FILE: join(work, 'config.toml'),
     XDG_CONFIG_HOME: join(work, 'xdg'),
   }
   const smokeOptions = { cwd: work, maxBuffer: 512 * 1024, env: isolatedEnv }
+  const login = await run('installed paid login completion', executable, ['login', '--tier', 'standard', '--memory-only'], smokeOptions)
+  if (!login.stdout.includes('Swico')) throw new Error('Installed login did not complete')
+  if (control.device?.tier !== 'standard') throw new Error('Installed login did not transmit the explicit paid tier')
+  const oldTokens = { access_token: 'installed-access-old', refresh_token: 'installed-refresh-old', expires_in: 900, session_id: 'installed-session', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'installed@example.test', name: 'Installed' } }
+  await writeFile(isolatedEnv.SWICO_CLI_CREDENTIAL_FILE, JSON.stringify({ endpoint: controlOrigin, tokens: oldTokens }))
+  await writeFile(join(work, 'schema.json'), JSON.stringify({ type: 'object', required: ['answer'], additionalProperties: false, properties: { answer: { type: 'string' } } }))
+  await writeFile(join(work, 'AGENTS.md'), 'AGENTS_SECRET_MARKER must never be sent by a task-only plan.')
+  const streamed = await run('installed streaming with current-token refresh', executable, ['ask', 'hello installed'], smokeOptions)
+  if (!streamed.stdout.includes('installed stream response') || !control.refreshed) throw new Error('Installed stream/refresh smoke failed')
+  const structured = await run('installed validated structured output', executable, ['exec', 'return an answer', '--output-schema', join(work, 'schema.json')], smokeOptions)
+  if (JSON.parse(structured.stdout).answer !== 'installed') throw new Error('Installed structured output smoke failed')
+  const planned = await run('installed task-only plan consent', executable, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
+  const planRequest = requestBodies.find(item => item.path === '/api/cli/v1/chat/stream' && String(item.body.message).includes('task-only plan'))
+  if (!planRequest || String(planRequest.body.message).includes('AGENTS_SECRET_MARKER')) throw new Error('Installed plan consent leaked repository instructions')
+  let recovered = false
+  try { await run('installed controlled error recovery', executable, ['ask', 'force recoverable error'], smokeOptions) } catch { recovered = true }
+  if (!recovered) throw new Error('Installed error recovery did not surface the controlled failure')
+  const afterError = await run('installed post-error chat recovery', executable, ['ask', 'success after error'], smokeOptions)
+  if (!afterError.stdout.includes('installed stream response')) throw new Error('Installed post-error chat did not recover')
+  const cancelled = await new Promise(resolve => {
+    const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    const timer = setTimeout(() => child.kill('SIGINT'), 500)
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }) })
+  })
+  if (control.cancelled < 1 || (!cancelled.code && !cancelled.signal)) throw new Error('Installed cancellation smoke did not cancel the request')
+  await run('installed remote logout and local deletion', executable, ['logout'], smokeOptions)
+  let revoked = false
+  try { await run('installed revoked-session rejection', executable, ['whoami'], smokeOptions) } catch { revoked = true }
+  if (!revoked) throw new Error('Installed revoked-session rejection did not fail closed')
   const help = await run('installed --help', executable, ['--help'], smokeOptions)
   const version = await run('installed --version', executable, ['--version'], smokeOptions)
   const doctor = await run('installed offline doctor', executable, ['doctor'], { ...smokeOptions, env: { ...isolatedEnv, SWICO_CLI_DOCTOR_OFFLINE: '1' } })
@@ -116,10 +197,11 @@ try {
     filename: record.filename,
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
-    installed_checks: { help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
+    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', cancellation: 'passed', logout_revocation: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),
   }, null, 2))
 } finally {
+  if (controlledServer) await new Promise(resolve => controlledServer.close(resolve))
   await rm(work, { recursive: true, force: true })
 }
