@@ -11,6 +11,7 @@ const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const keepArtifact = process.argv.includes('--keep-artifact')
+const STAGE_TIMEOUT_MS = 90_000
 
 function archiveEntries(buffer) {
   const entries = new Map()
@@ -30,18 +31,27 @@ function archiveEntries(buffer) {
   return entries
 }
 
-async function run(command, args, options = {}) {
-  return exec(command, args, {
-    cwd: root,
-    maxBuffer: 2 * 1024 * 1024,
-    env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
-    ...options,
-  })
+async function run(label, command, args, options = {}) {
+  process.stderr.write(`[release-check] ${label}\n`)
+  try {
+    return await exec(command, args, {
+      cwd: root,
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: STAGE_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
+      env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
+      ...options,
+    })
+  } catch (error) {
+    const detail = [error?.timedOut ? 'timed out' : '', error?.killed ? 'process killed' : '', error?.stderr, error?.stdout, error?.code ? `code=${error.code}` : '']
+      .filter(Boolean).join(' ').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000)
+    throw new Error(`${label} failed: ${detail || 'unknown subprocess failure'}`)
+  }
 }
 
 const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
 try {
-  const packed = await run(npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
+  const packed = await run('pack', npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
   const records = JSON.parse(packed.stdout)
   const record = Array.isArray(records) ? records[0] : records
   if (!record?.filename) throw new Error('npm pack did not return an artifact filename')
@@ -59,6 +69,7 @@ try {
     'package/dist/agent.js', 'package/dist/contracts.js', 'package/dist/context.js',
     'package/dist/credentials.js', 'package/dist/journal.js', 'package/dist/local_sessions.js',
     'package/dist/permissions.js', 'package/dist/plan.js', 'package/dist/repository.js',
+    'package/dist/output_schema.js',
     'package/dist/session.js', 'package/dist/sse.js', 'package/dist/workspace.js',
     'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
     'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
@@ -73,14 +84,25 @@ try {
   }
 
   const prefix = join(work, 'prefix')
-  await run(npm, ['install', '--global', '--prefix', prefix, '--ignore-scripts', archivePath])
+  await run('clean-prefix install', npm, ['install', '--global', '--prefix', prefix, '--ignore-scripts', archivePath])
   const executable = process.platform === 'win32' ? join(prefix, 'swico.cmd') : join(prefix, 'bin', 'swico')
-  const help = await exec(executable, ['--help'], { cwd: work, maxBuffer: 512 * 1024 })
-  const version = await exec(executable, ['--version'], { cwd: work, maxBuffer: 512 * 1024 })
-  const doctor = await exec(executable, ['doctor'], { cwd: work, env: { ...process.env, SWICO_CLI_DOCTOR_OFFLINE: '1' }, maxBuffer: 512 * 1024 })
-  const config = await exec(executable, ['config', 'validate'], { cwd: work, maxBuffer: 512 * 1024 })
-  const completion = await exec(executable, ['completion', 'bash'], { cwd: work, maxBuffer: 512 * 1024 })
-  const sandbox = await exec(executable, ['sandbox', 'status'], { cwd: work, maxBuffer: 512 * 1024 })
+  // Artifact smoke tests must never inspect the operator's real keychain,
+  // config, state, or sessions. Use an isolated empty state rooted in the
+  // temporary release directory.
+  const isolatedEnv = {
+    ...process.env,
+    SWICO_CLI_CREDENTIAL_FILE: join(work, 'empty-credentials.json'),
+    SWICO_CLI_STATE_DIR: join(work, 'state'),
+    SWICO_CLI_CONFIG_FILE: join(work, 'config.toml'),
+    XDG_CONFIG_HOME: join(work, 'xdg'),
+  }
+  const smokeOptions = { cwd: work, maxBuffer: 512 * 1024, env: isolatedEnv }
+  const help = await run('installed --help', executable, ['--help'], smokeOptions)
+  const version = await run('installed --version', executable, ['--version'], smokeOptions)
+  const doctor = await run('installed offline doctor', executable, ['doctor'], { ...smokeOptions, env: { ...isolatedEnv, SWICO_CLI_DOCTOR_OFFLINE: '1' } })
+  const config = await run('installed config validate', executable, ['config', 'validate'], smokeOptions)
+  const completion = await run('installed completion', executable, ['completion', 'bash'], smokeOptions)
+  const sandbox = await run('installed sandbox status', executable, ['sandbox', 'status'], smokeOptions)
   if (!help.stdout.includes('Usage: swico')) throw new Error('Installed --help output is invalid')
   if (version.stdout.trim() !== manifest.version) throw new Error(`Installed version mismatch: ${version.stdout.trim()}`)
   if (!config.stdout.includes('Configuration is valid')) throw new Error('Installed config validation output is invalid')

@@ -16,6 +16,12 @@ swico login
 swico
 ```
 
+The CLI is paid-only. If the website currently has Swico Free selected, choose
+the CLI tier explicitly during authorization, for example `swico login
+--tier lite` (also `standard` or `pro`). This does not change the website
+preference; the server rechecks Chat eligibility and available wallet or
+subscription allowance for every request.
+
 The production API is built in as `https://ai-tool-rrau.onrender.com`; browser
 approval remains on the server-controlled `https://swico.in` origin. Customers
 do not need Python, this repository, TypeScript, or provider keys.

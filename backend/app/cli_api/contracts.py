@@ -12,6 +12,7 @@ class DeviceAuthorizationRequest(BaseModel):
     code_challenge: str = Field(min_length=43, max_length=128)
     device_description: str = Field(default="Swico CLI", min_length=1, max_length=120)
     scopes: list[Literal["chat", "agent"]] = Field(default_factory=lambda: ["chat"], max_length=2)
+    tier: Literal["lite", "standard", "pro"] | None = None
 
 
 class DeviceTokenRequest(BaseModel):
@@ -41,7 +42,7 @@ class CliChatRequest(BaseModel):
 
 class CliTierRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tier: Literal["free", "lite", "standard", "pro"]
+    tier: Literal["lite", "standard", "pro"]
 
 
 class CloudJobRequest(BaseModel):

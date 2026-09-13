@@ -222,7 +222,7 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
 }
 
 export type CliDeviceInfo = {
-  user_code: string; device_description: string; scopes: string[]; status: string; expires_at: string
+  user_code: string; device_description: string; scopes: string[]; tier?: 'lite' | 'standard' | 'pro' | null; status: string; expires_at: string
 }
 
 export async function getCliDeviceInfo(userCode: string): Promise<CliDeviceInfo> {

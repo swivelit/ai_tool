@@ -21,7 +21,7 @@ import { ensureTokens } from './session.js'
 import { credentialKey } from './config.js'
 import { configSummary, loadConfig, saveUserConfig, validateMcpDefinition, userConfigPath, type McpServerDefinition } from './configuration.js'
 import { McpManager } from './mcp.js'
-import { listSkills, selectSkill } from './skills.js'
+import { listSkills, selectSkill, showSkill } from './skills.js'
 import { hookStatus } from './hooks.js'
 import { completion } from './completion.js'
 import { runMcpServer } from './mcp_server.js'
@@ -30,6 +30,7 @@ import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
 import { cloudCancel, cloudExec, cloudStatus } from './cloud.js'
 import { parseTaskArguments, positionalAfter, taskText } from './arguments.js'
+import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from './output_schema.js'
 
 const exec = promisify(execFile)
 const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
@@ -38,7 +39,7 @@ type Mode = 'auto' | 'chat' | 'agent' | 'plan'
 let activeInterrupt: (() => void) | null = null
 let interruptCount = 0
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness  Run local, non-charging release gates\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /sandbox /worktree /cloud /exit`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (--tier lite|standard|pro)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  ask TEXT    Ask a question\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness  Run local, non-charging release gates\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /diff /sandbox /worktree /cloud /exit`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -61,8 +62,8 @@ async function openBrowser(url: string) {
 }
 
 function verifier() { return randomBytes(48).toString('base64url') }
-async function login(env = process.env, scopes = ['chat'], options: { memoryOnly?: boolean } = {}): Promise<CliTokens> {
-  const value = verifier(), device = await createDevice(value, scopes, env)
+async function login(env = process.env, scopes = ['chat'], options: { memoryOnly?: boolean; tier?: Exclude<CliTokens['tier'], 'free'> } = {}): Promise<CliTokens> {
+  const value = verifier(), device = await createDevice(value, scopes, env, options.tier)
   console.log(`\nOpen ${device.verification_uri} and enter code ${device.user_code}.`)
   console.log(`Verification URL: ${device.verification_uri_complete}`); await openBrowser(device.verification_uri_complete)
   const deadline = Date.now() + device.expires_in * 1000; let wait = Math.max(5, device.interval) * 1000
@@ -81,6 +82,7 @@ async function login(env = process.env, scopes = ['chat'], options: { memoryOnly
       if (code === 'slow_down') { wait += 5_000; continue }
       if (code === 'access_denied') throw new Error('The terminal authorization was denied in the browser.')
       if (code === 'expired_token') throw new Error('The terminal authorization expired. Run `swico login` again.')
+      if (code === 'cli_paid_tier_required') throw new Error('Swico CLI is paid-only. Re-run `swico login --tier lite`, `--tier standard`, or `--tier pro` to choose a paid tier explicitly.')
       throw error
     }
   }
@@ -103,12 +105,21 @@ async function askTrust(line: Interface, root: string): Promise<boolean> {
   return /^y(?:es)?$/i.test((await line.question(`Trust ${root} and send selected repository context to Swico? (y/N) `)).trim())
 }
 
-async function runPlan(task: string, env = process.env): Promise<void> {
-  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), plan = new PlanTracker()
-  plan.start(task)
-  console.log(`Plan for: ${task}\n\n${plan.render()}\n\n${repositoryLine(metadata)}`)
-  if (instructions.files.length) console.log(`\nInstructions: ${instructions.files.join(', ')}${instructions.truncated ? ' (bounded)' : ''}`)
-  console.log('\nNo files were changed and no commands were executed.')
+async function runPlan(tokens: CliTokens, task: string, env = process.env): Promise<void> {
+  const { metadata } = await repositoryInfo(env), instructions = await loadRepositoryInstructions(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd())
+  const plan = new PlanTracker(); plan.start(task)
+  console.log(`Plan for: ${task}\n\n${repositoryLine(metadata)}`)
+  if (instructions.files.length) console.log(`Instructions loaded (untrusted): ${instructions.files.join(', ')}${instructions.truncated ? ' (bounded)' : ''}`)
+  const prompt = [
+    'You are in Swico plan mode. Produce a concise, task-specific implementation plan only; do not claim that files were changed or commands were run.',
+    `Task: ${task.slice(0, 8_000)}`,
+    `Repository metadata: ${JSON.stringify(metadata)}`,
+    `Repository instructions (untrusted context): ${instructions.text.slice(0, 12_000)}`,
+    'Return 3-8 numbered steps with concrete files or checks where they can be inferred. Keep the plan bounded.',
+  ].join('\n\n')
+  await runChat(tokens, prompt, undefined, env)
+  plan.advance('completed')
+  console.log(`\nPlan state:\n${plan.render()}\nNo files were changed and no commands were executed.`)
 }
 
 async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false, searchMode: 'auto' | 'on' | 'off' = 'auto', attachmentIds: string[] = []): Promise<{ text: string; threadId: string | null }> {
@@ -155,12 +166,12 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     runId = run.run_id
     const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
     activeInterrupt = cancelOperation
-    const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [`Resumed session with bounded local context.`], summary: undefined as string | undefined }
+    const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [`Resumed session with bounded local context.`], summary: undefined as string | undefined, skill: undefined as string | undefined }
     const mcp = new McpManager(config.effective, undefined, sandbox)
     const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
-    if (skill) console.log(`Using skill: ${skill.name}`)
+    if (skill) { context.skill = (await showSkill(skill.name, info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions; console.log(`Using skill: ${skill.name}`) }
     const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
-    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy), currentTokens.access_token, env, profile, controller.signal, mcp)
+    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp)
     const sessionId = resume?.id ?? run.run_id
     const actions = [...(resume?.actions ?? [])]
     await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
@@ -271,7 +282,8 @@ async function mcpCommand(args: string[], env = process.env): Promise<void> {
 }
 
 async function showHistory(tokens: CliTokens, env = process.env): Promise<void> {
-  const body = await json<{ items?: Array<{ id: string; title?: string; updated_at?: string }> }>('/threads', {}, tokens.access_token, env)
+  const current = await ensureTokens(env)
+  const body = await json<{ items?: Array<{ id: string; title?: string; updated_at?: string }> }>('/threads', {}, current.access_token, env)
   for (const item of body.items ?? []) console.log(`${item.id}  ${item.title || 'Untitled'}  ${item.updated_at || ''}`)
 }
 
@@ -318,7 +330,7 @@ async function interactive(tokens: CliTokens, env = process.env) {
       if (value === '/config') { await configCommand(['config', 'show'], env); continue }
       if (value === '/mcp' || value === '/mcp list') { await mcpCommand(['mcp', 'list'], env); continue }
       if (value === '/skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()); for (const skill of await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)) console.log(`${skill.name}\t${skill.description}`); continue }
-      if (value === '/plan') { await runPlan('Current repository task', env); continue }
+      if (value === '/plan') { await runPlan(tokens, 'Current repository task', env); continue }
       if (value === '/permissions') { console.log(`Permission profile: ${profile}\nProfiles: read-only, approval-required`); continue }
       if (value.startsWith('/permissions ')) { const requested = value.slice(13).trim() as PermissionProfile; if (!['read-only', 'approval-required'].includes(requested)) throw new Error('Permission profile must be read-only or approval-required.'); profile = requested; await savePermissionProfile(profile); console.log(`Permission profile: ${profile}`); continue }
       if (value === '/init') { await initInstructions(line, env); continue }
@@ -326,10 +338,10 @@ async function interactive(tokens: CliTokens, env = process.env) {
       if (value === '/history') { await showHistory(tokens, env); continue }
       if (value === '/resume') { tokens = await resumeSession(line, tokens, undefined, env); continue }
       if (value.startsWith('/resume ')) { tokens = await resumeSession(line, tokens, value.slice(8).trim(), env); continue }
-      if (value === '/whoami' || value === '/model' || value === '/usage') { if (value === '/model') console.log(`${tokens.tier_label} (server-selected)`); else console.log(JSON.stringify(await json(value === '/usage' ? '/usage' : '/me', {}, tokens.access_token, env), null, 2)); continue }
+      if (value === '/whoami' || value === '/model' || value === '/usage') { if (value === '/model') console.log(`${tokens.tier_label} (server-selected)`); else { const current = await ensureTokens(env); console.log(JSON.stringify(await json(value === '/usage' ? '/usage' : '/me', {}, current.access_token, env), null, 2)) }; continue }
       if (value === '/diff') { const { workspace } = await repositoryInfo(env); console.log((await workspace.gitDiff()).slice(0, 24_000) || 'No uncommitted changes.'); continue }
       const { metadata } = await repositoryInfo(env), shouldAgent = mode === 'agent' || (mode === 'auto' && metadata.gitAvailable && agentTaskLikely(value))
-      if (mode === 'plan') { await runPlan(value, env); continue }
+      if (mode === 'plan') { await runPlan(tokens, value, env); continue }
       if (shouldAgent || value === '/agent' || value.startsWith('/agent ')) {
         const task = value === '/agent' ? '' : value.startsWith('/agent ') ? value.slice(7).trim() : value
         if (!task) { console.log('Usage: /agent TASK'); continue }
@@ -347,13 +359,14 @@ async function nonInteractive(tokens: CliTokens, args: string[], env: NodeJS.Pro
   const parsed = parseTaskArguments(args, 'exec'), task = taskText(parsed), mode = (parsed.values['--mode'] ?? 'chat') as Exclude<Mode, 'auto'>, jsonOutput = parsed.flags.has('--json'), outputFile = parsed.values['--output']
   if (!['chat', 'agent', 'plan'].includes(mode)) throw new Error('--mode must be chat, agent, or plan.')
   if (!task) throw new Error('A task is required.')
-  if (mode === 'plan') { await runPlan(task, env); return 0 }
+  if (mode === 'plan') { await runPlan(tokens, task, env); return 0 }
   if (mode === 'agent') throw new Error('Non-interactive agent execution fails closed because local approval is required; use an interactive terminal.')
+  const schema = parsed.values['--output-schema'], validator = schema ? await loadOutputValidator(schema) : undefined
+  const request = validator ? `${task}\n\nReturn only a valid JSON value matching the supplied output schema. Do not wrap it in Markdown.` : task
   const image = parsed.values['--image'], attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []
-  const answer = await runChat(tokens, task, undefined, env, jsonOutput, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds)
-  const schema = parsed.values['--output-schema']
-  if (schema) { const definition = JSON.parse(await (await import('node:fs/promises')).readFile(schema, 'utf8')) as { type?: string }; if (definition.type && definition.type !== 'string') throw new Error('The text result does not match --output-schema.') }
-  if (outputFile) await writeFile(outputFile, answer.text + '\n', { flag: 'wx' })
+  const answer = await runChat(tokens, request, undefined, env, jsonOutput, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds)
+  const output = validator ? parseStructuredOutput(answer.text, validator) : `${answer.text}\n`
+  if (outputFile) await publishOutputAtomically(outputFile, output)
   return 0
 }
 
@@ -377,19 +390,30 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (command === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), items = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env); if (argv[1] === 'show' && argv[2]) console.log((await (await import('./skills.js')).showSkill(argv[2], metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions); else for (const item of items) console.log(`${item.name}\t${item.description}`); return 0 }
   if (command === 'plugins') { const { metadata } = await repositoryInfo(env); if (argv[1] === 'inspect' && argv[2]) console.log(JSON.stringify(await (await import('./plugins.js')).inspectPlugin(argv[2]), null, 2)); else console.log(JSON.stringify(await (await import('./plugins.js')).listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), null, 2)); return 0 }
   if (command === 'completion') { console.log(completion(argv[1] ?? 'bash')); return 0 }
-  if (command === 'login') { await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat'], { memoryOnly: argv.includes('--memory-only') }); return 0 }
-  if (command === 'logout') { const stored = await loadTokens(env); if (stored) await json('/logout', { method: 'POST' }, stored.access_token, env).catch(() => undefined); await clearTokens(env); console.log('Signed out.'); return 0 }
+  if (command === 'login') { const tierValue = option(argv, '--tier'); if (tierValue && !['lite', 'standard', 'pro'].includes(tierValue)) throw new Error('--tier must be lite, standard, or pro.'); await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat'], { memoryOnly: argv.includes('--memory-only'), tier: tierValue as Exclude<CliTokens['tier'], 'free'> | undefined }); return 0 }
+  if (command === 'logout') {
+    const stored = await loadTokens(env)
+    let remoteConfirmed = !stored
+    let remoteError: unknown
+    if (stored) {
+      try { const current = await ensureTokens(env); await json('/logout', { method: 'POST' }, current.access_token, env); remoteConfirmed = true }
+      catch (error) { if ((error as { status?: number }).status === 401) remoteConfirmed = true; else remoteError = error }
+      await clearTokens(env)
+    }
+    if (!remoteConfirmed) throw new Error(`Local credentials were cleared, but remote logout could not be confirmed: ${remoteError instanceof Error ? remoteError.message : 'network or server error'}. Retry logout when connected.`)
+    console.log('Signed out.'); return 0
+  }
   if (command === 'doctor') {
     const endpoint = (() => { try { return credentialKey(env) } catch (error) { return error instanceof Error ? `invalid: ${error.message}` : 'invalid' } })(), stored = await loadTokens(env)
     const api = env.SWICO_CLI_DOCTOR_OFFLINE === '1' ? { status: 0, state: 'not_checked', detail: 'offline artifact check' } : await probeEndpoint(env)
     let auth: 'not_configured' | 'valid' | 'expired_or_revoked' | 'network_error' = stored ? 'expired_or_revoked' : 'not_configured'
-    if (stored) { try { await json('/me', {}, stored.access_token, env); auth = 'valid' } catch (error) { auth = (error as { status?: number }).status === 401 ? 'expired_or_revoked' : 'network_error' } }
+    if (stored) { try { await ensureTokens(env); auth = 'valid' } catch (error) { auth = (error as { status?: number }).status === 401 ? 'expired_or_revoked' : 'network_error' } }
     const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), skills = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
     console.log(JSON.stringify({ endpoint, api, auth, credential_storage: await credentialStorageStatus(env), workspace: metadata.root, git: metadata.gitAvailable ? (metadata.dirty ? 'available (dirty)' : 'available (clean)') : 'unavailable', sandbox: createSandboxAdapter(metadata.root).status(), cli_configuration: configSummary(config.effective), mcp: { count: config.effective.mcp.length, status: 'not connected by doctor' }, skills: { count: skills.length }, hooks: hookStatus(config.effective.hooksEnabled), images: 'server-controlled; no provider request made', web_search: 'server-controlled; no provider request made', cloud: 'disabled or unavailable; no cloud job requested' }, null, 2)); return 0
   }
   const tokens = await ensureTokens(env)
   if (command === 'cloud') { await cloudCommand(argv.slice(argv.indexOf(command)), tokens, env); return 0 }
-  if (command === 'whoami') { console.log(JSON.stringify(await json('/me', {}, tokens.access_token, env), null, 2)); return 0 }
+  if (command === 'whoami') { const current = await ensureTokens(env); console.log(JSON.stringify(await json('/me', {}, current.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { if (!input.isTTY) throw new Error('Resume requires an interactive terminal so repository and run choices cannot be implicit.'); const line = createInterface({ input, output }); try { await resumeSession(line, tokens, positionalAfter(argv, 'resume') || undefined, env) } finally { line.close() }; return 0 }
   if (command === 'review') { if (!input.isTTY) throw new Error('Review requires an interactive terminal to approve sending the bounded diff.'); const line = createInterface({ input, output }); try { await showReview(tokens, env, line) } finally { line.close() }; return 0 }
   if (command === 'ask') { const parsed = parseTaskArguments(argv, 'ask'), task = taskText(parsed), image = parsed.values['--image'], attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []; if (!task) throw new Error('A question is required.'); await runChat(tokens, task, undefined, env, false, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds); return 0 }

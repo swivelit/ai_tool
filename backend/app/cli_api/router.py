@@ -40,7 +40,7 @@ from ..web_api.router import SwicoFreeLimitError, _enforce_swico_free_limits
 from ..web_api.swico_free_access import swico_free_eligible
 from ..web_api.usage_service import selected_swico_tier
 from ..ai.swico_tiers import (
-    SWICO_TIER_LABELS, SwicoTierUnavailableError, normalize_swico_tier,
+    SWICO_TIER_LABELS, SwicoTierUnavailableError,
     pro_enabled, public_tier_settings,
 )
 from .config import CliConfigurationError, agent_step_ceiling, cli_settings
@@ -57,6 +57,11 @@ from .isolated_runner import configured_isolated_runner
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cli/v1", tags=["cli"])
+CLI_PAID_TIERS = frozenset({"lite", "standard", "pro"})
+CLI_PAID_TIER_ERROR = {
+    "code": "cli_paid_tier_required",
+    "message": "Swico CLI requires an eligible paid tier. Choose Lite, Swico, or Pro explicitly.",
+}
 _BLOCKED_AGENT_PATH = re.compile(
     r"(?:^|/)\.env(?:$|[./])|(?:^|/)(?:\.npmrc|\.pypirc|\.ssh|credentials?|secrets?|tokens?|node_modules|dist|build|\.git)(?:/|$)|\.(?:pem|key|p12|pfx|kdbx)$",
     re.I,
@@ -277,12 +282,23 @@ def _email_allowed(settings, auth: AuthUser, user: User) -> bool:
     )
 
 
+def _require_cli_paid_tier(value: object, *, unavailable_status: int = 403) -> str:
+    tier = str(value or "").strip().lower()
+    if tier not in CLI_PAID_TIERS:
+        raise HTTPException(unavailable_status, CLI_PAID_TIER_ERROR)
+    if tier == "pro" and not pro_enabled():
+        raise HTTPException(422, {"code": "cli_tier_unavailable", "message": "Swico Pro is not currently available."})
+    return tier
+
+
+def _require_paid_cli_session(row: CliSession) -> None:
+    _require_cli_paid_tier(row.selected_tier)
+
+
 def _issue_session(session: Session, grant: CliDeviceGrant, user: User, settings) -> tuple[str, str, CliSession]:
     now = utc_now()
     access, refresh = random_secret(32), random_secret(48)
-    selected = selected_swico_tier(session, int(user.id))
-    if selected == "free" and not swico_free_eligible(int(user.id)):
-        selected = "lite"
+    selected = _require_cli_paid_tier(grant.requested_tier or selected_swico_tier(session, int(user.id)))
     scopes = _scope_list(grant.scopes_json)
     if "agent" in scopes and (not settings.agent_enabled or selected == "free"):
         scopes = [item for item in scopes if item != "agent"]
@@ -348,6 +364,8 @@ def _cli_session_from_header(
 @router.post("/device")
 def create_device_grant(payload: DeviceAuthorizationRequest, session: Session = Depends(get_session)):
     settings = _require_enabled()
+    if payload.tier is not None:
+        _require_cli_paid_tier(payload.tier, unavailable_status=422)
     if not valid_code_challenge(payload.code_challenge):
         _grant_error("invalid_request", "code_challenge must be an RFC 7636 S256 challenge")
     if "agent" in payload.scopes and not settings.agent_enabled:
@@ -366,6 +384,7 @@ def create_device_grant(payload: DeviceAuthorizationRequest, session: Session = 
         client_id=payload.client_id, device_code_digest=digest(raw_device),
         user_code_digest=digest(code), code_challenge=payload.code_challenge,
         device_description=payload.device_description.strip(),
+        requested_tier=payload.tier,
         scopes_json=json.dumps(sorted(set(payload.scopes)), separators=(",", ":")),
         expires_at=now + timedelta(seconds=settings.device_grant_seconds),
         interval_seconds=settings.poll_interval_seconds,
@@ -386,7 +405,7 @@ def device_info(user_code: str, session: Session = Depends(get_session)):
     grant = session.exec(select(CliDeviceGrant).where(CliDeviceGrant.user_code_digest == digest(user_code.strip().upper()))).first()
     if grant is None or ensure_utc(grant.expires_at) <= utc_now() or grant.status in {"consumed", "expired"}:
         raise HTTPException(404, "Device request not found or expired")
-    return {"user_code": user_code.strip().upper(), "device_description": grant.device_description, "scopes": _scope_list(grant.scopes_json), "status": grant.status, "expires_at": grant.expires_at.isoformat()}
+    return {"user_code": user_code.strip().upper(), "device_description": grant.device_description, "scopes": _scope_list(grant.scopes_json), "tier": grant.requested_tier, "status": grant.status, "expires_at": grant.expires_at.isoformat()}
 
 
 @router.post("/device/approve")
@@ -482,6 +501,7 @@ def token(payload: DeviceTokenRequest, session: Session = Depends(get_session)):
 @router.get("/me")
 def me(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     row, user = _cli_session_from_header(authorization, session)
+    _require_paid_cli_session(row)
     return {"session_id": row.id, "account": {"email": user.email, "name": user.name}, "tier": row.selected_tier, "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"), "scopes": _scope_list(row.scopes_json)}
 
 
@@ -514,11 +534,7 @@ def revoke_session(session_id: str, authorization: str | None = Header(default=N
 @router.patch("/session/tier")
 def change_tier(payload: CliTierRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     row, user = _cli_session_from_header(authorization, session)
-    if payload.tier == "pro" and not pro_enabled():
-        raise HTTPException(422, "Swico Pro is not available yet")
-    if payload.tier == "free" and not swico_free_eligible(int(user.id)):
-        raise HTTPException(422, "Swico Free is not available for this account")
-    row.selected_tier = normalize_swico_tier(payload.tier)
+    row.selected_tier = _require_cli_paid_tier(payload.tier, unavailable_status=422)
     session.add(row)
     return {"tier": row.selected_tier, "tier_label": SWICO_TIER_LABELS[row.selected_tier], "settings": public_tier_settings(row.selected_tier, free_available=swico_free_eligible(int(user.id)))}
 
@@ -526,12 +542,14 @@ def change_tier(payload: CliTierRequest, authorization: str | None = Header(defa
 @router.get("/usage")
 def usage(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     row, user = _cli_session_from_header(authorization, session)
+    _require_paid_cli_session(row)
     return {"tier": row.selected_tier, "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"), "wallet": get_wallet_summary(session, int(user.id), swico_tier=row.selected_tier, credit_bucket="chat")}
 
 
 @router.get("/threads")
 def list_cli_threads(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     _row, user = _cli_session_from_header(authorization, session)
+    _require_paid_cli_session(_row)
     rows = session.exec(select(WebChatThread).where(WebChatThread.user_id == int(user.id), WebChatThread.archived_at.is_(None)).order_by(WebChatThread.updated_at.desc()).limit(100)).all()
     return {"items": [{"id": item.id, "title": item.title, "updated_at": item.updated_at.isoformat()} for item in rows]}
 
@@ -546,9 +564,7 @@ async def upload_cli_attachment(file: UploadFile = File(...), authorization: str
     """
     with SessionLocal() as session:
         row, user = _cli_session_from_header(authorization, session)
-        if row.selected_tier == "free":
-            await file.close()
-            raise HTTPException(422, "Swico Free supports text only. Switch to a paid Swico tier for attachments.")
+        _require_paid_cli_session(row)
     safe_name = sanitize_filename(file.filename or "attachment")
     try:
         extension, media_type = validate_extension_and_mime(safe_name, file.content_type)
@@ -597,6 +613,7 @@ def _sse_event(name: str, payload: dict[str, Any]) -> str:
 async def chat_stream(payload: CliChatRequest, request: Request, authorization: str | None = Header(default=None)):
     with SessionLocal() as session:
         row, user = _cli_session_from_header(authorization, session)
+        _require_paid_cli_session(row)
         try:
             enforce_rate_limit(session, user_id=int(user.id), action="cli_chat", limit=12)
         except RateLimitError as exc:
@@ -719,8 +736,7 @@ def create_agent_run(payload: AgentRunRequest, authorization: str | None = Heade
     if not settings.agent_enabled:
         raise HTTPException(404, {"code": "cli_agent_disabled", "message": "The local coding agent is not enabled."})
     cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
-    if cli_session.selected_tier == "free":
-        raise HTTPException(403, "The local coding agent requires an eligible paid tier")
+    _require_paid_cli_session(cli_session)
     existing = session.exec(select(CliAgentRun).where(CliAgentRun.request_id == str(payload.request_id))).first()
     if existing is not None:
         if existing.user_id != int(user.id):
@@ -789,6 +805,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     """
     _require_agent_enabled()
     _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_paid_cli_session(_cli_session)
     try:
         # Planner rounds are metered Chat operations. Reuse the shared user
         # rate-limit bucket so browser, Android, and CLI requests cannot
@@ -866,6 +883,7 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
     """
     _require_agent_enabled()
     _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_paid_cli_session(_cli_session)
     run = session.exec(select(CliAgentRun).where(
         CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)
     ).with_for_update()).first()
@@ -926,6 +944,7 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
 def submit_agent_action(run_id: str, payload: AgentAction, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     _require_agent_enabled()
     _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_paid_cli_session(_cli)
     if not payload.payload_hash:
         raise HTTPException(422, "Action payload hash is required when submitting a local action")
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()

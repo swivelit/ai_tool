@@ -14,6 +14,7 @@ const tokens = { access_token: 'access-a', refresh_token: 'refresh-a', expires_i
 const credentialModule = await import('../dist/credentials.js')
 const sessionModule = await import('../dist/session.js')
 const configModule = await import('../dist/config.js')
+const apiModule = await import('../dist/api.js')
 
 function child(code, env) {
   return exec(process.execPath, ['--input-type=module', '-e', code], { cwd, env: { ...process.env, ...env }, maxBuffer: 256 * 1024 })
@@ -146,6 +147,37 @@ test('rotating a memory-only session remains memory-only', async () => {
     assert.equal(credentialModule.credentialStorageMode(env), 'memory')
     assert.deepEqual(await sessionModule.ensureTokens(env), rotated)
     assert.equal(credentialModule.credentialStorageMode(env), 'memory')
+  } finally {
+    await credentialModule.clearTokens(env)
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('authenticated stream requests refresh current credentials and share one refresh operation', async () => {
+  const rotated = { ...tokens, access_token: 'stream-access-b', refresh_token: 'stream-refresh-b' }
+  const calls = []
+  const server = createServer((request, response) => {
+    calls.push({ path: request.url, authorization: request.headers.authorization })
+    if (request.url.endsWith('/me')) { response.writeHead(401, { 'content-type': 'application/json' }); response.end('{}'); return }
+    if (request.url.endsWith('/token')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify(rotated)); return }
+    if (request.url.endsWith('/chat/stream')) {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end('event: delta\ndata: {"text":"ready"}\n\nevent: done\ndata: {}\n\n')
+      return
+    }
+    response.writeHead(404); response.end()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const env = { SWICO_API_BASE_URL: `http://127.0.0.1:${server.address().port}`, SWICO_CLI_ALLOW_INSECURE_LOCAL: '1' }
+  try {
+    await credentialModule.saveTokens(tokens, env, { memoryOnly: true })
+    await Promise.all([
+      apiModule.streamChat(tokens, 'one', undefined, undefined, env),
+      apiModule.streamChat(tokens, 'two', undefined, undefined, env),
+    ])
+    assert.equal(calls.filter(item => item.path.endsWith('/token')).length, 1)
+    assert.equal(calls.filter(item => item.path.endsWith('/chat/stream')).length, 2)
+    assert.ok(calls.filter(item => item.path.endsWith('/chat/stream')).every(item => item.authorization === `Bearer ${rotated.access_token}`))
   } finally {
     await credentialModule.clearTokens(env)
     await new Promise(resolve => server.close(resolve))

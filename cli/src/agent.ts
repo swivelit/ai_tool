@@ -18,8 +18,11 @@ function canonical(value: unknown): string {
 export function actionHash(action: AgentAction): string { return createHash('sha256').update(canonical(action.payload)).digest('hex') }
 export class LocalAgent {
   private readonly journal: ActionJournal
-  constructor(private readonly workspace: Workspace, private readonly accessToken: string, private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal, private readonly mcp?: McpManager, private readonly hooks = new HookBus()) {
+  constructor(private readonly workspace: Workspace, private readonly accessToken: string | (() => Promise<string>), private readonly env = process.env, private readonly profile: PermissionProfile = 'approval-required', private readonly signal?: AbortSignal, private readonly mcp?: McpManager, private readonly hooks = new HookBus()) {
     this.journal = new ActionJournal(env.SWICO_CLI_JOURNAL_FILE ?? `${workspace.root}/.swico/action-journal.jsonl`)
+  }
+  private async currentAccessToken(): Promise<string> {
+    return typeof this.accessToken === 'function' ? this.accessToken() : this.accessToken
   }
   async execute(runId: string, action: AgentAction, approve: (description: string) => Promise<boolean>): Promise<AgentResult> {
     await this.hooks.emit({ event: 'pre_tool', run_id: runId, action_type: action.action_type })
@@ -28,7 +31,7 @@ export class LocalAgent {
     if (previous === 'succeeded' || previous === 'failed' || previous === 'unknown') return { status: previous, result: `This action was already recorded as ${previous}; it was not run again.` }
     if (this.profile === 'read-only' && ['apply_patch', 'create_file', 'delete_file', 'move_file', 'run_command'].includes(action.action_type)) return { status: 'failed', result: 'The read-only permission profile blocks mutations and commands.' }
     await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'prepared' })
-    const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: action.protocol_version, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash }) }, this.accessToken, this.env)
+    const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: action.protocol_version, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash }) }, await this.currentAccessToken(), this.env)
     if (accepted.action_id !== action.action_id) throw new Error('Server returned a different action identity.')
     if (accepted.status && accepted.status !== 'accepted') {
       await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: accepted.status === 'succeeded' ? 'succeeded' : accepted.status === 'failed' ? 'failed' : 'unknown' })
@@ -52,9 +55,9 @@ export class LocalAgent {
         result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal)
       } else if (action.action_type === 'spawn_subagent') {
         const tasks = boundedSubagentTasks(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [])
-        result = await runSubagents({ access_token: this.accessToken }, runId, action.action_id, tasks, typeof action.payload.context === 'string' ? action.payload.context : '', this.env, this.signal)
+        result = await runSubagents({ access_token: await this.currentAccessToken() }, runId, action.action_id, tasks, typeof action.payload.context === 'string' ? action.payload.context : '', this.env, this.signal)
       } else if (action.action_type === 'web_search') {
-        const answer = await streamChat({ access_token: this.accessToken }, String(action.payload.query ?? ''), undefined, undefined, this.env, { signal: this.signal, searchMode: 'on' })
+        const answer = await streamChat({ access_token: await this.currentAccessToken() }, String(action.payload.query ?? ''), undefined, undefined, this.env, { signal: this.signal, searchMode: 'on' })
         result = answer.text
       } else {
         const network = action.payload.network === 'allowed' ? 'allowed' : 'disabled'
@@ -64,7 +67,7 @@ export class LocalAgent {
       }
       const resultHash = createHash('sha256').update(JSON.stringify(result)).digest('hex')
       try {
-        await json(`/agent/runs/${runId}/actions/${encodeURIComponent(action.action_id)}/result`, { method: 'POST', body: JSON.stringify({ action_id: action.action_id, result_hash: resultHash, status: 'succeeded' }) }, this.accessToken, this.env)
+        await json(`/agent/runs/${runId}/actions/${encodeURIComponent(action.action_id)}/result`, { method: 'POST', body: JSON.stringify({ action_id: action.action_id, result_hash: resultHash, status: 'succeeded' }) }, await this.currentAccessToken(), this.env)
       } catch {
         await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'unknown' })
         return { status: 'unknown', result: 'The local action finished, but Swico did not confirm its result. Inspect the journal before deciding whether to reconnect.' }
@@ -75,7 +78,7 @@ export class LocalAgent {
     } catch (error) {
       const resultHash = createHash('sha256').update(String(error)).digest('hex')
       try {
-        await json(`/agent/runs/${runId}/actions/${encodeURIComponent(action.action_id)}/result`, { method: 'POST', body: JSON.stringify({ action_id: action.action_id, result_hash: resultHash, status: 'failed' }) }, this.accessToken, this.env)
+        await json(`/agent/runs/${runId}/actions/${encodeURIComponent(action.action_id)}/result`, { method: 'POST', body: JSON.stringify({ action_id: action.action_id, result_hash: resultHash, status: 'failed' }) }, await this.currentAccessToken(), this.env)
       } catch {
         await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'unknown' })
         return { status: 'unknown', result: 'The local action outcome could not be recorded. Inspect the journal before retrying.' }

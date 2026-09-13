@@ -521,6 +521,7 @@ class CliDeviceGrant(SQLModel, table=True):
     user_code_digest: str = Field(max_length=64, index=True)
     code_challenge: str = Field(max_length=128)
     device_description: str = Field(default="Swico CLI", max_length=120)
+    requested_tier: Optional[str] = Field(default=None, max_length=16)
     scopes_json: str = Field(default='["chat"]', sa_column=Column(Text, nullable=False, server_default='["chat"]'))
     status: str = Field(default="pending", max_length=16, index=True)
     approved_user_id: Optional[int] = Field(default=None, foreign_key="user.id", ondelete="SET NULL", index=True)

@@ -8,7 +8,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 
 export type SandboxPolicy = 'read-only' | 'workspace-write'
 export type NetworkPolicy = 'disabled' | 'allowed'
-export type SandboxDiagnostic = 'ready' | 'binary_missing' | 'profile_rejected' | 'sandbox_apply_denied' | 'namespace_unavailable' | 'unsupported_platform'
+export type SandboxDiagnostic = 'ready' | 'binary_missing' | 'profile_rejected' | 'sandbox_apply_denied' | 'namespace_unavailable' | 'unsupported_platform' | 'runtime_startup_failure' | 'unknown_failure'
 export type IsolationCapability = 'proven' | 'available' | 'unverified' | 'unavailable'
 export type SandboxStatus = {
   implementation: 'macos-sandbox-exec' | 'linux-bubblewrap' | 'unavailable'
@@ -29,6 +29,8 @@ export type SandboxAdapter = {
   status(): SandboxStatus
   wrap(argv: string[], policy?: SandboxPolicy, network?: NetworkPolicy): { command: string; args: string[] }
   spawn(argv: string[], options: SpawnOptions & { policy?: SandboxPolicy; network?: NetworkPolicy }): ChildProcess
+  /** Map host-only verification fixtures into the sandbox namespace. */
+  mapProbePath?(path: string, kind: 'workspace' | 'outside' | 'home' | 'link'): string
 }
 
 function commandExists(value: string): boolean { try { execFileSync('sh', ['-c', `command -v ${value}`], { stdio: 'ignore' }); return true } catch { return false } }
@@ -45,13 +47,15 @@ function macRuntimeDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic
     // Run a deliberately malformed profile only to separate profile parsing
     // from the host-level sandbox_apply denial. It never executes a command
     // under a malformed policy and the bounded diagnostic contains no secrets.
+    let malformedDetail = ''
     try { execFileSync('/usr/bin/sandbox-exec', ['-p', '(version 1', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }) }
-    catch { /* expected parser rejection; keep the valid-profile diagnostic */ }
+    catch (malformed) { malformedDetail = errorOutput(malformed) }
     if (/syntax|parse|invalid|malformed|unknown operation/i.test(detail)) return { ready: false, diagnostic: 'profile_rejected', reason: `sandbox-exec rejected its readiness profile${detail ? `: ${detail}` : '.'}` }
     // Some macOS/container hosts suppress sandbox-exec stderr for a denied
     // sandbox_apply. A failed valid-profile probe with no parse diagnostic is
     // therefore an application denial, never evidence that the policy works.
-    return { ready: false, diagnostic: 'sandbox_apply_denied', reason: `sandbox-exec is installed but the host refused sandbox_apply${detail ? `: ${detail}` : ' (Operation not permitted).'}` }
+    const malformed = /syntax|parse|invalid|malformed|unknown operation/i.test(malformedDetail)
+    return { ready: false, diagnostic: /sandbox_apply|operation not permitted|not permitted/i.test(detail) || malformed ? 'sandbox_apply_denied' : 'unknown_failure', reason: `sandbox-exec could not apply its valid readiness profile${detail ? `: ${detail}` : ' (no diagnostic output)'}${malformedDetail ? `; malformed-profile probe: ${malformedDetail}` : '; malformed-profile probe produced no diagnostic.'}` }
   }
 }
 function bubblewrapDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
@@ -83,6 +87,7 @@ class MacSandbox implements SandboxAdapter {
     const wrapped = this.wrap(argv, options.policy, options.network)
     return spawn(wrapped.command, wrapped.args, { ...options, cwd: options.cwd ?? this.root, env: safeEnvironment(options.env) })
   }
+  mapProbePath(path: string): string { return path }
 }
 
 class LinuxBubblewrap implements SandboxAdapter {
@@ -93,7 +98,7 @@ class LinuxBubblewrap implements SandboxAdapter {
     for (const path of ['/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/usr/local']) {
       try { realpathSync(path); args.push('--ro-bind', path, path) } catch { /* optional system directory */ }
     }
-    args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/workspace', '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/tmp/swico-home', '--dir', '/tmp/swico-home')
+    args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-sandbox', '--dir', '/workspace', '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/tmp/swico-home', '--dir', '/tmp/swico-home')
     for (const [name, value] of Object.entries(safeEnvironment(environment))) if (name !== 'HOME' && value !== undefined) args.push('--setenv', name, value)
     if (network === 'disabled') args.push('--unshare-net')
     args.push(policy === 'workspace-write' ? '--bind' : '--ro-bind', root, '/workspace', '--', argv[0], ...argv.slice(1))
@@ -103,6 +108,10 @@ class LinuxBubblewrap implements SandboxAdapter {
   spawn(argv: string[], options: SpawnOptions & { policy?: SandboxPolicy; network?: NetworkPolicy }): ChildProcess {
     const root = safeRoot(this.workspaceRoot), policy = options.policy ?? 'workspace-write', network = options.network ?? 'disabled'
     return spawn('bwrap', this.args(argv, policy, network, options.env), { ...options, cwd: root, env: safeEnvironment(options.env) })
+  }
+  mapProbePath(path: string, kind: 'workspace' | 'outside' | 'home' | 'link'): string {
+    if (kind === 'workspace' || kind === 'link') return `/workspace/${relative(this.workspaceRoot, path).replaceAll('\\', '/')}`
+    return `/swico-probe-${kind}/${path.split(/[\\/]/).pop() ?? 'fixture'}`
   }
 }
 
@@ -160,15 +169,15 @@ export type SandboxVerification = {
 
 const verificationScript = String.raw`
 const fs = require('node:fs'), cp = require('node:child_process'), http = require('node:http');
-const [probe, workspace, outside, homeSecret, link, port, secret] = process.argv.slice(1);
-const report = allowed => { process.stdout.write(JSON.stringify({ allowed: Boolean(allowed) })); };
+const [probe, workspace, outside, homeSecret, link, port] = process.argv.slice(1);
+const report = allowed => { process.stdout.write(JSON.stringify({ marker: 'swico-sandbox-probe-v1', probe, allowed: Boolean(allowed) })); };
 try {
   if (probe === 'workspace_read') { fs.readFileSync(workspace); report(true); }
   else if (probe === 'workspace_write') { fs.appendFileSync(workspace, 'probe'); report(true); }
   else if (probe === 'outside_workspace_read') { fs.readFileSync(outside); report(true); }
   else if (probe === 'outside_workspace_write') { fs.writeFileSync(outside + '.write', 'probe'); report(true); }
   else if (probe === 'home_secret_read') { fs.readFileSync(homeSecret); report(true); }
-  else if (probe === 'secret_environment') { report(process.env.SWICO_VERIFY_SECRET === secret); }
+  else if (probe === 'secret_environment') { report(Object.prototype.hasOwnProperty.call(process.env, 'SWICO_VERIFY_SECRET')); }
   else if (probe === 'symlink_escape') { fs.readFileSync(link); report(true); }
   else if (probe === 'child_process') {
     try { cp.execFileSync(process.execPath, ['-e', 'require("node:fs").readFileSync(process.argv[1])', outside], { stdio: 'ignore' }); report(true); }
@@ -183,13 +192,19 @@ try {
 } catch { report(false); }
 `
 
-async function runProbe(adapter: SandboxAdapter, workspaceRoot: string, name: SandboxProbeName, expected: 'allow' | 'deny', paths: { workspace: string; outside: string; homeSecret: string; link: string; port: number; secret: string }, policy: SandboxPolicy): Promise<SandboxProbe> {
+export async function runSandboxProbe(adapter: SandboxAdapter, workspaceRoot: string, name: SandboxProbeName, expected: 'allow' | 'deny', paths: { workspace: string; outside: string; homeSecret: string; link: string; port: number }, policy: SandboxPolicy): Promise<SandboxProbe> {
   const started = Date.now()
+  const mapped = {
+    workspace: adapter.mapProbePath?.(paths.workspace, 'workspace') ?? paths.workspace,
+    outside: adapter.mapProbePath?.(paths.outside, 'outside') ?? paths.outside,
+    homeSecret: adapter.mapProbePath?.(paths.homeSecret, 'home') ?? paths.homeSecret,
+    link: adapter.mapProbePath?.(paths.link, 'link') ?? paths.link,
+  }
   return await new Promise<SandboxProbe>(resolveProbe => {
     let child: ChildProcess
     try {
-      child = adapter.spawn([process.execPath, '-e', verificationScript, name, paths.workspace, paths.outside, paths.homeSecret, paths.link, String(paths.port), paths.secret], {
-        cwd: workspaceRoot, shell: false, env: { ...process.env, SWICO_VERIFY_SECRET: paths.secret }, stdio: ['ignore', 'pipe', 'pipe'], policy, network: 'disabled'
+      child = adapter.spawn([process.execPath, '-e', verificationScript, name, mapped.workspace, mapped.outside, mapped.homeSecret, mapped.link, String(paths.port)], {
+        cwd: workspaceRoot, shell: false, env: { ...process.env, SWICO_VERIFY_SECRET: randomBytes(16).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], policy, network: 'disabled'
       })
     } catch (error) {
       resolveProbe({ name, expected, observed: 'error', passed: false, detail: error instanceof Error ? error.message.slice(0, 200) : 'sandbox spawn failed' }); return
@@ -202,10 +217,18 @@ async function runProbe(adapter: SandboxAdapter, workspaceRoot: string, name: Sa
     child.on('close', code => {
       if (settled) return
       settled = true; clearTimeout(timer)
-      let allowed = false
-      try { allowed = JSON.parse(stdout).allowed === true } catch { /* a denied sandbox may terminate before reporting */ }
+      let allowed = false, validReport = false
+      try {
+        const report = JSON.parse(stdout.trim()) as { marker?: unknown; probe?: unknown; allowed?: unknown }
+        validReport = report.marker === 'swico-sandbox-probe-v1' && report.probe === name && typeof report.allowed === 'boolean'
+        if (validReport) allowed = report.allowed === true
+      } catch { /* malformed or missing reports are errors, never deny evidence */ }
+      if (!validReport || code !== 0) {
+        resolveProbe({ name, expected, observed: 'error', passed: false, detail: `probe did not produce a valid ${name} result${code === null ? '' : ` (exit ${code})`}${stderr.trim() ? `: ${cleanProbeText(stderr)}` : stdout.trim() ? `: ${cleanProbeText(stdout)}` : ''} in ${Date.now() - started}ms` })
+        return
+      }
       const observed = allowed ? 'allowed' : 'denied'
-      const passed = expected === 'allow' ? allowed && code === 0 : !allowed
+      const passed = expected === 'allow' ? allowed : !allowed
       resolveProbe({ name, expected, observed, passed, detail: `${observed}${code === null ? '' : ` (exit ${code})`}${stderr.trim() ? `: ${cleanProbeText(stderr)}` : ''} in ${Date.now() - started}ms` })
     })
   })
@@ -223,9 +246,9 @@ export async function verifySandbox(root: string): Promise<SandboxVerification> 
   }
   await writeFile(workspaceFile, 'workspace\n'); await writeFile(outsideFile, 'outside\n'); await mkdir(homeRoot, { recursive: true, mode: 0o700 }); await writeFile(homeSecret, 'fake verification secret\n', { mode: 0o600 }); await symlink(outsideFile, link)
   const server = createServer((_request, response) => { response.end('verification'); }); await new Promise<void>(resolveListen => server.listen(0, '127.0.0.1', () => resolveListen())); const address = server.address(), port = typeof address === 'object' && address ? address.port : 0
-  const paths = { workspace: workspaceFile, outside: outsideFile, homeSecret, link, port, secret }, probes: SandboxProbe[] = []
+  const paths = { workspace: workspaceFile, outside: outsideFile, homeSecret, link, port }, probes: SandboxProbe[] = []
   try {
-    for (const [name, expected, policy] of probeNames) probes.push(await runProbe(runtime, runtimeRoot, name, expected, paths, policy))
+    for (const [name, expected, policy] of probeNames) probes.push(await runSandboxProbe(runtime, runtimeRoot, name, expected, paths, policy))
   } finally {
     server.close(); await rm(runtimeRoot, { recursive: true, force: true }); await rm(outsideRoot, { recursive: true, force: true }); await rm(homeRoot, { recursive: true, force: true })
   }

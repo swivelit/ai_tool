@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
-import { createSandboxAdapter, verifySandbox } from '../dist/sandbox.js'
+import { createSandboxAdapter, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { Workspace } from '../dist/workspace.js'
 import { releaseReadiness } from '../dist/release_readiness.js'
@@ -59,7 +59,7 @@ test('sandbox readiness exposes why a platform is unavailable instead of claimin
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-diagnostic-'))
   try {
     const status = createSandboxAdapter(root).status()
-    assert.ok(['ready', 'binary_missing', 'profile_rejected', 'sandbox_apply_denied', 'namespace_unavailable', 'unsupported_platform'].includes(status.diagnostic))
+    assert.ok(['ready', 'binary_missing', 'profile_rejected', 'sandbox_apply_denied', 'namespace_unavailable', 'unsupported_platform', 'runtime_startup_failure', 'unknown_failure'].includes(status.diagnostic))
     if (!status.available) assert.notEqual(status.diagnostic, 'ready')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
@@ -79,6 +79,18 @@ test('sandbox verify uses real hostile probes and never turns runtime detection 
       assert.ok(report.probes.every(item => item.observed === 'not_run'))
     }
     assert.doesNotMatch(JSON.stringify(report), /fake verification secret|SWICO_VERIFY_SECRET/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('sandbox verification treats a crashed or malformed probe as an error, not a deny pass', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-invalid-probe-'))
+  try {
+    const adapter = {
+      spawn: () => spawn(process.execPath, ['-e', 'process.exit(7)']),
+    }
+    const probe = await runSandboxProbe(adapter, root, 'outside_workspace_read', 'deny', { workspace: join(root, 'workspace.txt'), outside: join(root, 'outside.txt'), homeSecret: join(root, 'secret.txt'), link: join(root, 'link'), port: 0 }, 'read-only')
+    assert.equal(probe.passed, false)
+    assert.equal(probe.observed, 'error')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

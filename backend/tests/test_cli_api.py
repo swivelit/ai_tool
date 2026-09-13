@@ -57,6 +57,79 @@ def _start(client: TestClient, *, scopes: list[str] | None = None):
     return verifier, response.json()
 
 
+@pytest.mark.parametrize("tier", ["lite", "standard", "pro"])
+def test_cli_is_paid_only_and_explicit_tier_selection_does_not_change_website_preference(client: TestClient, monkeypatch: pytest.MonkeyPatch, tier: str):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_PRO_ENABLED", "true")
+    user = create_test_user(f"cli-free-choice-{tier}", f"cli-free-choice-{tier}@example.com")
+    from app.models import WebUsagePreferences
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    verifier = _verifier()
+    device = client.post("/api/cli/v1/device", json={
+        "client_id": "swico-cli", "code_challenge": _challenge(verifier),
+        "device_description": "Paid CLI test", "scopes": ["chat"], "tier": tier,
+    })
+    assert device.status_code == 200, device.text
+    info = client.get(f"/api/cli/v1/device/{device.json()['user_code']}")
+    assert info.status_code == 200 and info.json()["tier"] == tier
+    # Approval is performed by the authenticated account in the browser.
+    approved = client.post("/api/cli/v1/device/approve", json={"user_code": device.json()["user_code"], "approved": True}, headers=auth_headers(user.firebase_uid, user.email))
+    assert approved.status_code == 200, approved.text
+    token = client.post("/api/cli/v1/token", json={"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": device.json()["device_code"], "code_verifier": verifier})
+    assert token.status_code == 200 and token.json()["tier"] == tier
+    with SessionLocal() as session:
+        preference = session.exec(select(WebUsagePreferences).where(WebUsagePreferences.user_id == int(user.id))).first()
+        assert preference is not None and preference.assistant_tier == "free"
+
+
+def test_cli_rejects_legacy_free_contract_and_sessions_before_ai_or_billing(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    user = create_test_user("cli-legacy-free", "cli-legacy-free@example.com")
+    raw_access = "f" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("r" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="free", scopes_json='["chat"]', device_description="legacy",
+        ))
+        session.commit()
+    response = client.post("/api/cli/v1/chat/stream", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "message": "hello"})
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "cli_paid_tier_required"
+
+
+def test_cli_rejects_free_device_tier_before_creating_a_grant(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    response = client.post("/api/cli/v1/device", json={
+        "client_id": "swico-cli", "code_challenge": _challenge(_verifier()),
+        "device_description": "invalid Free terminal", "scopes": ["chat"], "tier": "free",
+    })
+    # The strict request contract rejects legacy Free before the route can
+    # create a pending grant or reach any billing/provider code.
+    assert response.status_code == 422
+    with SessionLocal() as session:
+        assert session.exec(select(CliDeviceGrant)).first() is None
+
+
+def test_cli_tier_switch_rejects_free_before_mutating_session(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    user = create_test_user("cli-tier-switch", "cli-tier-switch@example.com")
+    raw_access = "t" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("s" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat"]', device_description="switch",
+        ))
+        session.commit()
+    response = client.patch("/api/cli/v1/session/tier", headers={"Authorization": f"Bearer {raw_access}"}, json={"tier": "free"})
+    assert response.status_code == 422
+
+
 def test_device_flow_is_proof_bound_one_time_and_refresh_rotation(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
     user = create_test_user("cli-device-user", "cli-device@example.com")

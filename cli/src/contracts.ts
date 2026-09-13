@@ -1,4 +1,4 @@
-export type PublicTier = 'free' | 'lite' | 'standard' | 'pro'
+export type PublicTier = 'lite' | 'standard' | 'pro'
 
 export type CliTokens = {
   access_token: string

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 
 
-TEST_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "db" / "pytest.sqlite3"
+TEST_DB_PATH = Path(tempfile.mkdtemp(prefix="swico-pytest-db-")) / "pytest.sqlite3"
 TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Keep pytest isolated from developer/staging/production config values in .env.
@@ -126,6 +127,20 @@ def create_test_user(uid: str = "test-uid", email: str = "test@example.com", nam
         session.commit()
         session.refresh(user)
         return user
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fresh_sqlite_schema():
+    """Keep the default disposable SQLite database aligned with current models.
+
+    A fixed repository-local file let create_all preserve obsolete columns
+    between test runs. Never reset an explicitly supplied TEST_DATABASE_URL;
+    PostgreSQL integration runs own their disposable schema lifecycle.
+    """
+    if engine.dialect.name == "sqlite":
+        SQLModel.metadata.drop_all(engine)
+        SQLModel.metadata.create_all(engine)
+    yield
 
 
 @pytest.fixture(autouse=True)

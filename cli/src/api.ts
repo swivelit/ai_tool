@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { apiBaseUrl, cliApi } from './config.js'
 import { SSEParser, type SSEEvent } from './sse.js'
 import type { CliTokens, PublicTier } from './contracts.js'
+import { ensureTokens } from './session.js'
 
 export class CliApiError extends Error {
   constructor(public status: number, message: string, public body?: unknown) { super(message) }
@@ -37,10 +38,10 @@ export async function json<T>(path: string, init: RequestInit = {}, accessToken?
   return body as T
 }
 
-export async function createDevice(verifier: string, scopes: string[], env = process.env) {
+export async function createDevice(verifier: string, scopes: string[], env = process.env, tier?: Exclude<PublicTier, 'free'>) {
   const challenge = createHash('sha256').update(verifier).digest('base64url')
   return json<{ device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string; expires_in: number; interval: number }>('/device', {
-    method: 'POST', body: JSON.stringify({ client_id: 'swico-cli', code_challenge: challenge, device_description: `Swico CLI on ${process.platform}`, scopes }),
+    method: 'POST', body: JSON.stringify({ client_id: 'swico-cli', code_challenge: challenge, device_description: `Swico CLI on ${process.platform}`, scopes, ...(tier ? { tier } : {}) }),
   }, undefined, env)
 }
 
@@ -52,10 +53,20 @@ export async function refresh(refreshToken: string, env = process.env): Promise<
   return json<CliTokens>('/token', { method: 'POST', body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }) }, undefined, env)
 }
 
+async function accessTokenFor(tokens: Pick<CliTokens, 'access_token'>, env: NodeJS.ProcessEnv): Promise<string> {
+  try { return (await ensureTokens(env)).access_token }
+  catch (error) {
+    // Protocol/client tests may intentionally use an in-memory token without
+    // a credential store. Installed CLI operations use ensureTokens above.
+    if (error instanceof Error && error.message === 'Sign in first with `swico login`.') return tokens.access_token
+    throw error
+  }
+}
+
 export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, message: string, threadId?: string, onEvent?: (event: SSEEvent) => void, env = process.env, options: { signal?: AbortSignal; onRequestId?: (requestId: string) => void; searchMode?: 'auto' | 'on' | 'off'; attachmentIds?: string[] } = {}): Promise<{ threadId: string | null; text: string }> {
   const requestId = randomUUID()
   options.onRequestId?.(requestId)
-  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${tokens.access_token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text', search_mode: options.searchMode ?? 'auto', attachment_ids: options.attachmentIds ?? [] }) })
+  const response = await fetch(cliApi('/chat/stream', env), { method: 'POST', redirect: 'error', signal: options.signal, headers: { Authorization: `Bearer ${await accessTokenFor(tokens, env)}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ request_id: requestId, message, thread_id: threadId, input_mode: 'text', search_mode: options.searchMode ?? 'auto', attachment_ids: options.attachmentIds ?? [] }) })
   if (!response.ok || !response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
   const parser = new SSEParser(); const decoder = new TextDecoder(); let text = ''; let resolvedThread: string | null = null; let done = false
   for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
@@ -73,36 +84,36 @@ export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, messag
 }
 
 export async function cancelChat(tokens: CliTokens, requestId: string, env = process.env): Promise<void> {
-  await json(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' }, tokens.access_token, env)
+  await json(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' }, await accessTokenFor(tokens, env), env)
 }
 
 export async function uploadImage(tokens: CliTokens, filename: string, env = process.env): Promise<{ id: string; name: string; expires_at: string }> {
   const form = new FormData(); const bytes = await (await import('node:fs/promises')).readFile(filename)
   form.append('file', new Blob([bytes]), filename)
-  const response = await fetch(cliApi('/uploads', env), { method: 'POST', body: form, redirect: 'error', headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/json' } })
+  const response = await fetch(cliApi('/uploads', env), { method: 'POST', body: form, redirect: 'error', headers: { Authorization: `Bearer ${await accessTokenFor(tokens, env)}`, Accept: 'application/json' } })
   const body = await response.json().catch(() => ({})) as { id?: string; name?: string; expires_at?: string; detail?: unknown }
   if (!response.ok || !body.id) throw new CliApiError(response.status, typeof body.detail === 'string' ? body.detail : 'Swico could not upload that image.')
   return { id: body.id, name: body.name ?? filename, expires_at: body.expires_at ?? '' }
 }
-export async function deleteImage(tokens: CliTokens, id: string, env = process.env): Promise<void> { await json(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }, tokens.access_token, env) }
+export async function deleteImage(tokens: CliTokens, id: string, env = process.env): Promise<void> { await json(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }, await accessTokenFor(tokens, env), env) }
 
 export async function createAgentRun(tokens: CliTokens, task: string, threadId?: string, env = process.env) {
-  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>('/agent/runs', { method: 'POST', body: JSON.stringify({ request_id: randomUUID(), task, thread_id: threadId }) }, tokens.access_token, env)
+  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>('/agent/runs', { method: 'POST', body: JSON.stringify({ request_id: randomUUID(), task, thread_id: threadId }) }, await accessTokenFor(tokens, env), env)
 }
 export async function getAgentRun(tokens: CliTokens, runId: string, env = process.env) {
-  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>(`/agent/runs/${encodeURIComponent(runId)}`, {}, tokens.access_token, env)
+  return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>(`/agent/runs/${encodeURIComponent(runId)}`, {}, await accessTokenFor(tokens, env), env)
 }
 export async function planAgentStep(tokens: CliTokens, runId: string, task: string, context: string, env = process.env, signal?: AbortSignal) {
-  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, tokens.access_token, env)
+  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, await accessTokenFor(tokens, env), env)
 }
 export async function runSubagents(tokens: Pick<CliTokens, 'access_token'>, runId: string, actionId: string, tasks: Array<{ id: string; task: string }>, context: string, env = process.env, signal?: AbortSignal) {
-  return json<{ run_id: string; results: Array<{ id: string; summary: string; usage: number }>; active: number; max_active: number }>(`/agent/runs/${encodeURIComponent(runId)}/subagents`, { method: 'POST', body: JSON.stringify({ action_id: actionId, tasks, context: context.slice(0, 8_000) }), signal }, tokens.access_token, env)
+  return json<{ run_id: string; results: Array<{ id: string; summary: string; usage: number }>; active: number; max_active: number }>(`/agent/runs/${encodeURIComponent(runId)}/subagents`, { method: 'POST', body: JSON.stringify({ action_id: actionId, tasks, context: context.slice(0, 8_000) }), signal }, await accessTokenFor(tokens, env), env)
 }
 export async function completeAgentRun(tokens: CliTokens, runId: string, env = process.env) {
-  return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/complete`, { method: 'POST' }, tokens.access_token, env)
+  return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/complete`, { method: 'POST' }, await accessTokenFor(tokens, env), env)
 }
 export async function cancelAgentRun(tokens: CliTokens, runId: string, env = process.env) {
-  return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }, tokens.access_token, env)
+  return json<{ status: string }>(`/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }, await accessTokenFor(tokens, env), env)
 }
 
 export const uuid = randomUUID

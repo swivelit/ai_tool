@@ -67,7 +67,7 @@ function validTokens(value: unknown): value is CliTokens {
   return typeof candidate.access_token === 'string' && candidate.access_token.length > 0
     && typeof candidate.refresh_token === 'string' && candidate.refresh_token.length > 0
     && typeof candidate.expires_in === 'number' && typeof candidate.session_id === 'string'
-    && (candidate.tier === 'free' || candidate.tier === 'lite' || candidate.tier === 'standard' || candidate.tier === 'pro')
+    && (candidate.tier === 'lite' || candidate.tier === 'standard' || candidate.tier === 'pro')
     && typeof candidate.tier_label === 'string' && Array.isArray(candidate.scopes)
     && !!candidate.account && typeof candidate.account === 'object'
 }
@@ -132,10 +132,10 @@ export function credentialStorageMode(env = process.env): CredentialStorage | nu
   return memory.get(key(env))?.storage ?? null
 }
 
-export async function loadTokens(env = process.env): Promise<CliTokens | null> {
+export async function loadTokens(env = process.env, options: { bypassCache?: boolean } = {}): Promise<CliTokens | null> {
   const account = key(env)
   const cached = memory.get(account)
-  if (cached) return cached.tokens
+  if (cached && !options.bypassCache) return cached.tokens
 
   if (env.SWICO_CLI_CREDENTIAL_FILE) {
     try {

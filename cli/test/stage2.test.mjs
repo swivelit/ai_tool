@@ -10,6 +10,7 @@ import { listSkills, selectSkill } from '../dist/skills.js'
 import { inspectPlugin } from '../dist/plugins.js'
 import { probeEndpoint, streamChat } from '../dist/api.js'
 import { parseTaskArguments, taskText } from '../dist/arguments.js'
+import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from '../dist/output_schema.js'
 
 test('task parser keeps boolean search switches from consuming the prompt', () => {
   const parsed = parseTaskArguments(['ask', '--search', 'latest', 'status'], 'ask')
@@ -17,6 +18,18 @@ test('task parser keeps boolean search switches from consuming the prompt', () =
   assert.equal(parsed.flags.has('--search'), true)
   assert.throws(() => parseTaskArguments(['exec', '--search', '--no-search', 'task'], 'exec'), /cannot be used together/)
   assert.throws(() => parseTaskArguments(['ask', '--unknown', 'task'], 'ask'), /Unknown option/)
+})
+
+test('output schemas validate structured responses and publish atomically without clobbering', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-output-schema-')), schemaPath = join(root, 'schema.json'), outputPath = join(root, 'result.json')
+  try {
+    await writeFile(schemaPath, JSON.stringify({ type: 'object', required: ['answer'], additionalProperties: false, properties: { answer: { type: 'string' } } }))
+    const validator = await loadOutputValidator(schemaPath)
+    assert.equal(parseStructuredOutput('{"answer":"ok"}', validator), '{"answer":"ok"}\n')
+    assert.throws(() => parseStructuredOutput('{"answer":3}', validator), /did not match/)
+    await publishOutputAtomically(outputPath, '{"answer":"ok"}\n')
+    await assert.rejects(() => publishOutputAtomically(outputPath, '{"answer":"replacement"}\n'), /already exists/)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('doctor probes the explicit no-cost rollout health contract', async () => {

@@ -15,6 +15,12 @@ swico login
 swico
 ```
 
+The CLI is paid-only. If the website currently has Swico Free selected, choose
+the CLI tier explicitly with `swico login --tier lite`, `standard`, or `pro`.
+This is scoped to the CLI session and does not silently change the website
+preference; the server rechecks Chat eligibility and wallet or subscription
+allowance before each AI operation.
+
 An earlier unavailable scope was `@swico/swico`; remove it before installing
 the official package so the shared executable is unambiguous:
 
