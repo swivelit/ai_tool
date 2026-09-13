@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
@@ -40,32 +40,36 @@ function errorOutput(error: unknown): string {
   const value = error as { stderr?: unknown; stdout?: unknown; message?: unknown }
   return [value.stderr, value.stdout, value.message].filter(item => typeof item === 'string').join('\n').slice(0, 500)
 }
+function boundedRawCommandResult(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'status=unknown signal=unknown errno=unknown stdout= stderr='
+  const value = error as { status?: unknown; signal?: unknown; code?: unknown; errno?: unknown; stderr?: unknown; stdout?: unknown }
+  const clean = (item: unknown) => typeof item === 'string' ? item.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160) : ''
+  return `status=${String(value.status ?? 'unknown')} signal=${String(value.signal ?? 'none')} errno=${String(value.errno ?? value.code ?? 'none')} stdout=${clean(value.stdout)} stderr=${clean(value.stderr)}`
+}
 export function macRuntimeDiagnostic(run: typeof execFileSync = execFileSync): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
-  try { run('/usr/bin/sandbox-exec', ['-p', '(version 1) (allow process-exec)', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'macOS sandbox-exec policy enforcement is available.' } }
-  catch (error) {
-    const detail = errorOutput(error)
-    // Run a deliberately malformed profile only to separate profile parsing
-    // from the host-level sandbox_apply denial. It never executes a command
-    // under a malformed policy and the bounded diagnostic contains no secrets.
-    let malformedDetail = ''
-    try { run('/usr/bin/sandbox-exec', ['-p', '(version 1', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }) }
-    catch (malformed) { malformedDetail = errorOutput(malformed) }
-    if (/syntax|parse|invalid|malformed|unknown operation/i.test(detail)) return { ready: false, diagnostic: 'profile_rejected', reason: `sandbox-exec rejected its readiness profile${detail ? `: ${detail}` : '.'}` }
-    // Some macOS/container hosts suppress sandbox-exec stderr for a denied
-    // sandbox_apply. A failed valid-profile probe with no parse diagnostic is
-    // therefore an application denial, never evidence that the policy works.
-    // The malformed profile is only a parser control. Its expected syntax
-    // error must never classify an unrelated valid-profile crash or signal as
-    // sandbox_apply denial.
-    const explicitDenial = /sandbox_apply|operation not permitted|not permitted/i.test(detail)
-    return { ready: false, diagnostic: explicitDenial ? 'sandbox_apply_denied' : 'unknown_failure', reason: `sandbox-exec could not apply its valid readiness profile${detail ? `: ${detail}` : ' (no diagnostic output)'}${malformedDetail ? `; malformed-profile probe: ${malformedDetail}` : '; malformed-profile probe produced no diagnostic.'}` }
-  }
+  const readinessPolicy = '(version 1) (deny default) (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library")) (allow sysctl-read)'
+  let valid: unknown
+  try {
+    run('/usr/bin/sandbox-exec', ['-p', readinessPolicy, '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 })
+    return { ready: true, diagnostic: 'ready', reason: 'macOS sandbox-exec applied a least-privilege readiness policy to a known-startable system executable.' }
+  } catch (error) { valid = error }
+  // Independent malformed-parser control; it never classifies a valid-profile
+  // crash, signal, startup failure, or host sandbox_apply denial.
+  let malformed: unknown
+  try { run('/usr/bin/sandbox-exec', ['-p', '(version 1', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }) }
+  catch (error) { malformed = error }
+  const validDetail = errorOutput(valid), raw = boundedRawCommandResult(valid), malformedRaw = boundedRawCommandResult(malformed)
+  if (/syntax|parse|invalid|malformed|unknown operation/i.test(validDetail)) return { ready: false, diagnostic: 'profile_rejected', reason: `sandbox-exec rejected its valid readiness profile: ${raw}; parser control: ${malformedRaw}` }
+  if (/timed out|timeout/i.test(validDetail) || (valid && typeof valid === 'object' && (valid as { signal?: unknown }).signal === 'SIGTERM')) return { ready: false, diagnostic: 'runtime_startup_failure', reason: `sandbox-exec readiness timed out: ${raw}; parser control: ${malformedRaw}` }
+  const explicitDenial = /sandbox_apply|operation not permitted|not permitted|eacces/i.test(validDetail)
+  return { ready: false, diagnostic: explicitDenial ? 'sandbox_apply_denied' : 'unknown_failure', reason: `sandbox-exec could not apply its valid readiness profile: ${raw}; parser control: ${malformedRaw}` }
 }
 function bubblewrapDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
+  if (!commandExists('true') && !commandExists('/usr/bin/true')) return { ready: false, diagnostic: 'runtime_startup_failure', reason: 'bubblewrap is installed but the known-startable readiness executable is missing.' }
   try { execFileSync('bwrap', ['--die-with-parent', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--ro-bind', '/usr', '/usr', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-home', '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--setenv', 'HOME', '/tmp/swico-home', '--unshare-net', '--', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create least-privilege mount, user, PID, and network namespaces.' } }
   catch (error) {
-    const detail = errorOutput(error)
-    return { ready: false, diagnostic: 'namespace_unavailable', reason: `bubblewrap is installed but user/mount namespaces are unavailable on this host${detail ? `: ${detail}` : '.'}` }
+    const detail = errorOutput(error), startupFailure = /enoent|no such file|cannot execute|exec format/i.test(detail)
+    return { ready: false, diagnostic: startupFailure ? 'runtime_startup_failure' : 'namespace_unavailable', reason: startupFailure ? `bubblewrap readiness could not start the known executable${detail ? `: ${detail}` : '.'}` : `bubblewrap readiness could not create its required user/mount namespaces${detail ? `: ${detail}` : '.'}` }
   }
 }
 function macProfile(root: string, policy: SandboxPolicy, network: NetworkPolicy, writable: string): string {
@@ -102,7 +106,15 @@ class LinuxBubblewrap implements SandboxAdapter {
       try { realpathSync(path); args.push('--ro-bind', path, path) } catch { /* optional system directory */ }
     }
     args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-sandbox', '--dir', '/workspace', '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/tmp/swico-home', '--dir', '/tmp/swico-home')
-    for (const mount of probeMounts) args.push('--ro-bind', safeRoot(mount.source), mount.target)
+    // Verification outside/home paths are intentionally namespace-only. Do
+    // not bind their host directories: a read-only bind would grant precisely
+    // the read access the negative probes are meant to reject. Read-only
+    // system binds make the namespace path exist while keeping it non-writable
+    // and separate from the host fixture.
+    args.push('--ro-bind', '/usr', '/swico-probe-outside', '--ro-bind', '/usr', '/swico-probe-home')
+    for (const mount of probeMounts) {
+      if (mount.target.startsWith('/workspace/')) args.push('--ro-bind', safeRoot(mount.source), mount.target)
+    }
     for (const [name, value] of Object.entries(safeEnvironment(environment))) if (name !== 'HOME' && value !== undefined) args.push('--setenv', name, value)
     if (network === 'disabled') args.push('--unshare-net')
     args.push(policy === 'workspace-write' ? '--bind' : '--ro-bind', root, '/workspace', '--', argv[0], ...argv.slice(1))
@@ -159,7 +171,7 @@ function safeEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.P
   return result
 }
 
-export type SandboxProbeName = 'workspace_read' | 'workspace_write' | 'outside_workspace_read' | 'outside_workspace_write' | 'home_secret_read' | 'secret_environment' | 'network_outbound' | 'child_process' | 'symlink_escape'
+export type SandboxProbeName = 'workspace_read' | 'workspace_write' | 'workspace_write_read_only' | 'outside_workspace_read' | 'outside_workspace_write' | 'home_secret_read' | 'secret_environment' | 'network_outbound' | 'child_process' | 'symlink_escape'
 export type SandboxProbe = { name: SandboxProbeName; expected: 'allow' | 'deny'; observed: 'allowed' | 'denied' | 'not_run' | 'error'; passed: boolean; detail: string }
 export type SandboxVerification = {
   verified: boolean
@@ -173,34 +185,38 @@ export type SandboxVerification = {
 
 const verificationScript = String.raw`
 const fs = require('node:fs'), cp = require('node:child_process'), http = require('node:http');
-const [probe, workspace, outside, homeSecret, link, port] = process.argv.slice(1);
+const [probe, workspace, outside, homeSecret, link, port, knownFixtures] = process.argv.slice(1);
 const report = (outcome, errorCode) => { process.stdout.write(JSON.stringify({ marker: 'swico-sandbox-probe-v2', probe, outcome, ...(errorCode ? { error_code: String(errorCode).slice(0, 32) } : {}) })); };
-const attempt = operation => { try { operation(); report('allowed'); } catch (error) { report(error && error.code === 'ENOENT' ? 'fixture_missing' : 'denied', error && error.code); } };
+const attempt = (operation, namespacePath = false) => { try { operation(); report('allowed'); } catch (error) { report(error && error.code === 'ENOENT' ? (namespacePath && knownFixtures === 'true' ? 'namespace_absent' : 'fixture_missing') : 'denied', error && error.code); } };
 try {
   if (probe === 'workspace_read') attempt(() => fs.readFileSync(workspace));
   else if (probe === 'workspace_write') attempt(() => fs.appendFileSync(workspace, 'probe'));
-  else if (probe === 'outside_workspace_read') attempt(() => fs.readFileSync(outside));
-  else if (probe === 'outside_workspace_write') attempt(() => fs.writeFileSync(outside + '.write', 'probe'));
-  else if (probe === 'home_secret_read') attempt(() => fs.readFileSync(homeSecret));
+  else if (probe === 'workspace_write_read_only') attempt(() => fs.appendFileSync(workspace, 'probe'));
+  else if (probe === 'outside_workspace_read') attempt(() => fs.readFileSync(outside), true);
+  else if (probe === 'outside_workspace_write') attempt(() => fs.writeFileSync(outside + '.write', 'probe'), true);
+  else if (probe === 'home_secret_read') attempt(() => fs.readFileSync(homeSecret), true);
   else if (probe === 'secret_environment') report(Object.prototype.hasOwnProperty.call(process.env, 'SWICO_VERIFY_SECRET') ? 'allowed' : 'denied');
-  else if (probe === 'symlink_escape') attempt(() => fs.readFileSync(link));
+  else if (probe === 'symlink_escape') attempt(() => fs.readFileSync(link), true);
   else if (probe === 'child_process') {
-    try { cp.execFileSync(process.execPath, ['-e', 'require("node:fs").readFileSync(process.argv[1])', outside], { stdio: 'ignore' }); report('allowed'); }
-    catch (error) { report(error && error.code === 'ENOENT' ? 'child_startup_failure' : 'denied', error && error.code); }
+    const child = cp.spawnSync(process.execPath, ['-e', 'try { require("node:fs").readFileSync(process.argv[1]); process.stdout.write("child-read-allowed") } catch (error) { process.stdout.write("child-read-error:" + (error.code || "unknown")); }', outside], { encoding: 'utf8' });
+    if (child.error) report('child_startup_failure', child.error.code);
+    else if (child.stdout === 'child-read-allowed') report('allowed');
+    else if (child.stdout && child.stdout.startsWith('child-read-error:')) report(child.stdout.endsWith(':ENOENT') && knownFixtures === 'true' ? 'namespace_absent' : child.stdout.endsWith(':EACCES') || child.stdout.endsWith(':EPERM') ? 'denied' : 'child_operation_failure', child.stdout.slice('child-read-error:'.length));
+    else report('child_exit_failure', child.status == null ? 'unknown' : 'exit-' + child.status);
   } else if (probe === 'network_outbound') {
     let finished = false;
     const done = (outcome, errorCode) => { if (finished) return; finished = true; report(outcome, errorCode); };
     if (!Number(port)) done('test_server_unavailable');
     else {
       const request = http.get({ host: '127.0.0.1', port: Number(port), path: '/' }, response => { let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; }); response.on('end', () => done(body === 'swico-network-control-v1' ? 'allowed' : 'test_server_unavailable')); });
-      request.on('error', error => done('denied', error && error.code));
+      request.on('error', error => done(error && (error.code === 'ECONNREFUSED' || error.code === 'ENETUNREACH' || error.code === 'ENETDOWN') ? 'network_control_refused' : 'test_server_unavailable', error && error.code));
       setTimeout(() => done('test_server_unavailable'), 800);
     }
   } else report('unknown_probe');
 } catch (error) { report(error && error.code === 'ENOENT' ? 'fixture_missing' : 'probe_error', error && error.code); }
 `
 
-export async function runSandboxProbe(adapter: SandboxAdapter, workspaceRoot: string, name: SandboxProbeName, expected: 'allow' | 'deny', paths: { workspace: string; outside: string; homeSecret: string; link: string; port: number }, policy: SandboxPolicy): Promise<SandboxProbe> {
+export async function runSandboxProbe(adapter: SandboxAdapter, workspaceRoot: string, name: SandboxProbeName, expected: 'allow' | 'deny', paths: { workspace: string; outside: string; homeSecret: string; link: string; port: number; controlServerLive?: boolean; fixturesKnown?: boolean }, policy: SandboxPolicy): Promise<SandboxProbe> {
   const started = Date.now()
   const mapped = {
     workspace: adapter.mapProbePath?.(paths.workspace, 'workspace') ?? paths.workspace,
@@ -211,12 +227,8 @@ export async function runSandboxProbe(adapter: SandboxAdapter, workspaceRoot: st
   return await new Promise<SandboxProbe>(resolveProbe => {
     let child: ChildProcess
     try {
-      child = adapter.spawn([process.execPath, '-e', verificationScript, name, mapped.workspace, mapped.outside, mapped.homeSecret, mapped.link, String(paths.port)], {
+      child = adapter.spawn([process.execPath, '-e', verificationScript, name, mapped.workspace, mapped.outside, mapped.homeSecret, mapped.link, String(paths.port), String(paths.fixturesKnown === true)], {
         cwd: workspaceRoot, shell: false, env: { ...process.env, SWICO_VERIFY_SECRET: randomBytes(16).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], policy, network: 'disabled',
-        probeMounts: [
-          { source: dirname(paths.outside), target: dirname(mapped.outside) },
-          { source: dirname(paths.homeSecret), target: dirname(mapped.homeSecret) },
-        ],
       })
     } catch (error) {
       resolveProbe({ name, expected, observed: 'error', passed: false, detail: error instanceof Error ? error.message.slice(0, 200) : 'sandbox spawn failed' }); return
@@ -240,8 +252,10 @@ export async function runSandboxProbe(adapter: SandboxAdapter, workspaceRoot: st
         return
       }
       const report = JSON.parse(stdout.trim()) as { outcome?: string; error_code?: string }
-      const observed = allowed ? 'allowed' : report.outcome === 'denied' ? 'denied' : 'error'
-      const passed = expected === 'allow' ? report.outcome === 'allowed' : report.outcome === 'denied'
+      const isolatedNetworkRefusal = name === 'network_outbound' && report.outcome === 'network_control_refused' && paths.controlServerLive === true && adapter.status().implementation !== 'unavailable'
+      const namespaceAbsence = report.outcome === 'namespace_absent'
+      const observed = allowed ? 'allowed' : report.outcome === 'denied' || isolatedNetworkRefusal || namespaceAbsence ? 'denied' : 'error'
+      const passed = expected === 'allow' ? report.outcome === 'allowed' : report.outcome === 'denied' || isolatedNetworkRefusal || namespaceAbsence
       resolveProbe({ name, expected, observed, passed, detail: `${report.outcome ?? 'unknown'}${report.error_code ? ` (${report.error_code})` : ''}${code === null ? '' : ` (exit ${code})`}${stderr.trim() ? `: ${cleanProbeText(stderr)}` : ''} in ${Date.now() - started}ms` })
     })
   })
@@ -267,7 +281,14 @@ export async function verifySandbox(root: string): Promise<SandboxVerification> 
     server = createServer((_request, response) => { response.end('swico-network-control-v1'); })
     await new Promise<void>((resolveListen, rejectListen) => { server?.once('error', rejectListen); server?.listen(0, '127.0.0.1', () => resolveListen()) })
     const address = server.address(), port = typeof address === 'object' && address ? address.port : 0
-    const paths = { workspace: workspaceFile, outside: outsideFile, homeSecret, link, port }, probes: SandboxProbe[] = []
+    const controlServerLive = await new Promise<boolean>(resolveControl => {
+      if (!port) return resolveControl(false)
+      const request = httpRequest({ host: '127.0.0.1', port, path: '/', timeout: 500 }, response => {
+        let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk }); response.on('end', () => resolveControl(response.statusCode === 200 && body === 'swico-network-control-v1'))
+      })
+      request.on('error', () => resolveControl(false)); request.on('timeout', () => { request.destroy(); resolveControl(false) }); request.end()
+    })
+    const paths = { workspace: workspaceFile, outside: outsideFile, homeSecret, link, port, controlServerLive, fixturesKnown: true }, probes: SandboxProbe[] = []
     for (const [name, expected, policy] of probeNames) probes.push(await runSandboxProbe(runtime, runtimeRoot, name, expected, paths, policy))
     const verified = probes.every(item => item.passed)
     return { verified, implementation: status.implementation, diagnostic: verified ? 'ready' : status.diagnostic, reason: verified ? 'Hostile filesystem, environment, process, symlink, and network probes passed.' : `Sandbox verification failed after ${Date.now() - started}ms; inspect individual probes.`, runtime: base, verified_at: now, probes }
@@ -283,6 +304,7 @@ export async function verifySandbox(root: string): Promise<SandboxVerification> 
 
 const probeNames: Array<[SandboxProbeName, 'allow' | 'deny', SandboxPolicy]> = [
   ['workspace_read', 'allow', 'read-only'], ['workspace_write', 'allow', 'workspace-write'],
+  ['workspace_write_read_only', 'deny', 'read-only'],
   ['outside_workspace_read', 'deny', 'read-only'], ['outside_workspace_write', 'deny', 'workspace-write'],
   ['home_secret_read', 'deny', 'read-only'], ['secret_environment', 'deny', 'read-only'],
   ['network_outbound', 'deny', 'read-only'], ['child_process', 'deny', 'read-only'], ['symlink_escape', 'deny', 'read-only'],

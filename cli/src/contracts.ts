@@ -15,6 +15,7 @@ export type AgentAction = {
   protocol_version: 1 | 2
   action_id: string
   action_type: 'list_files' | 'search_text' | 'read_file' | 'read_file_range' | 'apply_patch' | 'create_file' | 'delete_file' | 'move_file' | 'run_command' | 'git_status' | 'git_diff' | 'mcp_tool' | 'spawn_subagent' | 'web_search'
+  reservation_id?: string
   payload: Record<string, unknown>
   payload_hash?: string
 }

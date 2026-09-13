@@ -189,7 +189,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       const next = await planAgentStep(currentTokens, run.run_id, task, promptContext, env, controller.signal)
       if (next.kind === 'assistant') { plan.advance(); console.log(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }); return currentTokens }
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
-      const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash }
+      const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash, reservation_id: next.reservation_id }
       console.log(`\nTool: ${action.action_type}`)
       const result = await agent.execute(run.run_id, action, async description => (profile === 'approval-required' || config.effective.approvalPolicy === 'always') ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : false)
       context.observations.push(`${action.action_type}: ${JSON.stringify(result.result).slice(0, 10_000)}`)
@@ -449,7 +449,10 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (command === 'ask') { const parsed = parseTaskArguments(argv, 'ask'), task = taskText(parsed), image = parsed.values['--image'], attachmentIds = image ? [await uploadImage(tokens, image, env)].map(item => item.id) : []; if (!task) throw new Error('A question is required.'); await runChat(tokens, task, undefined, env, false, parsed.flags.has('--search') ? 'on' : parsed.flags.has('--no-search') ? 'off' : 'auto', attachmentIds); return 0 }
   if (command === 'exec') return nonInteractive(tokens, argv, env)
   if (command === 'agent') { if (!input.isTTY) throw new Error('Agent mode requires an interactive terminal because local edits and commands always need approval.'); await runAgent(tokens, positionalAfter(argv, 'agent'), env); return 0 }
-  if (!input.isTTY) throw new Error('This terminal is non-interactive. Use `swico ask "your question"` or `swico exec "your task"`.')
+  // The release smoke uses a private pipe to drive the same interactive loop
+  // in one process. It is never set by normal customers and does not weaken
+  // approval requirements or enable agent execution.
+  if (!input.isTTY && env.SWICO_CLI_RELEASE_CHECK_INTERACTIVE !== '1') throw new Error('This terminal is non-interactive. Use `swico ask "your question"` or `swico exec "your task"`.')
   await interactive(tokens, env); return 0
 }
 

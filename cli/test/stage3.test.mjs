@@ -78,7 +78,7 @@ test('sandbox verify uses real hostile probes and never turns runtime detection 
   try {
     const report = await verifySandbox(root)
     assert.equal(report.runtime.architecture, process.arch)
-    assert.equal(report.probes.length, 9)
+    assert.equal(report.probes.length, 10)
     assert.ok(report.probes.every(item => item.name && item.detail))
     if (createSandboxAdapter(root).status().available) {
       assert.equal(report.verified, true)
@@ -116,6 +116,30 @@ test('sandbox verification rejects a missing deny fixture and an unavailable net
     assert.equal(network.passed, false)
     assert.equal(network.observed, 'error')
     assert.match(network.detail, /test_server_unavailable/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('sandbox verification does not treat a nested operation failure as child denial', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-child-result-'))
+  const outside = await mkdtemp(join(tmpdir(), 'swico-stage3-child-outside-'))
+  try {
+    const fixture = join(outside, 'known.txt')
+    await writeFile(fixture, 'known fixture\n')
+    const adapter = { spawn: (argv, options) => spawn(argv[0], argv.slice(1), options) }
+    const probe = await runSandboxProbe(adapter, root, 'child_process', 'deny', { workspace: join(root, 'workspace.txt'), outside: fixture, homeSecret: join(root, 'secret.txt'), link: join(root, 'link'), port: 0, fixturesKnown: true }, 'read-only')
+    assert.equal(probe.observed, 'allowed')
+    assert.equal(probe.passed, false)
+  } finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }) }
+})
+
+test('sandbox verification does not treat a closed nonzero port as network enforcement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-network-control-'))
+  try {
+    const adapter = { status: () => ({ implementation: 'unavailable' }), spawn: (argv, options) => spawn(argv[0], argv.slice(1), options) }
+    const probe = await runSandboxProbe(adapter, root, 'network_outbound', 'deny', { workspace: join(root, 'workspace.txt'), outside: join(root, 'outside.txt'), homeSecret: join(root, 'secret.txt'), link: join(root, 'link'), port: 9, controlServerLive: false, fixturesKnown: false }, 'read-only')
+    assert.equal(probe.passed, false)
+    assert.equal(probe.observed, 'error')
+    assert.match(probe.detail, /network_control_refused|test_server_unavailable/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

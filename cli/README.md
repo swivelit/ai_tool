@@ -89,9 +89,11 @@ verification fails, agent execution is refused rather than falling back to
 unsandboxed commands.
 
 The initial public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` until
-durable budgeting, cancellation/recovery, sensitive-path and local-side-effect
-recovery gates are verified. `swico login --agent` requests the additional
-scope but does not bypass the server gate or tier eligibility.
+native sandbox verification, PostgreSQL lifecycle coverage, and the remaining
+cancellation/recovery and local-side-effect acceptance gates are verified.
+Durable planner/action reservations and exact-once replay handling are covered
+by focused route tests. `swico login --agent` requests the additional scope
+but does not bypass the server gate or tier eligibility.
 
 ## Stage 2 local extensions
 

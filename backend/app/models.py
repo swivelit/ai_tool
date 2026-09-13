@@ -603,6 +603,10 @@ class CliAgentStep(SQLModel, table=True):
     run_id: str = Field(foreign_key="cli_agent_run.id", ondelete="CASCADE", index=True)
     sequence: int = Field(sa_column=Column(Integer, nullable=False))
     action_id: str = Field(max_length=64)
+    # A planner reservation is created before provider I/O.  The action_id is
+    # filled with a private reservation id until the structured action is
+    # validated, then retained as the binding for the submitted action.
+    reservation_id: Optional[str] = Field(default=None, max_length=64, index=True)
     action_type: str = Field(max_length=32)
     status: str = Field(default="pending", max_length=16, index=True)
     payload_hash: str = Field(max_length=64)

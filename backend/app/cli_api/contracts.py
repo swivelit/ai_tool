@@ -82,6 +82,7 @@ class AgentAction(BaseModel):
         "web_search",
     ]
     payload_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    reservation_id: str | None = Field(default=None, min_length=8, max_length=64)
     payload: dict[str, object] | None = None
 
 

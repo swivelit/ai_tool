@@ -101,6 +101,8 @@ try {
     try { body = bodyText ? JSON.parse(bodyText) : {} } catch { body = {} }
     requestBodies.push({ path: request.url, body })
     const jsonResponse = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
+    const protectedEndpoint = request.url === '/api/cli/v1/me' || request.url === '/api/cli/v1/chat/stream' || request.url?.startsWith('/api/cli/v1/chat/requests/')
+    if (control.loggedOut && protectedEndpoint) { jsonResponse(401, { detail: 'revoked controlled session' }); return }
     if (request.url === '/api/cli/v1/device' && request.method === 'POST') {
       control.device = body
       jsonResponse(200, { device_code: 'controlled-device', user_code: 'CTRL-123', verification_uri: 'https://swico.in/cli/authorize', verification_uri_complete: 'https://swico.in/cli/authorize?user_code=CTRL-123', expires_in: 30, interval: 5 })
@@ -146,6 +148,7 @@ try {
     SWICO_CLI_CREDENTIAL_FILE: join(work, 'empty-credentials.json'),
     SWICO_CLI_STATE_DIR: join(work, 'state'),
     SWICO_CLI_CONFIG_FILE: join(work, 'config.toml'),
+    SWICO_CLI_RELEASE_CHECK_INTERACTIVE: '1',
     XDG_CONFIG_HOME: join(work, 'xdg'),
   }
   const smokeOptions = { cwd: work, maxBuffer: 512 * 1024, env: isolatedEnv }
@@ -163,11 +166,23 @@ try {
   const planned = await run('installed task-only plan consent', executable, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
   const planRequest = requestBodies.find(item => item.path === '/api/cli/v1/chat/stream' && String(item.body.message).includes('task-only plan'))
   if (!planRequest || String(planRequest.body.message).includes('AGENTS_SECRET_MARKER')) throw new Error('Installed plan consent leaked repository instructions')
-  let recovered = false
-  try { await run('installed controlled error recovery', executable, ['ask', 'force recoverable error'], smokeOptions) } catch { recovered = true }
-  if (!recovered) throw new Error('Installed error recovery did not surface the controlled failure')
-  const afterError = await run('installed post-error chat recovery', executable, ['ask', 'success after error'], smokeOptions)
-  if (!afterError.stdout.includes('installed stream response')) throw new Error('Installed post-error chat did not recover')
+  const interactiveRecovery = await new Promise(resolve => {
+    const child = spawn(executable, [], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    let continued = false
+    const maybeContinue = () => {
+      if (continued || !`${stdout}\n${stderr}`.includes('Swico operation failed')) return
+      continued = true
+      child.stdin.write('success after error\n/exit\n')
+    }
+    child.stdout.on('data', chunk => { stdout += String(chunk); maybeContinue() })
+    child.stderr.on('data', chunk => { stderr += String(chunk); maybeContinue() })
+    child.on('close', (code, signal) => resolve({ stdout, stderr, code, signal }))
+    child.stdin.write('force recoverable error\n')
+    setTimeout(() => { if (!continued) child.stdin.write('success after error\n/exit\n'); setTimeout(() => child.stdin.end(), 500) }, 5_000)
+  })
+  const interactiveOutput = `${interactiveRecovery.stdout}\n${interactiveRecovery.stderr}`
+  if (!interactiveOutput.includes('temporary controlled failure') || !interactiveOutput.includes('installed stream response')) throw new Error(`Installed same-process error recovery did not complete: ${interactiveOutput.replace(/[\\u0000-\\u001f\\u007f]/g, ' ').slice(-1_000)}`)
   const cancelled = await new Promise(resolve => {
     const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => child.kill('SIGINT'), 500)
@@ -175,6 +190,10 @@ try {
   })
   if (control.cancelled < 1 || (!cancelled.code && !cancelled.signal)) throw new Error('Installed cancellation smoke did not cancel the request')
   await run('installed remote logout and local deletion', executable, ['logout'], smokeOptions)
+  const retainedRevoked = await fetch(`${controlOrigin}/api/cli/v1/me`, { headers: { Authorization: 'Bearer installed-access-new', Accept: 'application/json' } })
+  if (retainedRevoked.status !== 401) throw new Error(`Controlled server accepted a retained revoked credential: HTTP ${retainedRevoked.status}`)
+  const retainedChat = await fetch(`${controlOrigin}/api/cli/v1/chat/stream`, { method: 'POST', headers: { Authorization: 'Bearer installed-access-new', 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: 'retained-revoked-request', message: 'must be rejected' }) })
+  if (retainedChat.status !== 401) throw new Error(`Controlled chat endpoint accepted a retained revoked credential: HTTP ${retainedChat.status}`)
   let revoked = false
   try { await run('installed revoked-session rejection', executable, ['whoami'], smokeOptions) } catch { revoked = true }
   if (!revoked) throw new Error('Installed revoked-session rejection did not fail closed')

@@ -178,6 +178,25 @@ def _validate_agent_action_payload(action: AgentAction) -> str:
     payload = action.payload
     if not isinstance(payload, dict):
         raise HTTPException(422, "Structured actions must include a payload.")
+    allowed_fields = {
+        "list_files": {"limit"},
+        "search_text": {"term", "limit", "regex", "glob", "context_lines"},
+        "read_file": {"path"},
+        "read_file_range": {"path", "start", "end"},
+        "apply_patch": {"path", "expected_sha256", "patch", "content"},
+        "create_file": {"path", "content"},
+        "delete_file": {"path"},
+        "move_file": {"from", "to"},
+        "run_command": {"argv", "timeout_ms", "network"},
+        "git_status": set(),
+        "git_diff": {"ref"},
+        "mcp_tool": {"server_name", "tool_name", "arguments"},
+        "spawn_subagent": {"tasks", "context"},
+        "web_search": {"query"},
+    }[action.action_type]
+    unknown_fields = set(payload) - allowed_fields
+    if unknown_fields:
+        raise HTTPException(422, f"{action.action_type} payload contains unsupported fields.")
     if action.action_type == "list_files":
         limit = payload.get("limit", 200)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
@@ -748,6 +767,96 @@ def _active_agent_run(run_id: str, user_id: int) -> CliAgentRun | None:
         return run
 
 
+def _settle_planner_reservation(
+    run_id: str,
+    reservation_id: str,
+    *,
+    status: str,
+    action_type: str,
+    payload_hash: str,
+    action_id: str | None = None,
+    result_hash: str | None = None,
+) -> bool:
+    """Finalize a generation reservation after provider I/O.
+
+    The provider is never called while these row locks are held. The second
+    transaction rechecks cancellation/terminal state so a late provider result
+    cannot authorize an action after cancellation.
+    """
+    with SessionLocal() as settle_session:
+        run = settle_session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id).with_for_update()).first()
+        step = settle_session.exec(select(CliAgentStep).where(
+            CliAgentStep.run_id == run_id, CliAgentStep.reservation_id == reservation_id,
+        ).with_for_update()).first()
+        if run is None or step is None or step.status != "pending":
+            return False
+        if run.cancellation_requested or run.status not in {"running", "waiting_approval"} or ensure_utc(run.expires_at) <= utc_now():
+            step.status = "expired"
+            step.updated_at = utc_now()
+            settle_session.add(step)
+            settle_session.commit()
+            return False
+        step.status = status
+        step.action_type = action_type
+        step.payload_hash = payload_hash
+        if action_id is not None:
+            duplicate = settle_session.exec(select(CliAgentStep).where(
+                CliAgentStep.run_id == run_id, CliAgentStep.action_id == action_id,
+            )).first()
+            if duplicate is not None and duplicate.id != step.id:
+                step.status = "failed"
+                settle_session.add(step)
+                settle_session.commit()
+                return False
+            step.action_id = action_id
+        step.result_hash = result_hash
+        step.updated_at = utc_now()
+        if action_id is not None:
+            pending = CliPendingAction(
+                run_id=run_id, action_id=action_id, action_type=action_type,
+                payload_hash=payload_hash, status="pending",
+                expires_at=min(ensure_utc(run.expires_at), utc_now() + timedelta(seconds=300)),
+            )
+            settle_session.add(pending)
+            run.status = "waiting_approval"
+            run.updated_at = utc_now()
+            settle_session.add(run)
+        settle_session.add(step)
+        settle_session.commit()
+        return True
+
+
+def _fail_planner_reservation(run_id: str, reservation_id: str) -> None:
+    with SessionLocal() as failure_session:
+        step = failure_session.exec(select(CliAgentStep).where(
+            CliAgentStep.run_id == run_id, CliAgentStep.reservation_id == reservation_id,
+        ).with_for_update()).first()
+        if step is not None and step.status == "pending":
+            step.status = "failed"
+            step.updated_at = utc_now()
+            failure_session.add(step)
+            failure_session.commit()
+
+
+def _planner_payload_contract() -> str:
+    return (
+        "Exact action payload schemas (additional fields are invalid): "
+        "list_files {limit?: integer 1..500}; "
+        "search_text {term: string, limit?: integer, regex?: boolean, glob?: string, context_lines?: integer}; "
+        "read_file {path: safe relative string}; "
+        "read_file_range {path: safe relative string, start?: integer, end?: integer}; "
+        "apply_patch {path: safe relative string, expected_sha256: 64-hex string, patch|string or content|string}; "
+        "create_file {path: safe relative string, content: string}; "
+        "delete_file {path: safe relative string}; "
+        "move_file {from: safe relative string, to: safe relative string}; "
+        "run_command {argv: non-empty string array, timeout_ms?: integer 100..120000, network?: disabled|allowed}; "
+        "git_status {}; git_diff {ref?: string}; "
+        "mcp_tool {server_name: identifier, tool_name: identifier, arguments?: object}; "
+        "spawn_subagent {tasks: 1..4 bounded read-only task objects, context?: string}; "
+        "web_search {query: string}."
+    )
+
+
 @router.post("/agent/runs", status_code=201)
 def create_agent_run(payload: AgentRunRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     settings = _require_enabled()
@@ -837,6 +946,19 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         raise HTTPException(409, "Agent run is unavailable")
     if hashlib.sha256(payload.task.encode()).hexdigest() != run.task_hash:
         raise HTTPException(409, "Agent task does not match the original run")
+    outstanding = session.exec(select(CliAgentStep).where(
+        CliAgentStep.run_id == run.id,
+        CliAgentStep.status == "pending",
+        CliAgentStep.action_type == "planner_reservation",
+    )).first()
+    if outstanding is not None:
+        raise HTTPException(409, "A planner generation is already in progress; retrying will not generate another round.")
+    awaiting_action = session.exec(select(CliPendingAction).where(
+        CliPendingAction.run_id == run.id,
+        CliPendingAction.status == "pending",
+    )).first()
+    if awaiting_action is not None:
+        raise HTTPException(409, "The previous planned action is awaiting local execution; retrying will not generate another round.")
     if run.current_step >= run.max_steps:
         raise HTTPException(429, "Agent generation-step limit reached")
     # Reserve the planner round atomically, then release the database lock
@@ -848,7 +970,13 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     run_thread_id = run.thread_id
     run_tier = run.tier
     step_number = run.current_step + 1
+    reservation_id = str(uuid4())
     run.current_step = step_number
+    session.add(CliAgentStep(
+        run_id=run.id, sequence=step_number, action_id=reservation_id,
+        reservation_id=reservation_id, action_type="planner_reservation",
+        payload_hash=run.task_hash, status="pending",
+    ))
     session.add(run)
     session.commit()
     prompt = (
@@ -857,6 +985,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         "{\"kind\":\"action\",\"protocol_version\":1 or 2,\"action_id\":\"...\","
         "\"action_type\":\"list_files|search_text|read_file|read_file_range|apply_patch|create_file|delete_file|move_file|run_command|git_status|git_diff|mcp_tool|spawn_subagent|web_search\","
         "\"payload\":{...}}. Never request secrets, traversal, shell strings, or unapproved commands. "
+        f"{_planner_payload_contract()} "
         f"TASK (untrusted user text):\n{payload.task}\nLOCAL CONTEXT (untrusted):\n{payload.context}"
     )
     request_id = f"{run_request_id}:agent:{step_number}"
@@ -869,6 +998,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
         )
         completed = execute_web_turn(prepared)
     except Exception as exc:
+        _fail_planner_reservation(run_id_value, reservation_id)
         _fail_agent_run(run_id_value, "planner_generation_failed")
         raise HTTPException(502, "The coding-agent planner could not complete safely.") from exc
     finally:
@@ -877,16 +1007,26 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     try:
         parsed = json.loads(completed.message.content)
     except (TypeError, ValueError) as exc:
+        _fail_planner_reservation(run_id_value, reservation_id)
         _fail_agent_run(run_id_value, "planner_returned_unstructured_output")
         raise HTTPException(422, "The selected model did not return a supported structured action.") from exc
     if _active_agent_run(run_id_value, int(user.id)) is None:
+        _fail_planner_reservation(run_id_value, reservation_id)
         raise HTTPException(409, "The agent run was cancelled or became terminal while planning.")
     if not isinstance(parsed, dict) or parsed.get("kind") not in {"assistant", "action"}:
+        _fail_planner_reservation(run_id_value, reservation_id)
         raise HTTPException(422, "The planner response did not match the supported agent protocol.")
     if parsed["kind"] == "assistant":
         text_value = str(parsed.get("text") or "")
         if not text_value or len(text_value) > 8_000:
+            _fail_planner_reservation(run_id_value, reservation_id)
             raise HTTPException(422, "The planner assistant response is invalid.")
+        if not _settle_planner_reservation(
+            run_id_value, reservation_id, status="succeeded", action_type="assistant_response",
+            payload_hash=hashlib.sha256(text_value.encode()).hexdigest(),
+            result_hash=hashlib.sha256(text_value.encode()).hexdigest(),
+        ):
+            raise HTTPException(409, "The agent run was cancelled or became terminal while planning.")
         return {"kind": "assistant", "text": text_value, "usage": completed.response.input_tokens + completed.response.output_tokens}
     # `kind` is the planner envelope discriminator, not an AgentAction field.
     # Validate the inner action after removing it so the strict extra-field
@@ -895,11 +1035,22 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     try:
         action = AgentAction.model_validate(action_data)
     except Exception as exc:
+        _fail_planner_reservation(run_id_value, reservation_id)
         raise HTTPException(422, "The planner response did not contain a complete structured action.") from exc
     if action.payload is None:
+        _fail_planner_reservation(run_id_value, reservation_id)
         raise HTTPException(422, "Structured actions must include a payload.")
-    payload_hash = _validate_agent_action_payload(action)
-    return {"kind": "action", "protocol_version": action.protocol_version, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "usage": completed.response.input_tokens + completed.response.output_tokens}
+    try:
+        payload_hash = _validate_agent_action_payload(action)
+    except HTTPException:
+        _fail_planner_reservation(run_id_value, reservation_id)
+        raise
+    if not _settle_planner_reservation(
+        run_id_value, reservation_id, status="approved", action_type=action.action_type,
+        payload_hash=payload_hash, action_id=action.action_id,
+    ):
+        raise HTTPException(409, "The planned action reservation is no longer active.")
+    return {"kind": "action", "protocol_version": action.protocol_version, "action_id": action.action_id, "action_type": action.action_type, "payload": action.payload, "payload_hash": payload_hash, "reservation_id": reservation_id, "usage": completed.response.input_tokens + completed.response.output_tokens}
 
 
 @router.post("/agent/runs/{run_id}/subagents")
@@ -926,7 +1077,14 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
         CliPendingAction.action_id == payload.action_id,
         CliPendingAction.action_type == "spawn_subagent",
     ).with_for_update()).first()
-    if pending is None or pending.status != "pending":
+    if pending is None:
+        raise HTTPException(409, "The subagent action is missing, expired, or already submitted")
+    if pending.status == "submitted":
+        # The summaries are intentionally not retained in durable recovery
+        # state. A lost response is therefore an idempotent no-op, never a
+        # second set of provider calls or step reservations.
+        return {"run_id": run.id, "results": [], "active": 0, "max_active": 4, "replayed": True}
+    if pending.status != "pending":
         raise HTTPException(409, "The subagent action is missing, expired, or already submitted")
     # The spawn action itself consumes one step. Every independent model
     # analysis round consumes another, so this cannot bypass the run ceiling.
@@ -973,6 +1131,17 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
                 _redact_planner_turn(int(user.id), prepared.request_id)
     if _active_agent_run(run_id_value, int(user.id)) is None:
         raise HTTPException(409, "Agent subagent run was cancelled or expired")
+    with SessionLocal() as finalize_session:
+        final_pending = finalize_session.exec(select(CliPendingAction).where(
+            CliPendingAction.run_id == run_id, CliPendingAction.action_id == payload.action_id,
+        ).with_for_update()).first()
+        final_step = finalize_session.exec(select(CliAgentStep).where(
+            CliAgentStep.run_id == run_id, CliAgentStep.action_id == payload.action_id,
+        ).with_for_update()).first()
+        if final_pending is not None and final_step is not None and final_pending.status == "pending":
+            final_pending.status, final_pending.resolved_at = "submitted", utc_now()
+            final_step.status, final_step.result_hash, final_step.updated_at = "succeeded", hashlib.sha256(json.dumps(summaries, sort_keys=True).encode()).hexdigest(), utc_now()
+            finalize_session.add(final_pending); finalize_session.add(final_step); finalize_session.commit()
     return {"run_id": run.id, "results": summaries, "active": 0, "max_active": 4}
 
 
@@ -983,17 +1152,41 @@ def submit_agent_action(run_id: str, payload: AgentAction, authorization: str | 
     _require_paid_cli_session(_cli)
     if not payload.payload_hash:
         raise HTTPException(422, "Action payload hash is required when submitting a local action")
-    run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()
-    if run is None or ensure_utc(run.expires_at) <= utc_now() or run.status not in {"running", "waiting_approval"}:
-        raise HTTPException(409, "Agent run is unavailable")
-    if run.current_step >= run.max_steps:
-        raise HTTPException(429, "Agent generation-step limit reached")
     payload_hash = _validate_agent_action_payload(payload)
+    run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()
+    if run is None:
+        raise HTTPException(409, "Agent run is unavailable")
     duplicate = session.exec(select(CliAgentStep).where(CliAgentStep.run_id == run.id, CliAgentStep.action_id == payload.action_id)).first()
     if duplicate is not None:
         if duplicate.payload_hash != payload_hash:
             raise HTTPException(409, "Action identity was already used for a different payload")
-        return {"status": duplicate.status, "action_id": duplicate.action_id, "step_id": duplicate.id}
+        # A lost admission response is safe to replay. The local journal will
+        # decide whether the side effect already ran; an admitted-but-not-
+        # settled action must remain executable after reconnect.
+        replay_status = "accepted" if duplicate.status in {"pending", "approved", "executing"} else duplicate.status
+        return {"status": replay_status, "action_id": duplicate.action_id, "step_id": duplicate.id}
+    if ensure_utc(run.expires_at) <= utc_now() or run.status not in {"running", "waiting_approval"} or run.cancellation_requested:
+        raise HTTPException(409, "Agent run is unavailable")
+    if payload.reservation_id is not None:
+        reservation = session.exec(select(CliAgentStep).where(
+            CliAgentStep.run_id == run.id, CliAgentStep.reservation_id == payload.reservation_id,
+        ).with_for_update()).first()
+        if (
+            reservation is None
+            or reservation.action_id != payload.action_id
+            or reservation.action_type != payload.action_type
+            or reservation.payload_hash != payload_hash
+            or reservation.status != "approved"
+        ):
+            raise HTTPException(409, "The action does not match its planner reservation")
+        pending = session.exec(select(CliPendingAction).where(
+            CliPendingAction.run_id == run.id, CliPendingAction.action_id == payload.action_id,
+        )).first()
+        if pending is None or ensure_utc(pending.expires_at) <= utc_now() or pending.status != "pending":
+            raise HTTPException(409, "The planned action authorization is missing or expired")
+        return {"status": "accepted", "action_id": payload.action_id, "step_id": reservation.id, "expires_at": pending.expires_at.isoformat()}
+    if run.current_step >= run.max_steps:
+        raise HTTPException(429, "Agent generation-step limit reached")
     step = CliAgentStep(run_id=run.id, sequence=run.current_step + 1, action_id=payload.action_id, action_type=payload.action_type, payload_hash=payload_hash, status="approved")
     pending = CliPendingAction(run_id=run.id, action_id=payload.action_id, action_type=payload.action_type, payload_hash=payload_hash, expires_at=min(ensure_utc(run.expires_at), utc_now() + timedelta(seconds=300)))
     run.current_step += 1
@@ -1010,7 +1203,14 @@ def submit_agent_result(run_id: str, action_id: str, payload: AgentResultRequest
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()
     step = session.exec(select(CliAgentStep).where(CliAgentStep.run_id == run_id, CliAgentStep.action_id == action_id).with_for_update()).first()
     pending = session.exec(select(CliPendingAction).where(CliPendingAction.run_id == run_id, CliPendingAction.action_id == action_id).with_for_update()).first()
-    if run is None or step is None or pending is None or ensure_utc(pending.expires_at) <= utc_now() or pending.status not in {"pending", "submitted"}:
+    if run is None or step is None or pending is None:
+        raise HTTPException(409, "Action is expired, duplicated, or out of order")
+    if ensure_utc(pending.expires_at) <= utc_now():
+        pending.status, pending.resolved_at = "expired", utc_now()
+        step.status, step.updated_at = "expired", utc_now()
+        session.add(pending); session.add(step); session.commit()
+        raise HTTPException(409, "Action authorization expired")
+    if pending.status not in {"pending", "submitted"}:
         raise HTTPException(409, "Action is expired, duplicated, or out of order")
     if pending.status == "submitted":
         if step.result_hash == payload.result_hash:

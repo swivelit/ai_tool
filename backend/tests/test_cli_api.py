@@ -425,6 +425,133 @@ def test_agent_planner_rechecks_cancellation_after_model_io_without_authorizing_
     assert client.get(f"/api/cli/v1/agent/runs/{run_id}", headers={"Authorization": f"Bearer {raw_access}"}).json()["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("max_steps", [1, 2, 8])
+def test_planner_action_reservation_counts_one_round_and_binds_submission(client: TestClient, monkeypatch: pytest.MonkeyPatch, max_steps: int):
+    """A plan plus its action/result is one generation-step, not two."""
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_MAX_AGENT_STEPS", str(max_steps))
+    monkeypatch.setattr("app.cli_api.router.enforce_rate_limit", lambda *_args, **_kwargs: None)
+    user = create_test_user(f"cli-budget-{max_steps}", f"cli-budget-{max_steps}@example.com")
+    raw_access = "b" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("c" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat","agent"]', device_description="budget",
+        ))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "inspect a project"})
+    assert run.status_code == 201, run.text
+    run_id = run.json()["run_id"]
+    response = AIProviderResponse(text="", provider="test", model="test", route="test", reason="test", language="en", intent="coding", input_tokens=2, output_tokens=3, raw={"completion_status": "complete"})
+    calls = 0
+
+    def fake_prepare(**kwargs):
+        return SimpleNamespace(request_id=kwargs["request_id"])
+
+    def fake_execute(_prepared):
+        nonlocal calls
+        calls += 1
+        action_id = f"planned-{calls:04d}"
+        content = json.dumps({"kind": "action", "protocol_version": 1, "action_id": action_id, "action_type": "list_files", "payload": {"limit": 3}})
+        message = CompletedWebMessage(id=f"planned-message-{calls}", content=content, status="complete", swico_tier="lite", usage_source="actual", charge_micros=0, provider="test", model="test", request_id=f"planned-request-{calls}", replaces_message_id=None, revision_number=1)
+        return CompletedWebTurn(None, message, {"available_micros": 0}, response)
+
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", fake_prepare)
+    monkeypatch.setattr("app.cli_api.router.execute_web_turn", fake_execute)
+    monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
+    for expected_step in range(1, max_steps + 1):
+        planned = client.post(f"/api/cli/v1/agent/runs/{run_id}/plan", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "inspect a project", "context": "bounded"})
+        assert planned.status_code == 200, planned.text
+        body = planned.json()
+        assert body["reservation_id"]
+        lost_response_retry = client.post(f"/api/cli/v1/agent/runs/{run_id}/plan", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "inspect a project", "context": "bounded"})
+        assert lost_response_retry.status_code == 409
+        assert calls == expected_step
+        with SessionLocal() as session:
+            observed = session.get(CliAgentRun, run_id)
+            assert observed is not None and observed.current_step == expected_step
+        action = {"protocol_version": body["protocol_version"], "action_id": body["action_id"], "action_type": body["action_type"], "payload": body["payload"], "payload_hash": body["payload_hash"], "reservation_id": body["reservation_id"]}
+        accepted = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action)
+        assert accepted.status_code == 200, accepted.text
+        result = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions/{body['action_id']}/result", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": body["action_id"], "result_hash": hashlib.sha256(f"result-{expected_step}".encode()).hexdigest(), "status": "succeeded"})
+        assert result.status_code == 200, result.text
+    exhausted = client.post(f"/api/cli/v1/agent/runs/{run_id}/plan", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "inspect a project", "context": "bounded"})
+    assert exhausted.status_code == 429
+    assert calls == max_steps
+
+
+def test_planner_assistant_response_consumes_one_reservation_without_action(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_MAX_AGENT_STEPS", "1")
+    user = create_test_user("cli-assistant-budget", "cli-assistant-budget@example.com")
+    raw_access = "d" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("e" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="assistant budget"))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "summarize"})
+    assert run.status_code == 201
+    content = json.dumps({"kind": "assistant", "text": "No repository action is needed."})
+    response = AIProviderResponse(text=content, provider="test", model="test", route="test", reason="test", language="en", intent="coding", input_tokens=1, output_tokens=1, raw={"completion_status": "complete"})
+    message = CompletedWebMessage(id="assistant-budget-message", content=content, status="complete", swico_tier="lite", usage_source="actual", charge_micros=0, provider="test", model="test", request_id="assistant-budget-request", replaces_message_id=None, revision_number=1)
+    monkeypatch.setattr("app.cli_api.router.prepare_web_turn", lambda **_kwargs: SimpleNamespace(request_id="assistant-budget-request"))
+    monkeypatch.setattr("app.cli_api.router.execute_web_turn", lambda *_args, **_kwargs: CompletedWebTurn(None, message, {"available_micros": 0}, response))
+    monkeypatch.setattr("app.cli_api.router._redact_planner_turn", lambda *_args: None)
+    planned = client.post(f"/api/cli/v1/agent/runs/{run.json()['run_id']}/plan", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "summarize", "context": ""})
+    assert planned.status_code == 200 and planned.json()["kind"] == "assistant"
+    with SessionLocal() as session:
+        step = session.exec(select(CliAgentStep).where(CliAgentStep.run_id == run.json()["run_id"])).one()
+        assert step.status == "succeeded" and step.action_type == "assistant_response"
+
+
+def test_action_replay_and_conflict_are_reconciled_before_exhausted_budget(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_MAX_AGENT_STEPS", "1")
+    user = create_test_user("cli-replay-budget", "cli-replay-budget@example.com")
+    raw_access = "f" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("g" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="replay budget"))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "inspect"})
+    run_id = run.json()["run_id"]
+    payload = {"limit": 1}
+    action = {"protocol_version": 1, "action_id": "replay-action", "action_type": "list_files", "payload": payload, "payload_hash": hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+    accepted = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action)
+    assert accepted.status_code == 200
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/actions/replay-action/result", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "replay-action", "result_hash": "a" * 64, "status": "succeeded"}).status_code == 200
+    replay = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action)
+    assert replay.status_code == 200 and replay.json()["step_id"] == accepted.json()["step_id"]
+    conflict = {**action, "payload": {"limit": 2}, "payload_hash": hashlib.sha256(json.dumps({"limit": 2}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=conflict).status_code == 409
+
+
+def test_action_authorization_expiry_is_independent_of_run_lifetime(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    user = create_test_user("cli-action-expiry", "cli-action-expiry@example.com")
+    raw_access = "h" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("i" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="action expiry"))
+        session.commit()
+    run = client.post("/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"}, json={"request_id": str(uuid4()), "task": "inspect"})
+    run_id = run.json()["run_id"]
+    payload = {"limit": 1}
+    action = {"protocol_version": 1, "action_id": "expiry-action", "action_type": "list_files", "payload": payload, "payload_hash": hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()}
+    assert client.post(f"/api/cli/v1/agent/runs/{run_id}/actions", headers={"Authorization": f"Bearer {raw_access}"}, json=action).status_code == 200
+    with SessionLocal() as session:
+        pending = session.exec(select(CliPendingAction).where(CliPendingAction.action_id == "expiry-action")).one()
+        pending.expires_at = utc_now() - timedelta(seconds=1)
+        session.add(pending); session.commit()
+    expired = client.post(f"/api/cli/v1/agent/runs/{run_id}/actions/expiry-action/result", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "expiry-action", "result_hash": "b" * 64, "status": "succeeded"})
+    assert expired.status_code == 409
+    with SessionLocal() as session:
+        assert session.exec(select(CliPendingAction).where(CliPendingAction.action_id == "expiry-action")).one().status == "expired"
+
+
 def test_subagent_action_uses_independent_metered_chat_rounds_and_bounded_context(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
     monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
@@ -464,8 +591,8 @@ def test_subagent_action_uses_independent_metered_chat_rounds_and_bounded_contex
     assert all(call["forced_swico_tier"] == "lite" and call["billing_credit_bucket"] == "chat" for call in calls)
     assert all("bounded repository observations only" in call["message"] for call in calls)
     replay = client.post(f"/api/cli/v1/agent/runs/{run_id}/subagents", headers={"Authorization": f"Bearer {raw_access}"}, json={"action_id": "spawn-action-1", **action_payload})
-    assert replay.status_code == 200
-    assert [call["request_id"] for call in calls[2:]] == [call["request_id"] for call in calls[:2]]
+    assert replay.status_code == 200 and replay.json()["replayed"] is True
+    assert len(calls) == 2
 
 
 def test_agent_protocol_accepts_bounded_repository_actions_and_rejects_secret_paths(client: TestClient, monkeypatch: pytest.MonkeyPatch):

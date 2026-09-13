@@ -102,7 +102,7 @@ export async function getAgentRun(tokens: CliTokens, runId: string, env = proces
   return json<{ run_id: string; request_id: string; status: string; tier: string; max_steps: number; current_step: number; expires_at: string }>(`/agent/runs/${encodeURIComponent(runId)}`, {}, await accessTokenFor(env), env)
 }
 export async function planAgentStep(tokens: CliTokens, runId: string, task: string, context: string, env = process.env, signal?: AbortSignal) {
-  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, await accessTokenFor(env), env)
+  return json<{ kind: 'assistant' | 'action'; text?: string; action_id?: string; action_type?: string; payload?: Record<string, unknown>; payload_hash?: string; reservation_id?: string }>(`/agent/runs/${encodeURIComponent(runId)}/plan`, { method: 'POST', body: JSON.stringify({ task, context }), signal }, await accessTokenFor(env), env)
 }
 export async function runSubagents(tokens: Pick<CliTokens, 'access_token'>, runId: string, actionId: string, tasks: Array<{ id: string; task: string }>, context: string, env = process.env, signal?: AbortSignal) {
   return json<{ run_id: string; results: Array<{ id: string; summary: string; usage: number }>; active: number; max_active: number }>(`/agent/runs/${encodeURIComponent(runId)}/subagents`, { method: 'POST', body: JSON.stringify({ action_id: actionId, tasks, context: context.slice(0, 8_000) }), signal }, await accessTokenFor(env), env)
