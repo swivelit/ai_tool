@@ -70,6 +70,13 @@ function finalScreenSnapshot(output) {
   return frame.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, '').replace(/\r/g, '')
 }
 
+function safeDiagnostic(value, limit = 4_000) {
+  return String(value ?? '')
+    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .slice(-limit)
+}
+
 async function run(label, command, args, options = {}) {
   process.stderr.write(`[release-check] ${label}\n`)
   stageResults[label] = 'running'
@@ -121,7 +128,7 @@ const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
 let controlledServer
 let packedArchivePath
 const stageResults = {}
-const candidate = { accepted: false, source_identity: null, packed: null, stages: stageResults }
+const candidate = { accepted: false, source_identity: null, packed: null, stages: stageResults, pty_reports: [] }
 async function sourceIdentity() {
   try {
     const revision = (await exec('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim()
@@ -156,7 +163,9 @@ async function runPty(label, command, args, options, onOutput) {
   const runner = process.platform === 'win32' ? join(root, 'scripts', 'conpty_runner.mjs') : join(root, 'scripts', 'pty_runner.py')
   const launcher = process.platform === 'win32' ? [process.execPath, runner] : ['python3', runner]
   const child = spawn(launcher[0], [...launcher.slice(1), command, ...args], { cwd: root, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
-  let output = '', errorOutput = '', settled = false, timedOut = false, callbackError, timer
+  let output = '', errorOutput = '', settled = false, timedOut = false, callbackError, timer, forceTimer
+  let lastState = 'spawned'
+  const startedAt = Date.now()
   const maxTranscript = 2 * 1024 * 1024
   let resolveResult
   const result = new Promise(resolve => { resolveResult = resolve })
@@ -165,36 +174,55 @@ async function runPty(label, command, args, options, onOutput) {
     if (settled) return
     settled = true
     clearTimeout(timer)
+    clearTimeout(forceTimer)
     child.stdin.destroy()
     const nonZero = typeof resultValue.code === 'number' && resultValue.code !== 0
     const signalled = Boolean(resultValue.signal)
     const failure = resultValue.error || resultValue.timedOut || nonZero || signalled
+    const report = {
+      ...resultValue,
+      elapsed_ms: Date.now() - startedAt,
+      last_state: lastState,
+      helper_pid: child.pid ?? null,
+      helper_command: String(command).split(/[\\/]/).pop()?.slice(0, 80) || 'unknown',
+      output_bytes: Buffer.byteLength(output, 'utf8'),
+      error_output: safeDiagnostic(errorOutput),
+    }
     stageResults[label] = failure
       ? `failed: ${String(resultValue.error || (resultValue.timedOut ? 'timed out' : signalled ? `signal=${resultValue.signal}` : `code=${resultValue.code}`)).slice(0, 300)}`
       : 'passed'
-    resolveResult(resultValue)
+    if (failure) candidate.pty_reports.push({ label, ...report })
+    resolveResult(report)
   }
   child.stdout.on('data', chunk => {
+    lastState = 'output'
     const text = decoder.write(chunk)
     output = `${output}${text}`.slice(-maxTranscript)
     try {
       onOutput?.(text, value => {
         if (settled) return
-        if (value === null) child.stdin.end()
-        else child.stdin.write(value)
+        if (value === null) { lastState = 'input-eof-requested'; child.stdin.end() }
+        else { lastState = 'input-forwarded'; child.stdin.write(value) }
       })
     } catch (error) {
       callbackError = String(error)
-      child.kill('SIGTERM')
+      lastState = 'callback-error'
+      try { child.kill('SIGTERM') } catch (killError) { callbackError = `${callbackError}; ${String(killError)}` }
     }
   })
-  child.stderr.on('data', chunk => { errorOutput = `${errorOutput}${String(chunk)}`.slice(-maxTranscript) })
-  child.once('error', error => finish({ output, errorOutput, error: String(error) }))
-  child.once('close', (code, signal) => finish({ output: output + decoder.end(), errorOutput, code, signal, timedOut, error: callbackError }))
+  child.stderr.on('data', chunk => { lastState = 'helper-stderr'; errorOutput = `${errorOutput}${String(chunk)}`.slice(-maxTranscript) })
+  child.once('error', error => { lastState = 'helper-error'; finish({ output, errorOutput, error: String(error) }) })
+  child.once('close', (code, signal) => { lastState = 'child-close'; finish({ output: output + decoder.end(), errorOutput, code, signal, timedOut, error: callbackError }) })
   timer = setTimeout(() => {
     timedOut = true
-    child.kill('SIGTERM')
-    setTimeout(() => { if (!settled) child.kill('SIGKILL') }, 1_000)
+    lastState = 'timeout'
+    forceTimer = setTimeout(() => {
+      if (!settled) {
+        lastState = 'forced-termination'
+        try { child.kill('SIGKILL') } catch (error) { callbackError = callbackError || String(error) }
+      }
+    }, 1_000)
+    try { child.kill('SIGTERM') } catch (error) { callbackError = String(error) }
   }, STAGE_TIMEOUT_MS)
   return result
 }
@@ -233,12 +261,17 @@ try {
     'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
     'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
     'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js', 'package/dist/terminal_output.js', 'package/dist/terminal_ui.js', 'package/dist/command_registry.js', 'package/dist/usage.js',
-    'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js',
+    'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js', 'package/dist/build_identity.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
   const licenseText = (entries.get('package/LICENSE')?.toString('utf8') ?? '').replace(/\r\n/g, '\n')
   if (!licenseText.startsWith('MIT License\n') || !licenseText.includes('Copyright (c) 2026 Swivel Technologies and contributors')) throw new Error('Packaged CLI license text is not the approved MIT notice')
   if (!entries.get('package/LICENSE_SCOPE.md')?.toString('utf8').includes('not a repository-wide license')) throw new Error('Packaged CLI license scope is missing')
+  const buildIdentityText = entries.get('package/dist/build_identity.js')?.toString('utf8') ?? ''
+  const buildIdentityMatch = buildIdentityText.match(/Object\.freeze\((\{.*\})\)/s)
+  if (!buildIdentityMatch) throw new Error('Packaged build identity is missing or malformed')
+  const packagedIdentity = JSON.parse(buildIdentityMatch[1])
+  if (packagedIdentity.revision !== candidate.source_identity.revision || packagedIdentity.dirty !== candidate.source_identity.dirty) throw new Error('Packaged build identity does not match the source identity captured before pack')
   for (const entry of entries.keys()) {
     if (entry.startsWith('package/src/') || entry.startsWith('package/test/') || entry.startsWith('package/node_modules/') || entry.startsWith('package/bin/') || entry.endsWith('.map') || /(^|\/)(?:\.env[^/]*|\.npmrc|\.pypirc|\.swico|credentials\.json|action-journal)/i.test(entry)) {
       throw new Error(`Unwanted file in release archive: ${entry}`)
@@ -487,8 +520,10 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   if (!usage.stdout.includes('Available Chat credit') || !JSON.parse(usageJson.stdout).wallet) throw new Error('Installed usage command output is invalid')
   const versionIdentity = JSON.parse(versionJson.stdout)
   if (versionIdentity.version !== manifest.version || !String(versionIdentity.executable).includes('prefix')) throw new Error('Installed version identity did not identify the running executable')
+  if (versionIdentity.revision !== candidate.source_identity.revision || versionIdentity.dirty !== candidate.source_identity.dirty) throw new Error('Installed version identity does not match the packaged source identity')
   const doctorBody = JSON.parse(doctor.stdout)
   if (doctorBody.build?.version !== manifest.version || !String(doctorBody.build?.executable).includes('prefix')) throw new Error('Installed doctor did not identify the running executable')
+  if (doctorBody.build?.revision !== candidate.source_identity.revision || doctorBody.build?.dirty !== candidate.source_identity.dirty) throw new Error('Installed doctor identity does not match the packaged source identity')
   await writeFile(isolatedEnv.SWICO_CLI_CREDENTIAL_FILE, JSON.stringify({ endpoint: controlOrigin, tokens: { ...oldTokens, access_token:'installed-access-old', refresh_token:'invalid-refresh' } }))
   let invalidGrant = false
   try { await runNode('installed invalid-grant feedback', appEntry, ['whoami'], smokeOptions) } catch (error) { invalidGrant = String(error).includes('terminal authorization is no longer valid') || String(error).includes('swico login --tier') }

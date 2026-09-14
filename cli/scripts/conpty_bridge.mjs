@@ -1,7 +1,10 @@
+import { StringDecoder } from 'node:string_decoder'
+
 const DEFAULT_DRAIN_MS = 100
 const DEFAULT_TIMEOUT_MS = 40_000
 const DEFAULT_FORCE_KILL_MS = 1_000
 const MAX_DIAGNOSTIC_LENGTH = 160
+const MAX_CAPTURE_BYTES = 2 * 1024 * 1024
 
 function bounded(value) {
   return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, MAX_DIAGNOSTIC_LENGTH)
@@ -32,6 +35,7 @@ export function runPtyBridge({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   drainMs = DEFAULT_DRAIN_MS,
   forceKillMs = DEFAULT_FORCE_KILL_MS,
+  maxCaptureBytes = MAX_CAPTURE_BYTES,
 }) {
   let child
   let state = 'launching'
@@ -49,9 +53,15 @@ export function runPtyBridge({
   let timedOut = false
   let forcedTermination = false
   let inputEnded = false
+  let outputBackpressured = false
+  let pendingWrites = 0
+  let outputFailure
+  let outputDrainListener
+  let outputErrorListener
   const inputDecoder = new StringDecoder('utf8')
 
-  const outputChunks = []
+  let capturedOutput = Buffer.alloc(0)
+  let outputBytes = 0
   const promise = new Promise(resolve => { resolveResult = resolve })
 
   const report = (message, detail = '') => {
@@ -84,6 +94,52 @@ export function runPtyBridge({
     forceTimer = undefined
   }
 
+  const outputReady = () => !outputBackpressured && pendingWrites === 0
+
+  const removeOutputListeners = () => {
+    if (outputDrainListener) removeListener(output, 'drain', outputDrainListener)
+    if (outputErrorListener) removeListener(output, 'error', outputErrorListener)
+    outputDrainListener = undefined
+    outputErrorListener = undefined
+  }
+
+  const finishOutputWrite = error => {
+    pendingWrites = Math.max(0, pendingWrites - 1)
+    if (error) outputFailure = String(error)
+    if (outputFailure && state === 'draining') close('output-drain-failure')
+    else if (outputFailure && state !== 'closed') terminate('output-error', outputFailure)
+    else if (state === 'draining') settleDrain()
+  }
+
+  const watchOutput = () => {
+    if (!output) return
+    if (!outputDrainListener && typeof output.once === 'function') {
+      outputDrainListener = () => {
+        outputBackpressured = false
+        outputDrainListener = undefined
+        if (state === 'draining') settleDrain()
+      }
+      output.once('drain', outputDrainListener)
+    }
+    if (!outputErrorListener && typeof output.once === 'function') {
+      outputErrorListener = error => {
+        outputFailure = String(error)
+        if (state === 'draining') close('output-drain-failure')
+        else terminate('output-error', outputFailure)
+      }
+      output.once('error', outputErrorListener)
+    }
+  }
+
+  const capture = text => {
+    const bytes = Buffer.from(text, 'utf8')
+    outputBytes += bytes.length
+    if (bytes.length >= maxCaptureBytes) capturedOutput = bytes.subarray(-maxCaptureBytes)
+    else if (capturedOutput.length + bytes.length > maxCaptureBytes) {
+      capturedOutput = Buffer.concat([capturedOutput, bytes]).subarray(-maxCaptureBytes)
+    } else capturedOutput = Buffer.concat([capturedOutput, bytes])
+  }
+
   const releaseInputHandle = () => {
     // The bridge owns this stdin stream. Destroying it after the child has
     // exited is what lets a parent with an intentionally-open pipe reap us.
@@ -99,6 +155,7 @@ export function runPtyBridge({
     detachSignals()
     dispose(dataSubscription)
     dispose(exitSubscription)
+    removeOutputListeners()
     dataSubscription = undefined
     exitSubscription = undefined
     releaseInputHandle()
@@ -107,10 +164,11 @@ export function runPtyBridge({
     result = {
       code: typeof exitCode === 'number' ? exitCode : undefined,
       signal: signal || undefined,
-      output: outputChunks.join(''),
+      output: capturedOutput.toString('utf8'),
+      output_bytes: outputBytes,
       timedOut,
       forcedTermination,
-      error: bridgeError || overrides.error,
+      error: bridgeError || outputFailure || overrides.error,
       reason,
     }
     report('helper-closed', `reason=${reason} code=${result.code ?? 'none'} signal=${result.signal ?? 'none'}`)
@@ -123,20 +181,36 @@ export function runPtyBridge({
     detachInput()
     report('child-exit-observed', `code=${childExit?.exitCode ?? 'none'} signal=${childExit?.signal || 'none'}`)
     // node-pty can deliver a final data event around onExit. Keep the data
-    // subscription briefly, but make closure independent of parent stdin.
+    // subscription until writes have completed. The deadline is a failure
+    // bound, never evidence that output drained successfully.
     drainTimer = setTimeout(() => {
-      report('output-drained')
-      close(reason)
-    }, Math.max(0, drainMs))
+      if (state !== 'closed' && !outputReady()) {
+        outputFailure = outputFailure || 'PTY output did not drain before the bounded deadline'
+        close('output-drain-failure')
+      }
+    }, Math.max(1, drainMs))
+    settleDrain()
+  }
+
+  function settleDrain() {
+    if (state !== 'draining' || !outputReady()) return
+    queueMicrotask(() => {
+      if (state !== 'draining' || !outputReady()) return
+      if (outputFailure) close('output-drain-failure')
+      else {
+        report('output-drained')
+        close('child-exit')
+      }
+    })
   }
 
   const terminate = (reason, error) => {
     if (state === 'closed') return
     bridgeError = error || bridgeError
+    if (state === 'terminating') return
     if (reason === 'timeout') timedOut = true
     if (state !== 'terminating') state = 'terminating'
     detachInput()
-    try { child?.kill?.() } catch (killError) { bridgeError = bridgeError || String(killError) }
     forceTimer = setTimeout(() => {
       if (state === 'closed') return
       forcedTermination = true
@@ -146,6 +220,8 @@ export function runPtyBridge({
       // result if it arrived before this point.
       close('forced-termination', bridgeError || 'PTY child did not exit after termination')
     }, Math.max(0, forceKillMs))
+    try { child?.kill?.() } catch (killError) { bridgeError = bridgeError || String(killError) }
+    report('termination-requested', `reason=${reason}`)
   }
 
   function onInput(chunk) {
@@ -178,8 +254,10 @@ export function runPtyBridge({
   }
 
   try {
+    report('pty-spawn-start')
     child = pty.spawn(command, args, options)
     state = 'running'
+    report('child-started', `pid=${child?.pid ?? 'unknown'}`)
   } catch (error) {
     bridgeError = String(error)
     close('spawn-failure')
@@ -189,8 +267,20 @@ export function runPtyBridge({
   dataSubscription = child.onData(value => {
     if (state === 'closed') return
     const text = String(value)
-    outputChunks.push(text)
-    try { output?.write?.(text) } catch (error) { terminate('output-error', String(error)) }
+    capture(text)
+    try {
+      if (!output?.write) return
+      watchOutput()
+      const acceptsCallback = output.write.length >= 2
+      if (acceptsCallback) pendingWrites += 1
+      const accepted = acceptsCallback
+        ? output.write(text, finishOutputWrite)
+        : output.write(text)
+      if (accepted === false) {
+        outputBackpressured = true
+        watchOutput()
+      } else if (acceptsCallback && pendingWrites === 0 && state === 'draining') settleDrain()
+    } catch (error) { outputFailure = String(error); terminate('output-error', outputFailure) }
   })
   exitSubscription = child.onExit(exit => {
     if (state === 'closed' || childExit) return
@@ -208,4 +298,3 @@ export function runPtyBridge({
   timeout = setTimeout(() => terminate('timeout', 'PTY bridge timed out'), Math.max(1, timeoutMs))
   return promise
 }
-import { StringDecoder } from 'node:string_decoder'

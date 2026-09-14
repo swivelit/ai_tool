@@ -1,6 +1,6 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.2.0-rc.5",
+  "version": "0.2.0-rc.6",
   "description": "Swico terminal client for authenticated Chat",
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",

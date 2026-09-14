@@ -49,9 +49,10 @@ function bridgeFixture(overrides = {}) {
     command: 'controlled-child',
     input,
     output,
-    drainMs: 5,
-    timeoutMs: 100,
-    forceKillMs: 10,
+    drainMs: overrides.drainMs ?? 5,
+    timeoutMs: overrides.timeoutMs ?? 100,
+    forceKillMs: overrides.forceKillMs ?? 10,
+    maxCaptureBytes: overrides.maxCaptureBytes,
     diagnostics: value => diagnostics.push(value),
   })
   return { input, output, child, diagnostics, promise }
@@ -138,4 +139,59 @@ test('output failure terminates the child without leaving bridge listeners behin
   assert.equal(result.code, 70)
   assert.equal(input.listenerCount('data'), 0)
   assert.equal(input.listenerCount('end'), 0)
+})
+
+test('backpressured output must report drain before successful helper closure', async () => {
+  const output = new EventEmitter()
+  let callback
+  output.write = (_value, done) => { callback = done; return false }
+  const fixture = bridgeFixture({ output, drainMs: 50 })
+  fixture.child.data('final')
+  fixture.child.exit(0, 0)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  callback()
+  output.emit('drain')
+  const result = await within(fixture.promise)
+  assert.equal(result.code, 0)
+  assert.equal(result.error, undefined)
+})
+
+test('asynchronous output errors fail the drain rather than becoming a success', async () => {
+  const output = new EventEmitter()
+  output.write = () => true
+  const fixture = bridgeFixture({ output })
+  fixture.child.data('final')
+  fixture.child.exit(0, 0)
+  output.emit('error', new Error('controlled asynchronous output failure'))
+  const result = await within(fixture.promise)
+  assert.match(result.error, /controlled asynchronous output failure/)
+  assert.equal(result.reason, 'output-drain-failure')
+})
+
+test('repeated termination requests are idempotent and retain the first failure', async () => {
+  const fixture = bridgeFixture()
+  fixture.input.emit('error', new Error('first input failure'))
+  fixture.input.on('error', () => undefined)
+  fixture.input.emit('error', new Error('second input failure'))
+  fixture.child.exit(1, 0)
+  const result = await within(fixture.promise)
+  assert.equal(fixture.child.kills, 1)
+  assert.match(result.error, /first input failure/)
+  assert.equal(result.code, 1)
+})
+
+test('capture is bounded by bytes and preserves a real signal outcome', async () => {
+  const fixture = bridgeFixture()
+  fixture.child.data('123456789')
+  fixture.child.exit(0, 9)
+  const result = await within(fixture.promise)
+  assert.equal(result.signal, 9)
+  assert.equal(result.code, 0)
+  assert.equal(result.output_bytes, 9)
+
+  const bounded = bridgeFixture({ maxCaptureBytes: 4 })
+  bounded.child.data('abcdefghij')
+  bounded.child.exit(0, 0)
+  const boundedResult = await within(bounded.promise)
+  assert.equal(Buffer.byteLength(boundedResult.output), 4)
 })

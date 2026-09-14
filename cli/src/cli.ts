@@ -35,9 +35,10 @@ import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } f
 import { CommandUsageError, parseInteractiveCommand, topLevelCommand, validateTopLevelArguments } from './command_registry.js'
 import { formatUsage } from './usage.js'
 import { RichTerminalUI, type RichTerminalCommandContext } from './terminal_ui.js'
+import { BUILD_IDENTITY } from './build_identity.js'
 
 const exec = promisify(execFile)
-const packageJson = createRequire(import.meta.url)('../package.json') as { name?: string; version?: string; build_revision?: string; build_dirty?: boolean | string }
+const packageJson = createRequire(import.meta.url)('../package.json') as { name?: string; version?: string }
 const VERSION = packageJson.version ?? 'unknown'
 type Mode = 'auto' | 'chat' | 'agent' | 'plan'
 let activeInterrupt: (() => void) | null = null
@@ -72,8 +73,8 @@ function buildIdentity() {
     package: packageJson.name ?? '@swiveltechnologies/swico',
     version: VERSION,
     executable: process.argv[1] ?? 'unknown',
-    revision: typeof packageJson.build_revision === 'string' ? packageJson.build_revision : 'unknown',
-    dirty: typeof packageJson.build_dirty === 'boolean' || typeof packageJson.build_dirty === 'string' ? packageJson.build_dirty : 'unknown',
+    revision: BUILD_IDENTITY.revision,
+    dirty: BUILD_IDENTITY.dirty,
   }
 }
 

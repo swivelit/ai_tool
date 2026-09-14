@@ -27,7 +27,7 @@ if (process.platform !== 'win32' || process.argv.length < 3) {
   })
   if (result.timedOut || result.forcedTermination) process.exitCode = 124
   else if (result.error) process.exitCode = 70
-  else if (typeof result.code === 'number') process.exitCode = result.code
   else if (result.signal) process.exitCode = 128
+  else if (typeof result.code === 'number') process.exitCode = result.code
   else process.exitCode = 70
 }
