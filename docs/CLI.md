@@ -71,6 +71,12 @@ environment. Revoke sessions at `/settings/cli-sessions`.
 ## Chat and agent
 
 `swico ask "question"` and the interactive client stream normal Chat replies.
+At the macOS shell, `swico usage` prints a readable, read-only Chat wallet and
+estimate summary; `swico usage --json` returns the stable public usage envelope
+for scripts. Inside an interactive Swico session, use `/usage` instead. These
+commands refresh the selected session when needed but never generate, upload,
+create a reservation, or change tier. Token ranges are estimates and monetary
+values remain integer micros.
 `/model` displays the selected public tier and never accepts a raw vendor
 model. Interactive repository tasks are routed to the local agent when the
 mode is `auto`; `/mode chat`, `/mode plan`, and `/mode agent` select an
@@ -114,6 +120,11 @@ coding-session metadata when its server run is still resumable.
 `swico exec "task" --mode chat|plan|agent` is available for scripts; agent
 execution fails closed when approval is needed. `--json`, `--output`, and
 `--output-schema` are supported for non-interactive Chat/plan workflows.
+
+Interactive slash commands are exact-token commands. Unknown commands such as
+`/exite`, `/usagex`, and `/searchlight` receive local usage feedback and do not
+fall through to Chat; the same session remains usable. Use `/ask /literal text`
+for deliberate slash-prefixed message text. `/exit` exits locally.
 
 Raw source, patches, prompts and command output are not stored in durable
 Swico run records. Pending action metadata expires after 300 seconds. The

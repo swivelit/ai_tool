@@ -53,6 +53,13 @@ async function run(label, command, args, options = {}) {
 
 const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
 let controlledServer
+async function sourceIdentity() {
+  try {
+    const revision = (await exec('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim()
+    const status = (await exec('git', ['status', '--porcelain'], { cwd: root })).stdout.trim()
+    return { revision: revision || 'unknown', dirty: Boolean(status) }
+  } catch { return { revision: 'unknown', dirty: 'unknown' } }
+}
 try {
   const packed = await run('pack', npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
   const records = JSON.parse(packed.stdout)
@@ -76,7 +83,7 @@ try {
     'package/dist/session.js', 'package/dist/sse.js', 'package/dist/workspace.js',
     'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
     'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
-    'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js', 'package/dist/terminal_output.js',
+    'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js', 'package/dist/terminal_output.js', 'package/dist/command_registry.js', 'package/dist/usage.js',
     'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
@@ -101,7 +108,7 @@ try {
     try { body = bodyText ? JSON.parse(bodyText) : {} } catch { body = {} }
     requestBodies.push({ path: request.url, body })
     const jsonResponse = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
-    const protectedEndpoint = request.url === '/api/cli/v1/me' || request.url === '/api/cli/v1/chat/stream' || request.url?.startsWith('/api/cli/v1/chat/requests/')
+    const protectedEndpoint = request.url === '/api/cli/v1/me' || request.url === '/api/cli/v1/usage' || request.url === '/api/cli/v1/chat/stream' || request.url?.startsWith('/api/cli/v1/chat/requests/')
     if (control.loggedOut && protectedEndpoint) { jsonResponse(401, { detail: 'revoked controlled session' }); return }
     if (request.url === '/api/cli/v1/device' && request.method === 'POST') {
       control.device = body
@@ -110,6 +117,8 @@ try {
     }
     if (request.url === '/api/cli/v1/token' && request.method === 'POST') {
       if (body.grant_type === 'refresh_token') {
+        if (control.loggedOut) { jsonResponse(400, { error: 'invalid_grant', error_description: 'Refresh token is expired, reused, or revoked' }); return }
+        if (body.refresh_token === 'invalid-refresh') { jsonResponse(400, { error: 'invalid_grant', error_description: 'Refresh token is expired, reused, or revoked' }); return }
         control.refreshed = true
         jsonResponse(200, { access_token: 'installed-access-new', refresh_token: 'installed-refresh-new', expires_in: 900, session_id: 'installed-session', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'installed@example.test', name: 'Installed' } })
       } else jsonResponse(200, { access_token: 'installed-login-access', refresh_token: 'installed-login-refresh', expires_in: 900, session_id: 'installed-login-session', tier: 'standard', tier_label: 'Swico', scopes: ['chat'], account: { email: 'login@example.test', name: 'Login' } })
@@ -118,6 +127,10 @@ try {
     if (request.url === '/api/cli/v1/me') {
       if (request.headers.authorization === 'Bearer installed-access-old') { jsonResponse(401, { detail: 'expired' }); return }
       jsonResponse(control.loggedOut ? 401 : 200, { email: 'installed@example.test', tier: 'lite' })
+      return
+    }
+    if (request.url === '/api/cli/v1/usage') {
+      jsonResponse(200, { tier:'lite', tier_label:'Swico Lite', wallet:{ available_micros:999988, reserved_micros:0, token_estimate:{ range_min_tokens:25000, range_max_tokens:180000 } } })
       return
     }
     if (request.url?.startsWith('/api/cli/v1/chat/requests/') && request.url.endsWith('/cancel')) {
@@ -200,6 +213,27 @@ try {
   })
   const interactiveOutput = `${interactiveRecovery.stdout}\n${interactiveRecovery.stderr}`
   if (!interactiveOutput.includes('temporary controlled failure') || !interactiveOutput.includes('installed stream response')) throw new Error(`Installed same-process error recovery did not complete: ${interactiveOutput.replace(/[\\u0000-\\u001f\\u007f]/g, ' ').slice(-1_000)}`)
+  const beforeRejectedCommands = requestBodies.length
+  const rejectedCommands = await new Promise(resolve => {
+    const child = spawn(executable, [], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', chunk => { stdout += String(chunk) })
+    child.stderr.on('data', chunk => { stderr += String(chunk) })
+    child.on('close', (code, signal) => resolve({ stdout, stderr, code, signal }))
+    const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/usage', '/exit']
+    let next = 0
+    const timer = setInterval(() => {
+      if (next < commands.length) { child.stdin.write(`${commands[next]}\n`); next += 1; return }
+      if (stdout.includes('Available Chat credit')) { clearInterval(timer); child.stdin.end() }
+    }, 250)
+    setTimeout(() => { clearInterval(timer); child.stdin.end() }, 10_000)
+  })
+  const rejectedOutput = `${rejectedCommands.stdout}\n${rejectedCommands.stderr}`
+  if (!rejectedOutput.includes('Unknown interactive command "/exite"') || !rejectedOutput.includes('Unknown interactive command "/bogus"') || !rejectedOutput.includes('Unknown interactive command "/usagex"') || !rejectedOutput.includes('Unknown interactive command "/searchlight"') || !rejectedOutput.includes('Available Chat credit')) throw new Error(`Installed command safety/recovery smoke failed: ${rejectedOutput.slice(-1_000)}`)
+  if (rejectedCommands.code !== 0 || requestBodies.slice(beforeRejectedCommands).some(item => item.path === '/api/cli/v1/chat/stream')) throw new Error('Rejected interactive commands admitted Chat or did not exit cleanly')
+  const usage = await run('installed shell usage', executable, ['usage'], smokeOptions)
+  const usageJson = await run('installed shell usage JSON', executable, ['usage', '--json'], smokeOptions)
+  const versionJson = await run('installed version identity', executable, ['--version', '--json'], smokeOptions)
   const cancelled = await new Promise(resolve => {
     const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => child.kill('SIGINT'), 500)
@@ -211,6 +245,8 @@ try {
   if (retainedRevoked.status !== 401) throw new Error(`Controlled server accepted a retained revoked credential: HTTP ${retainedRevoked.status}`)
   const retainedChat = await fetch(`${controlOrigin}/api/cli/v1/chat/stream`, { method: 'POST', headers: { Authorization: 'Bearer installed-access-new', 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: 'retained-revoked-request', message: 'must be rejected' }) })
   if (retainedChat.status !== 401) throw new Error(`Controlled chat endpoint accepted a retained revoked credential: HTTP ${retainedChat.status}`)
+  const retainedRefresh = await fetch(`${controlOrigin}/api/cli/v1/token`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ grant_type:'refresh_token', refresh_token:'installed-refresh-new' }) })
+  if (![400, 401].includes(retainedRefresh.status)) throw new Error(`Controlled token endpoint accepted a retained revoked refresh credential: HTTP ${retainedRefresh.status}`)
   let revoked = false
   try { await run('installed revoked-session rejection', executable, ['whoami'], smokeOptions) } catch { revoked = true }
   if (!revoked) throw new Error('Installed revoked-session rejection did not fail closed')
@@ -225,15 +261,25 @@ try {
   if (!config.stdout.includes('Configuration is valid')) throw new Error('Installed config validation output is invalid')
   if (!completion.stdout.includes('swico')) throw new Error('Installed completion output is invalid')
   if (!sandbox.stdout.includes('"diagnostic"')) throw new Error('Installed sandbox status output is invalid')
+  if (!usage.stdout.includes('Available Chat credit') || !JSON.parse(usageJson.stdout).wallet) throw new Error('Installed usage command output is invalid')
+  const versionIdentity = JSON.parse(versionJson.stdout)
+  if (versionIdentity.version !== manifest.version || !String(versionIdentity.executable).includes('prefix')) throw new Error('Installed version identity did not identify the running executable')
+  const doctorBody = JSON.parse(doctor.stdout)
+  if (doctorBody.build?.version !== manifest.version || !String(doctorBody.build?.executable).includes('prefix')) throw new Error('Installed doctor did not identify the running executable')
+  await writeFile(isolatedEnv.SWICO_CLI_CREDENTIAL_FILE, JSON.stringify({ endpoint: controlOrigin, tokens: { ...oldTokens, access_token:'installed-access-old', refresh_token:'invalid-refresh' } }))
+  let invalidGrant = false
+  try { await run('installed invalid-grant feedback', executable, ['whoami'], smokeOptions) } catch (error) { invalidGrant = String(error).includes('terminal authorization is no longer valid') || String(error).includes('swico login --tier') }
+  if (!invalidGrant) throw new Error('Installed invalid_grant feedback was not actionable')
   const digest = createHash('sha256').update(archive).digest('hex')
   if (keepArtifact) await copyFile(archivePath, join(root, record.filename))
   console.log(JSON.stringify({
     name: manifest.name,
+    source_identity: await sourceIdentity(),
     version: manifest.version,
     filename: record.filename,
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
-    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', cancellation: 'passed', logout_revocation: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
+    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     installed_executable: executable,
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),

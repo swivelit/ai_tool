@@ -17,15 +17,39 @@ export class CliApiError extends Error {
   get retryable(): boolean | undefined { return this.details.retryable }
 }
 
-function errorDetails(value: unknown): { message: string; code?: string; request_id?: string; retryable?: boolean; stage?: string } {
+export type PublicErrorDetails = { message: string; code?: string; request_id?: string; retryable?: boolean; stage?: string }
+
+const SAFE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/
+const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
+const TERMINAL_AUTH_MESSAGE = 'The terminal authorization is no longer valid. Run `swico login --tier lite|standard|pro` to authorize a new paid terminal session.'
+
+function safeText(value: unknown, fallback: string): string {
+  if (typeof value !== 'string' || !value.trim() || /<\/?[A-Za-z][^>]*>/i.test(value)) return fallback
+  const bounded = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240)
+  return bounded || fallback
+}
+
+function safeCode(value: unknown, pattern: RegExp): string | undefined {
+  return typeof value === 'string' && pattern.test(value) ? value : undefined
+}
+
+export function errorDetails(value: unknown, status = 0): PublicErrorDetails {
   const object = value && typeof value === 'object' ? value as Record<string, unknown> : undefined
-  const detail = object?.detail && typeof object.detail === 'object' ? object.detail as Record<string, unknown> : object
+  const detailValue = object?.detail
+  const detail = detailValue && typeof detailValue === 'object' ? detailValue as Record<string, unknown> : undefined
+  const source = detail ?? object ?? {}
+  const code = safeCode(source.code ?? source.error ?? object?.code ?? object?.error, SAFE_CODE)
+  const rawMessage = source.message ?? source.error_description ?? object?.message ?? object?.error_description ?? (typeof detailValue === 'string' ? detailValue : undefined)
+  const message = safeText(rawMessage, 'Swico request failed.')
+  const authInvalid = code === 'invalid_grant'
+    || /(?:access|refresh) token.{0,40}(?:expired|revoked)|authorization.{0,40}(?:no longer|inactive)|expired or revoked/i.test(message)
+    || (status === 401 && /token|authorization|session/i.test(message))
   return {
-    message: typeof detail?.message === 'string' ? detail.message : typeof object?.message === 'string' ? object.message : 'Swico request failed.',
-    code: typeof detail?.code === 'string' ? detail.code : typeof object?.code === 'string' ? object.code : undefined,
-    request_id: typeof detail?.request_id === 'string' ? detail.request_id : typeof object?.request_id === 'string' ? object.request_id : undefined,
-    retryable: typeof detail?.retryable === 'boolean' ? detail.retryable : typeof object?.retryable === 'boolean' ? object.retryable : undefined,
-    stage: typeof detail?.stage === 'string' ? detail.stage : typeof object?.stage === 'string' ? object.stage : undefined,
+    message: authInvalid ? TERMINAL_AUTH_MESSAGE : message,
+    code,
+    request_id: safeCode(source.request_id ?? object?.request_id, SAFE_REQUEST_ID),
+    retryable: typeof source.retryable === 'boolean' ? source.retryable : typeof object?.retryable === 'boolean' ? object.retryable : authInvalid ? false : undefined,
+    stage: safeCode(source.stage ?? object?.stage, SAFE_CODE) ?? (authInvalid ? 'authentication' : undefined),
   }
 }
 
@@ -52,7 +76,7 @@ export async function json<T>(path: string, init: RequestInit = {}, accessToken?
   const response = await fetch(cliApi(path, env), { ...init, headers, redirect: 'error' })
   const body = await response.json().catch(() => ({})) as unknown
   if (!response.ok) {
-    const details = errorDetails(body)
+    const details = errorDetails(body, response.status)
     throw new CliApiError(response.status, details.message || `Swico request failed (${response.status})`, body, details)
   }
   return body as T
@@ -88,8 +112,8 @@ export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, messag
   if (!response.ok) {
     const bodyText = (await response.text()).slice(0, 4_096)
     let body: unknown = {}
-    try { body = JSON.parse(bodyText) } catch { body = { message: bodyText || `Swico could not start the chat request (${response.status}).` } }
-    const details = errorDetails(body)
+    try { body = JSON.parse(bodyText) } catch { body = bodyText.trimStart().startsWith('<') ? {} : { detail: bodyText || `Swico could not start the chat request (${response.status}).` } }
+    const details = errorDetails(body, response.status)
     throw new CliApiError(response.status, details.message || `Swico could not start the chat request (${response.status}).`, body, details)
   }
   if (!response.body) throw new CliApiError(response.status, 'Swico could not start the chat request.')
@@ -107,7 +131,7 @@ export async function streamChat(tokens: Pick<CliTokens, 'access_token'>, messag
       if (typeof object.text !== 'string') throw new CliApiError(502, 'The Swico stream sent an invalid delta event.', event.data)
       text += object.text
     } else if (event.event === 'error') {
-      const details = errorDetails(object)
+      const details = errorDetails(object, 502)
       terminal = 'error'
       onEvent?.(event)
       throw new CliApiError(502, details.message || 'Swico could not complete this request.', event.data, details)
@@ -137,7 +161,10 @@ export async function uploadImage(tokens: CliTokens, filename: string, env = pro
   form.append('file', new Blob([bytes]), filename)
   const response = await fetch(cliApi('/uploads', env), { method: 'POST', body: form, redirect: 'error', headers: { Authorization: `Bearer ${await accessTokenFor(env)}`, Accept: 'application/json' } })
   const body = await response.json().catch(() => ({})) as { id?: string; name?: string; expires_at?: string; detail?: unknown }
-  if (!response.ok || !body.id) throw new CliApiError(response.status, typeof body.detail === 'string' ? body.detail : 'Swico could not upload that image.')
+  if (!response.ok || !body.id) {
+    const details = errorDetails(body, response.status)
+    throw new CliApiError(response.status, details.message || 'Swico could not upload that image.', body, details)
+  }
   return { id: body.id, name: body.name ?? filename, expires_at: body.expires_at ?? '' }
 }
 export async function deleteImage(tokens: CliTokens, id: string, env = process.env): Promise<void> { await json(`/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }, await accessTokenFor(env), env) }

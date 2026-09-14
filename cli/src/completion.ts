@@ -1,8 +1,4 @@
-export const TOP_LEVEL_COMMANDS = [
-  'login', 'logout', 'whoami', 'ask', 'exec', 'agent', 'review', 'resume',
-  'doctor', 'config', 'mcp', 'mcp-server', 'skills', 'plugins', 'completion',
-  'sandbox', 'worktree', 'cloud', 'release-readiness',
-] as const
+import { TOP_LEVEL_COMMANDS } from './command_registry.js'
 
 const commandWords = TOP_LEVEL_COMMANDS.join(' ')
 const powershellWords = TOP_LEVEL_COMMANDS.map(value => `"${value}"`).join(',')

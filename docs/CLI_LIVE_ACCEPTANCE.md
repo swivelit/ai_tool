@@ -10,7 +10,7 @@ nonempty tester allowlist, `SWICO_CLI_AGENT_ENABLED=false`,
 `SWICO_CLI_CLOUD_AGENT_ENABLED=false`, and `SWICO_CLI_MAX_AGENT_STEPS=8`.
 
 1. In a clean disposable desktop shell, confirm `swico --version`, `swico
-   whoami`, and `swico doctor`; record only account identity, tier, API status,
+   whoami`, `swico usage --json`, and `swico doctor`; record only account identity, tier, API status,
    and auth-valid status.
 2. Record the website Chat usage/wallet value without exposing credentials.
 3. In the installed CLI interactive session, run `/usage` and record the
@@ -19,6 +19,9 @@ nonempty tester allowlist, `SWICO_CLI_AGENT_ENABLED=false`,
    before/after result with the applicable subscription allowance or PAYG
    ledger/request audit; a wallet difference without request correlation is
    not proof of exactly-once charging.
+   `/usage` belongs inside Swico. At the macOS shell, use `swico usage` or
+   `swico usage --json`; a shell command beginning with `/` is a zsh path, not
+   a Swico command.
 4. Wait for or simulate the controlled 900-second access-token expiry in the
    approved test harness. Make a request in the same interactive process and
    confirm refresh succeeds, the account/tier is unchanged, and the rotated

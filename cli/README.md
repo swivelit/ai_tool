@@ -14,6 +14,7 @@ Customers do not need an npm account to download the public package:
 npm install -g @swiveltechnologies/swico
 swico login
 swico
+swico usage
 ```
 
 The CLI is paid-only. If the website currently has Swico Free selected, choose
@@ -94,6 +95,14 @@ cancellation/recovery and local-side-effect acceptance gates are verified.
 Durable planner/action reservations and exact-once replay handling are covered
 by focused route tests. `swico login --agent` requests the additional scope
 but does not bypass the server gate or tier eligibility.
+
+Usage has two contexts: at the macOS shell, run `swico usage` or
+`swico usage --json`; inside an already-running Swico session, enter `/usage`.
+Both call the same read-only, refresh-aware `/usage` endpoint and never start
+generation or change the selected tier. Monetary values remain integer micros;
+token ranges are estimates, not exact provider-token balances. Use `/ask TEXT`
+inside Swico when an intentional message begins with `/`; `swico ask
+"/literal text"` is the shell form.
 
 ## Stage 2 local extensions
 
