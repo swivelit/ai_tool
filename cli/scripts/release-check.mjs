@@ -308,7 +308,7 @@ try {
   // Artifact smoke tests must never inspect the operator's real keychain,
   // config, state, or sessions. Use an isolated empty state rooted in the
   // temporary release directory.
-  const requestBodies = [], chatStreams = [], control = { refreshed: false, cancelled: 0, loggedOut: false, device: null }
+  const requestBodies = [], chatStreams = [], control = { refreshed: false, cancelled: 0, loggedOut: false, device: null, recoverableErrorEmitted: false }
   controlledServer = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(Buffer.from(chunk))
@@ -348,6 +348,7 @@ try {
     if (request.url === '/api/cli/v1/logout' && request.method === 'POST') { control.loggedOut = true; jsonResponse(200, { status: 'revoked' }); return }
     if (request.url === '/api/cli/v1/chat/stream' && request.method === 'POST') {
       if (String(body.message).includes('force recoverable error')) {
+        control.recoverableErrorEmitted = true
         response.writeHead(200, { 'content-type': 'text/event-stream' }); response.end('event: error\ndata: {"message":"temporary controlled failure"}\n\n'); return
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -456,23 +457,73 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   const planned = await runNode('installed task-only plan consent', appEntry, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
   const planRequest = requestBodies.find(item => item.path === '/api/cli/v1/chat/stream' && String(item.body.message).includes('task-only plan'))
   if (!planRequest || String(planRequest.body.message).includes('AGENTS_SECRET_MARKER')) throw new Error('Installed plan consent leaked repository instructions')
+  const recoveryStart = requestBodies.length
   const interactiveRecovery = await new Promise(resolve => {
     const child = spawn(process.execPath, [appEntry], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
-    let stdout = '', stderr = ''
-    let continued = false
-    const maybeContinue = () => {
-      if (continued || !`${stdout}\n${stderr}`.includes('Swico operation failed')) return
-      continued = true
-      child.stdin.write('success after error\n/exit\n')
+    let stdout = '', stderr = '', settled = false, state = 'waiting-initial-prompt', promptCount = 0
+    let initialPromptCount = 0, errorPromptCount = 0, successPromptCount = 0, timer
+    const promptPattern = /(?:auto|chat|plan|agent)> /g
+    const countPrompts = () => (stdout.match(promptPattern) ?? []).length
+    const requestMessages = () => requestBodies.slice(recoveryStart).filter(item => item.path === '/api/cli/v1/chat/stream').map(item => String(item.body.message ?? ''))
+    const finish = value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { child.stdin.destroy() } catch { /* disposable child cleanup */ }
+      resolve({ ...value, stdout, stderr, state, error_prompt_count: errorPromptCount, success_prompt_count: successPromptCount })
     }
-    child.stdout.on('data', chunk => { stdout += String(chunk); maybeContinue() })
-    child.stderr.on('data', chunk => { stderr += String(chunk); maybeContinue() })
-    child.on('close', (code, signal) => resolve({ stdout, stderr, code, signal }))
-    child.stdin.write('force recoverable error\n')
-    setTimeout(() => { if (!continued) child.stdin.write('success after error\n/exit\n'); setTimeout(() => child.stdin.end(), 500) }, 5_000)
+    const failOnDeadline = () => {
+      state = `${state}:timeout`
+      try { child.kill('SIGTERM') } catch { /* close/error evidence is retained */ }
+      finish({ timedOut: true })
+    }
+    const send = (message, nextState) => {
+      if (settled) return
+      state = nextState
+      child.stdin.write(`${message}\n`)
+    }
+    const advance = () => {
+      if (settled) return
+      promptCount = countPrompts()
+      const messages = requestMessages()
+      if (state === 'waiting-initial-prompt' && promptCount >= 1) {
+        initialPromptCount = promptCount
+        send('force recoverable error', 'waiting-recoverable-error')
+        return
+      }
+      if (state === 'waiting-recoverable-error' &&
+          messages[0] === 'force recoverable error' &&
+          control.recoverableErrorEmitted &&
+          stderr.includes('temporary controlled failure') &&
+          stderr.includes('Swico operation failed') &&
+          promptCount > initialPromptCount) {
+        errorPromptCount = promptCount
+        send('success after error', 'waiting-success')
+        return
+      }
+      if (state === 'waiting-success' &&
+          messages[1] === 'success after error' &&
+          stdout.includes('installed stream response') &&
+          promptCount > errorPromptCount) {
+        successPromptCount = promptCount
+        send('/exit', 'waiting-exit')
+      }
+    }
+    child.stdout.on('data', chunk => { stdout = `${stdout}${String(chunk)}`.slice(-256 * 1024); advance() })
+    child.stderr.on('data', chunk => { stderr = `${stderr}${String(chunk)}`.slice(-256 * 1024); advance() })
+    child.once('error', error => finish({ error: String(error) }))
+    child.once('close', (code, signal) => finish({ code, signal }))
+    timer = setTimeout(failOnDeadline, 20_000)
   })
   const interactiveOutput = `${interactiveRecovery.stdout}\n${interactiveRecovery.stderr}`
-  if (!interactiveOutput.includes('temporary controlled failure') || !interactiveOutput.includes('installed stream response')) throw new Error(`Installed same-process error recovery did not complete: ${interactiveOutput.replace(/[\\u0000-\\u001f\\u007f]/g, ' ').slice(-1_000)}`)
+  const recoveryMessages = requestBodies.slice(recoveryStart).filter(item => item.path === '/api/cli/v1/chat/stream').map(item => String(item.body.message ?? ''))
+  if (interactiveRecovery.timedOut || interactiveRecovery.error || interactiveRecovery.code !== 0 || interactiveRecovery.signal ||
+      interactiveRecovery.state !== 'waiting-exit' || !control.recoverableErrorEmitted ||
+      recoveryMessages[0] !== 'force recoverable error' || recoveryMessages[1] !== 'success after error' ||
+      recoveryMessages.includes('/exit') || !interactiveRecovery.stderr.includes('temporary controlled failure') ||
+      !interactiveRecovery.stdout.includes('installed stream response') || interactiveRecovery.success_prompt_count <= interactiveRecovery.error_prompt_count) {
+    throw new Error(`Installed same-process error recovery did not complete: ${safeDiagnostic(JSON.stringify({ state: interactiveRecovery.state, code: interactiveRecovery.code, signal: interactiveRecovery.signal, error: interactiveRecovery.error, requests: recoveryMessages, output: interactiveOutput }), 4_000)}`)
+  }
   const beforeRejectedCommands = requestBodies.length
   const rejectedCommands = await new Promise(resolve => {
     const child = spawn(process.execPath, [appEntry], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })

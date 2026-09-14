@@ -34,6 +34,12 @@ function helperExitCode(result) {
   return 70
 }
 
+function bridgeTimeoutMs() {
+  if (process.env.SWICO_PTY_TEST_MODE !== '1') return undefined
+  const value = Number.parseInt(process.env.SWICO_PTY_TEST_TIMEOUT_MS ?? '', 10)
+  return Number.isSafeInteger(value) && value >= 1_000 && value <= 20_000 ? value : undefined
+}
+
 async function main() {
   if (process.platform !== 'win32' || process.argv.length < 3) {
     await writeComplete(process.stderr, 'ConPTY acceptance requires Windows and a child command.\n')
@@ -56,6 +62,7 @@ async function main() {
     },
     input: process.stdin,
     output: process.stdout,
+    timeoutMs: bridgeTimeoutMs(),
     diagnostics: message => process.stderr.write(`[conpty] ${message}\n`),
   })
   const immediatelyAfterBridge = activeResourceSummary()

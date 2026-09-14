@@ -1,41 +1,38 @@
 # Paid Chat CLI release closure
 
-This checklist records the bounded `0.2.0-rc.7` release-candidate evidence. It
+This checklist records the bounded `0.2.0-rc.8` release-candidate evidence. It
 separates paid Chat, package distribution, local agent execution, and full
 feature parity; it is not a publication approval or a parity claim.
 
-Historical RC6 baseline: run `34878300838` at
-`c0ad0b42d853a7589acb48d28b421444901beddd` passed backend, PostgreSQL, web,
-Ubuntu CLI, and macOS CLI. Windows passed 81/81 tests, packaging, clean
-installation, the public shim, controlled login/refresh/streaming, and the
-installed controller path. The native helper printed `PTY_READY`, then its
-bridge reported child exit 0, input release, output drain, and logical helper
-close, but the outer Node helper remained alive until the approximately
-90-second timeout (`code=null`, `signal=SIGTERM`). Native installed rich
-terminal stages were not reached. This RC7 pass adds a bounded completion
-sentinel and an explicit isolated-helper shutdown contract; fresh Windows CI
-is required for acceptance.
+Historical RC6 evidence remains recorded below. RC7 baseline: run
+`34892384342` at `8ea9dfb4cc431d1c780569f1f45bc169864590f0` passed backend,
+PostgreSQL, web and Ubuntu CLI. macOS passed through installed task-only plan
+consent, then failed same-process recovery because its harness sent recovery
+commands before synchronized prompts. Windows passed ordinary 81/81 tests and
+then failed the native ConPTY test at `parent-eof`; Windows `release:check`
+did not run. This RC8 pass makes recovery prompt-driven and aligns the native
+EOF probe with Swico's Ctrl+D/EOT contract. Fresh CI is required.
 
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
-| Allowlisted paid Chat | Production Lite completion, wallet-debit smoke, website revoke/rejection, and explicit reauthorization are observed operator evidence. The installed controlled API release check passed login, refresh, streaming, recovery, usage, and retained-credential rejection. | Internal Chat candidate: ACCEPTED for scoped allowlisted review | Correlate a future approved request ID with the shared ledger if accounting evidence is required; do not infer it from wallet snapshots. |
+| Allowlisted paid Chat | Production Lite completion, wallet-debit smoke, website revoke/rejection, and explicit reauthorization remain observed evidence. RC8 controlled installed recovery, refresh, streaming and retained-session checks passed locally without paid calls. | ACCEPTED for scoped allowlisted review | Correlate any future approved request ID with the shared ledger; do not infer accounting from wallet snapshots. |
 | Public package distribution | CLI-only MIT notice, scope note, and dependency notice index are packaged; no registry publication was performed. | CONDITIONALLY READY / PUBLICATION PENDING | Confirm npm scope write permission separately from Swico login and owner-approve publication of the exact frozen archive. |
-| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Owner obtains fresh Windows/client CI for the candidate and runs native hostile verification on a supported host. |
+| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Owner obtains fresh Windows/client CI and separately runs native hostile verification on a supported host. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
-RC7 artifact for this pass:
+RC8 artifact for this pass:
 
-- version: `0.2.0-rc.7`
-- source revision/dirty state: `c0ad0b42d853a7589acb48d28b421444901beddd`, dirty=true (local RC7 implementation changes are uncommitted)
-- filename: `swiveltechnologies-swico-0.2.0-rc.7.tgz`
-- SHA-256: `650d43832f33374174f31478dee3291eb3f7c8693306f0d5c6065c403cceba8e`
-- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-ZH66g6/prefix/bin/swico` (removed after acceptance)
+- version: `0.2.0-rc.8`
+- source revision/dirty state: `8ea9dfb4cc431d1c780569f1f45bc169864590f0`, dirty=true (local RC8 changes are uncommitted)
+- filename: `swiveltechnologies-swico-0.2.0-rc.8.tgz`
+- SHA-256: `49ee69c7f8879449e78b59af312c40e4dcad0ea7091ac6d6743cb72e3af33e8e`
+- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-ck1emI/prefix/bin/swico` (removed after acceptance)
 - package contains `dist/terminal_ui.js`, the MIT scope files, dependency
   notices, compiled CLI files, and no source/tests/secrets. `dist/build_identity.js`
   records the source revision and dirty state captured by the build; installed
   `--version --json` and `doctor` matched that identity outside the Git checkout.
 
-Local validation for this RC7 source passed `npm ci`, typecheck, lint, all 81
+Local validation for this RC8 source passed `npm ci`, typecheck, lint, all 81
 CLI tests, the controlled installed release check, the package dry-run, the
 tracked-secret scan, and `git diff --check`. Native Windows ConPTY acceptance
 (`npm run test:conpty-native`) is **NOT RUN** on this macOS host; it is an
@@ -66,8 +63,8 @@ older global installation:
 
 ```sh
 mkdir -p "$HOME/.local/share/swico-pilot"
-shasum -a 256 ./swiveltechnologies-swico-0.2.0-rc.7.tgz
-npm install --global --prefix "$HOME/.local/share/swico-pilot" ./swiveltechnologies-swico-0.2.0-rc.7.tgz
+shasum -a 256 ./swiveltechnologies-swico-0.2.0-rc.8.tgz
+npm install --global --prefix "$HOME/.local/share/swico-pilot" ./swiveltechnologies-swico-0.2.0-rc.8.tgz
 "$HOME/.local/share/swico-pilot/bin/swico" --version --json
 "$HOME/.local/share/swico-pilot/bin/swico" usage --json
 ```

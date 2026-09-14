@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const runner = join(root, 'scripts', 'conpty_runner.mjs')
-const deadlineMs = 12_000
+const deadlineMs = 8_000
 const maxOutputBytes = 256 * 1024
 
 function appendBounded(current, chunk) {
@@ -27,7 +27,7 @@ function childScript(body) {
 async function runCase(name, script, expectedCode, options = {}) {
   const child = spawn(process.execPath, [runner, process.execPath, '-e', script], {
     cwd: root,
-    env: { ...process.env, TERM: 'xterm-256color', SWICO_PTY_COLUMNS: '100', SWICO_PTY_ROWS: '32' },
+    env: { ...process.env, TERM: 'xterm-256color', SWICO_PTY_COLUMNS: '100', SWICO_PTY_ROWS: '32', SWICO_PTY_TEST_MODE: '1', SWICO_PTY_TEST_TIMEOUT_MS: '5000' },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -45,11 +45,14 @@ async function runCase(name, script, expectedCode, options = {}) {
     let parentEofSent = false
     child.stderr.on('data', chunk => {
       stderr = appendBounded(stderr, stderrDecoder.write(chunk))
-      if (options.parentEof && !parentEofSent && stderr.includes('[conpty] child-started')) {
+    })
+    const maybeSendParentEof = () => {
+      if (options.parentEof && !parentEofSent && stdout.includes(options.inputReadyMarker ?? '')) {
         parentEofSent = true
         child.stdin.end()
       }
-    })
+    }
+    child.stdout.on('data', () => maybeSendParentEof())
     child.once('error', error => finish({ error }))
     child.once('close', (code, signal) => finish({ code, signal, stdout: `${stdout}${stdoutDecoder.end()}`, stderr: `${stderr}${stderrDecoder.end()}` }))
     timer = setTimeout(() => {
@@ -84,10 +87,10 @@ async function main() {
   const unicode = await runCase('unicode-final-output', childScript('தமிழ் 😀\n' + 'TAIL'.repeat(20)), 0)
   if (!unicode.stdout.includes('தமிழ்') || !unicode.stdout.includes('😀') || !unicode.stdout.includes('TAIL')) throw new Error('unicode-final-output: final output was truncated')
 
-  const eof = await runCase('parent-eof', `process.stdout.write('EOF_READY\\n'); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));`, 0, { parentEof: true })
+  const eof = await runCase('parent-eof', `const input = process.stdin; if (input.isTTY && typeof input.setRawMode === 'function') input.setRawMode(true); let seen = false; input.resume(); input.on('data', chunk => { if (!seen && Buffer.from(chunk).includes(4)) { seen = true; process.stdout.write('EOF_SEEN\\n'); process.exit(0); } }); process.stdout.write('EOF_READY\\n');`, 0, { parentEof: true, inputReadyMarker: 'EOF_READY' })
   // This is deliberately sent only while the child is running; the helper's
   // bridge must not write EOT after a child-exit event.
-  if (!eof.stdout.includes('EOF_READY')) throw new Error('parent-eof: marker was not observed')
+  if (!eof.stdout.includes('EOF_READY') || !eof.stdout.includes('EOF_SEEN')) throw new Error('parent-eof: readiness or EOT marker was not observed')
 
   process.stdout.write(JSON.stringify({ status: 'passed', cases: results.map(({ name, code, report }) => ({ name, code, child_code: report.child_code, output_bytes: report.output_bytes, resources: report.active_resources })) }) + '\n')
 }
