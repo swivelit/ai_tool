@@ -372,7 +372,7 @@ export class RichTerminalUI {
       card.push(`╭${'─'.repeat(inner)}╮`)
       card.push(`│ ${cyan(padCells(`Swico ${this.options.version} · ${this.options.tierLabel}`, inner - 1))}│`)
       card.push(`│ ${dim(padCells(`${abbreviatedDirectory(this.options.directory, inner - 1)}${branch}`, inner - 1))}│`)
-      if (this.options.modeLabel) card.push(`│ ${dim(padCells(`${this.options.modeLabel()} · Chat`, inner - 1))}│`)
+      if (this.options.modeLabel) card.push(`│ ${dim(padCells(`Mode: ${this.options.modeLabel()}`, inner - 1))}│`)
       card.push(`╰${'─'.repeat(inner)}╯`)
     } else card.push(padCells('Swico', layoutWidth))
 

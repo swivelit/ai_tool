@@ -166,7 +166,12 @@ async function runPty(label, command, args, options, onOutput) {
     settled = true
     clearTimeout(timer)
     child.stdin.destroy()
-    stageResults[label] = resultValue.error || resultValue.timedOut ? `failed: ${String(resultValue.error || 'timed out').slice(0, 300)}` : 'passed'
+    const nonZero = typeof resultValue.code === 'number' && resultValue.code !== 0
+    const signalled = Boolean(resultValue.signal)
+    const failure = resultValue.error || resultValue.timedOut || nonZero || signalled
+    stageResults[label] = failure
+      ? `failed: ${String(resultValue.error || (resultValue.timedOut ? 'timed out' : signalled ? `signal=${resultValue.signal}` : `code=${resultValue.code}`)).slice(0, 300)}`
+      : 'passed'
     resolveResult(resultValue)
   }
   child.stdout.on('data', chunk => {

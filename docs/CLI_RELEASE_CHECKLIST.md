@@ -1,28 +1,29 @@
 # Paid Chat CLI release closure
 
-This checklist records the bounded `0.2.0-rc.4` release-candidate evidence. It
+This checklist records the bounded `0.2.0-rc.5` release-candidate evidence. It
 separates paid Chat, package distribution, local agent execution, and full
 feature parity; it is not a publication approval or a parity claim.
 
-CI baseline: run `34854653266` at `999da21d` passed backend, PostgreSQL, web,
-Ubuntu CLI, and macOS CLI. Windows passed 68/68 tests, npm pack, and clean
-install, then failed at the installed public launcher shim. This dirty
+CI baseline: run `34862872762` at `3eb70983` passed backend, PostgreSQL, web,
+Ubuntu CLI, and macOS CLI. Windows passed typecheck/lint, 71/71 tests, npm
+pack, clean install, public shim, controlled login/streaming, and installed
+rich-controller checks, then timed out at the PTY positive control. This RC5
 candidate has not been remotely rerun, so it is not reported as six green jobs.
 
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
 | Allowlisted paid Chat | Production Lite completion, wallet-debit smoke, website revoke/rejection, and explicit reauthorization are observed operator evidence. The installed controlled API release check passed login, refresh, streaming, recovery, usage, and retained-credential rejection. | Internal Chat candidate: ACCEPTED for scoped allowlisted review | Correlate a future approved request ID with the shared ledger if accounting evidence is required; do not infer it from wallet snapshots. |
 | Public package distribution | CLI-only MIT notice, scope note, and dependency notice index are packaged; no registry publication was performed. | CONDITIONALLY READY / PUBLICATION PENDING | Confirm npm scope write permission separately from Swico login and owner-approve publication of the exact frozen archive. |
-| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. The prior CI revision `999da21d` passed the backend, PostgreSQL, web, Ubuntu CLI and macOS CLI jobs; this dirty candidate still needs a fresh owner-triggered run. | BLOCKED / UNVERIFIED | Owner obtains fresh Windows/client CI for the candidate and runs native hostile verification on a supported host. |
+| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. The prior CI revision `3eb70983` passed the backend, PostgreSQL, web, Ubuntu CLI and macOS CLI jobs; Windows reached the PTY stage and timed out. This dirty candidate still needs a fresh owner-triggered run. | BLOCKED / UNVERIFIED | Owner obtains fresh Windows/client CI for the candidate and runs native hostile verification on a supported host. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
 Final artifact for this pass:
 
-- version: `0.2.0-rc.4`
-- source revision/dirty state: `999da21d67e85f319de1e936d2adbcd219da16cf`, dirty (implementation changes are uncommitted)
-- filename: `swiveltechnologies-swico-0.2.0-rc.4.tgz`
-- SHA-256: `cd4324cd69f1388a35bd69e172d83f8634be10957d8b689ebe1ab422193c2afe`
-- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-7MBjcH/prefix/bin/swico` (removed after acceptance)
+- version: `0.2.0-rc.5`
+- source revision/dirty state: `3eb709833126d9fd620c2660cb5b0cdee9f40f84`, dirty (implementation changes are uncommitted)
+- filename: `swiveltechnologies-swico-0.2.0-rc.5.tgz`
+- SHA-256: `91e713ede5697a6fe65b016f3c199391c6df592161cca3730cccb80f4262508f`
+- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-KHoTMy/prefix/bin/swico` (removed after acceptance)
 - package contains `dist/terminal_ui.js`, the MIT scope files, dependency
   notices, compiled CLI files, and no source/tests/secrets
 
@@ -45,7 +46,8 @@ older global installation:
 
 ```sh
 mkdir -p "$HOME/.local/share/swico-pilot"
-npm install --global --prefix "$HOME/.local/share/swico-pilot" ./swiveltechnologies-swico-0.2.0-rc.4.tgz
+shasum -a 256 ./swiveltechnologies-swico-0.2.0-rc.5.tgz
+npm install --global --prefix "$HOME/.local/share/swico-pilot" ./swiveltechnologies-swico-0.2.0-rc.5.tgz
 "$HOME/.local/share/swico-pilot/bin/swico" --version --json
 "$HOME/.local/share/swico-pilot/bin/swico" usage --json
 ```
