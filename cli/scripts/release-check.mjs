@@ -94,7 +94,7 @@ try {
   if (!manifestBytes) throw new Error('Package archive has no package.json')
   const manifest = JSON.parse(manifestBytes.toString('utf8'))
   if (manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
-  if (manifest.version !== '0.2.0-rc.1') throw new Error(`Unexpected package version: ${manifest.version}`)
+  if (manifest.version !== '0.2.0-rc.2') throw new Error(`Unexpected package version: ${manifest.version}`)
   if (manifest.license !== 'MIT') throw new Error(`Unexpected package license: ${manifest.license}`)
   if (manifest.bin?.swico !== 'dist/cli.js') throw new Error('The swico executable does not map to dist/cli.js')
   const required = [
@@ -219,6 +219,43 @@ try {
   const normalRequestId = normalStream.requestId
   if (typeof normalRequestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(normalRequestId)) throw new Error('Controlled paid stream did not preserve a usable request correlation')
   if (!streamed.stderr.includes('Quality: best_effort\n')) throw new Error('Best-effort quality was not rendered as a readable stderr diagnostic')
+  const packageRoot = process.platform === 'win32' ? join(prefix, 'node_modules', '@swiveltechnologies', 'swico') : join(prefix, 'lib', 'node_modules', '@swiveltechnologies', 'swico')
+  const installedUiProbe = join(work, 'installed-ui-probe.mjs')
+  await writeFile(installedUiProbe, `import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { pathToFileURL } from 'node:url'
+const { RichTerminalUI } = await import(pathToFileURL(process.argv[2]).href)
+const input = new EventEmitter(); input.isTTY = true; input.setRawMode = value => { input.raw = value }
+const output = new EventEmitter(); output.isTTY = true; output.columns = 80; output.rows = 24
+let transcript = ''; output.write = value => { transcript += String(value); return true }
+const answers = []
+const ui = new RichTerminalUI({ input, output, version: 'installed', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+  onMessage: async (message, emit) => { answers.push(message); emit({ event: 'status', data: { phase: 'routing' } }); emit({ event: 'delta', data: { text: 'installed controller answer' } }); emit({ event: 'quality', data: { status: 'best_effort' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'installed controller answer', threadId: null } },
+  onCommand: async () => undefined,
+})
+const running = ui.run(); input.emit('data', Buffer.from('installed controller\\r')); await new Promise(resolve => setTimeout(resolve, 30)); input.emit('data', Buffer.from('/exit\\r')); await running
+assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /installed controller answer/); assert.equal(input.raw, false)
+`)
+  await run('installed rich controller/event path', process.execPath, [installedUiProbe, join(packageRoot, 'dist', 'terminal_ui.js')], smokeOptions)
+  let installedRichTerminal = process.platform === 'win32' ? 'not_run (native Windows PTY is covered by the Windows CI stage)' : 'not_run (host PTY unavailable; installed controller passed)'
+  if (process.platform !== 'win32' && process.stdin.isTTY && process.stdout.isTTY) {
+    const ptyArgs = process.platform === 'darwin' ? ['-q', '/dev/null', executable] : ['-q', '-c', JSON.stringify(executable), '/dev/null']
+    const pty = await new Promise(resolve => {
+      const child = spawn('script', ptyArgs, { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+      let output = '', sent = false, completed = false
+      const finish = result => { if (completed) return; completed = true; clearTimeout(deadline); child.kill('SIGTERM'); resolve(result) }
+      const observe = chunk => {
+        output += String(chunk)
+        if (!sent && output.includes('Ask Swico anything')) { sent = true; child.stdin.write('installed rich PTY\r') }
+        if (sent && output.includes('installed stream response')) { child.stdin.write('/exit\r'); setTimeout(() => finish({ output, code: 0 }), 100) }
+      }
+      child.stdout.on('data', observe); child.stderr.on('data', observe)
+      child.on('close', (code, signal) => finish({ output, code, signal }))
+      const deadline = setTimeout(() => finish({ output, timedOut: true }), 15_000)
+    })
+    if (pty.timedOut || pty.code !== 0 || !pty.output.includes('installed stream response') || !pty.output.includes('Swico')) throw new Error(`Installed rich PTY smoke failed: ${String(pty.output).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(-1_000)}`)
+    installedRichTerminal = 'passed (installed PTY with controlled API)'
+  }
   const structured = await run('installed validated structured output', executable, ['exec', 'return an answer', '--output-schema', join(work, 'schema.json')], smokeOptions)
   if (JSON.parse(structured.stdout).answer !== 'installed') throw new Error('Installed structured output smoke failed')
   const planned = await run('installed task-only plan consent', executable, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
@@ -325,7 +362,7 @@ try {
     filename: record.filename,
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
-    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', optional_resume: 'passed (installed offline)', release_readiness_json: `passed (installed offline; exit ${readiness.code ?? 'unknown'})`, cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
+    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', rich_terminal: installedRichTerminal, structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', optional_resume: 'passed (installed offline)', release_readiness_json: `passed (installed offline; exit ${readiness.code ?? 'unknown'})`, cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     installed_executable: executable,
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),

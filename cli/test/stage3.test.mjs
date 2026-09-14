@@ -180,7 +180,7 @@ test('explicit Swico worktrees are detached, owned, and do not alter a dirty pri
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-worktree-'))
   const state = join(root, 'state.json'), worktreeRoot = join(root, 'worktrees')
   try {
-    await run('git', ['init', '-q', root]); await run('git', ['config', 'user.email', 'swico-test@example.invalid'], { cwd: root }); await run('git', ['config', 'user.name', 'Swico Test'], { cwd: root })
+    await run('git', ['init', '-q', root]); await run('git', ['config', 'core.autocrlf', 'false'], { cwd: root }); await run('git', ['config', 'core.eol', 'lf'], { cwd: root }); await run('git', ['config', 'user.email', 'swico-test@example.invalid'], { cwd: root }); await run('git', ['config', 'user.name', 'Swico Test'], { cwd: root })
     await writeFile(join(root, 'tracked.txt'), 'base\n'); await run('git', ['add', 'tracked.txt'], { cwd: root }); await run('git', ['commit', '-qm', 'base'], { cwd: root })
     await writeFile(join(root, 'uncommitted.txt'), 'preserve\n')
     const metadata = { root, gitAvailable: true, head: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(), branch: 'master', dirty: true, staged: [], unstaged: ['uncommitted.txt'], untracked: ['uncommitted.txt'] }
@@ -199,7 +199,7 @@ test('non-interactive worktree cleanup fails closed before touching an owned wor
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-clean-'))
   const state = join(root, 'state.json'), worktreeRoot = join(root, 'worktrees')
   try {
-    await run('git', ['init', '-q', root]); await run('git', ['config', 'user.email', 'swico-test@example.invalid'], { cwd: root }); await run('git', ['config', 'user.name', 'Swico Test'], { cwd: root })
+    await run('git', ['init', '-q', root]); await run('git', ['config', 'core.autocrlf', 'false'], { cwd: root }); await run('git', ['config', 'core.eol', 'lf'], { cwd: root }); await run('git', ['config', 'user.email', 'swico-test@example.invalid'], { cwd: root }); await run('git', ['config', 'user.name', 'Swico Test'], { cwd: root })
     await writeFile(join(root, 'tracked.txt'), 'base\n'); await run('git', ['add', 'tracked.txt'], { cwd: root }); await run('git', ['commit', '-qm', 'base'], { cwd: root })
     const metadata = { root, gitAvailable: true, head: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(), branch: 'master', dirty: false, staged: [], unstaged: [], untracked: [] }
     const manager = new WorktreeManager(metadata, { SWICO_CLI_WORKTREES_FILE: state, SWICO_CLI_WORKTREE_ROOT: worktreeRoot }), item = await manager.create('run-2')

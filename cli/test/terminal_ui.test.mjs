@@ -17,7 +17,7 @@ function fakeTerminal() {
 test('rich UI keeps bracketed multiline paste as one draft and preserves slash text', async () => {
   const terminal = fakeTerminal(), messages = [], commands = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.1', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
     onMessage: async (message, emit) => { messages.push(message); emit({ event: 'delta', data: { text: 'Tamil தமிழ் 😀\n```ts\nconst ok = true\n```' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'fallback', threadId: 'thread-1' } },
     onCommand: async command => { commands.push(command.name) },
   })
@@ -33,10 +33,39 @@ test('rich UI keeps bracketed multiline paste as one draft and preserves slash t
   assert.match(terminal.text(), /const ok = true/)
 })
 
+test('rich UI keeps the active assistant identity across status, quality, and usage notices', async () => {
+  const terminal = fakeTerminal(), answers = []
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
+    onMessage: async (message, emit) => {
+      answers.push(message)
+      emit({ event: 'status', data: { phase: 'routing' } })
+      emit({ event: 'delta', data: { text: 'ANSWER_' } })
+      emit({ event: 'usage', data: { input_tokens: 1, output_tokens: 2 } })
+      emit({ event: 'delta', data: { text: 'MARKER' } })
+      emit({ event: 'quality', data: { status: 'best_effort' } })
+      emit({ event: 'done', data: { cancelled: false } })
+      return { text: 'ANSWER_MARKER', threadId: 'thread-1' }
+    },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  terminal.input.emit('data', Buffer.from('first\r', 'utf8'))
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', Buffer.from('second\r', 'utf8'))
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', Buffer.from('/exit\r', 'utf8'))
+  await running
+  assert.deepEqual(answers, ['first', 'second'])
+  const output = terminal.text()
+  assert.match(output, /ANSWER_MARKER/)
+  assert.equal((output.match(/ANSWER_MARKER/g) ?? []).length >= 2, true)
+})
+
 test('rich UI slash menu selection and malformed commands remain local', async () => {
   const terminal = fakeTerminal(), commands = [], notices = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.1', tierLabel: 'Swico Pro', directory: '/tmp/work', branch: null,
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Pro', directory: '/tmp/work', branch: null,
     onMessage: async () => { throw new Error('Chat must not run') },
     onCommand: async (command, context) => { commands.push(command.name); context.notice('usage shown') },
   })
@@ -51,4 +80,49 @@ test('rich UI slash menu selection and malformed commands remain local', async (
   assert.deepEqual(commands, ['usage'])
   assert.match(notices[0], /Unknown interactive command \"\/bogus\"/)
   assert.match(notices[0], /usage shown/)
+})
+
+test('rich UI decodes fragmented UTF-8, escape input, CRLF, and split paste markers', async () => {
+  const terminal = fakeTerminal(), messages = []
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    onMessage: async (message, emit) => { messages.push(message); emit({ event: 'delta', data: { text: 'ok' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'ok', threadId: null } },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  const unicode = Buffer.from('தமிழ் 😀\r\n', 'utf8')
+  for (const byte of unicode) terminal.input.emit('data', Buffer.from([byte]))
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', 'ab'); terminal.input.emit('data', '\u001b'); terminal.input.emit('data', 'Z\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '\u001b[20'); terminal.input.emit('data', '0~pasted\n/bogus'); terminal.input.emit('data', '\u001b[201'); terminal.input.emit('data', '~\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '/exit\r')
+  await running
+  assert.deepEqual(messages, ['தமிழ் 😀', 'abZ', 'pasted\n/bogus'])
+  assert.equal((terminal.text().match(/\u001b\[2J/g) ?? []).length <= 6, true)
+  assert.equal(terminal.input.raw, false)
+})
+
+test('rich UI closes on EOF and does not accept late callbacks after cancellation', async () => {
+  const terminal = fakeTerminal(), messages = [], emits = []
+  let release
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    onMessage: async message => { messages.push(message); await new Promise(resolve => { release = resolve }); return { text: 'late', threadId: null } },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  terminal.input.emit('data', 'hold\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '\u0003')
+  terminal.input.emit('data', '\u001b[200~late\u001b[201~')
+  terminal.input.emit('end')
+  await running
+  release?.()
+  await new Promise(resolve => setTimeout(resolve, 25))
+  emits.push(terminal.text())
+  assert.deepEqual(messages, ['hold'])
+  assert.match(emits[0], /\u001b\[\?1049l$/)
+  assert.doesNotMatch(emits[0], /Swico late/)
 })
