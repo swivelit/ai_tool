@@ -259,7 +259,7 @@ npm test
 npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swiveltechnologies-swico-0.2.0-rc.2.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-0.2.0-rc.3.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
 These are conditional owner-operated commands only; this pass does not run
@@ -279,7 +279,7 @@ For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swiveltechnologies-swico-0.2.0-rc.2.tgz
+npm install -g ./swiveltechnologies-swico-0.2.0-rc.3.tgz
 ```
 
 This is not a public-registry install and does not make the package available

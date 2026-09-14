@@ -42,6 +42,30 @@ const VERSION = packageJson.version ?? 'unknown'
 type Mode = 'auto' | 'chat' | 'agent' | 'plan'
 let activeInterrupt: (() => void) | null = null
 let interruptCount = 0
+let startupStage = 'bootstrap'
+let startupDiagnosticsEnabled = process.env.SWICO_CLI_STARTUP_DIAGNOSTICS === '1'
+
+function startupState() {
+  return {
+    stdin_tty: input.isTTY === true,
+    stdout_tty: output.isTTY === true,
+    stdin_readable_ended: input.readableEnded === true,
+    stdin_destroyed: input.destroyed === true,
+    stdout_destroyed: output.destroyed === true,
+    columns: typeof output.columns === 'number' ? output.columns : null,
+    rows: typeof output.rows === 'number' ? output.rows : null,
+  }
+}
+
+function startupDiagnostic(stage: string, details: Record<string, unknown> = {}) {
+  startupStage = stage
+  if (!startupDiagnosticsEnabled) return
+  const safe = Object.fromEntries(Object.entries(details).filter(([key, value]) => {
+    if (value === undefined || value === null) return false
+    return ['stdin_tty', 'stdout_tty', 'stdin_readable_ended', 'stdin_destroyed', 'stdout_destroyed', 'columns', 'rows', 'mode', 'command', 'reason', 'status', 'code', 'request_id'].includes(key)
+  }))
+  process.stderr.write(`[startup] ${stage}${Object.keys(safe).length ? ` ${JSON.stringify(safe)}` : ''}\n`)
+}
 
 function buildIdentity() {
   return {
@@ -64,7 +88,7 @@ function doctorAuthState(error: unknown): string {
   return 'request_error'
 }
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n\nInteractive commands: /help /new /history /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /history /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -386,7 +410,9 @@ async function resumeSession(line: Interface, tokens: CliTokens, id: string | un
 }
 
 async function richInteractive(tokens: CliTokens, env = process.env): Promise<void> {
+  startupDiagnostic('repository:discover', startupState())
   const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd())
+  startupDiagnostic('repository:ready', startupState())
   let currentTokens = tokens, thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile(), searchMode: 'auto' | 'on' | 'off' = 'auto', images: string[] = []
   let ui: RichTerminalUI
   const promptLine = { question: (text: string) => ui.prompt(text), close: () => undefined } as unknown as Interface
@@ -430,7 +456,8 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
       context.notice(`/${command.name} is available in the line-oriented interface with swico --plain.`)
     },
   })
-  await ui.run()
+  startupDiagnostic('rich-ui:run', startupState())
+  try { await ui.run() } finally { startupDiagnostic('rich-ui:restored', startupState()) }
 }
 
 async function plainInteractive(tokens: CliTokens, env = process.env) {
@@ -499,6 +526,7 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
 
 async function interactive(tokens: CliTokens, env = process.env): Promise<void> {
   const capable = input.isTTY === true && output.isTTY === true && env.SWICO_CLI_PLAIN !== '1' && env.TERM !== 'dumb'
+  startupDiagnostic('interactive:select', { ...startupState(), mode: capable ? 'rich' : 'plain' })
   if (capable) return richInteractive(tokens, env)
   return plainInteractive(tokens, env)
 }
@@ -524,10 +552,14 @@ async function nonInteractive(tokens: CliTokens, args: string[], env: NodeJS.Pro
 }
 
 async function main(argv = process.argv.slice(2), env = process.env) {
+  startupDiagnosticsEnabled = startupDiagnosticsEnabled || argv.includes('--diagnostic-startup') || env.SWICO_CLI_STARTUP_DIAGNOSTICS === '1'
+  if (argv.includes('--diagnostic-startup')) argv = argv.filter(value => value !== '--diagnostic-startup')
+  startupDiagnostic('main:start', startupState())
   if (argv.includes('--plain')) { argv = argv.filter(value => value !== '--plain'); env = { ...env, SWICO_CLI_PLAIN: '1' } }
-  if (argv.includes('--help') || argv.includes('-h')) { console.log(help + stage2Commands); return 0 }
-  if (argv.includes('--version') || argv.includes('-v')) { console.log(argv.includes('--json') ? JSON.stringify(buildIdentity()) : VERSION); return 0 }
+  if (argv.includes('--help') || argv.includes('-h')) { startupDiagnostic('main:help', startupState()); console.log(help + stage2Commands); return 0 }
+  if (argv.includes('--version') || argv.includes('-v')) { startupDiagnostic('main:version', startupState()); console.log(argv.includes('--json') ? JSON.stringify(buildIdentity()) : VERSION); return 0 }
   const parsedCommand = topLevelCommand(argv), command = parsedCommand.command ?? '', commandIndex = parsedCommand.index
+  startupDiagnostic('command:parsed', { ...startupState(), command: command || 'interactive' })
   if (command) {
     validateTopLevelArguments(command, argv)
     if (command === 'ask' || command === 'exec') {
@@ -577,7 +609,9 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     console.log(JSON.stringify({ build: buildIdentity(), endpoint, api, auth, credential_storage: await credentialStorageStatus(env), workspace: metadata.root, git: metadata.gitAvailable ? (metadata.dirty ? 'available (dirty)' : 'available (clean)') : 'unavailable', sandbox: createSandboxAdapter(metadata.root).status(), cli_configuration: configSummary(config.effective), mcp: { count: config.effective.mcp.length, status: 'not connected by doctor' }, skills: { count: skills.length }, hooks: hookStatus(config.effective.hooksEnabled), images: 'server-controlled; no provider request made', web_search: 'server-controlled; no provider request made', cloud: 'disabled or unavailable; no cloud job requested' }, null, 2)); return 0
   }
   if (command === 'usage') { await usageCommand(env, argv.includes('--json')); return 0 }
+  startupDiagnostic('auth:ensure', startupState())
   const tokens = await ensureTokens(env)
+  startupDiagnostic('auth:ready', { ...startupState(), mode: tokens.tier })
   if (command === 'cloud') { await cloudCommand(argv.slice(argv.indexOf(command)), tokens, env); return 0 }
   if (command === 'whoami') { const current = await ensureTokens(env); console.log(JSON.stringify(await json('/me', {}, current.access_token, env), null, 2)); return 0 }
   if (command === 'resume') { if (!input.isTTY) throw new Error('Resume requires an interactive terminal so repository and run choices cannot be implicit.'); const line = createInterface({ input, output }); try { await resumeSession(line, tokens, positionalAfter(argv, 'resume') || undefined, env) } finally { line.close() }; return 0 }
@@ -598,7 +632,9 @@ process.on('SIGINT', () => {
   if (activeInterrupt) { interruptCount += 1; activeInterrupt(); if (interruptCount > 1) process.exitCode = 130; else console.error('\nStopping the active Swico operation...'); return }
   process.exitCode = 130
 })
-main().then(code => { if (typeof code === 'number') process.exitCode = code }).catch(error => {
+main().then(code => { startupDiagnostic('process:exit', { ...startupState(), status: typeof code === 'number' ? code : 0 }); if (typeof code === 'number') process.exitCode = code }).catch(error => {
+  const value = error as { status?: unknown; code?: unknown; requestId?: unknown }
+  startupDiagnostic('process:error', { ...startupState(), status: typeof value.status === 'number' ? value.status : undefined, code: typeof value.code === 'string' ? value.code : undefined, request_id: typeof value.requestId === 'string' ? value.requestId : undefined, reason: startupStage })
   if (error instanceof CliApiError) {
     const suffix = [`HTTP ${error.status}`, error.code, error.requestId && `request ${error.requestId}`, error.details.stage && `stage ${error.details.stage}`, typeof error.retryable === 'boolean' && (error.retryable ? 'retryable' : 'do not retry')].filter(Boolean).join('; ')
     console.error(`${error.message}${suffix ? ` (${suffix})` : ''}`)

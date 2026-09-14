@@ -17,7 +17,7 @@ function fakeTerminal() {
 test('rich UI keeps bracketed multiline paste as one draft and preserves slash text', async () => {
   const terminal = fakeTerminal(), messages = [], commands = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
     onMessage: async (message, emit) => { messages.push(message); emit({ event: 'delta', data: { text: 'Tamil தமிழ் 😀\n```ts\nconst ok = true\n```' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'fallback', threadId: 'thread-1' } },
     onCommand: async command => { commands.push(command.name) },
   })
@@ -36,7 +36,7 @@ test('rich UI keeps bracketed multiline paste as one draft and preserves slash t
 test('rich UI keeps the active assistant identity across status, quality, and usage notices', async () => {
   const terminal = fakeTerminal(), answers = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: 'main',
     onMessage: async (message, emit) => {
       answers.push(message)
       emit({ event: 'status', data: { phase: 'routing' } })
@@ -65,7 +65,7 @@ test('rich UI keeps the active assistant identity across status, quality, and us
 test('rich UI slash menu selection and malformed commands remain local', async () => {
   const terminal = fakeTerminal(), commands = [], notices = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Pro', directory: '/tmp/work', branch: null,
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Pro', directory: '/tmp/work', branch: null,
     onMessage: async () => { throw new Error('Chat must not run') },
     onCommand: async (command, context) => { commands.push(command.name); context.notice('usage shown') },
   })
@@ -85,7 +85,7 @@ test('rich UI slash menu selection and malformed commands remain local', async (
 test('rich UI decodes fragmented UTF-8, escape input, CRLF, and split paste markers', async () => {
   const terminal = fakeTerminal(), messages = []
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
     onMessage: async (message, emit) => { messages.push(message); emit({ event: 'delta', data: { text: 'ok' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'ok', threadId: null } },
     onCommand: async () => undefined,
   })
@@ -108,7 +108,7 @@ test('rich UI closes on EOF and does not accept late callbacks after cancellatio
   const terminal = fakeTerminal(), messages = [], emits = []
   let release
   const ui = new RichTerminalUI({
-    input: terminal.input, output: terminal.output, version: '0.2.0-rc.2', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
     onMessage: async message => { messages.push(message); await new Promise(resolve => { release = resolve }); return { text: 'late', threadId: null } },
     onCommand: async () => undefined,
   })

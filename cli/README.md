@@ -57,8 +57,11 @@ npm run release:check
 It derives the tarball filename from `npm pack --json`, verifies the manifest
 and compiled entrypoint, prints a SHA-256, and installs it into a clean
 temporary npm prefix before running help/version/doctor outside this checkout.
-Pass `--keep-artifact` when an operator needs the checked tarball for a later
-publish command; the default check removes its temporary artifact.
+It uses the active npm JavaScript entry through Node (including on Windows),
+and its Unix rich-terminal stage allocates a real PTY rather than passing a
+pipe to `script`. Pass `--keep-artifact` when an operator needs the checked
+tarball for a later publish command; the default check removes its temporary
+artifact. A failed run never promotes an older same-version archive.
 
 Set `SWICO_API_BASE_URL` only for an approved HTTPS development endpoint.
 Production endpoints must use HTTPS. On supported desktop installations,
@@ -108,6 +111,19 @@ inside Swico when an intentional message begins with `/`; `swico ask
 `swico release-readiness --json` returns the same report for automation. A
 valid report may exit nonzero when the local-agent sandbox or package-license
 gate is blocked; that is a readiness result, not a command-syntax failure.
+
+If a capable terminal appears to return to the shell without a useful error,
+opt in to bounded startup diagnostics. They report only terminal state and the
+startup stage; they never print credentials, prompts, repository content, or
+environment values:
+
+```sh
+swico --diagnostic-startup
+```
+
+The diagnostics are written to stderr and stop after the process has restored
+the terminal. Use `node ./dist/cli.js --diagnostic-startup --plain` only for a
+source-build diagnosis; it is not installed-artifact acceptance.
 
 On a capable interactive TTY, bare `swico` opens the default rich terminal
 screen: a compact startup card, readable user/Swico turns, incremental Chat

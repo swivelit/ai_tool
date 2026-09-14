@@ -1,24 +1,26 @@
 # CLI terminal UI acceptance recording
 
 This is a sanitized, non-billable acceptance note for the local
-`0.2.0-rc.2` candidate. Installed controller/event coverage uses a disposable
+`0.2.0-rc.3` candidate. Installed controller/event coverage uses a disposable
 fake terminal and controlled API fixtures; no real credential or provider was
 used. The release check reports native PTY coverage separately when the host
 can allocate one.
 
-Fresh-prefix executable:
+Automated fresh-prefix installed PTY acceptance:
 
 ```text
-The exact fresh-prefix executable is recorded by the final release-check run
-and the external artifact report; temporary release prefixes are deleted after
-the check.
+PASS: PTY positive control (child stdin/stdout are TTYs)
+PASS: installed rich terminal with controlled API
+PASS: routing/status before deltas, /usage, two turns, Ctrl+C cancellation,
+      /exit, and terminal cleanup
+PASS: bounded startup diagnostics reached rich-ui:restored
 ```
 
 The real PTY transcript showed:
 
 ```text
 ╭──────────────────────────────────────────────────────────────────╮
-│ Swico 0.2.0-rc.2 · Swico Lite                                    │
+│ Swico 0.2.0-rc.3 · Swico Lite                                    │
 │ <workspace> · main                                                │
 ╰──────────────────────────────────────────────────────────────────╯
 · Ready · Enter sends · Ctrl+J inserts a newline · Ctrl+C cancels
@@ -26,8 +28,10 @@ The real PTY transcript showed:
 ```
 
 The installed controller path exercises routing status before deltas, quality,
-completion, fragmented input, paste, Unicode and cleanup. The native PTY probe
-was NOT RUN in the managed non-TTY host (`tcgetattr` is unavailable); this is
-not native terminal/platform acceptance. Narrow/wide visual review and the
-Windows PTY path remain host/CI checks, not a paid-Chat or agent-readiness
-claim.
+completion, fragmented input, paste, Unicode and cleanup. The release check's
+Unix helper uses `pty.fork()` and waits for the real child close status; it does
+not use BSD `script` with pipe input and does not synthesize success by sending
+`/exit` and killing the child. This is automated PTY evidence on the host where
+the check ran, not a claim that every operator Terminal, Windows console, or
+native coding sandbox is accepted. Narrow/wide visual review and Windows
+console acceptance remain platform checks.

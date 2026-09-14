@@ -1,19 +1,49 @@
 import { createHash } from 'node:crypto'
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { gunzipSync } from 'node:zlib'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const keepArtifact = process.argv.includes('--keep-artifact')
 const STAGE_TIMEOUT_MS = 90_000
+
+async function resolveNpmLauncher() {
+  const supplied = process.env.npm_execpath
+  if (supplied && isAbsolute(supplied)) {
+    await stat(supplied)
+    return { command: process.execPath, prefix: [supplied], source: 'npm_execpath' }
+  }
+  if (process.platform === 'win32') {
+    // npm.cmd cannot be passed to execFile without a shell on Windows. Find
+    // the active launcher, then use its adjacent npm-cli.js through Node.
+    const locations = (await exec('where.exe', ['npm.cmd'], { maxBuffer: 16 * 1024 })).stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    for (const located of locations) {
+      if (!isAbsolute(located)) continue
+      // The npm shim is trusted launcher metadata, not a workspace lookup.
+      // Prefer the path named by the shim, then its normal adjacent layout.
+      const shim = await readFile(located, 'utf8').catch(() => '')
+      const named = shim.match(/%~dp0[\\/](node_modules[\\/]npm[\\/]bin[\\/]npm-cli\.js)/i)?.[1]
+      const candidates = [named && join(dirname(located), named), join(dirname(located), 'node_modules', 'npm', 'bin', 'npm-cli.js')].filter(Boolean)
+      for (const script of candidates) {
+        try {
+          await stat(script)
+          return { command: process.execPath, prefix: [script], source: 'active npm.cmd JavaScript entry' }
+        } catch { /* try the next trusted adjacent path */ }
+      }
+    }
+    throw new Error('Cannot locate the active npm JavaScript entry. Run this check through npm or install npm.cmd with npm-cli.js.')
+  }
+  // Standalone Unix execution retains the platform npm command as a bounded
+  // fallback. No workspace-local package is guessed or loaded.
+  return { command: 'npm', prefix: [], source: 'active PATH npm fallback' }
+}
 
 function archiveEntries(buffer) {
   const entries = new Map()
@@ -35,24 +65,7 @@ function archiveEntries(buffer) {
 
 async function run(label, command, args, options = {}) {
   process.stderr.write(`[release-check] ${label}\n`)
-  try {
-    return await exec(command, args, {
-      cwd: root,
-      maxBuffer: 2 * 1024 * 1024,
-      timeout: STAGE_TIMEOUT_MS,
-      killSignal: 'SIGTERM',
-      env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
-      ...options,
-    })
-  } catch (error) {
-    const detail = [error?.timedOut ? 'timed out' : '', error?.killed ? 'process killed' : '', error?.stderr, error?.stdout, error?.code ? `code=${error.code}` : '']
-      .filter(Boolean).join(' ').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000)
-    throw new Error(`${label} failed: ${detail || 'unknown subprocess failure'}`)
-  }
-}
-
-async function runAllowFailure(label, command, args, options = {}) {
-  process.stderr.write(`[release-check] ${label}\n`)
+  stageResults[label] = 'running'
   try {
     const result = await exec(command, args, {
       cwd: root,
@@ -62,8 +75,32 @@ async function runAllowFailure(label, command, args, options = {}) {
       env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
       ...options,
     })
+    stageResults[label] = 'passed'
+    return result
+  } catch (error) {
+    stageResults[label] = `failed: ${String(error?.message ?? error).slice(0, 300)}`
+    const detail = [error?.timedOut ? 'timed out' : '', error?.killed ? 'process killed' : '', error?.stderr, error?.stdout, error?.code ? `code=${error.code}` : '']
+      .filter(Boolean).join(' ').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000)
+    throw new Error(`${label} failed: ${detail || 'unknown subprocess failure'}`)
+  }
+}
+
+async function runAllowFailure(label, command, args, options = {}) {
+  process.stderr.write(`[release-check] ${label}\n`)
+  stageResults[label] = 'running'
+  try {
+    const result = await exec(command, args, {
+      cwd: root,
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: STAGE_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
+      env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
+      ...options,
+    })
+    stageResults[label] = 'passed'
     return { ...result, code: 0 }
   } catch (error) {
+    stageResults[label] = `observed failure: ${String(error?.message ?? error).slice(0, 300)}`
     return {
       stdout: error?.stdout ?? '',
       stderr: error?.stderr ?? '',
@@ -75,6 +112,9 @@ async function runAllowFailure(label, command, args, options = {}) {
 
 const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
 let controlledServer
+let packedArchivePath
+const stageResults = {}
+const candidate = { accepted: false, source_identity: null, packed: null, stages: stageResults }
 async function sourceIdentity() {
   try {
     const revision = (await exec('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim()
@@ -82,19 +122,87 @@ async function sourceIdentity() {
     return { revision: revision || 'unknown', dirty: Boolean(status) }
   } catch { return { revision: 'unknown', dirty: 'unknown' } }
 }
+
+function stageStart(label) { stageResults[label] = 'running' }
+async function runNpm(label, args, options = {}) {
+  const launcher = await npmLauncher
+  return run(label, launcher.command, [...launcher.prefix, ...args], options)
+}
+
+async function runNode(label, script, args, options = {}) {
+  return run(label, process.execPath, [script, ...args], options)
+}
+
+async function runNodeAllowFailure(label, script, args, options = {}) {
+  return runAllowFailure(label, process.execPath, [script, ...args], options)
+}
+
+function quoteCmd(value) { return `"${String(value).replaceAll('"', '""')}"` }
+async function runPublicShim(label, shim, args, options = {}) {
+  if (process.platform !== 'win32') return run(label, shim, args, options)
+  const command = process.env.ComSpec || 'cmd.exe'
+  return run(label, command, ['/d', '/s', '/c', [quoteCmd(shim), ...args.map(quoteCmd)].join(' ')], options)
+}
+
+async function runPty(label, command, args, options, onOutput) {
+  stageStart(label)
+  process.stderr.write(`[release-check] ${label}\n`)
+  const runner = join(root, 'scripts', 'pty_runner.py')
+  const child = spawn('python3', [runner, command, ...args], { cwd: root, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
+  let output = '', errorOutput = '', settled = false, timedOut = false, timer
+  let resolveResult
+  const result = new Promise(resolve => { resolveResult = resolve })
+  const decoder = new (await import('node:string_decoder')).StringDecoder('utf8')
+  const finish = resultValue => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    child.stdin.destroy()
+    stageResults[label] = resultValue.error || resultValue.timedOut ? `failed: ${String(resultValue.error || 'timed out').slice(0, 300)}` : 'passed'
+    resolveResult(resultValue)
+  }
+  child.stdout.on('data', chunk => {
+    const text = decoder.write(chunk)
+    output += text
+    try {
+      onOutput?.(text, value => {
+        if (settled) return
+        if (value === null) child.stdin.end()
+        else child.stdin.write(value)
+      })
+    } catch (error) { finish({ output, error: String(error) }) }
+  })
+  child.stderr.on('data', chunk => { errorOutput += String(chunk) })
+  child.once('error', error => finish({ output, errorOutput, error: String(error) }))
+  child.once('close', (code, signal) => finish({ output: output + decoder.end(), errorOutput, code, signal, timedOut }))
+  timer = setTimeout(() => {
+    timedOut = true
+    child.kill('SIGTERM')
+    setTimeout(() => { if (!settled) child.kill('SIGKILL') }, 1_000)
+  }, STAGE_TIMEOUT_MS)
+  return result
+}
+
+const npmLauncher = resolveNpmLauncher()
 try {
-  const packed = await run('pack', npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
+  candidate.source_identity = await sourceIdentity()
+  candidate.npm_launcher = (await npmLauncher).source
+  const sourceManifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+  candidate.expected_version = sourceManifest.version
+  const packed = await runNpm('pack', ['pack', '--json', '--ignore-scripts', '--pack-destination', work])
   const records = JSON.parse(packed.stdout)
   const record = Array.isArray(records) ? records[0] : records
   if (!record?.filename) throw new Error('npm pack did not return an artifact filename')
   const archivePath = join(work, record.filename)
+  packedArchivePath = archivePath
   const archive = await readFile(archivePath)
+  candidate.packed = { filename: record.filename, sha256: createHash('sha256').update(archive).digest('hex') }
   const entries = archiveEntries(gunzipSync(archive))
   const manifestBytes = entries.get('package/package.json')
   if (!manifestBytes) throw new Error('Package archive has no package.json')
   const manifest = JSON.parse(manifestBytes.toString('utf8'))
-  if (manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
-  if (manifest.version !== '0.2.0-rc.2') throw new Error(`Unexpected package version: ${manifest.version}`)
+  if (manifest.name !== sourceManifest.name || manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
+  if (manifest.version !== sourceManifest.version || manifest.version !== candidate.expected_version) throw new Error(`Packed version ${manifest.version} does not match source version ${candidate.expected_version}`)
   if (manifest.license !== 'MIT') throw new Error(`Unexpected package license: ${manifest.license}`)
   if (manifest.bin?.swico !== 'dist/cli.js') throw new Error('The swico executable does not map to dist/cli.js')
   const required = [
@@ -112,7 +220,7 @@ try {
     'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
-  const licenseText = entries.get('package/LICENSE')?.toString('utf8') ?? ''
+  const licenseText = (entries.get('package/LICENSE')?.toString('utf8') ?? '').replace(/\r\n/g, '\n')
   if (!licenseText.startsWith('MIT License\n') || !licenseText.includes('Copyright (c) 2026 Swivel Technologies and contributors')) throw new Error('Packaged CLI license text is not the approved MIT notice')
   if (!entries.get('package/LICENSE_SCOPE.md')?.toString('utf8').includes('not a repository-wide license')) throw new Error('Packaged CLI license scope is missing')
   for (const entry of entries.keys()) {
@@ -122,8 +230,10 @@ try {
   }
 
   const prefix = join(work, 'prefix')
-  await run('clean-prefix install', npm, ['install', '--global', '--prefix', prefix, '--ignore-scripts', archivePath])
+  await runNpm('clean-prefix install', ['install', '--global', '--prefix', prefix, '--ignore-scripts', archivePath])
   const executable = process.platform === 'win32' ? join(prefix, 'swico.cmd') : join(prefix, 'bin', 'swico')
+  const packageRoot = process.platform === 'win32' ? join(prefix, 'node_modules', '@swiveltechnologies', 'swico') : join(prefix, 'lib', 'node_modules', '@swiveltechnologies', 'swico')
+  const appEntry = join(packageRoot, 'dist', 'cli.js')
   // Artifact smoke tests must never inspect the operator's real keychain,
   // config, state, or sessions. Use an isolated empty state rooted in the
   // temporary release directory.
@@ -205,21 +315,22 @@ try {
     XDG_CONFIG_HOME: join(work, 'xdg'),
   }
   const smokeOptions = { cwd: work, maxBuffer: 512 * 1024, env: isolatedEnv }
-  const login = await run('installed paid login completion', executable, ['login', '--tier', 'standard', '--memory-only'], smokeOptions)
+  const shimVersion = await runPublicShim('installed public launcher shim', executable, ['--version', '--json'], smokeOptions)
+  if (JSON.parse(shimVersion.stdout).version !== sourceManifest.version) throw new Error('Installed public shim did not launch the candidate package')
+  const login = await runNode('installed paid login completion', appEntry, ['login', '--tier', 'standard', '--memory-only'], smokeOptions)
   if (!login.stdout.includes('Swico')) throw new Error('Installed login did not complete')
   if (control.device?.tier !== 'standard') throw new Error('Installed login did not transmit the explicit paid tier')
   const oldTokens = { access_token: 'installed-access-old', refresh_token: 'installed-refresh-old', expires_in: 900, session_id: 'installed-session', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat'], account: { email: 'installed@example.test', name: 'Installed' } }
   await writeFile(isolatedEnv.SWICO_CLI_CREDENTIAL_FILE, JSON.stringify({ endpoint: controlOrigin, tokens: oldTokens }))
   await writeFile(join(work, 'schema.json'), JSON.stringify({ type: 'object', required: ['answer'], additionalProperties: false, properties: { answer: { type: 'string' } } }))
   await writeFile(join(work, 'AGENTS.md'), 'AGENTS_SECRET_MARKER must never be sent by a task-only plan.')
-  const streamed = await run('installed streaming with current-token refresh', executable, ['ask', 'hello installed'], smokeOptions)
+  const streamed = await runNode('installed streaming with current-token refresh', appEntry, ['ask', 'hello installed'], smokeOptions)
   if (!streamed.stdout.includes('installed stream response') || !control.refreshed) throw new Error('Installed stream/refresh smoke failed')
   const normalStream = chatStreams.find(item => item.requestId && requestBodies.some(request => request.body.request_id === item.requestId && request.body.message === 'hello installed'))
   if (!normalStream || normalStream.events.join(',') !== 'thread,status,delta,quality,usage,wallet,done' || normalStream.events.filter(event => event === 'done').length !== 1 || normalStream.events.includes('error')) throw new Error('Controlled paid stream did not exercise the complete public event envelope')
   const normalRequestId = normalStream.requestId
   if (typeof normalRequestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(normalRequestId)) throw new Error('Controlled paid stream did not preserve a usable request correlation')
   if (!streamed.stderr.includes('Quality: best_effort\n')) throw new Error('Best-effort quality was not rendered as a readable stderr diagnostic')
-  const packageRoot = process.platform === 'win32' ? join(prefix, 'node_modules', '@swiveltechnologies', 'swico') : join(prefix, 'lib', 'node_modules', '@swiveltechnologies', 'swico')
   const installedUiProbe = join(work, 'installed-ui-probe.mjs')
   await writeFile(installedUiProbe, `import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -237,32 +348,39 @@ const running = ui.run(); input.emit('data', Buffer.from('installed controller\\
 assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /installed controller answer/); assert.equal(input.raw, false)
 `)
   await run('installed rich controller/event path', process.execPath, [installedUiProbe, join(packageRoot, 'dist', 'terminal_ui.js')], smokeOptions)
-  let installedRichTerminal = process.platform === 'win32' ? 'not_run (native Windows PTY is covered by the Windows CI stage)' : 'not_run (host PTY unavailable; installed controller passed)'
-  if (process.platform !== 'win32' && process.stdin.isTTY && process.stdout.isTTY) {
-    const ptyArgs = process.platform === 'darwin' ? ['-q', '/dev/null', executable] : ['-q', '-c', JSON.stringify(executable), '/dev/null']
-    const pty = await new Promise(resolve => {
-      const child = spawn('script', ptyArgs, { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
-      let output = '', sent = false, completed = false
-      const finish = result => { if (completed) return; completed = true; clearTimeout(deadline); child.kill('SIGTERM'); resolve(result) }
-      const observe = chunk => {
-        output += String(chunk)
-        if (!sent && output.includes('Ask Swico anything')) { sent = true; child.stdin.write('installed rich PTY\r') }
-        if (sent && output.includes('installed stream response')) { child.stdin.write('/exit\r'); setTimeout(() => finish({ output, code: 0 }), 100) }
-      }
-      child.stdout.on('data', observe); child.stderr.on('data', observe)
-      child.on('close', (code, signal) => finish({ output, code, signal }))
-      const deadline = setTimeout(() => finish({ output, timedOut: true }), 15_000)
+  let installedRichTerminal = process.platform === 'win32' ? 'not_run (Windows native PTY adapter is not part of this client check)' : 'not_run (host PTY unavailable; installed controller passed)'
+  if (process.platform !== 'win32') {
+    // A real PTY can still inherit TERM=dumb from a CI/container parent. The
+    // rich-client acceptance needs a capable terminal profile, while the
+    // ordinary non-TTY and TERM=dumb fallback is checked separately below.
+    const ptySmokeOptions = { ...smokeOptions, env: { ...smokeOptions.env, TERM: 'xterm-256color' } }
+    const ptyReady = await runPty('PTY positive control', process.execPath, ['-e', "if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(41); process.stdout.write('PTY_READY\\n')"], ptySmokeOptions)
+    if (ptyReady.timedOut || ptyReady.error || ptyReady.code !== 0 || !ptyReady.output.includes('PTY_READY')) throw new Error(`PTY positive control failed: ${JSON.stringify({ code: ptyReady.code, signal: ptyReady.signal, error: ptyReady.error, output: ptyReady.output.slice(-500) })}`)
+    let ptyPhase = 0
+    const pty = await runPty('installed rich terminal PTY', process.execPath, [appEntry, '--diagnostic-startup'], ptySmokeOptions, (chunk, send) => {
+      if (ptyPhase === 0 && chunk.includes('Ask Swico anything')) { ptyPhase = 1; send('/usage\r') }
+      else if (ptyPhase === 1 && chunk.includes('Available Chat credit')) { ptyPhase = 2; send('installed rich PTY\r') }
+      else if (ptyPhase === 2 && chunk.includes('installed stream response')) { ptyPhase = 3; send('installed rich second turn\r') }
+      else if (ptyPhase === 3 && chunk.includes('installed stream response')) { ptyPhase = 4; send('cancel me\r') }
+      else if (ptyPhase === 4 && chunk.includes('Working · Ctrl+C cancels')) { ptyPhase = 5; send('\u0003') }
+      else if (ptyPhase === 5 && chunk.includes('Cancellation requested.')) { ptyPhase = 6; send('/exit\r') }
     })
-    if (pty.timedOut || pty.code !== 0 || !pty.output.includes('installed stream response') || !pty.output.includes('Swico')) throw new Error(`Installed rich PTY smoke failed: ${String(pty.output).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(-1_000)}`)
+    const visible = pty.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    if (pty.timedOut || pty.error || pty.code !== 0 || ptyPhase !== 6 || !visible.includes('installed rich PTY') || !visible.includes('installed rich second turn') || !pty.output.includes('[startup] rich-ui:restored')) throw new Error(`Installed rich PTY smoke failed: ${JSON.stringify({ code: pty.code, signal: pty.signal, phase: ptyPhase, error: pty.error, output: visible.slice(-1_000) })}`)
     installedRichTerminal = 'passed (installed PTY with controlled API)'
+    let eofSeen = false
+    const eofPty = await runPty('installed rich terminal EOF cleanup', process.execPath, [appEntry, '--diagnostic-startup'], ptySmokeOptions, (chunk, send) => {
+      if (!eofSeen && chunk.includes('Ask Swico anything')) { eofSeen = true; send(null) }
+    })
+    if (eofPty.timedOut || eofPty.error || eofPty.code !== 0 || !eofSeen || !eofPty.output.includes('[startup] rich-ui:restored')) throw new Error(`Installed rich EOF cleanup failed: ${JSON.stringify({ code: eofPty.code, signal: eofPty.signal, error: eofPty.error, output: eofPty.output.slice(-1_000) })}`)
   }
-  const structured = await run('installed validated structured output', executable, ['exec', 'return an answer', '--output-schema', join(work, 'schema.json')], smokeOptions)
+  const structured = await runNode('installed validated structured output', appEntry, ['exec', 'return an answer', '--output-schema', join(work, 'schema.json')], smokeOptions)
   if (JSON.parse(structured.stdout).answer !== 'installed') throw new Error('Installed structured output smoke failed')
-  const planned = await run('installed task-only plan consent', executable, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
+  const planned = await runNode('installed task-only plan consent', appEntry, ['exec', 'plan this task', '--mode', 'plan'], smokeOptions)
   const planRequest = requestBodies.find(item => item.path === '/api/cli/v1/chat/stream' && String(item.body.message).includes('task-only plan'))
   if (!planRequest || String(planRequest.body.message).includes('AGENTS_SECRET_MARKER')) throw new Error('Installed plan consent leaked repository instructions')
   const interactiveRecovery = await new Promise(resolve => {
-    const child = spawn(executable, [], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [appEntry], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     let continued = false
     const maybeContinue = () => {
@@ -280,7 +398,7 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   if (!interactiveOutput.includes('temporary controlled failure') || !interactiveOutput.includes('installed stream response')) throw new Error(`Installed same-process error recovery did not complete: ${interactiveOutput.replace(/[\\u0000-\\u001f\\u007f]/g, ' ').slice(-1_000)}`)
   const beforeRejectedCommands = requestBodies.length
   const rejectedCommands = await new Promise(resolve => {
-    const child = spawn(executable, [], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [appEntry], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/resume', '/usage', '/exit']
     let promptCount = 0, sent = 0, settled = false
@@ -306,15 +424,15 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   const rejectedOutput = `${rejectedCommands.stdout}\n${rejectedCommands.stderr}`
   if (!rejectedOutput.includes('Unknown interactive command "/exite"') || !rejectedOutput.includes('Unknown interactive command "/bogus"') || !rejectedOutput.includes('Unknown interactive command "/usagex"') || !rejectedOutput.includes('Unknown interactive command "/searchlight"') || !rejectedOutput.includes('No local coding sessions are saved.') || !rejectedOutput.includes('Available Chat credit')) throw new Error(`Installed command safety/recovery smoke failed: ${rejectedOutput.slice(-1_000)}`)
   if (rejectedCommands.code !== 0 || requestBodies.slice(beforeRejectedCommands).some(item => item.path === '/api/cli/v1/chat/stream')) throw new Error('Rejected interactive commands admitted Chat or did not exit cleanly')
-  const usage = await run('installed shell usage', executable, ['usage'], smokeOptions)
-  const usageJson = await run('installed shell usage JSON', executable, ['usage', '--json'], smokeOptions)
-  const readiness = await runAllowFailure('installed offline release-readiness JSON', executable, ['release-readiness', '--json'], smokeOptions)
+  const usage = await runNode('installed shell usage', appEntry, ['usage'], smokeOptions)
+  const usageJson = await runNode('installed shell usage JSON', appEntry, ['usage', '--json'], smokeOptions)
+  const readiness = await runNodeAllowFailure('installed offline release-readiness JSON', appEntry, ['release-readiness', '--json'], smokeOptions)
   let readinessBody
   try { readinessBody = JSON.parse(readiness.stdout) } catch { throw new Error(`Installed release-readiness --json did not return JSON: ${`${readiness.stdout} ${readiness.stderr}`.slice(-1_000)}`) }
   if (!readinessBody.checks || !Array.isArray(readinessBody.required_blockers)) throw new Error('Installed release-readiness JSON has an invalid public shape')
-  const versionJson = await run('installed version identity', executable, ['--version', '--json'], smokeOptions)
+  const versionJson = await runNode('installed version identity', appEntry, ['--version', '--json'], smokeOptions)
   const cancelled = await new Promise(resolve => {
-    const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [appEntry, 'ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     const deadline = Date.now() + 5_000
     const readiness = setInterval(() => {
       const admitted = requestBodies.some(item => item.path === '/api/cli/v1/chat/stream' && item.body.message === 'cancel me')
@@ -323,7 +441,7 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
     child.on('close', (code, signal) => { clearInterval(readiness); resolve({ code, signal }) })
   })
   if (control.cancelled < 1 || (!cancelled.code && !cancelled.signal)) throw new Error('Installed cancellation smoke did not cancel the request')
-  await run('installed remote logout and local deletion', executable, ['logout'], smokeOptions)
+  await runNode('installed remote logout and local deletion', appEntry, ['logout'], smokeOptions)
   const retainedRevoked = await fetch(`${controlOrigin}/api/cli/v1/me`, { headers: { Authorization: 'Bearer installed-access-new', Accept: 'application/json' } })
   if (retainedRevoked.status !== 401) throw new Error(`Controlled server accepted a retained revoked credential: HTTP ${retainedRevoked.status}`)
   const retainedChat = await fetch(`${controlOrigin}/api/cli/v1/chat/stream`, { method: 'POST', headers: { Authorization: 'Bearer installed-access-new', 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: 'retained-revoked-request', message: 'must be rejected' }) })
@@ -331,14 +449,14 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   const retainedRefresh = await fetch(`${controlOrigin}/api/cli/v1/token`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ grant_type:'refresh_token', refresh_token:'installed-refresh-new' }) })
   if (![400, 401].includes(retainedRefresh.status)) throw new Error(`Controlled token endpoint accepted a retained revoked refresh credential: HTTP ${retainedRefresh.status}`)
   let revoked = false
-  try { await run('installed revoked-session rejection', executable, ['whoami'], smokeOptions) } catch { revoked = true }
+  try { await runNode('installed revoked-session rejection', appEntry, ['whoami'], smokeOptions) } catch { revoked = true }
   if (!revoked) throw new Error('Installed revoked-session rejection did not fail closed')
-  const help = await run('installed --help', executable, ['--help'], smokeOptions)
-  const version = await run('installed --version', executable, ['--version'], smokeOptions)
-  const doctor = await run('installed offline doctor', executable, ['doctor'], { ...smokeOptions, env: { ...isolatedEnv, SWICO_CLI_DOCTOR_OFFLINE: '1' } })
-  const config = await run('installed config validate', executable, ['config', 'validate'], smokeOptions)
-  const completion = await run('installed completion', executable, ['completion', 'bash'], smokeOptions)
-  const sandbox = await run('installed sandbox status', executable, ['sandbox', 'status'], smokeOptions)
+  const help = await runNode('installed --help', appEntry, ['--help'], smokeOptions)
+  const version = await runNode('installed --version', appEntry, ['--version'], smokeOptions)
+  const doctor = await runNode('installed offline doctor', appEntry, ['doctor'], { ...smokeOptions, env: { ...isolatedEnv, SWICO_CLI_DOCTOR_OFFLINE: '1' } })
+  const config = await runNode('installed config validate', appEntry, ['config', 'validate'], smokeOptions)
+  const completion = await runNode('installed completion', appEntry, ['completion', 'bash'], smokeOptions)
+  const sandbox = await runNode('installed sandbox status', appEntry, ['sandbox', 'status'], smokeOptions)
   if (!help.stdout.includes('Usage: swico')) throw new Error('Installed --help output is invalid')
   if (version.stdout.trim() !== manifest.version) throw new Error(`Installed version mismatch: ${version.stdout.trim()}`)
   if (!config.stdout.includes('Configuration is valid')) throw new Error('Installed config validation output is invalid')
@@ -351,12 +469,15 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
   if (doctorBody.build?.version !== manifest.version || !String(doctorBody.build?.executable).includes('prefix')) throw new Error('Installed doctor did not identify the running executable')
   await writeFile(isolatedEnv.SWICO_CLI_CREDENTIAL_FILE, JSON.stringify({ endpoint: controlOrigin, tokens: { ...oldTokens, access_token:'installed-access-old', refresh_token:'invalid-refresh' } }))
   let invalidGrant = false
-  try { await run('installed invalid-grant feedback', executable, ['whoami'], smokeOptions) } catch (error) { invalidGrant = String(error).includes('terminal authorization is no longer valid') || String(error).includes('swico login --tier') }
+  try { await runNode('installed invalid-grant feedback', appEntry, ['whoami'], smokeOptions) } catch (error) { invalidGrant = String(error).includes('terminal authorization is no longer valid') || String(error).includes('swico login --tier') }
   if (!invalidGrant) throw new Error('Installed invalid_grant feedback was not actionable')
   const digest = createHash('sha256').update(archive).digest('hex')
-  if (keepArtifact) await copyFile(archivePath, join(root, record.filename))
+  candidate.accepted = installedRichTerminal.startsWith('passed')
+  if (keepArtifact && candidate.accepted) await copyFile(archivePath, join(root, record.filename))
+  if (!candidate.accepted) process.exitCode = 2
   console.log(JSON.stringify({
     name: manifest.name,
+    accepted: candidate.accepted,
     source_identity: await sourceIdentity(),
     version: manifest.version,
     filename: record.filename,
@@ -364,9 +485,19 @@ assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /i
     archive_files: [...entries.keys()].sort(),
     installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', rich_terminal: installedRichTerminal, structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', optional_resume: 'passed (installed offline)', release_readiness_json: `passed (installed offline; exit ${readiness.code ?? 'unknown'})`, cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     installed_executable: executable,
+    installed_js_entry: appEntry,
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),
   }, null, 2))
+} catch (error) {
+  candidate.error = String(error?.message ?? error).slice(0, 1_000)
+  if (keepArtifact && packedArchivePath) {
+    const failedPath = join(root, `${candidate.packed?.filename ?? 'swico-candidate.tgz'}.failed-${candidate.packed?.sha256?.slice(0, 12) ?? 'unknown'}`)
+    await copyFile(packedArchivePath, failedPath).catch(() => undefined)
+    candidate.failed_artifact = failedPath
+  }
+  process.stderr.write(`${JSON.stringify({ ...candidate, status: 'failed' }, null, 2)}\n`)
+  throw error
 } finally {
   if (controlledServer) await new Promise(resolve => controlledServer.close(resolve))
   await rm(work, { recursive: true, force: true })
