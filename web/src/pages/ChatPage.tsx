@@ -8,7 +8,7 @@ import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
 import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
-import { applyTheme, resolveTheme, type Theme } from '../theme'
+import { applyColorStyle, applyCustomColors, applyTheme, resolveColorStyle, resolveCustomColors, resolveTheme, type ColorStyle, type CustomColors, type Theme, } from '../theme'
 import { useVoiceReply } from '../hooks/useVoiceReply'
 import type { VoiceTurnDone } from '../hooks/useRealtimeVoice'
 import { frontendRelease } from '../config/publicConfig'
@@ -79,6 +79,10 @@ export function ChatPage() {
   const [voiceMode, setVoiceMode] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
+  const [colorStyle, setColorStyle] = useState<ColorStyle>(resolveColorStyle)
+  const [customColors, setCustomColors] = useState<CustomColors>(
+  resolveCustomColors,
+)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
   const [cancellationReady, setCancellationReady] = useState(false)
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
@@ -329,6 +333,13 @@ export function ChatPage() {
     return () => window.clearTimeout(timer)
   }, [highlightMessageId])
   useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => {
+  applyColorStyle(colorStyle)
+}, [colorStyle])
+
+useEffect(() => {
+  applyCustomColors(customColors)
+}, [customColors])
   useEffect(() => { setDraftVoiceTurnId(null) }, [active])
   useEffect(() => { localStorage.setItem('swico-sidebar-collapsed', String(collapsed)) }, [collapsed])
   useEffect(() => {
@@ -957,6 +968,17 @@ export function ChatPage() {
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
     <section className={`chat-main${emptyChat ? ' empty-chat' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
+      <div className="chat-background-art" aria-hidden="true">
+        <span className="chat-wave chat-wave-1" />
+        <span className="chat-wave chat-wave-2" />
+        <span className="chat-wave chat-wave-3" />
+
+        <span className="chat-particle chat-particle-1" />
+        <span className="chat-particle chat-particle-2" />
+        <span className="chat-particle chat-particle-3" />
+        <span className="chat-particle chat-particle-4" />
+        <span className="chat-particle chat-particle-5" />
+      </div>
       <header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {fileDragActive && <div className="chat-drop-overlay" aria-hidden="true"><span>Drop files or images to attach</span></div>}
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
@@ -990,7 +1012,8 @@ export function ChatPage() {
     {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}
       tuning={bootstrap.voice_tuning} internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
       addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
-    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setRepository(null); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} subscriptions={bootstrap.subscriptions} knowledgeLibraryEnabled={Boolean(bootstrap.features.web_knowledge_library)} knowledgeUploads={attachments.filter((item): item is ReadyAttachment => item.status === 'ready')} /></Suspense>}
+    {settings && <Suspense fallback={null}>
+    <SettingsModal user={user} theme={theme} setTheme={setTheme} colorStyle={colorStyle} setColorStyle={setColorStyle} customColors={customColors} setCustomColors={setCustomColors} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setRepository(null); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} subscriptions={bootstrap.subscriptions} knowledgeLibraryEnabled={Boolean(bootstrap.features.web_knowledge_library)} knowledgeUploads={attachments.filter((item): item is ReadyAttachment => item.status === 'ready')} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>
 }
