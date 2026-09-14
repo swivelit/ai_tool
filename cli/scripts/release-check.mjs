@@ -51,6 +51,28 @@ async function run(label, command, args, options = {}) {
   }
 }
 
+async function runAllowFailure(label, command, args, options = {}) {
+  process.stderr.write(`[release-check] ${label}\n`)
+  try {
+    const result = await exec(command, args, {
+      cwd: root,
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: STAGE_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
+      env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
+      ...options,
+    })
+    return { ...result, code: 0 }
+  } catch (error) {
+    return {
+      stdout: error?.stdout ?? '',
+      stderr: error?.stderr ?? '',
+      code: typeof error?.code === 'number' ? error.code : undefined,
+      timedOut: Boolean(error?.timedOut),
+    }
+  }
+}
+
 const work = await mkdtemp(join(tmpdir(), 'swico-release-'))
 let controlledServer
 async function sourceIdentity() {
@@ -220,7 +242,7 @@ try {
     child.stdout.on('data', chunk => { stdout += String(chunk) })
     child.stderr.on('data', chunk => { stderr += String(chunk) })
     child.on('close', (code, signal) => resolve({ stdout, stderr, code, signal }))
-    const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/usage', '/exit']
+    const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/resume', '/usage', '/exit']
     let next = 0
     const timer = setInterval(() => {
       if (next < commands.length) { child.stdin.write(`${commands[next]}\n`); next += 1; return }
@@ -229,10 +251,14 @@ try {
     setTimeout(() => { clearInterval(timer); child.stdin.end() }, 10_000)
   })
   const rejectedOutput = `${rejectedCommands.stdout}\n${rejectedCommands.stderr}`
-  if (!rejectedOutput.includes('Unknown interactive command "/exite"') || !rejectedOutput.includes('Unknown interactive command "/bogus"') || !rejectedOutput.includes('Unknown interactive command "/usagex"') || !rejectedOutput.includes('Unknown interactive command "/searchlight"') || !rejectedOutput.includes('Available Chat credit')) throw new Error(`Installed command safety/recovery smoke failed: ${rejectedOutput.slice(-1_000)}`)
+  if (!rejectedOutput.includes('Unknown interactive command "/exite"') || !rejectedOutput.includes('Unknown interactive command "/bogus"') || !rejectedOutput.includes('Unknown interactive command "/usagex"') || !rejectedOutput.includes('Unknown interactive command "/searchlight"') || !rejectedOutput.includes('No local coding sessions are saved.') || !rejectedOutput.includes('Available Chat credit')) throw new Error(`Installed command safety/recovery smoke failed: ${rejectedOutput.slice(-1_000)}`)
   if (rejectedCommands.code !== 0 || requestBodies.slice(beforeRejectedCommands).some(item => item.path === '/api/cli/v1/chat/stream')) throw new Error('Rejected interactive commands admitted Chat or did not exit cleanly')
   const usage = await run('installed shell usage', executable, ['usage'], smokeOptions)
   const usageJson = await run('installed shell usage JSON', executable, ['usage', '--json'], smokeOptions)
+  const readiness = await runAllowFailure('installed offline release-readiness JSON', executable, ['release-readiness', '--json'], smokeOptions)
+  let readinessBody
+  try { readinessBody = JSON.parse(readiness.stdout) } catch { throw new Error(`Installed release-readiness --json did not return JSON: ${`${readiness.stdout} ${readiness.stderr}`.slice(-1_000)}`) }
+  if (!readinessBody.checks || !Array.isArray(readinessBody.required_blockers)) throw new Error('Installed release-readiness JSON has an invalid public shape')
   const versionJson = await run('installed version identity', executable, ['--version', '--json'], smokeOptions)
   const cancelled = await new Promise(resolve => {
     const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -279,7 +305,7 @@ try {
     filename: record.filename,
     sha256: digest,
     archive_files: [...entries.keys()].sort(),
-    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
+    installed_checks: { login_paid_tier: 'passed (controlled API)', stream_refresh: 'passed (controlled API)', structured_output: 'passed (controlled API)', plan_consent: 'passed (task-only)', error_recovery: 'passed', command_safety: 'passed (interactive controlled API)', optional_resume: 'passed (installed offline)', release_readiness_json: `passed (installed offline; exit ${readiness.code ?? 'unknown'})`, cancellation: 'passed', logout_revocation: 'passed (controlled API)', usage: 'passed (controlled API)', auth_error_feedback: 'passed (controlled API)', help: 'passed', version: 'passed', doctor: 'passed (offline)', config_validate: 'passed', completion: 'passed', sandbox_status: 'passed (readiness only)' },
     installed_executable: executable,
     retained_artifact: keepArtifact ? join(root, record.filename) : null,
     doctor_output: JSON.parse(doctor.stdout),

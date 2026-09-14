@@ -47,7 +47,11 @@ export function validateTopLevelArguments(command: string, argv: string[]): void
     if (args.length > 1 || (args.length === 1 && args[0] !== '--json')) usage(command, 'Usage accepts only --json.')
     return
   }
-  if (['whoami', 'logout', 'doctor', 'review', 'mcp-server', 'release-readiness'].includes(command)) {
+  if (command === 'release-readiness') {
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--json')) usage(command, 'Release readiness accepts only --json.')
+    return
+  }
+  if (['whoami', 'logout', 'doctor', 'review', 'mcp-server'].includes(command)) {
     noArguments(command, args)
     return
   }
@@ -111,7 +115,7 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
   if (name === 'image' && !argument) commandError(name, 'Usage: /image PATH (paths containing spaces are accepted).')
   if (name === 'agent' && !argument) commandError(name, 'Usage: /agent TASK')
   if (name === 'ask' && !argument) commandError(name, 'Usage: /ask TEXT')
-  if (name === 'resume' && argument?.split(/\s+/).length !== 1) commandError(name, 'Usage: /resume [SESSION_ID]')
+  if (name === 'resume' && argument && argument.split(/\s+/).length !== 1) commandError(name, 'Usage: /resume [SESSION_ID]')
   if (name === 'mcp' && argument && argument !== 'list') commandError(name, 'Usage: /mcp or /mcp list')
   if (name === 'sandbox' && argument && argument !== 'status') commandError(name, 'Usage: /sandbox or /sandbox status')
   if (name === 'worktree' && argument && argument !== 'list') commandError(name, 'Usage: /worktree or /worktree list')

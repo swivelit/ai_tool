@@ -21,7 +21,7 @@ export type PublicErrorDetails = { message: string; code?: string; request_id?: 
 
 const SAFE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/
 const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
-const TERMINAL_AUTH_MESSAGE = 'The terminal authorization is no longer valid. Run `swico login --tier lite|standard|pro` to authorize a new paid terminal session.'
+const TERMINAL_AUTH_MESSAGE = 'The terminal authorization is no longer valid. Run `swico login --tier lite`. Choose `--tier standard` or `--tier pro` when appropriate.'
 
 function safeText(value: unknown, fallback: string): string {
   if (typeof value !== 'string' || !value.trim() || /<\/?[A-Za-z][^>]*>/i.test(value)) return fallback

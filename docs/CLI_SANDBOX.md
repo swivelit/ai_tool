@@ -6,9 +6,10 @@ all desktop platforms are ready. Swico has no unsandboxed agent fallback.
 ## Evaluated runtimes
 
 * macOS Seatbelt (`sandbox-exec`) is a system primitive available on Intel
-  and Apple Silicon. It is not a new dependency, but its policy application
-  can be refused by the host. This checkout's Intel development host returns
-  `sandbox_apply: Operation not permitted`, so macOS is fail-closed here.
+  and Apple Silicon. The latest ordinary desktop readiness control on this
+  Intel development host terminated with `SIGABRT` and is reported as
+  `unknown_failure`; that is inconclusive host evidence, so macOS remains
+  fail-closed here. It is not proof that Seatbelt enforcement was refused.
 * [Bubblewrap](https://github.com/containers/bubblewrap) is an actively used
   Linux user/mount/PID/network namespace tool. It requires a usable unprivileged
   user namespace and is therefore Linux-only; Swico uses it only when the

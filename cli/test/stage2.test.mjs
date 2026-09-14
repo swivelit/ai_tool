@@ -86,7 +86,7 @@ test('skills load descriptions before bounded instructions and completion is off
     assert.equal(selectSkill('fix test failures', skills)?.name, 'testing')
     assert.match(completion('bash'), /complete -F/)
     assert.throws(() => completion('unknown'), /bash, zsh/)
-    for (const shell of ['bash', 'zsh', 'fish', 'powershell']) for (const command of ['sandbox', 'worktree', 'cloud', 'mcp-server']) assert.match(completion(shell), new RegExp(command.replace('-', '\\-')))
+    for (const shell of ['bash', 'zsh', 'fish', 'powershell']) for (const command of ['sandbox', 'worktree', 'cloud', 'mcp-server', 'release-readiness']) assert.match(completion(shell), new RegExp(command.replace('-', '\\-')))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

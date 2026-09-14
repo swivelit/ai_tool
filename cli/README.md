@@ -19,8 +19,8 @@ swico usage
 
 The CLI is paid-only. If the website currently has Swico Free selected, choose
 the CLI tier explicitly during authorization, for example `swico login
---tier lite` (also `standard` or `pro`). This does not change the website
-preference; the server rechecks Chat eligibility and available wallet or
+--tier lite`. Choose `--tier standard` or `--tier pro` as separate alternatives
+when appropriate. This does not change the website preference; the server rechecks Chat eligibility and available wallet or
 subscription allowance for every request.
 
 The production API is built in as `https://ai-tool-rrau.onrender.com`; browser
@@ -103,6 +103,11 @@ generation or change the selected tier. Monetary values remain integer micros;
 token ranges are estimates, not exact provider-token balances. Use `/ask TEXT`
 inside Swico when an intentional message begins with `/`; `swico ask
 "/literal text"` is the shell form.
+
+`swico release-readiness` runs local, non-charging readiness checks;
+`swico release-readiness --json` returns the same report for automation. A
+valid report may exit nonzero when the local-agent sandbox or package-license
+gate is blocked; that is a readiness result, not a command-syntax failure.
 
 ## Stage 2 local extensions
 

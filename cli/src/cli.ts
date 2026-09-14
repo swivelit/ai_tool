@@ -63,7 +63,7 @@ function doctorAuthState(error: unknown): string {
   return 'request_error'
 }
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (--tier lite|standard|pro)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness  Run local, non-charging release gates\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nInside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n\nInteractive commands: /help /new /history /resume /mode /model /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nInside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -116,7 +116,7 @@ async function login(env = process.env, scopes = ['chat'], options: { memoryOnly
       if (code === 'slow_down') { wait += 5_000; continue }
       if (code === 'access_denied') throw new Error('The terminal authorization was denied in the browser.')
       if (code === 'expired_token') throw new Error('The terminal authorization expired. Run `swico login` again.')
-      if (code === 'cli_paid_tier_required') throw new Error('Swico CLI is paid-only. Re-run `swico login --tier lite`, `--tier standard`, or `--tier pro` to choose a paid tier explicitly.')
+      if (code === 'cli_paid_tier_required') throw new Error('Swico CLI is paid-only. Run `swico login --tier lite`. Choose `--tier standard` or `--tier pro` when appropriate.')
       throw error
     }
   }

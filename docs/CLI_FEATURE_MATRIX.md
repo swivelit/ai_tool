@@ -30,7 +30,7 @@ explicitly bounded.
 | Sessions, resume, worktrees | PARTIAL | Owner-scoped metadata and detached worktrees; no automatic merge |
 | Images and web search | IMPLEMENTED + UNVERIFIED | Server-controlled paid capabilities; live/device acceptance still pending |
 | Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
-| Sandboxed local execution | FAIL-CLOSED / DISABLED | macOS Intel host refuses Seatbelt application; Linux/Windows not proven here |
+| Sandboxed local execution | FAIL-CLOSED / DISABLED | Latest ordinary macOS desktop diagnostic ends in `unknown_failure`/`SIGABRT`; hostile enforcement is not accepted; Linux/Windows not proven here |
 | Cloud tasks | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 
 | Capability | Status | Boundary / evidence |
@@ -55,7 +55,7 @@ explicitly bounded.
 | Images | PARTIAL | CLI upload reuses temporary paid image path; live/device verification pending |
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
-| macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and hostile verification are present; this Intel host refuses sandbox_apply |
+| macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and hostile verification are present; latest ordinary desktop readiness control reports `unknown_failure`/`SIGABRT`, so native enforcement remains unverified |
 | Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap plus hostile verification; no real Linux host was available in this audit |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
 | Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
@@ -66,13 +66,15 @@ explicitly bounded.
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
 | npm package | IMPLEMENTED + VERIFIED (installed path) | Final artifact passed clean-prefix checks against a controlled API; not published |
-| License | FAIL-CLOSED / DISABLED | No approved top-level LICENSE; publication decision required |
+| License | FAIL-CLOSED / DISABLED | No owner-approved CLI package SPDX expression or `SEE LICENSE IN` notice; publication decision required |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary
 check. `swico release-readiness --json` reports `agent_sandbox_ready` as
 blocked until that check passes; it does not make cloud readiness a local
 agent blocker. On the current Intel macOS host the verification probes are
-correctly not run because `sandbox_apply` is refused.
+correctly not run because the latest ordinary desktop readiness control is
+inconclusive (`unknown_failure`/`SIGABRT`). This is not evidence of native
+enforcement and does not change the fail-closed agent decision.
 
 The initial production controls remain `SWICO_CLI_AGENT_ENABLED=false` and
 `SWICO_CLI_CLOUD_AGENT_ENABLED=false`.

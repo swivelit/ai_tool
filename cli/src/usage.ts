@@ -10,17 +10,12 @@ function integerLabel(value: unknown): string | undefined {
   return undefined
 }
 
-function isZero(value: unknown): boolean {
-  return value === 0 || value === '0'
-}
-
 /** Render the public /usage envelope without inventing precision or quotas. */
 export function formatUsage(value: unknown): string {
   const body = object(value) ?? {}
   const wallet = object(body.wallet) ?? object(body.chat_wallet) ?? body
   const tier = typeof body.tier_label === 'string' ? body.tier_label : typeof body.tier === 'string' ? body.tier : 'paid Chat'
   const available = integerLabel(wallet.available_micros ?? wallet.balance_micros)
-  const availableValue = wallet.available_micros ?? wallet.balance_micros
   const reserved = integerLabel(wallet.reserved_micros)
   const estimate = object(wallet.token_estimate) ?? object(body.token_estimate)
   const blended = integerLabel(estimate?.estimated_blended_tokens)
@@ -29,12 +24,15 @@ export function formatUsage(value: unknown): string {
   const lines = [`Swico Chat usage (${tier})`]
   lines.push(`Available Chat credit: ${available === undefined ? 'unavailable' : `${available} micros`}`)
   lines.push(`Reserved Chat credit: ${reserved === undefined ? 'unavailable' : `${reserved} micros`}`)
-  if (isZero(availableValue)) lines.push('Entitlement: unavailable or exhausted')
+  if (wallet.billing_exempt === true) lines.push('Allowance/eligibility: exempt account (as reported by the usage endpoint)')
+  else lines.push('Allowance/eligibility: not shown by the usage endpoint')
   if (blended || minimum || maximum) {
     const range = minimum && maximum ? `${minimum}–${maximum}` : blended ?? 'unavailable'
     lines.push(`Estimated token range: ${range} tokens (estimate, not exact provider-token balance)`)
+  } else if (estimate?.availability === 'unavailable') {
+    lines.push('Token estimate: unavailable (pricing estimate)')
   } else {
-    lines.push('Token estimate: unavailable or exhausted')
+    lines.push('Token estimate: not shown by the usage endpoint')
   }
   return lines.join('\n')
 }

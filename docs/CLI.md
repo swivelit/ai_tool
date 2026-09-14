@@ -16,7 +16,8 @@ swico
 ```
 
 The CLI is paid-only. If the website currently has Swico Free selected, choose
-the CLI tier explicitly with `swico login --tier lite`, `standard`, or `pro`.
+the CLI tier explicitly, for example with `swico login --tier lite`; use
+`--tier standard` or `--tier pro` as separate alternatives when appropriate.
 This is scoped to the CLI session and does not silently change the website
 preference; the server rechecks Chat eligibility and wallet or subscription
 allowance before each AI operation.
@@ -215,11 +216,12 @@ the API process. There is no fallback to Render.
 ## Sandbox verification and platform support
 
 The current adapter intentionally has no unsandboxed fallback. The macOS
-adapter uses the system Seatbelt interface on both Intel and Apple Silicon,
-but this development Intel host returns `sandbox_apply: Operation not
-permitted`; it is therefore unavailable here. Linux uses system bubblewrap
-and requires usable unprivileged user/mount namespaces. Windows is
-fail-closed: no reviewed native filesystem/network runtime is bundled.
+adapter uses the system Seatbelt interface on both Intel and Apple Silicon;
+the latest ordinary desktop readiness control on this Intel host ended with
+`unknown_failure`/`SIGABRT`, so native enforcement remains unverified and
+unavailable here. Linux uses system bubblewrap and requires usable
+unprivileged user/mount namespaces. Windows is fail-closed: no reviewed
+native filesystem/network runtime is bundled.
 
 `swico sandbox verify` creates only temporary fake files, a local loopback
 test server, and a fake environment secret. It never reads real credentials.
@@ -233,9 +235,11 @@ separate policy and are not enabled by default.
 After confirming that the publisher controls the `@swiveltechnologies` npm
 scope and that
 the repository's approved license is included in the release, run explicitly.
-This checkout has no approved top-level LICENSE file, so the package allowlist
-does not reference a missing file; publication remains gated on the project's
-licensing decision rather than inventing terms here.
+This checkout has no owner-approved CLI package license expression or
+referenced notice. Publication remains gated on the owner's licensing decision;
+do not add MIT, Apache, proprietary, or placeholder terms here. An approved
+SPDX expression or `SEE LICENSE IN <file>` decision must include that notice
+and dependency notices in the exact package before publication.
 
 ```bash
 cd cli
@@ -248,12 +252,18 @@ npm whoami --registry=https://registry.npmjs.org/
 npm publish ./swiveltechnologies-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
-Use the artifact filename printed by `release:check` if the version changes.
-`npm whoami` proves identity, not write access to `@swiveltechnologies`; inspect package
-metadata after publication and then install the intended package from the
-public registry in a clean prefix. On Windows use `npm.cmd` and `swico.cmd`
-equivalents. Scope creation/joining and interactive publish authentication
-belong to the publisher, not customers or Render.
+These are conditional owner-operated commands only; this pass does not run
+them. `npm whoami` proves npm identity, not write access to the
+`@swiveltechnologies` scope. Check scope permissions with the authorized owner
+before publishing. npm account identity is separate from Swico browser login:
+downloading the package never grants API access, and server rollout/paid
+eligibility still governs use. Use the exact artifact filename and hash emitted
+by the final release check. If the owner chooses a beta tag, publish the same
+tested archive with `--tag beta` and have testers install
+`@swiveltechnologies/swico@beta`; it does not change `latest` automatically.
+On Windows use `npm.cmd` and `swico.cmd` equivalents. Scope
+creation/joining and interactive publish authentication belong to the owner,
+not customers or Render.
 
 For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
