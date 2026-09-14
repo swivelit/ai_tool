@@ -1,6 +1,6 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.2.0-rc.6",
+  "version": "0.2.0-rc.7",
   "description": "Swico terminal client for authenticated Chat",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,8 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build",
-    "release:check": "npm run build && node scripts/release-check.mjs"
+    "release:check": "npm run build && node scripts/release-check.mjs",
+    "test:conpty-native": "node scripts/test-conpty-native.mjs"
   },
   "devDependencies": {
     "@types/node": "22.10.7",

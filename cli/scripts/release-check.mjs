@@ -77,6 +77,18 @@ function safeDiagnostic(value, limit = 4_000) {
     .slice(-limit)
 }
 
+function parseConptyResult(value) {
+  const lines = String(value ?? '').split(/\r?\n/).filter(line => line.startsWith('[conpty-result] '))
+  if (lines.length === 0) return { value: null, error: null }
+  try {
+    const parsed = JSON.parse(lines.at(-1).slice('[conpty-result] '.length))
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.helper_exit_code !== 'number') throw new Error('invalid completion sentinel')
+    return { value: parsed, error: null }
+  } catch (error) {
+    return { value: null, error: `invalid ConPTY completion sentinel: ${String(error?.message ?? error).slice(0, 160)}` }
+  }
+}
+
 async function run(label, command, args, options = {}) {
   process.stderr.write(`[release-check] ${label}\n`)
   stageResults[label] = 'running'
@@ -178,7 +190,15 @@ async function runPty(label, command, args, options, onOutput) {
     child.stdin.destroy()
     const nonZero = typeof resultValue.code === 'number' && resultValue.code !== 0
     const signalled = Boolean(resultValue.signal)
-    const failure = resultValue.error || resultValue.timedOut || nonZero || signalled
+    const completion = parseConptyResult(errorOutput)
+    const sentinelMismatch = completion.value && (
+      completion.value.helper_exit_code !== resultValue.code ||
+      (typeof completion.value.child_code === 'number' && completion.value.child_code !== 0 && resultValue.code === 0) ||
+      completion.value.child_signal || completion.value.timedOut || completion.value.forcedTermination || completion.value.error_present
+    )
+    const sentinelRequiredButMissing = process.platform === 'win32' && !completion.value && !completion.error
+    const sentinelError = completion.error || (sentinelMismatch ? 'ConPTY completion sentinel disagreed with helper exit status' : sentinelRequiredButMissing ? 'ConPTY helper closed without a completion sentinel' : null)
+    const failure = resultValue.error || resultValue.timedOut || nonZero || signalled || sentinelError
     const report = {
       ...resultValue,
       elapsed_ms: Date.now() - startedAt,
@@ -187,9 +207,11 @@ async function runPty(label, command, args, options, onOutput) {
       helper_command: String(command).split(/[\\/]/).pop()?.slice(0, 80) || 'unknown',
       output_bytes: Buffer.byteLength(output, 'utf8'),
       error_output: safeDiagnostic(errorOutput),
+      completion_sentinel: completion.value,
+      completion_sentinel_error: sentinelError,
     }
     stageResults[label] = failure
-      ? `failed: ${String(resultValue.error || (resultValue.timedOut ? 'timed out' : signalled ? `signal=${resultValue.signal}` : `code=${resultValue.code}`)).slice(0, 300)}`
+      ? `failed: ${String(resultValue.error || sentinelError || (resultValue.timedOut ? 'timed out' : signalled ? `signal=${resultValue.signal}` : `code=${resultValue.code}`)).slice(0, 300)}`
       : 'passed'
     if (failure) candidate.pty_reports.push({ label, ...report })
     resolveResult(report)

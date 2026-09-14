@@ -141,6 +141,10 @@ jobs:
       - name: Run hostile sandbox verification or assert fail-closed capability
         run: node dist/cli.js sandbox verify --json --ci
         working-directory: cli
+      - name: Run native Windows ConPTY helper acceptance
+        if: runner.os == 'Windows'
+        run: npm run test:conpty-native
+        working-directory: cli
       - name: Build, pack, inspect, and install release artifact
         run: npm run release:check
         working-directory: cli
