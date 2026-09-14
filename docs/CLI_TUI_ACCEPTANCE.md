@@ -35,6 +35,6 @@ not use BSD `script` with pipe input and does not synthesize success by sending
 the check ran, not a claim that every operator Terminal, Windows console, or
 native coding sandbox is accepted. The Windows path uses the dev-only pinned
 `node-pty` ConPTY adapter and the RC8 helper emits a `[conpty-result]` sentinel
-only after the bridge result and bounded diagnostics are flushed. It is not run
-on this Mac; the owner-triggered Windows job must complete that path before
-Windows rich Chat is accepted.
+only after the bridge result and bounded diagnostics are flushed. The local Mac
+run does not itself provide Windows evidence; the clean Windows path passed in
+CI run `34908695927`, including the native helper and installed rich terminal.

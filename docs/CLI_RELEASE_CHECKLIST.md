@@ -4,29 +4,47 @@ This checklist records the bounded `0.2.0-rc.8` release-candidate evidence. It
 separates paid Chat, package distribution, local agent execution, and full
 feature parity; it is not a publication approval or a parity claim.
 
-Historical RC6 evidence remains recorded below. RC7 baseline: run
-`34892384342` at `8ea9dfb4cc431d1c780569f1f45bc169864590f0` passed backend,
-PostgreSQL, web and Ubuntu CLI. macOS passed through installed task-only plan
-consent, then failed same-process recovery because its harness sent recovery
-commands before synchronized prompts. Windows passed ordinary 81/81 tests and
-then failed the native ConPTY test at `parent-eof`; Windows `release:check`
-did not run. This RC8 pass makes recovery prompt-driven and aligns the native
-EOF probe with Swico's Ctrl+D/EOT contract. Fresh CI is required.
+Historical RC6 and RC7 evidence remains recorded by its original run IDs. The
+accepted RC8 baseline is run `34908695927` at
+`f8b12c9dfa6f8d5711c5b6370e457b15d7ef8276`. Backend, PostgreSQL, web, Ubuntu,
+macOS, and Windows all passed. Windows passed native ConPTY exits, nonzero
+exit preservation, Unicode output, parent EOF/Ctrl+D, and the complete
+installed release check with `accepted: true`, `dirty: false`, and the exact
+checked-out revision. This is the first fully green cross-platform Chat CLI
+baseline.
+
+The closure change adds a dependent Ubuntu `cli-release-artifact` job. It runs
+only after the backend, PostgreSQL, web, and complete CLI matrix succeed,
+rebuilds the exact version, validates clean embedded identity and package
+contents, and uploads only `swico-cli-0.2.0-rc.8-release-candidate` containing
+the tarball and minimal release manifest. That new job is pending the next
+owner-reviewed CI run.
 
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
-| Allowlisted paid Chat | Production Lite completion, wallet-debit smoke, website revoke/rejection, and explicit reauthorization remain observed evidence. RC8 controlled installed recovery, refresh, streaming and retained-session checks passed locally without paid calls. | ACCEPTED for scoped allowlisted review | Correlate any future approved request ID with the shared ledger; do not infer accounting from wallet snapshots. |
-| Public package distribution | CLI-only MIT notice, scope note, and dependency notice index are packaged; no registry publication was performed. | CONDITIONALLY READY / PUBLICATION PENDING | Confirm npm scope write permission separately from Swico login and owner-approve publication of the exact frozen archive. |
-| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Owner obtains fresh Windows/client CI and separately runs native hostile verification on a supported host. |
+| Paid Chat CLI technical RC | Production Lite completion, wallet-debit smoke, website revoke/rejection, and explicit reauthorization remain observed evidence. RC8 controlled installed recovery, refresh, streaming, and retained-session checks passed; all six CI jobs passed. | ACCEPTED technical RC | Complete operator live paid-account acceptance and request-correlated billing verification. |
+| Public npm distribution | CLI-only MIT notice, scope note, dependency notice index, and clean CI artifact validation are in place; no registry publication was performed. | CONDITIONALLY READY / PUBLICATION PENDING | Retain/download the canonical CI artifact, confirm npm scope write permission, and owner-approve beta publication. |
+| Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Run the separate native hostile sandbox and disposable coding-workflow milestone; do not infer it from green Chat CI. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
-RC8 artifact for this pass:
+Package identity audit: the authoritative scope and executable are defined in
+`cli/package.json` and `cli/package-lock.json`, asserted by
+`cli/scripts/release-check.mjs`, and surfaced by `cli/src/cli.ts`. The same
+identity appears in the CLI README/license scope, release/live docs, publisher
+and install commands, and the MIT patch record. The historical
+`@swico/swico` name appears only in migration guidance telling users to remove
+that unavailable package. Repository search found no backend, web, database,
+session, billing, authentication, provider, or protocol assumption tied to the
+npm scope; changing it later is distribution/docs/package metadata work, but
+would require a fresh full CI run and owner approval before stable `0.2.0`.
+
+Local RC8 artifact for this pass:
 
 - version: `0.2.0-rc.8`
-- source revision/dirty state: `8ea9dfb4cc431d1c780569f1f45bc169864590f0`, dirty=true (local RC8 changes are uncommitted)
+- source revision/dirty state: `f8b12c9dfa6f8d5711c5b6370e457b15d7ef8276`, dirty=true (release-closure edits are uncommitted locally)
 - filename: `swiveltechnologies-swico-0.2.0-rc.8.tgz`
-- SHA-256: `49ee69c7f8879449e78b59af312c40e4dcad0ea7091ac6d6743cb72e3af33e8e`
-- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-ck1emI/prefix/bin/swico` (removed after acceptance)
+- SHA-256: `6511fde86dfc7ef9fe2c8322c910750ed299b544453b42f4a34e71b1a7daa5b9`
+- fresh-prefix executable: `/var/folders/cf/v61848bn5rxcb9w0prpshwwc0000gn/T/swico-release-bIDOUn/prefix/bin/swico` (removed after acceptance)
 - package contains `dist/terminal_ui.js`, the MIT scope files, dependency
   notices, compiled CLI files, and no source/tests/secrets. `dist/build_identity.js`
   records the source revision and dirty state captured by the build; installed
@@ -52,10 +70,10 @@ previous retained artifact and leave the deployed database and migration at
 `20260913_cli_reservations`.
 
 For the operator: use `swico usage` at the macOS shell and `/usage` inside an
-interactive Swico session. Run the owner-triggered GitHub Windows job on the
-candidate; a skipped or unavailable job is not a pass. Render is not involved
-in this CLI-only change. The installed UI scope is recorded in
-`docs/CLI_TUI_ACCEPTANCE.md`.
+interactive Swico session. The accepted RC8 CI run is `34908695927`; the new
+canonical artifact job must run after this closure change before its artifact
+is treated as current. Render is not involved in this CLI-only change. The
+installed UI scope is recorded in `docs/CLI_TUI_ACCEPTANCE.md`.
 
 For a stable desktop pilot prefix, use the explicit absolute path in every
 new Terminal tab; do not rely on a vanished shell variable or replace the

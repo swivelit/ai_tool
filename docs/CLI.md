@@ -259,21 +259,34 @@ npm test
 npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swiveltechnologies-swico-0.2.0-rc.8.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-0.2.0-rc.8.tgz --access public --tag beta --registry=https://registry.npmjs.org/
 ```
 
 These are conditional owner-operated commands only; this pass does not run
-them. `npm whoami` proves npm identity, not write access to the
+them. RC8 is a prerelease pilot: if approved, publish the exact tested archive
+with `--tag beta` (or an explicitly approved `next` tag), then testers install
+it with:
+
+```bash
+npm install -g @swiveltechnologies/swico@beta
+```
+
+Do not publish RC8 as `latest`. The stable workflow is a separately approved
+`0.2.0` build, followed by a fresh six-job CI run and publication with
+`--tag latest`; only then should the unqualified command be used:
+
+```bash
+npm install -g @swiveltechnologies/swico
+```
+
+`npm whoami` proves npm identity, not write access to the
 `@swiveltechnologies` scope. Check scope permissions with the authorized owner
 before publishing. npm account identity is separate from Swico browser login:
 downloading the package never grants API access, and server rollout/paid
 eligibility still governs use. Use the exact artifact filename and hash emitted
-by the final release check. If the owner chooses a beta tag, publish the same
-tested archive with `--tag beta` and have testers install
-`@swiveltechnologies/swico@beta`; it does not change `latest` automatically.
-On Windows use `npm.cmd` and `swico.cmd` equivalents. Scope
-creation/joining and interactive publish authentication belong to the owner,
-not customers or Render.
+by the final release check. On Windows use `npm.cmd` and `swico.cmd`
+equivalents. Scope creation/joining and interactive publish authentication
+belong to the owner, not customers or Render.
 
 For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
