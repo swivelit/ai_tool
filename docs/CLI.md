@@ -72,6 +72,15 @@ environment. Revoke sessions at `/settings/cli-sessions`.
 ## Chat and agent
 
 `swico ask "question"` and the interactive client stream normal Chat replies.
+On a capable TTY, bare `swico` uses the default rich terminal UI: a compact
+startup card, distinct user/Swico turns, incremental output, readable notices,
+and a multiline composer. Enter submits; Ctrl+J inserts a newline and is the
+portable fallback for terminals that cannot distinguish Shift+Enter. Bracketed
+paste stays in the draft, slash suggestions come from the exact command
+registry, and Ctrl+C cancels an active turn without an automatic retry. `Esc`
+and `/exit` restore the terminal. Use `swico --plain`, a non-TTY, or
+`TERM=dumb` for the line-oriented interface; `NO_COLOR` only disables color.
+Machine output and MCP stdio remain on their existing non-rich paths.
 At the macOS shell, `swico usage` prints a readable, read-only Chat wallet and
 estimate summary; `swico usage --json` returns the stable public usage envelope
 for scripts. Inside an interactive Swico session, use `/usage` instead. These
@@ -235,11 +244,12 @@ separate policy and are not enabled by default.
 After confirming that the publisher controls the `@swiveltechnologies` npm
 scope and that
 the repository's approved license is included in the release, run explicitly.
-This checkout has no owner-approved CLI package license expression or
-referenced notice. Publication remains gated on the owner's licensing decision;
-do not add MIT, Apache, proprietary, or placeholder terms here. An approved
-SPDX expression or `SEE LICENSE IN <file>` decision must include that notice
-and dependency notices in the exact package before publication.
+The CLI package is scoped under the approved MIT terms in `cli/LICENSE` and
+`cli/LICENSE_SCOPE.md`; this does not relicense the monorepo or grant hosted
+service access. Publication remains a separate owner decision: confirm control
+of the `@swiveltechnologies` npm scope and preserve the packaged license and
+dependency notices. npm identity proves account identity, not scope write
+permission.
 
 ```bash
 cd cli
@@ -249,7 +259,7 @@ npm test
 npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swiveltechnologies-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-0.2.0-rc.1.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
 These are conditional owner-operated commands only; this pass does not run
@@ -269,7 +279,7 @@ For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swiveltechnologies-swico-0.1.0.tgz
+npm install -g ./swiveltechnologies-swico-0.2.0-rc.1.tgz
 ```
 
 This is not a public-registry install and does not make the package available

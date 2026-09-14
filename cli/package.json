@@ -1,14 +1,18 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "description": "Swico terminal client for authenticated Chat",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "swico": "dist/cli.js"
   },
   "files": [
     "dist/**/*.js",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "LICENSE_SCOPE.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=20"

@@ -109,6 +109,20 @@ inside Swico when an intentional message begins with `/`; `swico ask
 valid report may exit nonzero when the local-agent sandbox or package-license
 gate is blocked; that is a readiness result, not a command-syntax failure.
 
+On a capable interactive TTY, bare `swico` opens the default rich terminal
+screen: a compact startup card, readable user/Swico turns, incremental Chat
+output, notices, and a multiline composer. Enter submits, Ctrl+J inserts a
+newline, and bracketed/multiline paste remains a draft until Enter. Shift+Enter
+is recognized when the terminal reports a distinguishable modified-enter
+sequence; Ctrl+J is the portable fallback. Arrow keys edit and browse history,
+Tab selects a filtered slash-command suggestion, Page Up/Page Down scrolls the
+conversation, and Ctrl+C cancels the active turn without retrying it. `/help`
+shows the exact local command registry. The UI restores terminal state on
+`/exit`, EOF, cancellation, errors, and signals. Use `swico --plain` or a
+non-TTY/`TERM=dumb` environment for line-oriented output; `NO_COLOR` disables
+color without changing the protocol. Machine JSON/JSONL and MCP stdio never
+use the rich screen or mix diagnostics into stdout.
+
 ## Stage 2 local extensions
 
 `swico config show|path|validate` reads the user TOML configuration and the
@@ -134,3 +148,10 @@ OS-enforced sandbox only when the platform runtime is available and the
 hostile verification passes; otherwise the agent fails closed. Use `swico
 sandbox status` for runtime diagnostics and `swico sandbox verify` for the
 actual boundary check.
+
+## License
+
+The first-party Swico CLI client is MIT-licensed. See `LICENSE`,
+`LICENSE_SCOPE.md`, and `THIRD_PARTY_NOTICES.md`. This does not license the
+backend, website, or Android application, or grant free hosted-service access.
+Third-party code keeps its own licenses and notices.

@@ -94,9 +94,12 @@ try {
   if (!manifestBytes) throw new Error('Package archive has no package.json')
   const manifest = JSON.parse(manifestBytes.toString('utf8'))
   if (manifest.name !== '@swiveltechnologies/swico') throw new Error(`Unexpected package name: ${manifest.name}`)
+  if (manifest.version !== '0.2.0-rc.1') throw new Error(`Unexpected package version: ${manifest.version}`)
+  if (manifest.license !== 'MIT') throw new Error(`Unexpected package license: ${manifest.license}`)
   if (manifest.bin?.swico !== 'dist/cli.js') throw new Error('The swico executable does not map to dist/cli.js')
   const required = [
     'package/package.json', 'package/README.md',
+    'package/LICENSE', 'package/LICENSE_SCOPE.md', 'package/THIRD_PARTY_NOTICES.md',
     'package/dist/cli.js', 'package/dist/api.js', 'package/dist/config.js',
     'package/dist/agent.js', 'package/dist/contracts.js', 'package/dist/context.js',
     'package/dist/credentials.js', 'package/dist/journal.js', 'package/dist/local_sessions.js',
@@ -105,10 +108,13 @@ try {
     'package/dist/session.js', 'package/dist/sse.js', 'package/dist/workspace.js',
     'package/dist/completion.js', 'package/dist/configuration.js', 'package/dist/hooks.js',
     'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/plugins.js',
-    'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js', 'package/dist/terminal_output.js', 'package/dist/command_registry.js', 'package/dist/usage.js',
+    'package/dist/skills.js', 'package/dist/subagents.js', 'package/dist/sandbox.js', 'package/dist/terminal_output.js', 'package/dist/terminal_ui.js', 'package/dist/command_registry.js', 'package/dist/usage.js',
     'package/dist/worktrees.js', 'package/dist/cloud.js', 'package/dist/release_readiness.js',
   ]
   for (const entry of required) if (!entries.has(entry)) throw new Error(`Missing required release file: ${entry}`)
+  const licenseText = entries.get('package/LICENSE')?.toString('utf8') ?? ''
+  if (!licenseText.startsWith('MIT License\n') || !licenseText.includes('Copyright (c) 2026 Swivel Technologies and contributors')) throw new Error('Packaged CLI license text is not the approved MIT notice')
+  if (!entries.get('package/LICENSE_SCOPE.md')?.toString('utf8').includes('not a repository-wide license')) throw new Error('Packaged CLI license scope is missing')
   for (const entry of entries.keys()) {
     if (entry.startsWith('package/src/') || entry.startsWith('package/test/') || entry.startsWith('package/node_modules/') || entry.startsWith('package/bin/') || entry.endsWith('.map') || /(^|\/)(?:\.env[^/]*|\.npmrc|\.pypirc|\.swico|credentials\.json|action-journal)/i.test(entry)) {
       throw new Error(`Unwanted file in release archive: ${entry}`)
@@ -239,16 +245,26 @@ try {
   const rejectedCommands = await new Promise(resolve => {
     const child = spawn(executable, [], { cwd: work, env: isolatedEnv, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
+    const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/resume', '/usage', '/exit']
+    let promptCount = 0, sent = 0, settled = false
+    const promptPattern = /(?:auto|chat|plan|agent)> /g
+    const countPrompts = () => (stdout.match(promptPattern) ?? []).length
+    const sendWhenReady = () => {
+      if (settled) return
+      const observed = countPrompts()
+      if (observed <= promptCount) return
+      promptCount = observed
+      if (sent < commands.length) {
+        child.stdin.write(`${commands[sent]}\n`)
+        sent += 1
+      }
+    }
     child.stdout.on('data', chunk => { stdout += String(chunk) })
     child.stderr.on('data', chunk => { stderr += String(chunk) })
-    child.on('close', (code, signal) => resolve({ stdout, stderr, code, signal }))
-    const commands = ['/exite', '/bogus', '/usagex', '/searchlight', '/resume', '/usage', '/exit']
-    let next = 0
-    const timer = setInterval(() => {
-      if (next < commands.length) { child.stdin.write(`${commands[next]}\n`); next += 1; return }
-      if (stdout.includes('Available Chat credit')) { clearInterval(timer); child.stdin.end() }
-    }, 250)
-    setTimeout(() => { clearInterval(timer); child.stdin.end() }, 10_000)
+    child.stdout.on('data', sendWhenReady)
+    child.on('close', (code, signal) => { settled = true; resolve({ stdout, stderr, code, signal }) })
+    const timer = setTimeout(() => { if (!settled) { settled = true; child.kill('SIGTERM'); resolve({ stdout, stderr, code: null, signal: 'SIGTERM' }) } }, 15_000)
+    child.on('close', () => clearTimeout(timer))
   })
   const rejectedOutput = `${rejectedCommands.stdout}\n${rejectedCommands.stderr}`
   if (!rejectedOutput.includes('Unknown interactive command "/exite"') || !rejectedOutput.includes('Unknown interactive command "/bogus"') || !rejectedOutput.includes('Unknown interactive command "/usagex"') || !rejectedOutput.includes('Unknown interactive command "/searchlight"') || !rejectedOutput.includes('No local coding sessions are saved.') || !rejectedOutput.includes('Available Chat credit')) throw new Error(`Installed command safety/recovery smoke failed: ${rejectedOutput.slice(-1_000)}`)
@@ -262,8 +278,12 @@ try {
   const versionJson = await run('installed version identity', executable, ['--version', '--json'], smokeOptions)
   const cancelled = await new Promise(resolve => {
     const child = spawn(executable, ['ask', 'cancel me'], { cwd: work, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] })
-    const timer = setTimeout(() => child.kill('SIGINT'), 500)
-    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }) })
+    const deadline = Date.now() + 5_000
+    const readiness = setInterval(() => {
+      const admitted = requestBodies.some(item => item.path === '/api/cli/v1/chat/stream' && item.body.message === 'cancel me')
+      if (admitted || Date.now() >= deadline) { clearInterval(readiness); child.kill('SIGINT') }
+    }, 25)
+    child.on('close', (code, signal) => { clearInterval(readiness); resolve({ code, signal }) })
   })
   if (control.cancelled < 1 || (!cancelled.code && !cancelled.signal)) throw new Error('Installed cancellation smoke did not cancel the request')
   await run('installed remote logout and local deletion', executable, ['logout'], smokeOptions)

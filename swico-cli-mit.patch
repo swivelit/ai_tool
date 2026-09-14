@@ -1,0 +1,115 @@
+--- /dev/null
++++ b/cli/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 Swivel Technologies and contributors
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+--- /dev/null
++++ b/cli/LICENSE_SCOPE.md
+@@ -0,0 +1,27 @@
++# Swico CLI license scope
++
++The MIT license in `LICENSE` applies to first-party Swico CLI code and
++associated documentation distributed in the `@swiveltechnologies/swico`
++package, and their corresponding first-party sources under `cli/` in the
++`swivelit/ai_tool` repository.
++
++This is not a repository-wide license. It does not license sibling `backend/`,
++`web/`, `mobile/`, model files, datasets, deployment infrastructure, or other
++material outside that CLI scope. Any separate licenses already attached to
++those materials remain unchanged.
++
++Third-party dependencies and any separately identified third-party material
++retain their own licenses and copyright notices. This license does not
++replace, remove, or relicense those notices. Preserve required upstream
++attribution and notices when distributing or incorporating third-party code.
++
++The MIT license permits use, modification, redistribution, and commercial use
++of the covered client. These permissions do not provide Swico hosted-service
++access, a subscription, credits, credentials, or permission to bypass server
++controls. Hosted-service access is governed separately by the applicable
++service terms and server-side authorization and billing rules. No new service
++terms are created by this scope note.
++
++No trademark license to Swico or Swivel Technologies names or logos is granted
++by this scope note. This note explains the scope of the covered Software; it
++does not add restrictions to the permissions granted by the MIT license.
+--- /dev/null
++++ b/LICENSE_SCOPE.md
+@@ -0,0 +1,13 @@
++# Repository licensing scope
++
++The first-party Swico CLI client under `cli/` is MIT-licensed as described in
++`cli/LICENSE` and `cli/LICENSE_SCOPE.md`.
++
++This repository is not licensed as a whole under that MIT license. The CLI
++license does not grant rights to sibling backend, website, mobile, model,
++data, or deployment materials. Separately identified third-party licenses
++and notices remain in force. Public visibility is not a substitute for an
++applicable license.
++
++The open client does not grant hosted Swico API access or waive paid-service
++eligibility, authentication, rate limits, or billing.
+--- a/cli/package.json
++++ b/cli/package.json
+@@ -2,13 +2,16 @@
+   "name": "@swiveltechnologies/swico",
+   "version": "0.1.0",
+   "description": "Swico terminal client for authenticated Chat",
++  "license": "MIT",
+   "type": "module",
+   "bin": {
+     "swico": "dist/cli.js"
+   },
+   "files": [
+     "dist/**/*.js",
+-    "README.md"
++    "README.md",
++    "LICENSE",
++    "LICENSE_SCOPE.md"
+   ],
+   "engines": {
+     "node": ">=20"
+--- a/cli/package-lock.json
++++ b/cli/package-lock.json
+@@ -22,7 +22,8 @@
+       },
+       "engines": {
+         "node": ">=20"
+-      }
++      },
++      "license": "MIT"
+     },
+     "node_modules/@hono/node-server": {
+       "version": "2.1.1",
+--- a/cli/README.md
++++ b/cli/README.md
+@@ -134,3 +134,10 @@
+ hostile verification passes; otherwise the agent fails closed. Use `swico
+ sandbox status` for runtime diagnostics and `swico sandbox verify` for the
+ actual boundary check.
++
++## License
++
++The first-party Swico CLI client is MIT-licensed. See `LICENSE` and
++`LICENSE_SCOPE.md`. This does not license the backend, website, or Android
++application, or grant free hosted-service access. Third-party code keeps its
++own licenses and notices.

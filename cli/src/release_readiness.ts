@@ -62,8 +62,8 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   const config = await loadConfig(root)
   const sandboxReady: ReadinessState = sandbox.verified ? 'ready' : 'blocked'
   // Check the package being released, not an unrelated license at the
-  // workspace root. The current package intentionally has no license until
-  // the owner makes that decision.
+  // workspace root. Package terms are scoped to the first-party CLI; this
+  // check does not license the rest of the monorepo or authorize publication.
   let packageLicense = ''
   let licenseReferenceExists = false
   try {
@@ -76,7 +76,7 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' && validPackageLicense(packageLicense) && (!/^SEE LICENSE IN /i.test(packageLicense) || licenseReferenceExists) ? 'ready' : 'blocked'
   const required_blockers: string[] = []
   if (!sandbox.verified) required_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
-  if (license === 'blocked') required_blockers.push('No approved package license metadata or referenced notice is present; public npm release requires an explicit licensing decision.')
+  if (license === 'blocked') required_blockers.push('Package license metadata or its referenced notice is invalid; public npm release remains blocked until approved terms are present.')
   const mcpHasStdio = config.effective.mcp.some(item => item.transport === 'stdio')
   const checks: ReleaseReadiness['checks'] = {
     // An offline check cannot prove an authenticated end-to-end Chat turn.

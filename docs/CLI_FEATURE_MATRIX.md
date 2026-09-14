@@ -21,7 +21,7 @@ explicitly bounded.
 
 | Workflow area | Swico status | Current boundary |
 |---|---|---|
-| Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route; no live-provider proof in this check |
+| Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route plus installed rich/plain terminal paths; no new live-provider call in this check |
 | Repository instructions, planning, local edits | PARTIAL | Bounded agent protocol; local agent blocked unless hostile sandbox proof passes |
 | Approvals and local permissions | IMPLEMENTED + VERIFIED | Read-only/approval-required only; no full-auto mode |
 | Skills, declarative plugins, hooks | PARTIAL | Skills and inspection work; executable hooks/plugins remain disabled |
@@ -65,8 +65,8 @@ explicitly bounded.
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED (installed path) | Final artifact passed clean-prefix checks against a controlled API; not published |
-| License | FAIL-CLOSED / DISABLED | No owner-approved CLI package SPDX expression or `SEE LICENSE IN` notice; publication decision required |
+| npm package | IMPLEMENTED + VERIFIED (installed path) | `0.2.0-rc.1` final artifact passed clean-prefix checks against a controlled API and a real PTY launch; not published |
+| License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary
 check. `swico release-readiness --json` reports `agent_sandbox_ready` as
