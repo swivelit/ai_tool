@@ -224,6 +224,11 @@ def test_website_cli_session_revoke_is_owner_scoped_idempotent_and_rejects_retai
         "/api/cli/v1/me", headers={"Authorization": f"Bearer {raw_access}"},
     ).status_code == 401
     assert client.post(
+        "/api/cli/v1/token", json={
+            "grant_type": "refresh_token", "refresh_token": "r" * 64,
+        },
+    ).status_code in {400, 401}
+    assert client.post(
         "/api/cli/v1/chat/stream",
         headers={"Authorization": f"Bearer {raw_access}"},
         json={"request_id": str(uuid4()), "message": "must be rejected"},

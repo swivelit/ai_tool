@@ -47,18 +47,24 @@ export function TerminalSessions({ user }: { user: User }) {
 
   const revoke = async (item: CliSessionSummary) => {
     if (pending[item.id]) return
+    const requestGeneration = generation.current
     setPending(value => ({ ...value, [item.id]: true })); setError(''); setNotice('')
     try {
       await revokeCliSession(user, item.id)
+      if (generation.current !== requestGeneration) return
       revokedIds.current.add(item.id)
       setItems(value => value.filter(current => current.id !== item.id))
       setConfirming(null)
       setNotice(`${item.device_description || 'Terminal session'} was revoked.`)
-      await load(generation.current, false)
+      await load(requestGeneration, false)
     } catch (value) {
-      setError(sessionError(value)); setConfirming(null)
+      if (generation.current === requestGeneration) {
+        setError(sessionError(value)); setConfirming(null)
+      }
     } finally {
-      setPending(value => ({ ...value, [item.id]: false }))
+      if (generation.current === requestGeneration) {
+        setPending(value => ({ ...value, [item.id]: false }))
+      }
     }
   }
 

@@ -336,6 +336,28 @@ _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE = re.compile(
     r"marathi|gujarati|punjabi|odia|oriya)\s+la\b",
     re.IGNORECASE,
 )
+_NATIVE_OUTPUT_VERBS = r"பதில்|பதிலளி|விளக்க|எழுத|சொல்ல|கூறு"
+_NATIVE_REPLY_LANGUAGE_PATTERNS = (
+    (
+        "ta",
+        re.compile(
+            rf"(?:தமிழில்|தமிழ்(?:\s+மொழியில்|\s+எழுத்தில்|\s+வாக்கியங்களில்))"
+            rf"[^.!?;\n]{{0,40}}(?:{_NATIVE_OUTPUT_VERBS})|"
+            rf"(?:{_NATIVE_OUTPUT_VERBS})[^.!?;\n]{{0,40}}"
+            r"(?:தமிழில்|தமிழ்(?:\s+மொழியில்|\s+எழுத்தில்|\s+வாக்கியங்களில்))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "en",
+        re.compile(
+            rf"ஆங்கிலத்தில்[^.!?;\n]{{0,40}}(?:{_NATIVE_OUTPUT_VERBS})|"
+            rf"(?:{_NATIVE_OUTPUT_VERBS})[^.!?;\n]{{0,40}}ஆங்கிலத்தில்",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_NATIVE_REPLY_NEGATION_RE = re.compile(r"வேண்டாம்|கூடாது|வேண்டியதில்லை")
 
 
 def explicit_web_reply_language(message: str) -> str | None:
@@ -361,6 +383,17 @@ def explicit_web_reply_language(message: str) -> str | None:
                 candidates.append((match.end(), language))
     if candidates:
         return max(candidates, key=lambda item: item[0])[1]
+    native_candidates: list[tuple[int, str]] = []
+    for language, pattern in _NATIVE_REPLY_LANGUAGE_PATTERNS:
+        for match in pattern.finditer(unquoted):
+            sentence = unquoted[
+                max(0, match.start() - 40):min(len(unquoted), match.end() + 40)
+            ]
+            if _NATIVE_REPLY_NEGATION_RE.search(sentence):
+                continue
+            native_candidates.append((match.end(), language))
+    if native_candidates:
+        return max(native_candidates, key=lambda item: item[0])[1]
     # Common Tanglish imperatives are output transformations, not translation
     # commands for the words in the request itself.
     match = _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE.search(unquoted)

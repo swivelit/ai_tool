@@ -363,6 +363,19 @@ def test_language_resolution_ignores_quotes_negation_and_subject_names():
     assert resolve_web_reply_language("ta", "Translate it to English") == "en"
 
 
+def test_native_tamil_output_directive_overrides_english_preference_without_mutating_it():
+    message = "ஒளிச்சேர்க்கை எப்படி வேலை செய்கிறது? ஐந்து எளிய தமிழ் வாக்கியங்களில் விளக்கவும்."
+    assert resolve_web_reply_language("en", message) == "ta"
+    assert resolve_web_reply_language("en", "ஒளிச்சேர்க்கை எப்படி வேலை செய்கிறது?") == "en"
+    assert resolve_web_reply_language("en", "Explain Tamil grammar.") == "en"
+
+
+def test_native_output_directives_keep_quotes_negation_and_later_language_overrides_safe():
+    assert resolve_web_reply_language("en", 'Discuss "தமிழில் பதில் சொல்லுங்கள்" as an example.') == "en"
+    assert resolve_web_reply_language("en", "தமிழில் பதில் வேண்டாம்; ஆங்கிலத்தில் பதிலளிக்கவும்.") == "en"
+    assert resolve_web_reply_language("en", "தமிழில் பதில் சொல்லுங்கள். Actually, reply in English.") == "en"
+
+
 def test_resolved_english_clears_subject_language_script_requirement():
     message = "Reply in English and explain the Tamil language"
     contract = apply_reply_language_contract(

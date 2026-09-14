@@ -76,7 +76,7 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' && validPackageLicense(packageLicense) && (!/^SEE LICENSE IN /i.test(packageLicense) || licenseReferenceExists) ? 'ready' : 'blocked'
   const required_blockers: string[] = []
   if (!sandbox.verified) required_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
-  if (license === 'blocked') required_blockers.push('No approved top-level LICENSE is present; public npm release requires an explicit licensing decision.')
+  if (license === 'blocked') required_blockers.push('No approved package license metadata or referenced notice is present; public npm release requires an explicit licensing decision.')
   const mcpHasStdio = config.effective.mcp.some(item => item.transport === 'stdio')
   const checks: ReleaseReadiness['checks'] = {
     // An offline check cannot prove an authenticated end-to-end Chat turn.

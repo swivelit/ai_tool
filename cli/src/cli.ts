@@ -10,6 +10,7 @@ import { clearTokens, credentialStorageStatus, loadTokens, saveTokens, Credentia
 import { cancelAgentRun, cancelChat, CliApiError, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat, uploadImage } from './api.js'
 import { isAgentActionType, type AgentAction, type CliTokens } from './contracts.js'
 import { LocalAgent } from './agent.js'
+import { TerminalOutput } from './terminal_output.js'
 import { Workspace } from './workspace.js'
 import { discoverRepository, loadRepositoryInstructions, type RepositoryMetadata } from './repository.js'
 import { buildAgentContext, compactObservations } from './context.js'
@@ -43,21 +44,22 @@ const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login  
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
-function showStreamEvent(event: SSEEvent, jsonOutput = false) {
+function showStreamEvent(event: SSEEvent, jsonOutput = false, terminal?: TerminalOutput) {
   if (jsonOutput) { process.stdout.write(`${JSON.stringify(event)}\n`); return }
+  const diagnostic = (value: string) => (terminal ?? new TerminalOutput(process.stdout, process.stderr)).writeDiagnostic(value)
   if (event.event === 'status' && event.data && typeof event.data === 'object') {
     const phase = String((event.data as { phase?: unknown }).phase ?? 'progress')
-    process.stderr.write(`[${phase}]\n`)
+    diagnostic(`[${phase}]`)
   }
   if (event.event === 'sources' && event.data && typeof event.data === 'object' && 'sources' in event.data) {
     const sources = (event.data as { sources?: unknown }).sources
-    if (Array.isArray(sources)) process.stderr.write(`Sources: ${sources.map(source => source && typeof source === 'object' ? String((source as { label?: unknown }).label ?? '') : '').filter(Boolean).join(', ') || 'available'}\n`)
+    if (Array.isArray(sources)) diagnostic(`Sources: ${sources.map(source => source && typeof source === 'object' ? String((source as { label?: unknown }).label ?? '') : '').filter(Boolean).join(', ') || 'available'}`)
   }
-  if (event.event === 'quality' && event.data && typeof event.data === 'object' && 'status' in event.data) process.stderr.write(`Quality: ${String((event.data as { status?: unknown }).status ?? 'reported')}\n`)
+  if (event.event === 'quality' && event.data && typeof event.data === 'object' && 'status' in event.data) diagnostic(`Quality: ${String((event.data as { status?: unknown }).status ?? 'reported')}`)
   if (event.event === 'error' && event.data && typeof event.data === 'object') {
     const value = event.data as { code?: unknown; message?: unknown; request_id?: unknown; retryable?: unknown }
     const suffix = [value.code, value.request_id && `request ${value.request_id}`, typeof value.retryable === 'boolean' && (value.retryable ? 'retryable' : 'do not retry')].filter(Boolean).join('; ')
-    process.stderr.write(`Error: ${String(value.message ?? 'Swico request failed.')}${suffix ? ` (${suffix})` : ''}\n`)
+    diagnostic(`Error: ${String(value.message ?? 'Swico request failed.')}${suffix ? ` (${suffix})` : ''}`)
   }
 }
 
@@ -137,15 +139,19 @@ async function runChat(tokens: CliTokens, message: string, thread: string | unde
   const controller = new AbortController(); let requestId: string | undefined
   activeInterrupt = () => { controller.abort(); if (requestId) void cancelChat(tokens, requestId, env).catch(() => undefined) }
   let renderedDelta = false
+  const terminal = new TerminalOutput(process.stdout, process.stderr)
   try {
     const answer = await streamChat(tokens, message, thread, event => {
-      if (!suppressOutput) showStreamEvent(event, jsonOutput)
+      if (!suppressOutput) showStreamEvent(event, jsonOutput, terminal)
       if (!suppressOutput && !jsonOutput && event.event === 'delta' && event.data && typeof event.data === 'object') {
         const text = String((event.data as { text?: unknown }).text ?? '')
-        if (text) { process.stdout.write(text); renderedDelta = true }
+        if (text) { terminal.writeAnswer(text); renderedDelta = true }
       }
     }, env, { signal: controller.signal, onRequestId: value => { requestId = value }, searchMode, attachmentIds, outputSchema })
-    if (!suppressOutput && !jsonOutput) { if (renderedDelta) process.stdout.write('\n'); else console.log(`\n${answer.text}`) }
+    if (!suppressOutput && !jsonOutput) {
+      if (!renderedDelta) terminal.writeAnswer(answer.text)
+      terminal.finishAnswer()
+    }
     return { text: answer.text, threadId: answer.threadId }
   } finally { if (activeInterrupt) activeInterrupt = null }
 }
