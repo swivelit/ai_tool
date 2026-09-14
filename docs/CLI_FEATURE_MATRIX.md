@@ -65,7 +65,7 @@ explicitly bounded.
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED (installed path) | `0.2.0-rc.3` candidate is tested locally against a controlled API/PTY; not published until owner approval |
+| npm package | IMPLEMENTED + VERIFIED (installed path) | `0.2.0-rc.4` candidate is tested locally against controlled API/PTY; Windows ConPTY and remote CI evidence are recorded separately; not published until owner approval |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary

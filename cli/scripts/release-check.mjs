@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
+import { windowsShimInvocation } from './windows-launcher.mjs'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -61,6 +62,12 @@ function archiveEntries(buffer) {
     offset += 512 + Math.ceil(size / 512) * 512
   }
   return entries
+}
+
+function finalScreenSnapshot(output) {
+  const marker = '\u001b[2J\u001b[H'
+  const frame = output.slice(output.lastIndexOf(marker) + marker.length)
+  return frame.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, '').replace(/\r/g, '')
 }
 
 async function run(label, command, args, options = {}) {
@@ -137,19 +144,20 @@ async function runNodeAllowFailure(label, script, args, options = {}) {
   return runAllowFailure(label, process.execPath, [script, ...args], options)
 }
 
-function quoteCmd(value) { return `"${String(value).replaceAll('"', '""')}"` }
 async function runPublicShim(label, shim, args, options = {}) {
   if (process.platform !== 'win32') return run(label, shim, args, options)
-  const command = process.env.ComSpec || 'cmd.exe'
-  return run(label, command, ['/d', '/s', '/c', [quoteCmd(shim), ...args.map(quoteCmd)].join(' ')], options)
+  const invocation = windowsShimInvocation(shim, args)
+  return run(label, invocation.command, invocation.args, { ...options, ...invocation.options })
 }
 
 async function runPty(label, command, args, options, onOutput) {
   stageStart(label)
   process.stderr.write(`[release-check] ${label}\n`)
-  const runner = join(root, 'scripts', 'pty_runner.py')
-  const child = spawn('python3', [runner, command, ...args], { cwd: root, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
-  let output = '', errorOutput = '', settled = false, timedOut = false, timer
+  const runner = process.platform === 'win32' ? join(root, 'scripts', 'conpty_runner.mjs') : join(root, 'scripts', 'pty_runner.py')
+  const launcher = process.platform === 'win32' ? [process.execPath, runner] : ['python3', runner]
+  const child = spawn(launcher[0], [...launcher.slice(1), command, ...args], { cwd: root, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
+  let output = '', errorOutput = '', settled = false, timedOut = false, callbackError, timer
+  const maxTranscript = 2 * 1024 * 1024
   let resolveResult
   const result = new Promise(resolve => { resolveResult = resolve })
   const decoder = new (await import('node:string_decoder')).StringDecoder('utf8')
@@ -163,18 +171,21 @@ async function runPty(label, command, args, options, onOutput) {
   }
   child.stdout.on('data', chunk => {
     const text = decoder.write(chunk)
-    output += text
+    output = `${output}${text}`.slice(-maxTranscript)
     try {
       onOutput?.(text, value => {
         if (settled) return
         if (value === null) child.stdin.end()
         else child.stdin.write(value)
       })
-    } catch (error) { finish({ output, error: String(error) }) }
+    } catch (error) {
+      callbackError = String(error)
+      child.kill('SIGTERM')
+    }
   })
-  child.stderr.on('data', chunk => { errorOutput += String(chunk) })
+  child.stderr.on('data', chunk => { errorOutput = `${errorOutput}${String(chunk)}`.slice(-maxTranscript) })
   child.once('error', error => finish({ output, errorOutput, error: String(error) }))
-  child.once('close', (code, signal) => finish({ output: output + decoder.end(), errorOutput, code, signal, timedOut }))
+  child.once('close', (code, signal) => finish({ output: output + decoder.end(), errorOutput, code, signal, timedOut, error: callbackError }))
   timer = setTimeout(() => {
     timedOut = true
     child.kill('SIGTERM')
@@ -290,7 +301,7 @@ try {
       emit('status', { phase: 'generating' })
       if (String(body.message).includes('cancel me')) { setTimeout(() => response.end(), 5_000); return }
       const schema = body.output_schema
-      const text = schema?.required?.includes('answer') ? '{"answer":"installed"}' : String(body.message).includes('plan') ? '1. Produce a task-only plan.\n2. Confirm the requested checks.' : 'installed stream response'
+      const text = schema?.required?.includes('answer') ? '{"answer":"installed"}' : String(body.message).includes('plan') ? '1. Produce a task-only plan.\n2. Confirm the requested checks.' : body.message === 'installed rich PTY' ? 'RICH_TURN_ONE' : body.message === 'installed rich second turn' ? 'RICH_TURN_TWO' : 'installed stream response'
       emit('delta', { text })
       emit('quality', { status: 'best_effort', checks: [] })
       emit('usage', { tier: 'standard', input_tokens: 3, output_tokens: 4, charged_micros: 12, usage_source: 'estimated' })
@@ -317,6 +328,8 @@ try {
   const smokeOptions = { cwd: work, maxBuffer: 512 * 1024, env: isolatedEnv }
   const shimVersion = await runPublicShim('installed public launcher shim', executable, ['--version', '--json'], smokeOptions)
   if (JSON.parse(shimVersion.stdout).version !== sourceManifest.version) throw new Error('Installed public shim did not launch the candidate package')
+  const shimHelp = await runPublicShim('installed public launcher help', executable, ['--help'], smokeOptions)
+  if (!shimHelp.stdout.includes('Usage: swico')) throw new Error('Installed public shim did not preserve the public help contract')
   const login = await runNode('installed paid login completion', appEntry, ['login', '--tier', 'standard', '--memory-only'], smokeOptions)
   if (!login.stdout.includes('Swico')) throw new Error('Installed login did not complete')
   if (control.device?.tier !== 'standard') throw new Error('Installed login did not transmit the explicit paid tier')
@@ -348,26 +361,30 @@ const running = ui.run(); input.emit('data', Buffer.from('installed controller\\
 assert.deepEqual(answers, ['installed controller']); assert.match(transcript, /installed controller answer/); assert.equal(input.raw, false)
 `)
   await run('installed rich controller/event path', process.execPath, [installedUiProbe, join(packageRoot, 'dist', 'terminal_ui.js')], smokeOptions)
-  let installedRichTerminal = process.platform === 'win32' ? 'not_run (Windows native PTY adapter is not part of this client check)' : 'not_run (host PTY unavailable; installed controller passed)'
-  if (process.platform !== 'win32') {
+  let installedRichTerminal = 'not_run (native terminal adapter unavailable; installed controller passed)'
+  {
     // A real PTY can still inherit TERM=dumb from a CI/container parent. The
     // rich-client acceptance needs a capable terminal profile, while the
     // ordinary non-TTY and TERM=dumb fallback is checked separately below.
-    const ptySmokeOptions = { ...smokeOptions, env: { ...smokeOptions.env, TERM: 'xterm-256color' } }
+    const ptySmokeOptions = { ...smokeOptions, env: { ...smokeOptions.env, TERM: 'xterm-256color', SWICO_PTY_COLUMNS: '100', SWICO_PTY_ROWS: '32' } }
     const ptyReady = await runPty('PTY positive control', process.execPath, ['-e', "if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(41); process.stdout.write('PTY_READY\\n')"], ptySmokeOptions)
     if (ptyReady.timedOut || ptyReady.error || ptyReady.code !== 0 || !ptyReady.output.includes('PTY_READY')) throw new Error(`PTY positive control failed: ${JSON.stringify({ code: ptyReady.code, signal: ptyReady.signal, error: ptyReady.error, output: ptyReady.output.slice(-500) })}`)
     let ptyPhase = 0
+    let observed = ''
+    const cancelledBeforeRich = control.cancelled
     const pty = await runPty('installed rich terminal PTY', process.execPath, [appEntry, '--diagnostic-startup'], ptySmokeOptions, (chunk, send) => {
-      if (ptyPhase === 0 && chunk.includes('Ask Swico anything')) { ptyPhase = 1; send('/usage\r') }
-      else if (ptyPhase === 1 && chunk.includes('Available Chat credit')) { ptyPhase = 2; send('installed rich PTY\r') }
-      else if (ptyPhase === 2 && chunk.includes('installed stream response')) { ptyPhase = 3; send('installed rich second turn\r') }
-      else if (ptyPhase === 3 && chunk.includes('installed stream response')) { ptyPhase = 4; send('cancel me\r') }
-      else if (ptyPhase === 4 && chunk.includes('Working · Ctrl+C cancels')) { ptyPhase = 5; send('\u0003') }
-      else if (ptyPhase === 5 && chunk.includes('Cancellation requested.')) { ptyPhase = 6; send('/exit\r') }
+      observed = `${observed}${chunk}`.slice(-64 * 1024)
+      if (ptyPhase === 0 && observed.includes('Ask Swico anything')) { ptyPhase = 1; send('/usage\r') }
+      else if (ptyPhase === 1 && observed.includes('Available Chat credit')) { ptyPhase = 2; send('\u001b[200~installed rich PTY\u001b[201~\r') }
+      else if (ptyPhase === 2 && observed.includes('RICH_TURN_ONE')) { ptyPhase = 3; send('installed rich second turn\r') }
+      else if (ptyPhase === 3 && observed.includes('RICH_TURN_TWO')) { ptyPhase = 4; send('cancel me\r') }
+      else if (ptyPhase === 4 && observed.includes('Working · Ctrl+C cancels')) { ptyPhase = 5; send('\u0003') }
+      else if (ptyPhase === 5 && observed.includes('Cancellation requested.')) { ptyPhase = 6; send('/exit\r') }
     })
     const visible = pty.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    if (pty.timedOut || pty.error || pty.code !== 0 || ptyPhase !== 6 || !visible.includes('installed rich PTY') || !visible.includes('installed rich second turn') || !pty.output.includes('[startup] rich-ui:restored')) throw new Error(`Installed rich PTY smoke failed: ${JSON.stringify({ code: pty.code, signal: pty.signal, phase: ptyPhase, error: pty.error, output: visible.slice(-1_000) })}`)
-    installedRichTerminal = 'passed (installed PTY with controlled API)'
+    const screen = finalScreenSnapshot(pty.output)
+    if (pty.timedOut || pty.error || pty.code !== 0 || ptyPhase !== 6 || !visible.includes('RICH_TURN_ONE') || !visible.includes('RICH_TURN_TWO') || control.cancelled <= cancelledBeforeRich || !pty.output.includes('[startup] rich-ui:restored') || !screen.includes(`Swico ${sourceManifest.version} · Swico Lite`) || !screen.includes('RICH_TURN_TWO') || (pty.output.match(/\u001b\[2J/g) ?? []).length > 2 || !/\u001b\[\d+;\d+H/.test(pty.output)) throw new Error(`Installed rich PTY smoke failed: ${JSON.stringify({ code: pty.code, signal: pty.signal, phase: ptyPhase, cancelled: control.cancelled - cancelledBeforeRich, error: pty.error, screen: screen.slice(-1_000), output: visible.slice(-1_000) })}`)
+    installedRichTerminal = `passed (installed ${process.platform === 'win32' ? 'ConPTY' : 'Unix PTY'} with controlled API)`
     let eofSeen = false
     const eofPty = await runPty('installed rich terminal EOF cleanup', process.execPath, [appEntry, '--diagnostic-startup'], ptySmokeOptions, (chunk, send) => {
       if (!eofSeen && chunk.includes('Ask Swico anything')) { eofSeen = true; send(null) }

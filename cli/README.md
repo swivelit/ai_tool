@@ -62,6 +62,9 @@ and its Unix rich-terminal stage allocates a real PTY rather than passing a
 pipe to `script`. Pass `--keep-artifact` when an operator needs the checked
 tarball for a later publish command; the default check removes its temporary
 artifact. A failed run never promotes an older same-version archive.
+Developer `npm ci` also installs the pinned `node-pty` test dependency for the
+Windows ConPTY stage; it is a dev-only release tool, excluded from the tarball,
+and is not needed by a customer's `--ignore-scripts` installation.
 
 Set `SWICO_API_BASE_URL` only for an approved HTTPS development endpoint.
 Production endpoints must use HTTPS. On supported desktop installations,

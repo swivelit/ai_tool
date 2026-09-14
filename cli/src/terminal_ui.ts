@@ -19,6 +19,7 @@ export type RichTerminalOptions = {
   output: Writable & { isTTY?: boolean; columns?: number; rows?: number; on?: (event: string, listener: (...args: any[]) => void) => any; removeListener?: (event: string, listener: (...args: any[]) => void) => any }
   version: string
   tierLabel: string
+  modeLabel?: () => string
   directory: string
   branch: string | null
   onMessage: (message: string, events: (event: SSEEvent) => void) => Promise<{ text: string; threadId: string | null }>
@@ -46,6 +47,14 @@ function cellWidth(value: string): number {
 
 function safeText(value: string): string { return value.replace(ansiPattern, '').replace(/\u001b/g, '���') }
 function textWidth(value: string): number { return graphemes(safeText(value)).reduce((total, part) => total + cellWidth(part), 0) }
+
+function abbreviatedDirectory(value: string, width: number): string {
+  const clean = safeText(value).replace(/[\\/]+$/, '') || value
+  if (textWidth(clean) <= width) return clean
+  const parts = clean.split(/[\\/]/).filter(Boolean)
+  const tail = parts.at(-1) ?? clean
+  return textWidth(tail) + 4 <= width ? `…/${tail}` : `…${takeCells(tail, Math.max(1, width - 1))}`
+}
 
 function takeCells(value: string, width: number): string {
   if (width <= 0) return ''
@@ -116,13 +125,14 @@ export class RichTerminalUI {
   private escapeTimer: NodeJS.Timeout | undefined
   private renderTimer: NodeJS.Timeout | undefined
   private lastFrame = ''
+  private needsFullClear = true
   private cancelCurrent: (() => void) | undefined
   private finishRun: (() => void) | undefined
   private promptWaiter: { resolve: (value: string) => void; reject: (error: Error) => void } | undefined
   private activeTurn: ActiveTurn | undefined
   private readonly onInput = (chunk: Buffer | string) => this.consume(typeof chunk === 'string' ? chunk : this.decoder.write(chunk))
   private readonly onInputEnd = () => { this.consume(this.decoder.end()); this.rejectPrompt(new Error('Terminal input closed.')); this.exit() }
-  private readonly onResize = () => this.render()
+  private readonly onResize = () => { this.needsFullClear = true; this.render() }
   private readonly onSignal = () => this.exit()
 
   constructor(private readonly options: RichTerminalOptions) {}
@@ -138,7 +148,7 @@ export class RichTerminalUI {
     this.options.output.on?.('resize', this.onResize)
     process.once('SIGINT', this.onSignal)
     process.once('SIGTERM', this.onSignal)
-    this.write(`${CSI}?1049h${CSI}?25l${CSI}?2004h`)
+    this.write(`${CSI}?1049h${CSI}?25h${CSI}?2004h`)
     this.notice('Ready · Enter sends · Ctrl+J inserts a newline · Ctrl+C cancels · /help for commands')
     this.renderNow()
     try {
@@ -350,39 +360,43 @@ export class RichTerminalUI {
   private renderNow(): void {
     if (!this.running) return
     const width = Math.max(1, this.options.output.columns ?? 80), rows = Math.max(1, this.options.output.rows ?? 24)
+    // Never write the last physical cell: a terminal may wrap there before
+    // the next control sequence is processed. The unused final column is
+    // cleared by CSI K and keeps cursor/layout calculations deterministic.
+    const layoutWidth = Math.max(1, width - 1)
     const cyan = (value: string) => color(this.useColor, '36', value), dim = (value: string) => color(this.useColor, '2', value), green = (value: string) => color(this.useColor, '32', value)
     const branch = this.options.branch ? ` · ${this.options.branch}` : ''
-    const cardWidth = Math.min(width, 68), card: string[] = []
+    const cardWidth = Math.min(layoutWidth, 68), card: string[] = []
     if (cardWidth >= 4) {
       const inner = cardWidth - 2
       card.push(`╭${'─'.repeat(inner)}╮`)
-      card.push(`│ ${cyan(padCells(`Swico ${this.options.version}`, inner - 1))}│`)
-      card.push(`│ ${dim(padCells(`${this.options.directory}${branch}`, inner - 1))}│`)
+      card.push(`│ ${cyan(padCells(`Swico ${this.options.version} · ${this.options.tierLabel}`, inner - 1))}│`)
+      card.push(`│ ${dim(padCells(`${abbreviatedDirectory(this.options.directory, inner - 1)}${branch}`, inner - 1))}│`)
+      if (this.options.modeLabel) card.push(`│ ${dim(padCells(`${this.options.modeLabel()} · Chat`, inner - 1))}│`)
       card.push(`╰${'─'.repeat(inner)}╯`)
-    } else card.push(padCells('Swico', width))
+    } else card.push(padCells('Swico', layoutWidth))
 
     const transcript: string[] = []
     for (const message of this.messages) {
       const rawLabel = message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Swico' : '·'
       const styledLabel = message.role === 'user' ? green(rawLabel) : message.role === 'assistant' ? cyan(rawLabel) : dim(rawLabel)
-      const labelWidth = textWidth(rawLabel) + 1, contentWidth = Math.max(1, width - labelWidth)
+      const labelWidth = textWidth(rawLabel) + 1, contentWidth = Math.max(1, layoutWidth - labelWidth)
       const wrapped = wrapCells(message.text, contentWidth)
       wrapped.forEach((line, index) => transcript.push(index === 0 ? `${styledLabel} ${padCells(line, contentWidth)}` : `${' '.repeat(labelWidth)}${padCells(line, contentWidth)}`))
     }
 
-    const menu = this.filteredCommands().slice(0, 6).map((item, index) => padCells(`${index === this.menuIndex ? '›' : ' '} /${item.name} ${item.description}`, width))
-    const composerWidth = Math.max(1, width - 2), composerLines: string[] = []
+    const menu = this.filteredCommands().slice(0, 6).map((item, index) => padCells(`${index === this.menuIndex ? '›' : ' '} /${item.name} ${item.description}`, layoutWidth))
+    const composerWidth = Math.max(1, layoutWidth - 2), composerLines: string[] = []
     if (this.draft) {
       for (const [lineIndex, line] of this.draft.split('\n').entries()) {
         const wrapped = wrapCells(line, composerWidth)
-        wrapped.forEach((part, index) => composerLines.push(padCells(`${lineIndex === 0 && index === 0 ? '> ' : '· '}${part}`, width)))
+        wrapped.forEach((part, index) => composerLines.push(padCells(`${lineIndex === 0 && index === 0 ? '> ' : '· '}${part}`, layoutWidth)))
       }
-    } else composerLines.push(padCells(`> ${dim('Ask Swico anything…')}`, width))
-    const footer = [padCells(dim(this.busy ? 'Working · Ctrl+C cancels' : 'Enter send · Ctrl+J newline · ↑↓ history · Ctrl+D exit'), width)]
+    } else composerLines.push(padCells(`> ${dim('Ask Swico anything…')}`, layoutWidth))
+    const footer = [padCells(dim(this.busy ? 'Working · Ctrl+C cancels' : 'Enter send · Ctrl+J newline · ↑↓ history · Ctrl+D exit'), layoutWidth)]
     const available = Math.max(1, rows - card.length - composerLines.length - menu.length - footer.length - 2)
     const start = Math.max(0, transcript.length - available - this.scrollOffset), visible = transcript.slice(start, start + available)
-    const lines = [...card, ...visible, ...menu, '', ...composerLines, ...footer].slice(0, rows).map(line => padCells(line, width))
-    while (lines.length < rows) lines.push(' '.repeat(width))
+    const lines = [...card, ...visible, ...menu, '', ...composerLines, ...footer].slice(0, rows).map(line => padCells(line, layoutWidth))
     const draftBefore = this.draft.slice(0, this.cursor), draftParts = draftBefore.split('\n')
     let composerRow = 0, composerColumn = 3
     for (const [lineIndex, part] of draftParts.entries()) {
@@ -391,10 +405,13 @@ export class RichTerminalUI {
       if (lineIndex < draftParts.length - 1) composerRow += 1
       composerColumn = 3 + textWidth(chunks.at(-1) ?? '')
     }
-    const cursorLine = Math.min(rows - 1, card.length + visible.length + menu.length + 1 + composerRow)
-    const cursorColumn = Math.min(width, Math.max(1, composerColumn))
-    const frame = `${CSI}2J${CSI}H${lines.join('\n')}${CSI}${cursorLine + 1};${cursorColumn}H`
+    const cursorLine = Math.min(Math.max(0, rows - 1), card.length + visible.length + menu.length + 1 + composerRow)
+    const cursorColumn = Math.min(layoutWidth, Math.max(1, composerColumn))
+    const clear = `${CSI}J`
+    const home = this.needsFullClear ? `${CSI}2J${CSI}H` : `${CSI}H`
+    const frame = `${home}${lines.map(line => `${line}${CSI}K`).join('\n')}${clear}${CSI}${cursorLine + 1};${cursorColumn}H`
     if (frame !== this.lastFrame) { this.lastFrame = frame; this.write(frame) }
+    this.needsFullClear = false
   }
 }
 

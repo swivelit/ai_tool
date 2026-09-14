@@ -126,3 +126,27 @@ test('rich UI closes on EOF and does not accept late callbacks after cancellatio
   assert.match(emits[0], /\u001b\[\?1049l$/)
   assert.doesNotMatch(emits[0], /Swico late/)
 })
+
+test('rich UI keeps the header at the top, shows tier/mode, and uses a visible cell cursor without row padding', async () => {
+  const terminal = fakeTerminal(); terminal.output.columns = 157; terminal.output.rows = 93
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.0-rc.3', tierLabel: 'Swico Lite', modeLabel: () => 'Chat', directory: '/Users/example/projects/swico', branch: 'main',
+    onMessage: async (_message, emit) => { emit({ event: 'delta', data: { text: 'layout answer' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'layout answer', threadId: null } },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  await new Promise(resolve => setTimeout(resolve, 25))
+  const initial = terminal.text()
+  assert.match(initial, /Swico 0\.2\.0-rc\.3 · Swico Lite/)
+  assert.match(initial, /Chat/)
+  assert.match(initial, /\u001b\[\d+;\d+H/)
+  assert.equal((initial.match(/\u001b\[2J/g) ?? []).length, 1)
+  assert.ok(initial.split('\n').length < 30, 'initial frame must not write one blank line per terminal row')
+  terminal.input.emit('data', Buffer.from('layout\r', 'utf8'))
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.output.columns = 24; terminal.output.rows = 8; terminal.output.emit('resize')
+  terminal.input.emit('data', Buffer.from('/exit\r', 'utf8'))
+  await running
+  assert.match(terminal.text(), /layout answer/)
+  assert.equal(terminal.input.raw, false)
+})

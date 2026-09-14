@@ -417,7 +417,7 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
   let ui: RichTerminalUI
   const promptLine = { question: (text: string) => ui.prompt(text), close: () => undefined } as unknown as Interface
   ui = new RichTerminalUI({
-    input, output, version: VERSION, tierLabel: currentTokens.tier_label, directory: metadata.root, branch: metadata.branch,
+    input, output, version: VERSION, tierLabel: currentTokens.tier_label, modeLabel: () => mode === 'agent' ? 'Agent' : mode === 'plan' ? 'Plan' : 'Chat', directory: metadata.root, branch: metadata.branch,
     onMessage: async (message, events) => {
       ui.setCancel(() => activeInterrupt?.())
       try {

@@ -1,6 +1,6 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.0-rc.4",
   "description": "Swico terminal client for authenticated Chat",
   "license": "MIT",
   "type": "module",
@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "22.10.7",
+    "node-pty": "1.1.0",
     "typescript": "5.7.3"
   },
   "publishConfig": {
