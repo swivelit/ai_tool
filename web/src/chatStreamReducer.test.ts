@@ -120,6 +120,16 @@ describe('chatStreamReducer', () => {
     expect(state.assistant?.quality?.repository_validation_mode).toBe('executable')
     expect(JSON.stringify(state.assistant?.quality)).not.toMatch(/provider|model/)
   })
+  it('preserves the checked quality outcome through SSE parsing', () => {
+    let state = chatStreamReducer(emptyStreamState, {
+      type:'start', requestId:'checked', threadId:'t1', tier:'lite', tierLabel:'Swico Lite',
+    })
+    state = chatStreamReducer(state, { type:'event', event:{
+      event:'quality', data:{ status:'checked', retrieval_status:'insufficient', checks:[],
+        repository_validation_mode:null },
+    } })
+    expect(state.assistant?.quality?.status).toBe('checked')
+  })
   it('keeps verified-buffered text empty until a delta arrives', () => {
     let state = chatStreamReducer(emptyStreamState, {
       type:'start', requestId:'buffered', threadId:'t1',

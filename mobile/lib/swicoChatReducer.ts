@@ -34,7 +34,7 @@ function sources(value: unknown): SourceSummary[] {
 function quality(value: unknown): ResponseQuality | null {
   const input = object(value);
   const status = String(input.status ?? "");
-  if (!["verified", "grounded", "best_effort", "unverified", "insufficient_evidence"].includes(status)) return null;
+  if (!["verified", "checked", "grounded", "best_effort", "unverified", "insufficient_evidence"].includes(status)) return null;
   const checks = (Array.isArray(input.checks) ? input.checks : []).flatMap(item => {
     const check = object(item);
     const type = String(check.type ?? "").slice(0, 64);
@@ -98,7 +98,7 @@ export function reduceSwicoStream(state: SwicoStreamState, event: StreamEvent): 
           ...state.assistant, id: has(data, "message_id") && data.message_id ? String(data.message_id) : state.assistant.id, status: data.cancelled ? "cancelled" : "complete",
           ...(has(data, "input_mode") && ["text", "voice", "dictation", "realtime_voice"].includes(String(data.input_mode)) ? { input_mode: String(data.input_mode) as Message["input_mode"] } : {}),
           ...(has(data, "voice_turn_id") ? { voice_turn_id: data.voice_turn_id ? String(data.voice_turn_id) : null } : {}),
-          ...(has(data, "reply_language") ? { reply_language: data.reply_language === "ta" ? "ta" as const : data.reply_language === "en" ? "en" as const : null } : {}),
+          ...(has(data, "reply_language") && ["en", "ta", "tanglish", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od"].includes(String(data.reply_language)) ? { reply_language: String(data.reply_language) as Message["reply_language"] } : {}),
           ...(has(data, "finish_reason") ? { finish_reason: String(data.finish_reason ?? "unknown") } : {}),
           ...(has(data, "truncated") ? { truncated: Boolean(data.truncated) } : {}),
           ...(has(data, "can_continue") ? { can_continue: Boolean(data.can_continue) } : {}),

@@ -16,7 +16,7 @@ from ..tier_policy import TierPolicy
 from .corrective import CorrectiveRetrievalController
 from .deduplication import deduplicate_candidates
 from .dense import EmbeddingFunction, TemporaryDenseRetriever
-from .evaluator import evaluate_retrieval
+from .evaluator import candidate_support_sufficient, evaluate_retrieval
 from .fusion import reciprocal_rank_fusion
 from .lexical import LexicalAttachmentRetriever
 from .hierarchical import HierarchicalRetriever
@@ -286,10 +286,7 @@ def _lexical_support_sufficient(run: RetrievalRun) -> bool:
     """Return true when lexical evidence is strong enough to skip dense search."""
 
     return any(
-        max(
-            float(getattr(item, "lexical_score", 0.0) or 0.0),
-            float(getattr(item, "metadata_score", 0.0) or 0.0),
-        ) >= 0.08
+        candidate_support_sufficient(item)
         for result_set in run.result_sets
         for item in result_set
     )

@@ -1,0 +1,4 @@
+export type HookEvent = 'session_start' | 'session_end' | 'user_prompt' | 'pre_tool' | 'post_tool' | 'permission_request' | 'pre_compact' | 'post_compact' | 'subagent_start' | 'subagent_stop'
+export type HookPayload = { event: HookEvent; run_id?: string; action_type?: string; summary?: string }
+export class HookBus { private listeners = new Map<HookEvent, Array<(payload: HookPayload) => void | Promise<void>>>() ; on(event: HookEvent, listener: (payload: HookPayload) => void | Promise<void>): void { this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]) }; async emit(payload: HookPayload): Promise<void> { for (const listener of this.listeners.get(payload.event) ?? []) await listener(payload) } }
+export function hookStatus(enabled = false): { enabled: boolean; execution: 'disabled' | 'approval-required' } { return { enabled, execution: enabled ? 'approval-required' : 'disabled' } }

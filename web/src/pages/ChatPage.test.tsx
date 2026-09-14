@@ -68,6 +68,12 @@ function mockApi() {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(nextResolve => { resolve = nextResolve })
+  return { promise, resolve }
+}
+
 const uploaded = {
   id:'upload-1', name:'notes.txt', media_type:'text/plain', size_bytes:5,
   created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),
@@ -127,6 +133,24 @@ it('uses a safe fallback when the bootstrap name is not usable', async () => {
   expect(screen.queryByText(/^Hey,/u)).not.toBeInTheDocument()
 })
 
+it('shows a recoverable bootstrap error instead of an endless loading state', async () => {
+  mockApi()
+  let attempts = 0
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') {
+      attempts += 1
+      if (attempts === 1) throw new Error('bootstrap unavailable')
+      return bootstrap as never
+    }
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load your Swico workspace.')
+  await userEvent.click(screen.getByRole('button', { name:'Retry' }))
+  expect(await screen.findByRole('heading', { name:'Hey, Hari. How can I help you?' })).toBeInTheDocument()
+})
+
 it('keeps the compact composer for a new chat and after the first message', async () => {
   mockApi()
   render(<ChatPage />)
@@ -135,6 +159,293 @@ it('keeps the compact composer for a new chat and after the first message', asyn
   expect(textarea).toHaveValue('Keep this draft')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(document.querySelector('.chat-main')).not.toHaveClass('empty-chat'))
+})
+
+it('does not bind a delayed first-thread event after New chat', async () => {
+  mockApi()
+  const first = deferred<void>()
+  let firstEvent: ((event: { event:string; data:unknown }) => void) | undefined
+  vi.mocked(streamChat)
+    .mockImplementationOnce(async (_user, _payload, onEvent) => {
+      firstEvent = onEvent
+      await first.promise
+    })
+    .mockResolvedValueOnce(undefined)
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'old request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+
+  await userEvent.click(screen.getByTestId('new-chat-button'))
+  await act(async () => { firstEvent?.({ event:'thread', data:{ thread_id:'old-thread' } }) })
+  await userEvent.type(composer, 'new request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(streamChat).mock.calls[1][1]).not.toHaveProperty('thread_id')
+  await act(async () => { first.resolve(undefined); await first.promise })
+})
+
+it('keeps newer history and search responses ahead of older requests', async () => {
+  mockApi()
+  const threadA = { id:'history-a', title:'History A', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const threadB = { id:'history-b', title:'History B', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const historyA = deferred<{ items: unknown[] }>()
+  const historyB = deferred<{ items: unknown[] }>()
+  const searchOld = deferred<{ items: unknown[] }>()
+  const searchNew = deferred<{ items: unknown[] }>()
+  let searchCalls = 0
+  const searchBootstrap = { ...bootstrap, features:{ ...bootstrap.features, web_content_search:true } }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return searchBootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[threadA, threadB], has_more:false } as never
+    if (path.includes('/history-a/messages')) return historyA.promise as never
+    if (path.includes('/history-b/messages')) return historyB.promise as never
+    if (path.startsWith('/api/web/search?')) return (++searchCalls === 1 ? searchOld.promise : searchNew.promise) as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'History A' }))
+  await userEvent.click(await screen.findByRole('button', { name:'History B' }))
+  await act(async () => { historyB.resolve({ items:[{ id:'b-answer', thread_id:'history-b', role:'assistant', content:'Newer history', status:'complete' }] }) })
+  expect(await screen.findByText('Newer history')).toBeInTheDocument()
+  await act(async () => { historyA.resolve({ items:[{ id:'a-answer', thread_id:'history-a', role:'assistant', content:'Older history', status:'complete' }] }) })
+  expect(screen.queryByText('Older history')).not.toBeInTheDocument()
+
+  const search = screen.getByRole('textbox', { name:'Search chats' })
+  fireEvent.change(search, { target:{ value:'old query' } })
+  await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 350)) })
+  fireEvent.change(search, { target:{ value:'new query' } })
+  await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 350)) })
+  await act(async () => { searchNew.resolve({ items:[{ thread_id:'history-b', message_id:'new-result', source_kind:'message', snippet:'new result', updated_at:new Date().toISOString() }] }) })
+  expect(await screen.findByText('new result')).toBeInTheDocument()
+  await act(async () => { searchOld.resolve({ items:[{ thread_id:'history-a', message_id:'old-result', source_kind:'message', snippet:'old result', updated_at:new Date().toISOString() }] }) })
+  expect(screen.queryByText('old result')).not.toBeInTheDocument()
+})
+
+it('restores a failed PDF prompt without deleting its server upload', async () => {
+  mockApi()
+  const pdf = { ...uploaded, id:'pdf-upload', name:'report.pdf', media_type:'application/pdf' }
+  vi.mocked(uploadDocument).mockResolvedValue(pdf)
+  vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(503, {}))
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Summarize this PDF')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'report.pdf', { type:'application/pdf' }))
+  await screen.findByText(/remaining/)
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('temporarily unavailable'))
+  expect(composer).toHaveValue('Summarize this PDF')
+  expect(deleteUpload).not.toHaveBeenCalled()
+})
+
+it('clears the pending PDF chip after success while retaining server context for the thread', async () => {
+  mockApi()
+  const pdf = { ...uploaded, id:'successful-pdf', name:'successful.pdf', media_type:'application/pdf' }
+  vi.mocked(uploadDocument).mockResolvedValue(pdf)
+  vi.mocked(streamChat).mockImplementation(async (_user, _payload, onEvent) => {
+    onEvent({ event:'thread', data:{ thread_id:'pdf-thread' } })
+    onEvent({ event:'done', data:{ message_id:'pdf-answer', request_id:'pdf-request' } })
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes('/pdf-thread/messages')) return { items:[{
+      id:'pdf-answer', thread_id:'pdf-thread', role:'assistant', content:'Read', request_id:'pdf-request',
+      status:'complete', attachments:[pdf],
+    }] } as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Read this PDF')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'successful.pdf', { type:'application/pdf' }))
+  await screen.findByText('successful.pdf')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Active attachment context')).toHaveTextContent('successful.pdf')
+  expect(deleteUpload).not.toHaveBeenCalled()
+  expect(screen.getByText('Read')).toBeInTheDocument()
+})
+
+it('accounts for active PDF context, exposes removal, and allows a replacement upload', async () => {
+  mockApi()
+  const files = Array.from({ length:5 }, (_, index) => ({
+    ...uploaded, id:`context-${index}`, name:`context-${index}.pdf`, media_type:'application/pdf',
+  }))
+  const replacement = { ...uploaded, id:'replacement-upload', name:'replacement.pdf', media_type:'application/pdf' }
+  const uploadResponses = [...files, replacement]
+  let uploadIndex = 0
+  vi.mocked(uploadDocument).mockImplementation(async () => uploadResponses[uploadIndex++])
+  const submitted: unknown[] = []
+  vi.mocked(streamChat).mockImplementation(async (_user, _payload, onEvent) => {
+    submitted.push(_payload)
+    onEvent({ event:'thread', data:{ thread_id:'context-thread' } })
+    onEvent({ event:'done', data:{ message_id:`context-answer-${submitted.length}`, request_id:`context-request-${submitted.length}` } })
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes('/context-thread/messages')) return { items:[{
+      id:'context-answer', thread_id:'context-thread', role:'assistant', content:'Done', request_id:'context-request',
+      status:'complete', attachments:files,
+    }] } as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  for (const file of files) {
+    await userEvent.upload(input, new File(['pdf'], file.name, { type:'application/pdf' }))
+    await screen.findByText(file.name)
+  }
+  await userEvent.type(screen.getByRole('textbox', { name:'Message Swico' }), 'Review these files')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await waitFor(() => expect(screen.queryByLabelText('Pending attachments')).not.toBeInTheDocument())
+  expect(screen.getByLabelText('Active attachment context')).toHaveTextContent('context-0.pdf')
+  await userEvent.upload(input, new File(['pdf'], 'blocked.pdf', { type:'application/pdf' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/up to 5 files/i)
+  await userEvent.click(screen.getByRole('button', { name:'Remove active context context-0.pdf' }))
+  await userEvent.upload(input, new File(['pdf'], 'replacement.pdf', { type:'application/pdf' }))
+  expect(await screen.findByText('replacement.pdf')).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByText('replacement.pdf')).not.toHaveTextContent(/Uploading/i))
+  await userEvent.type(screen.getByRole('textbox', { name:'Message Swico' }), 'Use the replacement')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids).toEqual(expect.arrayContaining(['replacement-upload']))
+  expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids).not.toContain('context-0')
+})
+
+it('keeps an explicitly removed attachment detached when an older history response arrives', async () => {
+  mockApi()
+  const thread = { id:'detached-thread', title:'Detached', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const attachment = { ...uploaded, id:'detached-pdf', name:'detached.pdf', media_type:'application/pdf' }
+  const olderHistory = deferred<{ items: unknown[] }>()
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[thread], has_more:false } as never
+    if (path.includes('/detached-thread/messages')) return olderHistory.promise as never
+    return {} as never
+  })
+  vi.mocked(uploadDocument).mockResolvedValue(attachment)
+  const submitted: unknown[] = []
+  vi.mocked(streamChat).mockImplementation(async (_user, _payload, onEvent) => {
+    submitted.push(_payload)
+    onEvent({ event:'thread', data:{ thread_id:thread.id } })
+    onEvent({ event:'done', data:{ message_id:`detached-answer-${submitted.length}`, request_id:`detached-request-${submitted.length}` } })
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Detached' }))
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Read this')
+  await userEvent.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'detached.pdf', { type:'application/pdf' }))
+  await screen.findByText('detached.pdf')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await userEvent.click(screen.getByRole('button', { name:'Remove detached.pdf' }))
+  await act(async () => { olderHistory.resolve({ items:[{ id:'detached-answer-1', thread_id:thread.id, role:'assistant', content:'Older', request_id:'detached-request-1', status:'complete', attachments:[attachment] }] }); await olderHistory.promise })
+  expect(await screen.findByText('Older')).toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByLabelText('Active attachment context')).not.toBeInTheDocument())
+  await userEvent.type(composer, 'Follow up without the removed file')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids || []).not.toContain('detached-pdf')
+})
+
+it('transfers new-chat removal intent when the first SSE event assigns a server thread', async () => {
+  mockApi()
+  const thread = { id:'assigned-thread', title:'Assigned', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  const attachment = { ...uploaded, id:'new-chat-pdf', name:'new-chat.pdf', media_type:'application/pdf' }
+  const streamGate = deferred<void>()
+  const history = deferred<{ items: unknown[] }>()
+  const pendingDelete = deferred<void>()
+  let streamCallback: ((event: { event:string; data:unknown }) => void) | undefined
+  const submitted: unknown[] = []
+  vi.mocked(uploadDocument).mockResolvedValue(attachment)
+  vi.mocked(deleteUpload).mockReturnValue(pendingDelete.promise)
+  vi.mocked(streamChat).mockImplementation(async (_user, payload, onEvent) => {
+    submitted.push(payload)
+    streamCallback = onEvent
+    await streamGate.promise
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes(`/threads/${thread.id}/messages`)) return history.promise as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Read this')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'new-chat.pdf', { type:'application/pdf' }))
+  await screen.findByText('new-chat.pdf')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  await userEvent.click(screen.getByRole('button', { name:'Remove new-chat.pdf' }))
+  streamCallback?.({ event:'thread', data:{ thread_id:thread.id } })
+  streamCallback?.({ event:'done', data:{ message_id:'assigned-answer', request_id:'assigned-request' } })
+  await act(async () => { streamGate.resolve(undefined); await streamGate.promise })
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes(`/threads/${thread.id}/messages`))).toBe(true))
+  await act(async () => { history.resolve({ items:[{ id:'assigned-answer', thread_id:thread.id, role:'assistant', content:'Assigned history', request_id:'assigned-request', status:'complete', attachments:[attachment] }] }); await history.promise })
+  expect(await screen.findByText('Assigned history')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Active attachment context')).not.toBeInTheDocument()
+  await userEvent.type(composer, 'Follow up')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect((submitted[1] as { attachment_ids?: string[] }).attachment_ids || []).not.toContain(attachment.id)
+})
+
+it('keeps an explicitly selected expired PDF recoverable instead of silently sending text', async () => {
+  mockApi()
+  const expired = { ...uploaded, id:'expired-pdf', name:'expired.pdf', media_type:'application/pdf', expires_at:new Date(Date.now() - 1_000).toISOString() }
+  vi.mocked(uploadDocument).mockResolvedValue(expired)
+  const { container } = render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'Explain this')
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'expired.pdf', { type:'application/pdf' }))
+  await screen.findByText('expired.pdf')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/expired/i)
+  expect(streamChat).not.toHaveBeenCalled()
+  expect(screen.getByText('Expired')).toBeInTheDocument()
+})
+
+it('keeps a pending upload visible while history refreshes', async () => {
+  mockApi()
+  const pending = deferred<typeof uploaded>()
+  vi.mocked(uploadDocument).mockReturnValue(pending.promise)
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'pending.pdf', { type:'application/pdf' }))
+  await screen.findByText('Uploading… 0%')
+  await userEvent.click(screen.getByRole('button', { name:'Archived chats' }))
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes('archived=true'))).toBe(true))
+  expect(screen.getByText('Uploading… 0%')).toBeInTheDocument()
+  await act(async () => { pending.resolve({ ...uploaded, id:'pending-upload', name:'pending.pdf', media_type:'application/pdf' }); await pending.promise })
+})
+
+it('does not attach a deferred upload from chat A after navigating to chat B', async () => {
+  mockApi()
+  const pending = deferred<typeof uploaded>()
+  vi.mocked(uploadDocument).mockReturnValue(pending.promise)
+  const threadB = { id:'thread-b-upload', title:'Chat B', archived:false, created_at:new Date().toISOString(), updated_at:new Date().toISOString() }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[threadB], has_more:false } as never
+    if (path.includes('/thread-b-upload/messages')) return { items:[] } as never
+    return {} as never
+  })
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'abandoned.pdf', { type:'application/pdf' }))
+  await screen.findByText('Uploading… 0%')
+  await userEvent.click(await screen.findByRole('button', { name:'Chat B' }))
+  await act(async () => { pending.resolve({ ...uploaded, id:'abandoned-upload', name:'abandoned.pdf' }); await pending.promise })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(screen.queryByText('abandoned.pdf')).not.toBeInTheDocument()
+  expect(deleteUpload).toHaveBeenCalledWith(user, 'abandoned-upload')
 })
 
 it('continues without an optimistic control bubble and consumes the parent button', async () => {
@@ -577,7 +888,7 @@ it('applies the released wallet and delays Retry for service capacity', async ()
   expect(await screen.findByRole('alert')).toHaveTextContent(
     /service capacity.*Try again after/i
   )
-  expect(screen.getByText('Keep my prompt visible')).toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name:'Message Swico' })).toHaveValue('Keep my prompt visible')
   expect(screen.getByText('≈ 1.2K tokens')).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Retry answer' })).toBeDisabled()
   expect(screen.queryByRole('dialog', { name:/Billing/i })).not.toBeInTheDocument()
@@ -652,10 +963,11 @@ it('selects and uploads a supported document, then sends its attachment id witho
   await waitFor(() => expect(streamChat).toHaveBeenCalled())
   expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ message:'', attachment_ids:['upload-1'] })
   expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ input_mode:'text' })
-  expect(screen.getByText(/stay active for this chat/i)).toBeInTheDocument()
+  expect(screen.queryByText(/stay active for this chat/i)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:'Remove notes.txt' })).not.toBeInTheDocument()
 })
 
-it('removes an expired active image attachment and revokes its preview URL', async () => {
+it('keeps an explicitly selected expired image recoverable until removed', async () => {
   mockApi()
   const imageBootstrap = { ...bootstrap, uploads:{ ...bootstrap.uploads, supported_extensions:['.txt', '.pdf', '.png'] } }
   vi.mocked(apiJson).mockImplementation(async (_user, path) => {
@@ -674,8 +986,9 @@ it('removes an expired active image attachment and revokes its preview URL', asy
   await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['image'], 'expired.png', { type:'image/png' }))
   await waitFor(() => expect(uploadDocument).toHaveBeenCalledOnce())
-  await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:expired-image'))
-  expect(screen.queryByRole('button', { name:'Remove expired.png' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Remove expired.png' })).toBeInTheDocument()
+  expect(screen.getByText('Expired')).toBeInTheDocument()
+  expect(revoke).not.toHaveBeenCalledWith('blob:expired-image')
 })
 
 it('revokes an active image preview when the pending attachment is removed', async () => {
@@ -704,6 +1017,45 @@ it('rejects unsupported documents before upload', async () => {
   await userEvent.upload(fileInput, new File(['bad'], 'script.exe', { type:'application/octet-stream' }), { applyAccept:false })
   expect(await screen.findByRole('alert')).toHaveTextContent('not supported')
   expect(uploadDocument).not.toHaveBeenCalled()
+})
+
+it('rejects a dropped upload during first-thread assignment without leaving the composer busy', async () => {
+  mockApi()
+  const streamGate = deferred<void>()
+  const submitted: unknown[] = []
+  vi.mocked(streamChat).mockImplementation(async (_user, payload, onEvent) => {
+    submitted.push(payload)
+    if (submitted.length === 1) {
+      onEvent({ event:'thread', data:{ thread_id:'drop-assigned-thread' } })
+      onEvent({ event:'done', data:{ message_id:'drop-answer', request_id:'drop-request' } })
+      await streamGate.promise
+    }
+  })
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[], has_more:false } as never
+    if (path.includes('/drop-assigned-thread/messages')) return { items:[{
+      id:'drop-answer', thread_id:'drop-assigned-thread', role:'assistant', content:'First answer',
+      request_id:'drop-request', status:'complete', attachments:[],
+    }] } as never
+    return {} as never
+  })
+  render(<ChatPage />)
+  const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(textbox, 'First request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  const dropTarget = screen.getByTestId('conversation')
+  fireEvent.drop(dropTarget, {
+    dataTransfer:{ types:['Files'], files:[new File(['late'], 'late.pdf', { type:'application/pdf' })] },
+  })
+  expect(uploadDocument).not.toHaveBeenCalled()
+  await act(async () => { streamGate.resolve(undefined); await streamGate.promise })
+  expect(await screen.findByText('First answer')).toBeInTheDocument()
+  await userEvent.type(textbox, 'Second request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(screen.queryByText(/Uploading/)).not.toBeInTheDocument()
 })
 
 it('accepts a file dropped over the main chat area and prevents send while pending', async () => {

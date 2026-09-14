@@ -18,6 +18,20 @@ it.each([
   expect(screen.queryByText(/openai|sarvam|gpt|model/i)).not.toBeInTheDocument()
 })
 
+it('explains provider-cited web grounding without calling it independently verified', () => {
+  render(<ResponseQualityPanel quality={{
+    status:'grounded', retrieval_status:'sufficient',
+    repository_validation_mode:null,
+    evidence_strength:'provider_cited_grounding',
+    checks:[{
+      type:'web_evidence_support', status:'failed', reason:'web_claim_not_supported',
+    }],
+  }} />)
+  expect(screen.getByText(/Provider-cited web grounding/)).toBeInTheDocument()
+  expect(screen.getByText(/cited web claim was not fully supported/)).toBeInTheDocument()
+  expect(screen.queryByText(/independently verified/i)).not.toBeInTheDocument()
+})
+
 it('renders safe repository check summaries without internal details', () => {
   render(<ResponseQualityPanel quality={{
     status:'unverified',

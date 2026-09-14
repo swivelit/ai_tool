@@ -9,6 +9,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BLUEPRINT = ROOT / "render.staging.yaml"
 WORKFLOW = ROOT / ".github" / "workflows" / "deployed-smoke.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def load_blueprint() -> dict:
@@ -377,3 +378,21 @@ def test_workflow_does_not_print_secret_values():
     assert "Authorization" not in run_blocks
     assert "firebase token" not in run_blocks.lower()
     assert "if: failure()" in WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_postgres_cli_lifecycle_workflow_resolves_backend_paths_from_backend_directory():
+    data = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    job = data["jobs"]["backend-postgres-cli-lifecycle"]
+    install = next(step for step in job["steps"] if step.get("name") == "Install backend dependencies")
+    migration = next(step for step in job["steps"] if step.get("name") == "Apply migrations to the disposable PostgreSQL database")
+    tests = next(step for step in job["steps"] if step.get("name") == "Run required PostgreSQL CLI lifecycle tests")
+    assert install["working-directory"] == "backend"
+    assert "python -m pip install -r requirements.txt" in install["run"]
+    assert "backend/requirements.txt" not in install["run"]
+    assert (ROOT / "backend" / "requirements.txt").is_file()
+    assert migration["working-directory"] == "backend"
+    assert migration["env"]["DATABASE_URL"].startswith("postgresql+psycopg://")
+    assert tests["working-directory"] == "backend"
+    assert "tests/test_cli_postgres_lifecycle.py" in tests["run"]
+    assert "collected 0 items" in tests["run"] and "skipped" in tests["run"]
+    assert tests["env"]["TEST_DATABASE_URL"].startswith("postgresql+psycopg://")

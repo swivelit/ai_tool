@@ -516,6 +516,26 @@ def test_master_switch_blocks_even_internal_users(monkeypatch, client):
     assert response.status_code == 422
 
 
+def test_disabled_free_selection_is_reported_unavailable_and_never_paid_routed(monkeypatch, client):
+    monkeypatch.setenv("SWICO_FREE_ENABLED", "false")
+    user = create_test_user("disabled-selection", "disabled-selection@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="free"))
+        session.commit()
+    headers = auth_headers("disabled-selection", "disabled-selection@example.com")
+    settings = client.get("/api/web/settings/assistant", headers=headers)
+    assert settings.status_code == 200
+    assert settings.json()["tier"] == "free"
+    assert next(item for item in settings.json()["tiers"] if item["id"] == "free")["available"] is False
+    assert settings.json()["availability_reason"] == "Swico Free is temporarily unavailable."
+    request = client.post(
+        "/api/web/chat/stream", headers=headers,
+        json={"request_id": "d1000000-0000-4000-8000-000000000001", "message": "hello"},
+    )
+    assert request.status_code == 422
+    assert request.json()["error"]["code"] == "tier_unavailable"
+
+
 def test_manual_database_free_selection_cannot_bypass_rollout(monkeypatch, client):
     monkeypatch.setenv("SWICO_FREE_ENABLED", "true")
     monkeypatch.setenv("SWICO_FREE_ROLLOUT_PERCENT", "0")
@@ -525,7 +545,8 @@ def test_manual_database_free_selection_cannot_bypass_rollout(monkeypatch, clien
         session.commit()
     headers = auth_headers("manual-free", "manual-free@example.com")
     settings = client.get("/api/web/settings/assistant", headers=headers).json()
-    assert settings["tier"] == "lite"
+    assert settings["tier"] == "free"
+    assert settings["availability_reason"] is not None
     response = client.post(
         "/api/web/chat/stream", headers=headers,
         json={"request_id": "a1000000-0000-4000-8000-000000000099", "message": "Explain this."},

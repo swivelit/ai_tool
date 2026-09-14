@@ -642,6 +642,8 @@ def tracked_openai_generation(
                         request_kwargs["prompt_cache_key"] = str(
                             extra["prompt_cache_key"]
                         )
+                    if isinstance(response_format, dict) and response_format.get("type") == "json_schema" and spec.supports_response_format:
+                        request_kwargs["text"] = {"format": response_format}
                     logger.info(
                         "openai_generation_budget_resolved",
                         extra={

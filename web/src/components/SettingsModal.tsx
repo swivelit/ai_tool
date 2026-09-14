@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Archive, BookOpen, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
+import { Link, useInRouterContext } from 'react-router-dom'
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { formatRupeesForDisplay, formatRupeesFromPaise, tokenEstimateLabel } from '../credits'
@@ -12,6 +13,13 @@ import { REPLY_LANGUAGE_NATIVE_LABELS, WEB_REPLY_LANGUAGES, type ReplyLanguage }
 
 type Section = 'general' | 'profile' | 'usage' | 'knowledge' | 'data'
 type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[]; memory: MemorySettings }
+
+function TerminalSessionsLink({ onClick }: { onClick: (event: MouseEvent<HTMLAnchorElement>) => void }) {
+  const inRouter = useInRouterContext()
+  return inRouter
+    ? <Link className="data-control" to="/settings/cli-sessions" onClick={onClick}><Settings2 size={18} /><span><strong>Terminal sessions</strong><small>View and revoke terminals authorized for paid CLI Chat.</small></span></Link>
+    : <a className="data-control" href="/settings/cli-sessions" onClick={onClick}><Settings2 size={18} /><span><strong>Terminal sessions</strong><small>View and revoke terminals authorized for paid CLI Chat.</small></span></a>
+}
 
 const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -218,6 +226,20 @@ setCustomColors?: (colors: CustomColors) => void; close: () => void;
       setSubscriptionData(value => value ? { ...value, [bucket]: value[bucket] ? { ...value[bucket]!, payg_fallback_enabled: enabled } : value[bucket] } : value)
     } catch (error) { setNotice(safeError(error)) }
   }
+  const hasUnsavedChanges = Boolean(
+    profile && loaded && JSON.stringify(profile) !== JSON.stringify(loaded.profile),
+  ) || Boolean(loaded && (
+    (unlimited ? loaded.preferences.hard_limit_micros !== null : String(loaded.preferences.hard_limit_token_estimate?.estimated_blended_tokens ?? '') !== cap)
+    || loaded.preferences.warning_threshold_percent !== Number(warning)
+    || loaded.preferences.notify_at_threshold !== notify
+  ))
+  const leaveSettings = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (hasUnsavedChanges && !window.confirm('You have unsaved settings. Leave without saving?')) {
+      event.preventDefault()
+      return
+    }
+    close()
+  }
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -366,6 +388,7 @@ setCustomColors?: (colors: CustomColors) => void; close: () => void;
           </section>}
           {loaded && knowledgeLibraryEnabled && section === 'knowledge' && <KnowledgeLibrary user={user} uploads={knowledgeUploads} />}
           {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button>
+            <TerminalSessionsLink onClick={leaveSettings} />
             <div className="memory-controls"><h4>Cross-chat memory</h4>{loaded.memory.available ? <><label className="check-row"><input type="checkbox" checked={loaded.memory.enabled} disabled={saving} onChange={event => void setMemoryEnabled(event.target.checked)} />Use relevant saved details in other chats</label><small>Only explicit preferences, ongoing projects, and deterministic conversation summaries are saved. No LLM is called to manage memory.</small>
               <div className="memory-list">{!loaded.memory.items.length ? <p>No saved memory facts.</p> : loaded.memory.items.map(item => <article key={item.id}><span><strong>{item.category.replaceAll('_', ' ')}</strong><small>{item.value_text}</small></span><button type="button" disabled={saving} aria-label={`Delete memory ${item.value_text}`} onClick={() => void deleteMemory(item.id)}>Delete</button></article>)}</div>
               {loaded.memory.items.length > 0 && <button className="danger-button" type="button" disabled={saving} onClick={() => void deleteMemory()}>Clear all memory</button>}</> : <p>Cross-chat memory is not enabled on this deployment.</p>}</div>

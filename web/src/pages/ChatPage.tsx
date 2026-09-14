@@ -24,6 +24,11 @@ type ActiveRepository = ComposerRepository & {
   owner_uid: string;
   thread_id: string | null;
 }
+type SubmittedChatPayload = {
+  request_id: string; message: string; thread_id?: string; attachment_ids?: string[];
+  repository_id?: string; input_mode: InputMode; voice_turn_id?: string;
+  continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string;
+}
 
 function safeRepositoryFilename(value: string): string {
   const basename = value.replaceAll('\\', '/').split('/').at(-1) ?? ''
@@ -90,9 +95,22 @@ export function ChatPage() {
   const [fileDragActive, setFileDragActive] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
+  const detachedAttachmentIds = useRef(new Map<string, Set<string>>())
+  const localConversationIdRef = useRef(`new-${crypto.randomUUID()}`)
   const removedRepositoryUploads = useRef(new Set<string>())
   const revokedAttachmentPreviews = useRef(new Set<string>())
   const attachmentsRef = useRef<ComposerAttachment[]>([])
+  const draftRef = useRef(draft)
+  const navigationGenerationRef = useRef(0)
+  const transportAttemptRef = useRef<string | null>(null)
+  const threadLoadGenerationRef = useRef(0)
+  const messageLoadGenerationRef = useRef(new Map<string, number>())
+  const searchGenerationRef = useRef(0)
+  const queryRef = useRef(query)
+  const archivedRef = useRef(archived)
+  const pendingAttachmentKeysRef = useRef(new Set<string>())
+  const submittedPayloadsRef = useRef(new Map<string, SubmittedChatPayload>())
+  const [bootstrapError, setBootstrapError] = useState('')
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
   const activeRef = useRef<string | null>(active)
@@ -100,8 +118,11 @@ export function ChatPage() {
   const userUidRef = useRef(userUid)
   const streamScopeRef = useRef<{
     requestId: string
+    transportAttemptId: string
     initialThreadId: string | null
     threadId: string | null
+    navigationGeneration: number
+    localConversationId: string
     assistantMessageId?: string
   } | null>(null)
   const cancellationReadyRef = useRef(false)
@@ -132,13 +153,18 @@ export function ChatPage() {
     replaceActiveAttachments([])
   }, [replaceActiveAttachments])
   useEffect(() => { attachmentsRef.current = attachments }, [attachments])
+  useEffect(() => { draftRef.current = draft }, [draft])
   useEffect(() => () => {
     attachmentsRef.current.forEach(revokeAttachmentPreview)
   }, [revokeAttachmentPreview])
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
+  useEffect(() => { queryRef.current = query }, [query])
+  useEffect(() => { archivedRef.current = archived }, [archived])
   useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => {
     userUidRef.current = userUid
+    detachedAttachmentIds.current.clear()
+    localConversationIdRef.current = `new-${crypto.randomUUID()}`
     setRepository(value => value?.owner_uid === userUid ? value : null)
   }, [userUid])
   useEffect(() => {
@@ -173,15 +199,25 @@ export function ChatPage() {
 
   const loadThreads = useCallback(async (reset = true) => {
     if (!user) return
+    const generation = ++threadLoadGenerationRef.current
+    const requestedArchived = archivedRef.current
+    const requestedQuery = queryRef.current.trim()
     const offset = reset ? 0 : threadCountRef.current
     const params = new URLSearchParams({ archived: String(archived), limit: '50', offset: String(offset) })
-    if (query.trim()) params.set('q', query.trim())
+    if (requestedQuery) params.set('q', requestedQuery)
     const page = await apiJson<{ items: Thread[]; has_more: boolean }>(user, `/api/web/threads?${params}`)
+    if (
+      generation !== threadLoadGenerationRef.current
+      || userUidRef.current !== user.uid
+      || requestedArchived !== archivedRef.current
+      || requestedQuery !== queryRef.current.trim()
+    ) return
     setThreads(value => reset ? page.items : [...value, ...page.items]); setHasMore(page.has_more)
-  }, [archived, query, user])
-  const refreshWallet = useCallback(async () => {
+  }, [archived, user])
+  const refreshWallet = useCallback(async (isCurrent?: () => boolean) => {
     if (!user) return
     const response = await apiJson<Wallet & { wallet?: Wallet; wallets?: Wallets }>(user, '/api/web/billing/wallet')
+    if (isCurrent && !isCurrent()) return
     setBootstrap(value => value ? {
       ...value, wallet:response.wallet ?? response,
       ...(response.wallets ? { wallets:response.wallets } : {}),
@@ -194,6 +230,8 @@ export function ChatPage() {
     } = {},
   ): Promise<boolean> => {
     if (!user) return false
+    const generation = (messageLoadGenerationRef.current.get(threadId) ?? 0) + 1
+    messageLoadGenerationRef.current.set(threadId, generation)
     const data = await apiJson<{ items: Message[] }>(user, `/api/web/threads/${threadId}/messages`)
     const unique = Array.from(new Map(data.items.map(message => [message.id, message])).values())
     if (
@@ -206,7 +244,10 @@ export function ChatPage() {
         )
       ))
     ) return false
-    if (activeRef.current !== threadId) return false
+    if (
+      activeRef.current !== threadId
+      || messageLoadGenerationRef.current.get(threadId) !== generation
+    ) return false
     setMessages(unique)
     const restored = new Map<string, MessageAttachment>()
     const localPreviews = new Map(
@@ -224,7 +265,23 @@ export function ChatPage() {
         }
       }
     }
-    replaceActiveAttachments(Array.from(restored.values()).slice(-5))
+    const current = attachmentsRef.current
+    const detached = detachedAttachmentIds.current.get(threadId) ?? new Set<string>()
+    const pending = current.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))
+    const activeReady = current.filter(item => (
+      item.status === 'ready'
+      && !('local_id' in item)
+      && !detached.has(item.id)
+      && !pendingAttachmentKeysRef.current.has(item.id)
+      && !removedLocalUploads.current.has(item.id)
+    ))
+    const merged = new Map<string, ComposerAttachment>()
+    for (const item of [...activeReady, ...Array.from(restored.values()), ...pending]) {
+      if ('id' in item && detached.has(item.id)) continue
+      const key = attachmentKey(item)
+      if (!merged.has(key)) merged.set(key, item)
+    }
+    replaceActiveAttachments(Array.from(merged.values()).slice(-5))
     return true
   }, [replaceActiveAttachments, user])
   const applyWallet = useCallback((wallet: Wallet) => {
@@ -235,6 +292,13 @@ export function ChatPage() {
     targetController: AbortController,
   ) => {
     if (!user || cancellationSentRef.current) return
+    const navigationGeneration = navigationGenerationRef.current
+    const transportAttemptId = transportAttemptRef.current
+    const isCurrent = () => (
+      navigationGenerationRef.current === navigationGeneration
+      && transportAttemptRef.current === transportAttemptId
+      && streamScopeRef.current?.requestId === targetRequestId
+    )
     cancellationSentRef.current = true
     try {
       const result = await apiJson<{ status: string }>(
@@ -242,8 +306,10 @@ export function ChatPage() {
         `/api/web/chat/requests/${targetRequestId}/cancel`,
         { method:'POST' },
       )
+      if (!isCurrent()) return
       if (result.status === 'stopped') {
-        await refreshWallet().catch(() => undefined)
+        await refreshWallet(isCurrent).catch(() => undefined)
+        if (!isCurrent()) return
         targetController.abort()
       } else if (result.status === 'cancelling') {
         setError(
@@ -253,6 +319,7 @@ export function ChatPage() {
         setError('Swico had already completed this response.')
       }
     } catch {
+      if (!isCurrent()) return
       cancellationSentRef.current = false
       setError(
         'Cancellation could not be confirmed. The stream will remain open until usage settlement finishes.',
@@ -306,24 +373,53 @@ export function ChatPage() {
       document.removeEventListener('visibilitychange', refreshVisibleWallet)
     }
   }, [refreshWallet, user])
-  useEffect(() => {
+  const loadBootstrap = useCallback(async () => {
     if (!user) return
-    void apiJson<Bootstrap>(user, '/api/web/bootstrap').then(setBootstrap).catch(() => setError('Could not load your Swico workspace.'))
+    const uid = user.uid
+    setBootstrapError('')
+    try {
+      const value = await apiJson<Bootstrap>(user, '/api/web/bootstrap')
+      if (userUidRef.current !== uid) return
+      setBootstrap(value)
+    } catch {
+      if (userUidRef.current === uid) setBootstrapError('Could not load your Swico workspace.')
+    }
   }, [user])
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadThreads(true).catch(() => setError('Chat history could not be loaded.')) }, 250)
+    if (!user) return
+    void loadBootstrap()
+  }, [loadBootstrap, user])
+  useEffect(() => {
+    const navigationGeneration = navigationGenerationRef.current
+    const requestedArchived = archived
+    const requestedQuery = query.trim()
+    const timer = window.setTimeout(() => {
+      void loadThreads(true).catch(() => {
+        if (
+          navigationGenerationRef.current === navigationGeneration
+          && archivedRef.current === requestedArchived
+          && queryRef.current.trim() === requestedQuery
+        ) setError('Chat history could not be loaded.')
+      })
+    }, 250)
     return () => window.clearTimeout(timer)
   }, [archived, query, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
+    const generation = ++searchGenerationRef.current
     if (!user || !bootstrap?.features.web_content_search || !query.trim()) {
       setSearchResults([])
       return
     }
+    const requestedQuery = query.trim()
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({ q: query.trim(), limit: '20' })
       void apiJson<{ items: SearchResult[] }>(user, `/api/web/search?${params}`)
-        .then(value => setSearchResults(value.items))
-        .catch(() => setSearchResults([]))
+        .then(value => {
+          if (generation === searchGenerationRef.current && requestedQuery === query.trim()) setSearchResults(value.items)
+        })
+        .catch(() => {
+          if (generation === searchGenerationRef.current && requestedQuery === query.trim()) setSearchResults([])
+        })
     }, 300)
     return () => window.clearTimeout(timer)
   }, [bootstrap?.features.web_content_search, query, user])
@@ -349,10 +445,17 @@ useEffect(() => {
   }, [])
   useEffect(() => {
     if (!user || !active) { if (!streaming) { setMessages([]); clearActiveAttachments() }; return }
+    const navigationGeneration = navigationGenerationRef.current
+    const requestedThread = active
     const streamingThread = streamScopeRef.current?.threadId
       ?? streamState.assistant?.thread_id
     if (streaming && streamingThread === active) return
-    void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
+    void loadMessages(active).catch(() => {
+      if (
+        navigationGenerationRef.current === navigationGeneration
+        && activeRef.current === requestedThread
+      ) setError('Conversation could not be loaded.')
+    })
   }, [active, clearActiveAttachments, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!user || !active || streaming) return
@@ -385,11 +488,15 @@ useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
     const removeExpiredAttachments = () => {
       const now = Date.now()
-      const expiredKeys = new Set(attachments
-        .filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
-        .map(item => 'local_id' in item ? item.local_id : item.id))
+      const expiredItems = attachments.filter(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now)
+      const expiredKeys = new Set(expiredItems.map(item => 'local_id' in item ? item.local_id : item.id))
       if (!expiredKeys.size) return
-      replaceActiveAttachments(attachments.filter(item => !expiredKeys.has('local_id' in item ? item.local_id : item.id)))
+      replaceActiveAttachments(attachments.flatMap(item => {
+        const key = 'local_id' in item ? item.local_id : item.id
+        if (!expiredKeys.has(key)) return [item]
+        if (!pendingAttachmentKeysRef.current.has(key)) return []
+        return 'id' in item ? [{ ...item, status:'expired' as const }] : [item]
+      }))
     }
     removeExpiredAttachments()
     const timer = window.setInterval(removeExpiredAttachments, 1000)
@@ -448,15 +555,58 @@ useEffect(() => {
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
     attachmentOverride?: MessageAttachment[], originOverride?: { inputMode: InputMode; voiceTurnId: string | null },
-    requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string },
+    requestOptions?: { continueMessageId?: string; editMessageId?: string; regenerateMessageId?: string; payloadOverride?: SubmittedChatPayload },
   ) => {
-    let selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
+    const navigationGeneration = navigationGenerationRef.current
+    const transportAttemptId = crypto.randomUUID()
+    const nextRequestId = retryRequestId || crypto.randomUUID()
+    const localConversationId = localConversationIdRef.current
+    const isCurrentTransport = () => (
+      transportAttemptRef.current === transportAttemptId
+      && navigationGenerationRef.current === navigationGeneration
+      && streamScopeRef.current?.requestId === nextRequestId
+      && streamScopeRef.current?.transportAttemptId === transportAttemptId
+    )
+    const sourceAttachments = attachmentOverride ?? attachments
+    const explicitAttachmentSelection = Boolean(
+      attachmentOverride || requestOptions?.editMessageId || requestOptions?.regenerateMessageId,
+    )
+    const expiredAttachments = sourceAttachments.filter(item => (
+      'expires_at' in item
+      && (new Date(item.expires_at).getTime() <= Date.now() || item.status === 'expired')
+    ))
+    const expiredPendingAttachments = expiredAttachments.filter(item => (
+      explicitAttachmentSelection || pendingAttachmentKeysRef.current.has(attachmentKey(item))
+    ))
+    let selectedAttachments = sourceAttachments.filter((item): item is ReadyAttachment => (
+      item.status === 'ready' && new Date(item.expires_at).getTime() > Date.now()
+    ))
+    if (expiredPendingAttachments.length) {
+      replaceActiveAttachments(attachments.map(item => (
+        'id' in item
+        && expiredPendingAttachments.some(expired => attachmentKey(expired) === attachmentKey(item))
+          ? { ...item, status:'expired' as const }
+          : item
+      )))
+      setError('An explicitly selected attachment expired. Remove it or upload it again before sending.')
+      return
+    }
     if (
       !user || !bootstrap || streaming
       || (!text.trim() && !selectedAttachments.length)
       || offline || attachments.some(item => item.status === 'uploading')
       || repository?.status === 'uploading'
     ) return
+    transportAttemptRef.current = transportAttemptId
+    streamScopeRef.current = {
+      requestId: nextRequestId, transportAttemptId,
+      initialThreadId: threadId, threadId, navigationGeneration, localConversationId,
+    }
+    const submittedPendingKeys = new Set(
+      selectedAttachments
+        .map(attachmentKey)
+        .filter(key => pendingAttachmentKeysRef.current.has(key)),
+    )
     const maxCharacters = bootstrap.uploads.long_input_enabled
       ? (bootstrap.uploads.long_input_max_chars ?? 64000) : 16000
     if (text.length > maxCharacters) {
@@ -480,6 +630,7 @@ useEffect(() => {
         const virtual = await uploadVirtualText(user, {
           upload_id: crypto.randomUUID(), text, operation: longInputMode,
         })
+        if (!isCurrentTransport()) return
         selectedAttachments = [...selectedAttachments, virtual]
         replaceActiveAttachments([...attachmentsRef.current.filter(item => item.status === 'ready'), virtual].slice(-bootstrap.uploads.max_files_per_message))
         const labels: Record<LongInputMode, string> = {
@@ -494,12 +645,12 @@ useEffect(() => {
         providerText = embeddedQuestion
           ?? `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`
       } catch (caught) {
+        if (!isCurrentTransport()) return
         setError(chatErrorMessage(caught, !navigator.onLine)); setStreaming(false)
         return
       }
     }
-    const nextRequestId = retryRequestId || crypto.randomUUID()
-    streamScopeRef.current = { requestId:nextRequestId, initialThreadId:threadId, threadId }
+    if (!isCurrentTransport()) return
     const origin = originOverride ?? {
       inputMode: draftVoiceTurnId ? 'dictation' as const : 'text' as const,
       voiceTurnId: draftVoiceTurnId,
@@ -519,12 +670,33 @@ useEffect(() => {
       && (!repository.expires_at
         || new Date(repository.expires_at).getTime() > Date.now())
     ) ? repository.id : null
+    const computedPayload: SubmittedChatPayload = {
+      request_id: nextRequestId,
+      message: providerText,
+      attachment_ids: selectedAttachments.map(item => item.id),
+      input_mode: origin.inputMode,
+      ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
+      ...(threadId ? { thread_id: threadId } : {}),
+      ...(requestRepositoryId ? { repository_id: requestRepositoryId } : {}),
+      ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
+      ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
+      ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
+    }
+    const payload: SubmittedChatPayload = requestOptions?.payloadOverride
+      ? { ...requestOptions.payloadOverride, request_id: nextRequestId }
+      : computedPayload
+    providerText = payload.message
+    selectedAttachments = sourceAttachments.filter((item): item is ReadyAttachment => (
+      'id' in item && payload.attachment_ids?.includes(item.id) === true
+    ))
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
+    submittedPayloadsRef.current.set(nextRequestId, payload)
     if (!existingUser && !revisionTarget && !requestOptions?.continueMessageId) {
       const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: isReplyLanguage(bootstrap.user.reply_language) ? bootstrap.user.reply_language : 'en' }
       setMessages(value => [...value, optimistic])
     }
+    draftRef.current = ''
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
     cancellationReadyRef.current = false
     queuedStopRef.current = false
@@ -533,20 +705,13 @@ useEffect(() => {
     dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '', tier: bootstrap.assistant.tier, tierLabel: bootstrap.assistant.tier_label })
     const abort = new AbortController(); setController(abort)
     try {
-      await streamChat(user, {
-        request_id: nextRequestId,
-        message: providerText,
-        attachment_ids: selectedAttachments.map(item => item.id),
-        input_mode: origin.inputMode,
-        ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
-        ...(threadId ? { thread_id: threadId } : {}),
-        ...(requestRepositoryId ? { repository_id: requestRepositoryId } : {}),
-        ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
-        ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
-        ...(requestOptions?.regenerateMessageId ? { regenerate_message_id: requestOptions.regenerateMessageId } : {}),
-      }, event => {
+      await streamChat(user, payload, event => {
         const scope = streamScopeRef.current
-        if (!scope || scope.requestId !== nextRequestId) return
+        if (
+          !scope
+          || scope.requestId !== nextRequestId
+          || scope.navigationGeneration !== navigationGenerationRef.current
+        ) return
         if (event.event === 'sources' && (
           typeof event.data !== 'object' || event.data === null
         )) return
@@ -559,6 +724,15 @@ useEffect(() => {
           if (id) {
             const stillViewingOrigin = activeRef.current === scope.initialThreadId
             scope.threadId = id
+            if (!scope.initialThreadId) {
+              const detached = detachedAttachmentIds.current.get(scope.localConversationId)
+              if (detached?.size) {
+                const serverDetached = detachedAttachmentIds.current.get(id) ?? new Set<string>()
+                detached.forEach(attachmentId => serverDetached.add(attachmentId))
+                detachedAttachmentIds.current.set(id, serverDetached)
+                detachedAttachmentIds.current.delete(scope.localConversationId)
+              }
+            }
             if (stillViewingOrigin) {
               pendingRepositoryThreadRebindRef.current = {
                 from:scope.initialThreadId,
@@ -597,6 +771,7 @@ useEffect(() => {
         // Dictation is an input convenience only. Manual speaker playback remains
         // available from completed messages, but is never auto-generated here.
       }, abort.signal, () => {
+        if (!isCurrentTransport()) return
         cancellationReadyRef.current = true
         setCancellationReady(true)
         if (queuedStopRef.current) {
@@ -615,16 +790,20 @@ useEffect(() => {
           replacement,
         ])
       })
+      if (!isCurrentTransport()) return
       setDraftVoiceTurnId(null)
       await loadThreads(true)
+      if (!isCurrentTransport()) return
       const completedThreadId = streamScopeRef.current?.requestId === nextRequestId
         ? streamScopeRef.current.threadId ?? threadId
         : threadId
       if (completedThreadId) {
+        if (!isCurrentTransport()) return
         const persisted = await loadMessages(completedThreadId, {
           requireAssistantRequestId:nextRequestId,
           requireAssistantMessageId:streamScopeRef.current?.assistantMessageId,
         })
+        if (!isCurrentTransport()) return
         if (persisted) {
           // The persisted thread is authoritative after a terminal stream.
           // Clear the optimistic projection only after the matching assistant
@@ -632,11 +811,23 @@ useEffect(() => {
           dispatchStream({ type:'reset' })
         }
       }
+      if (submittedPendingKeys.size && isCurrentTransport()) {
+        pendingAttachmentKeysRef.current = new Set(
+          [...pendingAttachmentKeysRef.current].filter(key => !submittedPendingKeys.has(key)),
+        )
+        // The selection tray is cleared logically, while the valid server
+        // upload remains active per-thread for a follow-up question.
+      }
     } catch (caught) {
+      if (!isCurrentTransport()) return
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
       } else {
-        if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
+        // Keep a recoverable payload after a failed send, but never replace text
+        // typed after the request began. Attachments remain server-owned and are
+        // intentionally not deleted here.
+        if (!draftRef.current.trim()) { draftRef.current = text; setDraft(text) }
+        if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
         const repositoryDetached = [
@@ -652,15 +843,19 @@ useEffect(() => {
           : chatErrorMessage(caught, !navigator.onLine))
         if (!(caught instanceof SSEStreamError) && !repositoryDetached) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
-      if (revisionTarget?.thread_id) await loadMessages(revisionTarget.thread_id)
+      if (revisionTarget?.thread_id && isCurrentTransport()) await loadMessages(revisionTarget.thread_id)
       if (requestOptions?.continueMessageId && threadId) {
+        if (!isCurrentTransport()) return
         await loadMessages(threadId)
       }
     } finally {
-      cancellationReadyRef.current = false
-      queuedStopRef.current = false
-      setCancellationReady(false)
-      setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`)
+      if (isCurrentTransport()) {
+        cancellationReadyRef.current = false
+        queuedStopRef.current = false
+        setCancellationReady(false)
+        setStreaming(false); setContinuingMessageId(null); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`)
+        transportAttemptRef.current = null
+      }
     }
   }
 
@@ -688,6 +883,8 @@ useEffect(() => {
     const retryText = original.attachments?.length && original.content === summary ? '' : original.content
     void send(retryText, original.thread_id || active, original.request_id, original.attachments, {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
+    }, {
+      payloadOverride: submittedPayloadsRef.current.get(original.request_id),
     })
   }
   const continueResponse = (message: Message) => {
@@ -717,11 +914,39 @@ useEffect(() => {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
     }, { regenerateMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setHighlightMessageId(null); activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const resetSearch = () => {
+    setQuery('')
+    setSearchResults([])
+    ++searchGenerationRef.current
+    ++threadLoadGenerationRef.current
+  }
+  const invalidateNavigation = () => {
+    ++navigationGenerationRef.current
+    streamScopeRef.current = null
+    transportAttemptRef.current = null
+    controller?.abort()
+    setStreaming(false)
+    setController(null)
+    setRequestId(null)
+    setCancellationReady(false)
+  }
+  const newChat = () => {
+    invalidateNavigation()
+    pendingAttachmentKeysRef.current.clear()
+    voiceReply.clear(); draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null)
+    localConversationIdRef.current = `new-${crypto.randomUUID()}`
+    activeRef.current = null; setActive(null); setMessages([]); clearActiveAttachments(); setRepository(null); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`)
+  }
+  const select = (id: string) => {
+    invalidateNavigation()
+    pendingAttachmentKeysRef.current.clear()
+    draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`)
+  }
   const selectSearch = (result: SearchResult) => {
     if (!result.thread_id) return
-    setDraftVoiceTurnId(null); clearActiveAttachments(); setRepository(null); activeRef.current = result.thread_id
+    invalidateNavigation()
+    pendingAttachmentKeysRef.current.clear()
+    draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); clearActiveAttachments(); setRepository(null); activeRef.current = result.thread_id
     setActive(result.thread_id); setHighlightMessageId(result.message_id)
     setDrawer(false); setError(''); setFocusKey(`search-${result.thread_id}`)
   }
@@ -741,6 +966,13 @@ useEffect(() => {
   }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
+    // The chooser is disabled while a response is streaming. Keep drag/drop
+    // on the same admission policy so a file cannot be stranded when the
+    // first response assigns its server thread.
+    if (streaming) {
+      setError('Finish the current response before adding an attachment.')
+      return
+    }
     const limits = bootstrap.uploads
     const usable = attachments.filter(item => item.status !== 'expired' && item.status !== 'unavailable' && item.status !== 'error')
     let count = usable.length
@@ -773,27 +1005,56 @@ useEffect(() => {
         size_bytes: file.size, status: 'uploading', progress: 0,
         preview_url:previewUrl,
       }
+      pendingAttachmentKeysRef.current.add(localId)
       setAttachments(value => [...value, pending])
-      void uploadDocument(user, file, progress => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item)))
+      const uploadNavigation = navigationGenerationRef.current
+      const uploadThread = activeRef.current
+      const uploadIsCurrent = () => (
+        navigationGenerationRef.current === uploadNavigation
+        && activeRef.current === uploadThread
+        && userUidRef.current === user.uid
+      )
+      void uploadDocument(user, file, progress => {
+        if (!uploadIsCurrent()) return
+        setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item))
+      })
         .then(upload => {
-          if (removedLocalUploads.current.delete(localId)) {
+          if (!uploadIsCurrent()) {
+            pendingAttachmentKeysRef.current.delete(localId)
             void deleteUpload(user, upload.id).catch(() => undefined)
             return
           }
+          if (removedLocalUploads.current.delete(localId)) {
+            pendingAttachmentKeysRef.current.delete(localId)
+            void deleteUpload(user, upload.id).catch(() => undefined)
+            return
+          }
+          pendingAttachmentKeysRef.current.delete(localId)
+          pendingAttachmentKeysRef.current.add(upload.id)
           setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
             ? { ...upload, preview_url:item.preview_url ?? upload.preview_url } : item))
         })
-        .catch(caught => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
-          ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item)))
+        .catch(caught => {
+          if (!uploadIsCurrent()) return
+          setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
+            ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item))
+        })
     }
   }
   const removeAttachment = (attachment: ComposerAttachment) => {
     const key = attachmentKey(attachment)
     if ('local_id' in attachment && attachment.status === 'uploading') removedLocalUploads.current.add(attachment.local_id)
+    pendingAttachmentKeysRef.current.delete(attachmentKey(attachment))
     revokeAttachmentPreview(attachment)
     attachmentsRef.current = attachmentsRef.current.filter(item => attachmentKey(item) !== key)
     setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
-    if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
+    if (!('local_id' in attachment)) {
+      const scope = activeRef.current ?? localConversationIdRef.current
+      const detached = detachedAttachmentIds.current.get(scope) ?? new Set<string>()
+      detached.add(attachment.id)
+      detachedAttachmentIds.current.set(scope, detached)
+      if (user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
+    }
   }
 
   const hasFileDragData = (event: DragEvent<HTMLElement>) => (
@@ -865,11 +1126,23 @@ useEffect(() => {
     }
     setError('')
     setRepository(pending)
+    const uploadNavigation = navigationGenerationRef.current
+    const uploadThread = activeRef.current
+    const uploadIsCurrent = () => (
+      navigationGenerationRef.current === uploadNavigation
+      && activeRef.current === uploadThread
+      && userUidRef.current === ownerUid
+    )
     void uploadRepository(user, file, repositoryId, progress => {
+      if (!uploadIsCurrent()) return
       setRepository(value => value?.id === repositoryId
         ? { ...value, progress:Math.min(100, Math.max(0, progress)) }
         : value)
     }).then((snapshot: RepositorySnapshot) => {
+      if (!uploadIsCurrent()) {
+        void deleteRepository(user, snapshot.id).catch(() => undefined)
+        return
+      }
       if (removedRepositoryUploads.current.delete(repositoryId)) {
         void deleteRepository(user, snapshot.id).catch(() => undefined)
         return
@@ -895,7 +1168,7 @@ useEffect(() => {
         })
       }
     }).catch(caught => {
-      if (userUidRef.current !== ownerUid) return
+      if (!uploadIsCurrent()) return
       const message = repositoryUploadError(caught)
       setError(message)
       setRepository(value => value?.id !== repositoryId ? value
@@ -937,19 +1210,29 @@ useEffect(() => {
   const closeSettings = () => { setSettings(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
   const voiceTurnDone = useCallback((turn: VoiceTurnDone) => {
     if (turn.completion_status !== 'complete') return
+    const navigationGeneration = navigationGenerationRef.current
     voiceThreadRef.current = turn.thread_id
     activeRef.current = turn.thread_id
     setActive(turn.thread_id)
     void Promise.all([loadMessages(turn.thread_id), loadThreads(true), refreshWallet()])
-      .catch(() => setError('The Voice turn was saved, but chat history could not be refreshed yet.'))
+      .catch(() => {
+        if (navigationGenerationRef.current === navigationGeneration && activeRef.current === turn.thread_id) {
+          setError('The Voice turn was saved, but chat history could not be refreshed yet.')
+        }
+      })
   }, [loadMessages, loadThreads, refreshWallet])
   const closeVoiceMode = useCallback(() => {
+    const navigationGeneration = navigationGenerationRef.current
     setVoiceMode(false)
     const authoritativeThread = voiceThreadRef.current ?? active
     if (authoritativeThread) {
       activeRef.current = authoritativeThread
       setActive(authoritativeThread)
-      void loadMessages(authoritativeThread).catch(() => setError('Voice messages were saved, but the final refresh failed.'))
+      void loadMessages(authoritativeThread).catch(() => {
+        if (navigationGenerationRef.current === navigationGeneration && activeRef.current === authoritativeThread) {
+          setError('Voice messages were saved, but the final refresh failed.')
+        }
+      })
     }
     void loadThreads(true).catch(() => undefined)
     void refreshWallet().catch(() => undefined)
@@ -963,10 +1246,11 @@ useEffect(() => {
   const greetingName = firstMeaningfulNameToken(bootstrap?.user.name)
   const emptyGreeting = greetingName ? `Hey, ${greetingName}. How can I help you?` : 'How can I help you?'
 
-  if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
+  if (!user) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
+  if (!bootstrap) return <div className="app-loading"><div className="brand-mark">S</div>{bootstrapError ? <div role="alert"><p>{bootstrapError}</p><button className="primary" onClick={() => void loadBootstrap()}>Retry</button></div> : <span>Opening Swico…</span>}</div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
-      searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
+      searchResults={searchResults} selectSearch={selectSearch} select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => { setRepository(null); void signOut() }} close={() => { setDrawer(false); resetSearch() }} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); resetSearch(); setRepository(null); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
     <section className={`chat-main${emptyChat ? ' empty-chat' : ''}`} onDragEnter={handleChatDragEnter} onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop}>
       <div className="chat-background-art" aria-hidden="true">
         <span className="chat-wave chat-wave-1" />
@@ -991,7 +1275,7 @@ useEffect(() => {
       <div className={emptyChat ? 'empty-chat-home' : undefined}>
         {emptyChat && <div className="empty-chat-welcome"><h1 data-testid="empty-chat-greeting">{emptyGreeting}</h1></div>}
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} cancellationReady={cancellationReady} streaming={streaming} disabled={offline} focusKey={focusKey}
-        attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        attachments={attachments} pendingAttachments={attachments.filter(item => pendingAttachmentKeysRef.current.has(attachmentKey(item)))} activeAttachments={attachments.filter(item => !pendingAttachmentKeysRef.current.has(attachmentKey(item)))} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         repository={repository}
         repositoryUploadEnabled={Boolean(bootstrap.features.web_repository_upload)}
         repositoryChatEnabled={Boolean(bootstrap.features.web_repository_chat)}

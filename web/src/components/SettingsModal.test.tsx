@@ -310,6 +310,7 @@ it('traps focus, closes on escape, and exposes archived/legal controls', async (
   expect(screen.getByRole('button', { name:'Close settings' })).toHaveFocus()
   await userEvent.click(await screen.findByRole('button', { name:'Data controls' }))
   await userEvent.click(screen.getByRole('button', { name:/Archived chats/ })); expect(archived).toHaveBeenCalled()
+  expect(screen.getByRole('link', { name:/Terminal sessions/ })).toHaveAttribute('href', '/settings/cli-sessions')
   expect(screen.getByRole('link', { name:'Terms' })).toHaveAttribute('href', '/legal/terms')
   fireEvent.keyDown(window, { key:'Escape' }); expect(close).toHaveBeenCalled()
 })

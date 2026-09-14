@@ -336,4 +336,7 @@ def test_ai_router_live_data_disabled_does_not_hallucinate(monkeypatch):
 
     assert response.provider == "blocked"
     assert response.route == "live_data_disabled"
-    assert "cannot fetch live" in response.text.lower()
+    text = response.text.lower()
+    assert "live data access" in text
+    assert "cannot give current" in text
+    assert "will not guess" in text

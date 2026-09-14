@@ -50,6 +50,8 @@ export function Composer({
   disabled,
   focusKey = '',
   attachments = [],
+  pendingAttachments,
+  activeAttachments = [],
   attachmentsEnabled = false,
   repository = null,
   repositoryUploadEnabled = false,
@@ -84,7 +86,7 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   cancellationReady?: boolean;
   streaming: boolean; disabled?: boolean; focusKey?: string;
-  attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
+  attachments?: ComposerAttachment[]; pendingAttachments?: ComposerAttachment[]; activeAttachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
   repository?: ComposerRepository | null; repositoryUploadEnabled?: boolean;
   repositoryChatEnabled?: boolean;
   repositoryValidationCapability?: 'static_only' | 'executable';
@@ -116,14 +118,15 @@ export function Composer({
   const composing = useRef(false)
   const [now, setNow] = useState(Date.now())
   const [menuOpen, setMenuOpen] = useState(false)
+  const visibleAttachments = pendingAttachments ?? attachments
 
   useEffect(() => { valueRef.current = value }, [value])
 
   useEffect(() => {
-    if (!attachments.some(item => item.status === 'ready')) return
+    if (!visibleAttachments.some(item => item.status === 'ready')) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [attachments])
+  }, [visibleAttachments])
 
   const insertTranscript = useCallback((transcript: string, voiceTurnId: string, wallet: Wallet) => {
     const current = valueRef.current
@@ -141,9 +144,9 @@ export function Composer({
   })
 
   const audioBusy = ['requesting', 'recording', 'stopping', 'transcribing'].includes(recorder.state.status)
-  const uploadBusy = attachments.some(item => item.status === 'uploading')
+  const uploadBusy = visibleAttachments.some(item => item.status === 'uploading')
   const repositoryUploadBusy = repository?.status === 'uploading'
-  const readyAttachments = attachments.filter(item => item.status === 'ready')
+  const readyAttachments = visibleAttachments.filter(item => item.status === 'ready')
   const hasSendableContent = !!value.trim() || readyAttachments.length > 0
   const overLimit = value.length > maxCharacters
   const nearLimit = value.length >= Math.floor(maxCharacters * 0.8)
@@ -285,8 +288,8 @@ export function Composer({
   return <div className="composer-wrap" ref={wrapRef}>
     <div className="composer-shell">
 
-      {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
-        {attachments.map(attachment => <div
+      {visibleAttachments.length > 0 && <div className="attachment-tray" aria-label="Pending attachments">
+        {visibleAttachments.map(attachment => <div
           className={`attachment-chip ${attachment.status}`}
           key={'local_id' in attachment ? attachment.local_id : attachment.id}
         >
@@ -330,6 +333,17 @@ export function Composer({
           >
             <X size={15} />
           </button>
+        </div>)}
+      </div>}
+
+      {activeAttachments.length > 0 && <div className="attachment-tray attachment-context-tray" aria-label="Active attachment context">
+        <div className="attachment-context-note" role="status">
+          Active context is included in follow-ups. Remove a file here to make room for another upload.
+        </div>
+        {activeAttachments.map(attachment => <div className={`attachment-chip ${attachment.status}`} key={`context-${'local_id' in attachment ? attachment.local_id : attachment.id}`}>
+          <span className="attachment-visual"><AttachmentVisual attachment={attachment} /></span>
+          <span className="attachment-copy"><strong title={attachment.name}>{attachment.name}</strong><small>{attachment.status === 'expired' ? 'Expired context — remove or re-upload' : 'Active for this chat'}</small></span>
+          <button type="button" aria-label={`Remove active context ${attachment.name}`} title={`Remove active context ${attachment.name}`} onClick={() => removeAttachment(attachment)}><X size={15} /></button>
         </div>)}
       </div>}
 

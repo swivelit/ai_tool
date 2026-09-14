@@ -676,7 +676,7 @@ def settle_usage_reservation(
     provider: str | None = None, model: str | None = None,
     usage_kind: str | None = None, voice_turn_id: str | None = None,
     audio_milliseconds: int | None = None, characters: int | None = None,
-    swico_tier: str | None = None,
+    swico_tier: str | None = None, customer_debit_micros: int | None = None,
 ) -> UsageCharge:
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
     if charge is None:
@@ -688,6 +688,7 @@ def settle_usage_reservation(
     if charge.funding_source == "subscription":
         reserved_provider = charge.provider
         reserved_model = charge.model
+        reserved_before = int(charge.reserved_micros)
         provider_debit = max(0, int(provider_cost_micros))
         try:
             reservation_pricing_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
@@ -711,10 +712,12 @@ def settle_usage_reservation(
         debit = settle_subscription_window(
             session, charge=charge, provider_cost_micros=provider_debit,
             request_id=request_id, metadata={"provider": reserved_provider},
+            customer_debit_micros=customer_debit_micros,
         )
         charge.provider_cost_amount_decimal = provider_cost_amount
         charge.provider_cost_currency = provider_cost_currency
         charge.provider_cost_micros = provider_debit
+        charge.reserved_micros = 0
         charge.debited_micros = debit
         charge.input_tokens = max(0, input_tokens)
         charge.cached_input_tokens = max(0, cached_input_tokens)
@@ -726,7 +729,7 @@ def settle_usage_reservation(
             pricing_snapshot = {}
         pricing_snapshot["reservation"] = {
             "provider": reserved_provider, "model": reserved_model,
-            "reserved_micros": int(charge.reserved_micros),
+            "reserved_micros": reserved_before,
             "pricing_snapshot": reservation_pricing_snapshot,
         }
         if provider_debit > debit:
@@ -773,8 +776,11 @@ def settle_usage_reservation(
     usage_limit_available = settlement_limit_available(
         session, user_id=charge.user_id, request_id=request_id
     )
+    debit_source = provider_debit if customer_debit_micros is None else max(
+        0, int(customer_debit_micros)
+    )
     debit = min(
-        provider_debit,
+        debit_source,
         max(0, int(wallet.balance_micros)),
         usage_limit_available if usage_limit_available is not None else provider_debit,
     )
@@ -786,6 +792,7 @@ def settle_usage_reservation(
     charge.provider_cost_amount_decimal = provider_cost_amount
     charge.provider_cost_currency = provider_cost_currency
     charge.provider_cost_micros = provider_debit
+    charge.reserved_micros = 0
     charge.debited_micros = debit
     charge.input_tokens = max(0, input_tokens)
     charge.cached_input_tokens = max(0, cached_input_tokens)

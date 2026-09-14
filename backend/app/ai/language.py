@@ -215,6 +215,21 @@ def localized_web_deterministic_text(language: Optional[str], key: str, fallback
     normalized = normalize_web_reply_language(language) or "en"
     if key == "provider_unavailable":
         return WEB_PROVIDER_UNAVAILABLE_RESPONSES.get(normalized, WEB_PROVIDER_UNAVAILABLE_RESPONSES["en"])
+    if key == "live_data_unavailable":
+        return {
+            "en": "I couldn’t verify the current answer from reliable sources just now. Please try again shortly.",
+            "ta": "நம்பகமான ஆதாரங்களில் இருந்து தற்போதைய பதிலை இப்போது சரிபார்க்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்.",
+            "tanglish": "Nambagamaana sources-la irundhu current answer-a ippo verify panna mudiyala. Konjam neram kazhichu try pannunga.",
+            "hi": "मैं अभी विश्वसनीय स्रोतों से वर्तमान उत्तर की पुष्टि नहीं कर सका। कृपया थोड़ी देर बाद फिर कोशिश करें।",
+            "bn": "আমি এই মুহূর্তে নির্ভরযোগ্য উৎস থেকে বর্তমান উত্তর যাচাই করতে পারিনি। কিছুক্ষণ পরে আবার চেষ্টা করুন।",
+            "te": "విశ్వసనీయ వనరుల నుండి ప్రస్తుత సమాధానాన్ని ఇప్పుడే ధృవీకరించలేకపోయాను. కొంత సమయం తర్వాత మళ్లీ ప్రయత్నించండి.",
+            "kn": "ವಿಶ್ವಾಸಾರ್ಹ ಮೂಲಗಳಿಂದ ಪ್ರಸ್ತುತ ಉತ್ತರವನ್ನು ಈಗ ಪರಿಶೀಲಿಸಲಾಗಲಿಲ್ಲ. ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+            "ml": "വിശ്വസനീയമായ ഉറവിടങ്ങളിൽ നിന്ന് നിലവിലെ ഉത്തരം ഇപ്പോൾ സ്ഥിരീകരിക്കാനായില്ല. കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക.",
+            "mr": "विश्वसनीय स्रोतांमधून सध्याचे उत्तर आत्ता पडताळता आले नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.",
+            "gu": "વિશ્વસનીય સ્ત્રોતોમાંથી વર્તમાન જવાબની હમણાં ચકાસણી થઈ શકી નથી. થોડા સમય પછી ફરી પ્રયાસ કરો.",
+            "pa": "ਭਰੋਸੇਯੋਗ ਸਰੋਤਾਂ ਤੋਂ ਮੌਜੂਦਾ ਜਵਾਬ ਦੀ ਹੁਣ ਪੁਸ਼ਟੀ ਨਹੀਂ ਹੋ ਸਕੀ। ਕੁਝ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+            "od": "ବିଶ୍ୱସନୀୟ ଉତ୍ସରୁ ବର୍ତ୍ତମାନର ଉତ୍ତର ଏବେ ଯାଞ୍ଚ କରିପାରିଲି ନାହିଁ। କିଛି ସମୟ ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।",
+        }.get(normalized, fallback)
     return WEB_DETERMINISTIC_RESPONSES.get(normalized, {}).get(key, fallback)
 
 _SCRIPT_RANGES: tuple[tuple[str, str, str], ...] = (
@@ -294,6 +309,99 @@ def is_supported_web_reply_language(value: Optional[str]) -> bool:
     return _normalized_reply_language(value) in WEB_REPLY_LANGUAGES
 
 
+_EXPLICIT_REPLY_LANGUAGE_RE = re.compile(
+    r"\b(?:reply|answer|respond|give|provide|show|tell|return|write|output|result|"
+    r"explain|say)\b[^\n.!?]{0,80}?\b(?:in|using|as)\s+"
+    r"(english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|marathi|"
+    r"gujarati|punjabi|odia|oriya)\b(?!\s+nadu\b)",
+    re.IGNORECASE,
+)
+_LANGUAGE_NAME_RE = (
+    r"english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|marathi|"
+    r"gujarati|punjabi|odia|oriya"
+)
+_TRANSLATE_REPLY_LANGUAGE_RE = re.compile(
+    rf"\btranslate(?:\s+(?:it|this|that|the\s+answer|the\s+result))?\b"
+    rf"[^\n.!?]{{0,80}}?\b(?:to|into|in)\s+({_LANGUAGE_NAME_RE})\b",
+    re.IGNORECASE,
+)
+_OUTPUT_REPLY_LANGUAGE_RE = re.compile(
+    rf"\b(?:reply|answer|respond|give|provide|show|tell|return|write|output|"
+    rf"result|explain|say)\b[^;\n.!?]{{0,80}}?\b(?:in|using|as)\s+"
+    rf"({_LANGUAGE_NAME_RE})\b(?!\s+nadu\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE = re.compile(
+    r"\b(english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|"
+    r"marathi|gujarati|punjabi|odia|oriya)\s+la\b",
+    re.IGNORECASE,
+)
+_NATIVE_OUTPUT_VERBS = r"பதில்|பதிலளி|விளக்க|எழுத|சொல்ல|கூறு"
+_NATIVE_REPLY_LANGUAGE_PATTERNS = (
+    (
+        "ta",
+        re.compile(
+            rf"(?:தமிழில்|தமிழ்(?:\s+மொழியில்|\s+எழுத்தில்|\s+வாக்கியங்களில்))"
+            rf"[^.!?;\n]{{0,40}}(?:{_NATIVE_OUTPUT_VERBS})|"
+            rf"(?:{_NATIVE_OUTPUT_VERBS})[^.!?;\n]{{0,40}}"
+            r"(?:தமிழில்|தமிழ்(?:\s+மொழியில்|\s+எழுத்தில்|\s+வாக்கியங்களில்))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "en",
+        re.compile(
+            rf"ஆங்கிலத்தில்[^.!?;\n]{{0,40}}(?:{_NATIVE_OUTPUT_VERBS})|"
+            rf"(?:{_NATIVE_OUTPUT_VERBS})[^.!?;\n]{{0,40}}ஆங்கிலத்தில்",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_NATIVE_REPLY_NEGATION_RE = re.compile(r"வேண்டாம்|கூடாது|வேண்டியதில்லை")
+
+
+def explicit_web_reply_language(message: str) -> str | None:
+    """Return a one-turn output-language instruction, if one is explicit.
+
+    The output verb requirement is intentional: place names (for example,
+    Tamil Nadu), quoted material, and subjects such as English grammar are not
+    reply-language requests.
+    """
+    text = str(message or "")
+    # Quoted examples and attachment text are not instructions from the user.
+    unquoted = re.sub(r"(`[^`]*`|\"[^\"]*\"|'[^']*'|“[^”]*”|‘[^’]*’)" ,
+                      lambda match: " " * len(match.group(0)), text)
+    candidates: list[tuple[int, str]] = []
+    for pattern in (_TRANSLATE_REPLY_LANGUAGE_RE, _OUTPUT_REPLY_LANGUAGE_RE):
+        for match in pattern.finditer(unquoted):
+            before = unquoted[max(0, match.start() - 36):match.start()].lower()
+            before = re.split(r"[;.!?\n]", before)[-1]
+            if re.search(r"\b(?:do\s+not|don['’]?t|never|must\s+not|avoid)\b", before):
+                continue
+            language = normalize_web_reply_language(match.group(1))
+            if language:
+                candidates.append((match.end(), language))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    native_candidates: list[tuple[int, str]] = []
+    for language, pattern in _NATIVE_REPLY_LANGUAGE_PATTERNS:
+        for match in pattern.finditer(unquoted):
+            sentence = unquoted[
+                max(0, match.start() - 40):min(len(unquoted), match.end() + 40)
+            ]
+            if _NATIVE_REPLY_NEGATION_RE.search(sentence):
+                continue
+            native_candidates.append((match.end(), language))
+    if native_candidates:
+        return max(native_candidates, key=lambda item: item[0])[1]
+    # Common Tanglish imperatives are output transformations, not translation
+    # commands for the words in the request itself.
+    match = _EXPLICIT_REPLY_LANGUAGE_TANGLISH_RE.search(unquoted)
+    if match and re.search(r"\b(?:sollu|sollunga|pannu|pannunga|reply|answer|respond)\b", unquoted, re.I):
+        return normalize_web_reply_language(match.group(1))
+    return None
+
+
 def web_reply_language_name(value: Optional[str]) -> str:
     return WEB_REPLY_LANGUAGE_NAMES.get(normalize_web_reply_language(value) or "", "English")
 
@@ -305,7 +413,15 @@ def web_reply_language_script(value: Optional[str]) -> str:
 def resolve_web_reply_language(
     reply_language: Optional[str], message: str = ""
 ) -> str:
-    """Resolve website reply style, preferring a valid saved preference."""
+    """Resolve the effective output language for one request.
+
+    A current-turn instruction has precedence over the saved profile setting;
+    it does not mutate that setting.
+    """
+
+    explicit = explicit_web_reply_language(message)
+    if explicit in WEB_REPLY_LANGUAGES:
+        return explicit
 
     normalized = normalize_web_reply_language(reply_language)
     if normalized in WEB_REPLY_LANGUAGES:
@@ -336,7 +452,8 @@ def _romanized_language(message: str) -> Optional[str]:
 
 
 def detect_language(message: str, reply_language: Optional[str] = None) -> LanguageDecision:
-    reply = _normalized_reply_language(reply_language)
+    explicit = explicit_web_reply_language(message)
+    reply = explicit or normalize_web_reply_language(reply_language) or ""
     script_language = _script_language(message)
     romanized_language = _romanized_language(message) if not script_language else None
     input_language = script_language or romanized_language or "en"
@@ -363,7 +480,7 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
         return LanguageDecision(
             language=language,
             is_indic=True,
-            code_mixed=reply == "tanglish",
+            code_mixed=reply == "tanglish" or (reply == "ta" and bool(romanized_language)),
             prefer_provider="sarvam",
             reason="reply_language_prefers_indic",
             input_language=input_language,

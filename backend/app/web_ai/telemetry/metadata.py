@@ -62,16 +62,24 @@ _ALLOWED_KEYS = frozenset(
         "source_label",
         "source_locator",
         "source_kind",
+        "claim_support_type",
+        "unsupported_claim_count",
+        "cited_claim_count",
+        "verification_strength",
+        "independent_verification",
+        "temporal_support_strength",
         "confidence",
         "content_hash",
         "round_count",
         "dense_enabled",
         "embedding_call_count",
         "quality_outcome",
+        "evidence_strength",
         "repository_validation_mode",
         "quality_checks",
         "check_type",
         "check_status",
+        "reason_code",
         "fence_autoclosed",
         "expected_sentence_count",
         "observed_sentence_count",
@@ -204,6 +212,7 @@ _ENUM_VALUES: dict[str, frozenset[str]] = {
     ),
     "quality_outcome": frozenset(
         {
+            "checked",
             "verified",
             "grounded",
             "best_effort",
@@ -317,6 +326,8 @@ _LIST_ENUM_VALUES: dict[str, frozenset[str]] = {
             "retrieval_unavailable",
             "owner_mismatch",
             "corrective_round",
+            "freshness_evidence",
+            "provider_cited_grounding",
             "repository_context_used",
             "knowledge_lexical",
             "knowledge_hybrid",
@@ -351,6 +362,10 @@ def allowed_metadata_keys() -> frozenset[str]:
 
 
 def _validate_semantic_value(key: str, value: object) -> None:
+    if key in {"unsupported_claim_count", "cited_claim_count"} and (
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+    ):
+        raise UnsafeMetadataError(f"{key} must be a non-negative integer")
     if key == "policy_version":
         if not isinstance(value, str) or not re.fullmatch(
             r"v[1-9][0-9]{0,3}", value

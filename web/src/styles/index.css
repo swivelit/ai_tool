@@ -270,7 +270,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .legal { display: flex; flex-wrap: wrap; gap: 3px 8px; padding: 5px 9px 1px }
 .legal a { color: var(--subtle); text-decoration: none; font-size: 9px }
 .legal a:hover { text-decoration: underline }
-.sidebar.collapsed .sidebar-brand strong, .sidebar.collapsed .rail-action span, .sidebar.collapsed .search-action input, .sidebar.collapsed .search-action kbd, .sidebar.collapsed .archive-toggle, .sidebar.collapsed .threads, .sidebar.collapsed .credit-card span, .sidebar.collapsed .credit-card b, .sidebar.collapsed .account-button > span:nth-child(2), .sidebar.collapsed .account-button > svg, .sidebar.collapsed .legal { display: none }
+  .sidebar.collapsed .sidebar-brand strong, .sidebar.collapsed .rail-action span, .sidebar.collapsed .search-action input, .sidebar.collapsed .search-action kbd, .sidebar.collapsed .search-action span, .sidebar.collapsed .archive-toggle, .sidebar.collapsed .threads, .sidebar.collapsed .credit-card span, .sidebar.collapsed .credit-card b, .sidebar.collapsed .account-button > span:nth-child(2), .sidebar.collapsed .account-button > svg, .sidebar.collapsed .legal { display: none }
 .sidebar.collapsed .sidebar-brand { flex-direction: column; padding-bottom: 5px }
 .sidebar.collapsed .collapse-button { margin: 2px 0 0 }
 .sidebar.collapsed .rail-action, .sidebar.collapsed .search-action, .sidebar.collapsed .credit-card, .sidebar.collapsed .account-button { justify-content: center; padding: 0 }
@@ -985,6 +985,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .data-control { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: transparent; text-align: left; cursor: pointer }
 .data-control span { display: grid; gap: 4px }
 .data-control small, .data-note { color: var(--muted); font-size: 11px; line-height: 1.5 }
+.terminal-session-card { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 11px; text-align: left }
+.terminal-session-card h2 { margin: 0 0 12px; font-size: 16px }
+.terminal-session-card dl { display: grid; gap: 7px; margin: 0 0 14px; font-size: 12px }
+.terminal-session-card dl div { display: flex; justify-content: space-between; gap: 12px }
+.terminal-session-card dt { color: var(--muted) }
+.terminal-session-card dd { margin: 0; overflow-wrap: anywhere; text-align: right }
 .memory-controls { display: grid; gap: 10px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 11px }
 .memory-controls h4, .memory-controls p { margin: 0 }
 .memory-controls > small { color: var(--muted); line-height: 1.5 }
@@ -1068,7 +1074,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .sidebar, .sidebar.collapsed { position: fixed; inset: 0 auto 0 0; width: min(86vw, 300px); transform: translateX(-105%); box-shadow: 18px 0 55px rgb(0 0 0 / 25%) }
   .sidebar.open { transform: translateX(0) }
   .sidebar.collapsed .sidebar-brand { flex-direction: row }
-  .sidebar.collapsed .sidebar-brand strong, .sidebar.collapsed .rail-action span, .sidebar.collapsed .search-action input, .sidebar.collapsed .search-action kbd, .sidebar.collapsed .archive-toggle, .sidebar.collapsed .threads, .sidebar.collapsed .credit-card span, .sidebar.collapsed .credit-card b, .sidebar.collapsed .account-button > span:nth-child(2), .sidebar.collapsed .account-button > svg, .sidebar.collapsed .legal { display: revert }
+  .sidebar.collapsed .sidebar-brand strong, .sidebar.collapsed .rail-action span, .sidebar.collapsed .search-action input, .sidebar.collapsed .search-action kbd, .sidebar.collapsed .search-action span, .sidebar.collapsed .archive-toggle, .sidebar.collapsed .threads, .sidebar.collapsed .credit-card span, .sidebar.collapsed .credit-card b, .sidebar.collapsed .account-button > span:nth-child(2), .sidebar.collapsed .account-button > svg, .sidebar.collapsed .legal { display: revert }
   .sidebar.collapsed .rail-action, .sidebar.collapsed .search-action, .sidebar.collapsed .credit-card, .sidebar.collapsed .account-button { justify-content: initial; padding-inline: 10px }
   .collapse-button { display: none }
   .mobile-close, .menu-button { display: inline-grid }
@@ -1335,7 +1341,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   font-size: 12px;
   color: var(--muted);
 }
-
-
 
 

@@ -3,10 +3,20 @@ import type { ResponseQuality } from '../types'
 
 const LABELS: Record<ResponseQuality['status'], string> = {
   verified: 'Verified',
+  checked: 'Structure checked; sources not verified',
   grounded: 'Sources checked',
   best_effort: 'Best effort',
   unverified: 'Could not fully verify',
   insufficient_evidence: 'Not enough supporting information',
+}
+
+const REASON_LABELS: Record<string, string> = {
+  web_claim_not_supported: 'A cited web claim was not fully supported by its associated source.',
+  unsupported_cited_section: 'A cited answer section needs more direct source support.',
+  no_cited_sections: 'No source citation was attached to the factual answer.',
+  provider_cited_grounding: 'Grounded in provider-cited web material; independent page verification was unavailable.',
+  independent_source_support_unavailable: 'The available source did not independently establish the claim.',
+  evidence_temporal_scope_not_established: 'The source did not establish the requested current time period.',
 }
 
 export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) {
@@ -59,6 +69,13 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
   if (displayedStatus === 'unverified' && repositoryChecks.length > 0) {
     checkLabels.push('Not repository-verified')
   }
+  if (quality.evidence_strength === 'provider_cited_grounding') {
+    checkLabels.push('Provider-cited web grounding; independent verification unavailable')
+  }
+  const detailLabels = quality.checks.flatMap(check => {
+    if (!['failed', 'warning', 'error'].includes(check.status) || !check.reason) return []
+    return [REASON_LABELS[check.reason] ?? check.reason]
+  })
   return <section
     className={`response-quality ${warning ? 'warning' : 'ok'}`}
     aria-label="Response quality"
@@ -69,5 +86,6 @@ export function ResponseQualityPanel({ quality }: { quality: ResponseQuality }) 
       {warningCount} {warningCount === 1 ? 'check needs' : 'checks need'} attention
     </small>}
     {checkLabels.length > 0 && <small>{[...new Set(checkLabels)].join(' · ')}</small>}
+    {detailLabels.length > 0 && <small>{[...new Set(detailLabels)].join(' · ')}</small>}
   </section>
 }

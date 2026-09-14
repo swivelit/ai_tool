@@ -292,6 +292,39 @@ def get_firebase_user_by_email(email: str) -> Any | None:
         raise
 
 
+def firebase_cli_session_is_active(
+    firebase_uid: str, email: str | None, created_at: Any,
+) -> bool:
+    """Apply the explicit CLI-session identity policy.
+
+    Production sessions are checked against Firebase on use: disabled/deleted
+    users, changed verified email, and refresh-token revocation after session
+    creation invalidate the opaque CLI session. Local dev tokens intentionally
+    use the test identity policy and do not call Firebase.
+    """
+    if _dev_token_allowed() and not _firebase_credentials_json_payload() and not _google_application_credentials_path():
+        return True
+    try:
+        firebase_auth = _firebase_auth_module()
+        record = firebase_auth.get_user(firebase_uid)
+    except Exception:
+        return False
+    if bool(getattr(record, "disabled", False)):
+        return False
+    record_email = _normalized_email(getattr(record, "email", None))
+    if not record_email or record_email != _normalized_email(email) or not bool(getattr(record, "email_verified", False)):
+        return False
+    revoked_at = getattr(record, "tokens_valid_after_timestamp", None)
+    if revoked_at:
+        try:
+            created_seconds = created_at.timestamp()
+            if float(revoked_at) / 1000 > created_seconds:
+                return False
+        except (AttributeError, TypeError, ValueError):
+            return False
+    return True
+
+
 def firebase_user_exists_by_email(email: str) -> bool:
     return get_firebase_user_by_email(email) is not None
 

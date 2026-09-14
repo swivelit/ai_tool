@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .language import explicit_web_reply_language
+
 @dataclass(frozen=True)
 class IntentDecision:
     intent: str
@@ -408,7 +410,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     )),
     ("coding", re.compile(r"\b(code|coding|debug|bug|stack trace|typescript|python|react native|fastapi|sql|api implementation|function implementation|class implementation|refactor)\b", re.I)),
     ("complex_reasoning", re.compile(r"\b(architecture|design a|multi[- ]?step|trade[- ]?off|deep analysis|reason through|system design|migration plan|debug this architecture)\b", re.I)),
-    ("translation", re.compile(r"\b(translate|translation|transliterate|transliteration|convert (?:to|into)|in tamil|tamil la|hindi me|hinglish|tanglish)\b", re.I)),
+    ("translation", re.compile(r"\b(translate|translation|transliterate|transliteration|convert (?:to|into)|in tamil(?!\s+nadu\b)|tamil la(?!\s+nadu\b)|hindi me|hinglish|tanglish)\b", re.I)),
     ("tts", re.compile(r"\b(text[- ]?to[- ]?speech|tts|speak this|read aloud|voice output)\b", re.I)),
     ("stt", re.compile(r"\b(speech[- ]?to[- ]?text|stt|transcribe|transcription|voice upload)\b", re.I)),
     ("weather", re.compile(r"\b(weather|forecast|rain|temperature|humidity)\b", re.I)),
@@ -565,10 +567,24 @@ def classify_contextual_followup(message: str) -> IntentDecision | None:
     text = str(message or "").strip()
     if not text:
         return None
+    if explicit_web_reply_language(text) and not _has_explicit_subject(text):
+        return IntentDecision(
+            intent="contextual_language",
+            route="contextual_language",
+            reason="contextual_language_needs_recent_context",
+        )
     for intent, pattern in _CONTEXTUAL_PATTERNS:
         if not pattern.search(text):
             continue
-        if intent != "contextual_reference" and _has_explicit_subject(text):
+        # A reference word is not enough to make a turn contextual.  If the
+        # same turn supplies a concrete subject ("this Python code" or "the
+        # first option in argparse"), route it as a standalone request.  A
+        # bare "what about Kerala?" remains an omitted-role entity switch and
+        # intentionally keeps context.
+        if _has_explicit_subject(text) and not (
+            intent == "contextual_reference"
+            and re.search(r"\bwhat\s+about\b", text, re.IGNORECASE)
+        ):
             continue
         return IntentDecision(intent=intent, route=intent, reason=f"{intent}_needs_recent_context")
     return None
@@ -581,9 +597,19 @@ def _has_explicit_subject(text: str) -> bool:
         r"\bin\s+tamil\b",
         r"\bexplain\s+in\s+tamil\b",
         r"\bexplain\b",
+        r"\b(?:give|answer|reply|respond|provide|return|show|tell|write|output)\b",
+        r"\b(?:me|the|result)\b",
+        r"\b(?:in|using|as)\s+(?:english|tamil|tanglish|hindi|bengali|telugu|kannada|malayalam|marathi|gujarati|punjabi|odia|oriya)\b",
         r"\btranslate\b",
         r"\btranslation\b",
         r"\bmake\b",
+        r"\bmore\b",
+        r"\bsimply\b",
+        r"\bshort(?:er)?\b",
+        r"\bbrief(?:ly)?\b",
+        r"\bfix\b",
+        r"\bsection\b",
+        r"\badvantages?\b",
         r"\bit\b",
         r"\bthis\b",
         r"\bthat\b",

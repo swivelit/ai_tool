@@ -7,6 +7,7 @@ const authState: { user: unknown; loading: boolean } = { user:null, loading:fals
 vi.mock('./auth/useAuth', () => ({ useAuth: () => authState }))
 vi.mock('./pages/ChatPage', () => ({ ChatPage: () => <main>Chat</main> }))
 vi.mock('./pages/GuestChatPage', () => ({ GuestChatPage: () => <main>Guest chat</main> }))
+vi.mock('./pages/CliSessionsPage', () => ({ CliSessionsPage: () => <main>Terminal sessions page</main> }))
 
 it('renders the guest chat at the unauthenticated root and keeps auth routes explicit', async () => {
   const { unmount } = render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
@@ -22,6 +23,20 @@ it('renders the guest chat at the unauthenticated root and keeps auth routes exp
 it('keeps the authenticated root on the existing ChatPage', () => {
   authState.user = { uid:'signed-in-user' }
   render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
+  expect(screen.getByText('Chat')).toBeInTheDocument()
+  authState.user = null
+})
+
+it('preserves a safe signed-out terminal-session return path and rejects external return targets', () => {
+  authState.user = null
+  const signedOut = render(<MemoryRouter initialEntries={['/settings/cli-sessions']}><App /></MemoryRouter>)
+  expect(screen.getByRole('heading', { name:'Welcome back' })).toBeInTheDocument()
+  signedOut.unmount()
+  authState.user = { uid:'signed-in-user' }
+  const safe = render(<MemoryRouter initialEntries={['/login?returnTo=%2Fsettings%2Fcli-sessions']}><App /></MemoryRouter>)
+  expect(screen.getByText('Terminal sessions page')).toBeInTheDocument()
+  safe.unmount()
+  render(<MemoryRouter initialEntries={['/login?returnTo=https%3A%2F%2Fevil.example']}><App /></MemoryRouter>)
   expect(screen.getByText('Chat')).toBeInTheDocument()
   authState.user = null
 })

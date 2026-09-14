@@ -1026,6 +1026,18 @@ def test_gpt5_nano_uses_responses_without_chat_only_params():
     assert metadata["endpoint"] == "responses"
 
 
+def test_structured_cli_schema_reaches_metered_generation_contract():
+    client = _Client()
+    schema = {"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}, "additionalProperties": False}
+    request = _request(message="Return structured data")
+    request.metadata["structured_output_schema"] = schema
+    route = replace(_route(models=["gpt-4.1-nano"]), provider_endpoint_candidates=["chat_completions"])
+    OpenAIProvider(client).complete(request, route)
+    assert client.completions.calls[0]["response_format"] == {
+        "type": "json_schema", "name": "swico_cli_output", "strict": True, "schema": schema,
+    }
+
+
 def test_chat_fallback_uses_chat_endpoint_and_supported_params():
     client = _Client()
 

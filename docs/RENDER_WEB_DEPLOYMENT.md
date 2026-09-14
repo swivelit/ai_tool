@@ -209,6 +209,38 @@ created the Blueprint.
 
 The root must remain blank. `backend/config.py` and `backend/app/agentic_service.py` still have repository-root runtime reads involving `mobile/data/`.
 
+### Paid current-information lookup (backend only)
+
+The paid website tiers may use the bounded OpenAI Responses web-search
+adapter. Keep the existing `ENABLE_WEB_SEARCH_FOR_FREE=false`; it is the
+separate Free/local-only switch. Add these variables only to the existing API
+service, never to `swico-web`, `VITE_*`, or a shared client environment:
+
+```dotenv
+WEB_LIVE_SEARCH_ENABLED=false
+WEB_LIVE_SEARCH_PROVIDER=openai
+WEB_LIVE_SEARCH_MODEL=gpt-4.1-mini
+WEB_LIVE_SEARCH_TIMEOUT_SECONDS=15
+WEB_LIVE_SEARCH_MAX_CALLS_PER_TURN=1
+WEB_LIVE_SEARCH_MAX_OUTPUT_TOKENS=1000
+```
+
+Set `WEB_LIVE_SEARCH_ENABLED=true` only with the existing backend
+`OPENAI_API_KEY`. The adapter validates the provider/model and bounds, requires
+completed hosted search output with source citations, and is admitted within
+the existing paid request reservation. Roll back by setting
+`WEB_LIVE_SEARCH_ENABLED=false`, then redeploying the API service. Verify the
+configuration offline with `cd backend && python scripts/web_live_search_check.py --pretty`;
+an operator may intentionally run one bounded live probe with
+`--live --query "Who is the CM of Tamil Nadu?" --pretty`.
+
+For a bounded operator diagnosis after an intentional live probe, add
+`--debug-evidence --export-fixture /secure/operator/swico-search.json`.
+The exported file contains only the sanitized public query and Responses
+payload. Replay it without network, billing, or another provider request with
+`cd backend && python scripts/web_live_search_check.py --replay-fixture /secure/operator/swico-search.json --debug-evidence --pretty`.
+Do not expose the fixture or debug output to ordinary chat clients.
+
 Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, `CORS_ALLOW_ORIGINS=https://<web-domain>`, and leave `CORS_ALLOW_LOCAL_DEV_ORIGINS` empty unless explicitly enabling local Vite -> hosted-backend development. If enabled, set it to exactly `http://localhost:5173,http://127.0.0.1:5173`. Production `CORS_ALLOW_ORIGINS` remains HTTPS-only; do not use wildcard CORS. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing and Swico tier variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
 
 For the website subscription rollout, add these backend variables to the existing API service (never to the static site and never as `VITE_*` values): `WEB_SUBSCRIPTIONS_ENABLED=false`, `WEB_REFERRALS_ENABLED=false`, `WEB_SUBSCRIPTION_1M_PRICE_PAISE=150000`, `WEB_SUBSCRIPTION_6M_PRICE_PAISE=800000`, `WEB_SUBSCRIPTION_1Y_PRICE_PAISE=1200000`, `WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS=125000000`, `WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK=true`, `WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT=false`, `WEB_REFERRAL_REWARD_1M_WEEKS=1`, `WEB_REFERRAL_REWARD_6M_WEEKS=3`, and `WEB_REFERRAL_REWARD_1Y_MONTHS=2`. Enable subscriptions/referrals only after migration, Razorpay test-mode verification, legal publication, and supervised non-production checkout verification. There is no subscription reset cron or additional Render service.
@@ -1226,3 +1258,38 @@ Mode.
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 
 After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹15 payment with owner-controlled payment details, verify the expected server-calculated credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
+
+## Swico CLI rollout
+
+The CLI is an additional client of the existing API and Chat billing bucket.
+Keep these backend settings disabled by default:
+
+```text
+SWICO_CLI_ENABLED=false
+SWICO_CLI_AGENT_ENABLED=false
+SWICO_CLI_WEB_ORIGIN=https://swico.in
+SWICO_CLI_ALLOWED_EMAILS=
+SWICO_CLI_MAX_AGENT_STEPS=8
+SWICO_CLI_CLOUD_AGENT_ENABLED=false
+```
+
+Deploy the API and `swico-web` from the same tested commit, run the API-owned
+Alembic pre-deploy migration and the read-only CLI readiness check, then enable
+chat for a test account. Verify device authorization, account ownership, Chat
+reservation/settlement and session revocation before enabling the agent for
+that account. Remove the allowlist only for a wider rollout. Roll back by
+setting either feature flag to `false`; retain schema and billing records.
+There is no new Render service, database, browser localhost origin, or
+provider credential. `/cli/authorize` is served by the existing SPA rewrite.
+Cloud remains disabled and fail-closed: no repository code may run in the API
+or web process until a separately isolated runner and short-lived job
+capability service are reviewed and deployed.
+
+Readiness check (no paid provider call):
+
+```bash
+cd backend
+python scripts/swico_cli_release_check.py --pretty
+```
+
+CLI installation/authentication details are in `docs/CLI.md`.

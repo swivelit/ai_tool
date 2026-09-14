@@ -47,6 +47,10 @@ function sources(data: unknown): SourceSummary[] {
       id, label, locator,
       confidence: Number.isFinite(confidence) ? confidence : 0,
       source_kind: String(source.source_kind ?? '').slice(0, 32),
+      ...(typeof source.attributes === 'object' && source.attributes !== null
+        ? { attributes: Object.fromEntries(Object.entries(source.attributes as Record<string, unknown>).flatMap(([key, value]) =>
+          ['verification_strength', 'independent_verification', 'temporal_support_strength', 'claim_support_type'].includes(key)
+            ? [[key, String(value).slice(0, 128)]] : [])) } : {}),
     }]
   })
 }
@@ -54,14 +58,22 @@ function sources(data: unknown): SourceSummary[] {
 function quality(data: unknown): ResponseQuality | null {
   const value = record(data)
   const status = String(value.status ?? '')
-  if (!['verified', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence'].includes(status)) return null
+  if (!['verified', 'checked', 'grounded', 'best_effort', 'unverified', 'insufficient_evidence'].includes(status)) return null
   const checks = (Array.isArray(value.checks) ? value.checks : []).flatMap(item => {
     const check = record(item)
     const type = String(check.type ?? '').slice(0, 64)
     const checkStatus = String(check.status ?? '')
     if (!type || !['passed', 'failed', 'warning', 'skipped', 'error'].includes(checkStatus)) return []
-    return [{ type, status: checkStatus as ResponseQuality['checks'][number]['status'] }]
+    const reason = String(check.reason ?? '').slice(0, 80)
+    return [{
+      type, status: checkStatus as ResponseQuality['checks'][number]['status'],
+      ...(reason ? { reason } : {}),
+    }]
   })
+  const evidenceStrength = ['provider_cited_grounding', 'independently_source_supported']
+    .includes(String(value.evidence_strength ?? ''))
+    ? value.evidence_strength as ResponseQuality['evidence_strength']
+    : null
   return {
     status: status as ResponseQuality['status'],
     retrieval_status: typeof value.retrieval_status === 'string'
@@ -70,6 +82,7 @@ function quality(data: unknown): ResponseQuality | null {
       .includes(String(value.repository_validation_mode ?? ''))
       ? value.repository_validation_mode as ResponseQuality['repository_validation_mode']
       : null,
+    ...(evidenceStrength ? { evidence_strength: evidenceStrength } : {}),
     checks: checks.slice(0, 24),
   }
 }

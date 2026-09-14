@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 
 
-TEST_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "db" / "pytest.sqlite3"
+TEST_DB_PATH = Path(tempfile.mkdtemp(prefix="swico-pytest-db-")) / "pytest.sqlite3"
 TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Keep pytest isolated from developer/staging/production config values in .env.
@@ -102,9 +103,9 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, ReferralAttribution, ReferralCode, ReferralReward, SubscriptionEntitlement, SubscriptionPreference, SubscriptionUsageLedger, SubscriptionUsageWindow, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebAnswerCheck, WebChatMessage, WebChatThread, WebCodeEdge, WebCodeFile, WebCodeRepository, WebCodeSymbol, WebConversationSummary, WebEvidenceItem, WebGuestSession, WebKnowledgeChunk, WebKnowledgeDocument, WebKnowledgeNode, WebKnowledgeTriplet, WebMemoryFact, WebMessageFeedback, WebRetrievalTrace, WebUsagePeriodLock, WebUsagePreferences, WebUsageStage
+from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, ReferralAttribution, ReferralCode, ReferralReward, SubscriptionEntitlement, SubscriptionPreference, SubscriptionUsageLedger, SubscriptionUsageWindow, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebAnswerCheck, WebChatMessage, WebChatThread, WebCodeEdge, WebCodeFile, WebCodeRepository, WebCodeSymbol, WebConversationSummary, WebEvidenceItem, WebGuestSession, WebKnowledgeChunk, WebKnowledgeDocument, WebKnowledgeNode, WebKnowledgeTriplet, WebMemoryFact, WebMessageFeedback, WebRetrievalTrace, WebUsagePeriodLock, WebUsagePreferences, WebUsageStage
 
-WEB_MODELS = [WebKnowledgeNode, WebKnowledgeTriplet, WebKnowledgeChunk, WebKnowledgeDocument, WebCodeEdge, WebCodeSymbol, WebCodeFile, WebCodeRepository, WebEvidenceItem, WebAnswerCheck, WebUsageStage, WebRetrievalTrace, ProcessedWebhook, SubscriptionUsageLedger, SubscriptionUsageWindow, ReferralReward, ReferralAttribution, SubscriptionEntitlement, ReferralCode, WalletLedger, UsageCharge, WebMessageFeedback, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, WebGuestSession, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences, SubscriptionPreference]
+WEB_MODELS = [CliPendingAction, CliAgentStep, CliAgentRun, CliSession, CliDeviceGrant, WebKnowledgeNode, WebKnowledgeTriplet, WebKnowledgeChunk, WebKnowledgeDocument, WebCodeEdge, WebCodeSymbol, WebCodeFile, WebCodeRepository, WebEvidenceItem, WebAnswerCheck, WebUsageStage, WebRetrievalTrace, ProcessedWebhook, SubscriptionUsageLedger, SubscriptionUsageWindow, ReferralReward, ReferralAttribution, SubscriptionEntitlement, ReferralCode, WalletLedger, UsageCharge, WebMessageFeedback, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, WebGuestSession, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences, SubscriptionPreference]
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
@@ -126,6 +127,20 @@ def create_test_user(uid: str = "test-uid", email: str = "test@example.com", nam
         session.commit()
         session.refresh(user)
         return user
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fresh_sqlite_schema():
+    """Keep the default disposable SQLite database aligned with current models.
+
+    A fixed repository-local file let create_all preserve obsolete columns
+    between test runs. Never reset an explicitly supplied TEST_DATABASE_URL;
+    PostgreSQL integration runs own their disposable schema lifecycle.
+    """
+    if engine.dialect.name == "sqlite":
+        SQLModel.metadata.drop_all(engine)
+        SQLModel.metadata.create_all(engine)
+    yield
 
 
 @pytest.fixture(autouse=True)

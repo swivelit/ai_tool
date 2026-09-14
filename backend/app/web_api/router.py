@@ -73,7 +73,7 @@ from ..ai.providers.sarvam_provider import (
 )
 from ..ai.language import (
     WEB_REPLY_LANGUAGES, is_supported_web_reply_language,
-    normalize_web_reply_language, resolve_web_stt_mode,
+    normalize_web_reply_language, resolve_web_reply_language, resolve_web_stt_mode,
 )
 from ..ai.providers.sarvam_streaming_provider import (
     SarvamStreamingError, SarvamStreamingProvider, sarvam_tts_output_codec,
@@ -113,6 +113,7 @@ from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
+    CliSession,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
     WebKnowledgeDocument,
 )
@@ -147,6 +148,7 @@ from ..web_ai.retrieval.persistent_knowledge import (
 )
 from ..observability import APP_RELEASE, get_request_id
 from ..openai_tracked import OpenAIBudgetExceededError
+from ..web_ai.generation.models import SAFE_QUALITY_REASON_CODES
 from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
@@ -214,6 +216,29 @@ _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
 ALEMBIC_HEAD = repository_alembic_head()
+
+
+def request_generation_cancellation(request_id: str, user_id: int) -> bool:
+    """Shared in-process cancellation admission used by web-compatible clients."""
+    with _active_generations_lock:
+        active = _active_generations.get(str(request_id))
+        if active is not None and active[0] == int(user_id):
+            active[1].cancel()
+            return True
+        _pending_generation_cancellations[str(request_id)] = int(user_id)
+        return False
+
+
+def register_generation(request_id: str, user_id: int, cancellation: GenerationCancellation) -> None:
+    with _active_generations_lock:
+        _active_generations[str(request_id)] = (int(user_id), cancellation)
+        if _pending_generation_cancellations.pop(str(request_id), None) == int(user_id):
+            cancellation.cancel()
+
+
+def unregister_generation(request_id: str) -> None:
+    with _active_generations_lock:
+        _active_generations.pop(str(request_id), None)
 
 
 def _tickets() -> VoiceTicketStore:
@@ -686,6 +711,19 @@ def _serialize_message(
                 0.0, min(1.0, float(source.get("confidence") or 0.0))
             ),
             "source_kind": str(source.get("source_kind") or "")[:32],
+            **(
+                {
+                    "attributes": {
+                        str(key)[:64]: str(value)[:128]
+                        for key, value in (source.get("attributes") or {}).items()
+                        if str(key) in {
+                            "verification_strength", "independent_verification",
+                            "temporal_support_strength", "claim_support_type",
+                        }
+                    }
+                }
+                if isinstance(source.get("attributes"), dict) else {}
+            ),
         }
         for source in (
             raw_sources if isinstance(raw_sources, list) else []
@@ -697,7 +735,7 @@ def _serialize_message(
     if isinstance(raw_quality, dict):
         quality_status = str(raw_quality.get("status") or "")
         if quality_status in {
-            "verified", "grounded", "best_effort", "unverified",
+            "verified", "checked", "grounded", "best_effort", "unverified",
             "insufficient_evidence",
         }:
             quality_checks = []
@@ -712,9 +750,11 @@ def _serialize_message(
                 if check_type and check_status in {
                     "passed", "failed", "warning", "skipped", "error",
                 }:
-                    quality_checks.append({
-                        "type": check_type, "status": check_status,
-                    })
+                    safe_check = {"type": check_type, "status": check_status}
+                    reason = str(check.get("reason") or "")
+                    if reason in SAFE_QUALITY_REASON_CODES:
+                        safe_check["reason"] = reason
+                    quality_checks.append(safe_check)
             quality = {
                 "status": quality_status,
                 "retrieval_status": (
@@ -729,6 +769,13 @@ def _serialize_message(
                     else None
                 ),
                 "repair_attempted": raw_quality.get("repair_attempted") is True,
+                **(
+                    {"evidence_strength": str(raw_quality.get("evidence_strength"))[:64]}
+                    if str(raw_quality.get("evidence_strength") or "") in {
+                        "provider_cited_grounding", "independently_source_supported",
+                    }
+                    else {}
+                ),
             }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
@@ -869,8 +916,6 @@ def bootstrap(
         int(user.id), internal_account=billing_exempt,
     )
     swico_tier = selected_swico_tier(session, int(user.id))
-    if swico_tier == "free" and not free_available:
-        swico_tier = "lite"
     uploads = _uploads_public_config()
     rollout, triag_settings = _web_rollout(auth, user)
     validation_capability = "static_only"
@@ -2311,6 +2356,58 @@ def _profile_response(user) -> dict[str, Any]:
     }
 
 
+@router.get("/cli/sessions")
+def list_web_cli_sessions(
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    """List terminal sessions for the signed-in website account.
+
+    This intentionally uses Firebase website authentication rather than a
+    terminal bearer token, so a user can revoke a lost terminal even after
+    the CLI rollout flag has been disabled.
+    """
+    user = get_owned_user(session, auth)
+    rows = session.exec(
+        select(CliSession).where(
+            CliSession.user_id == int(user.id),
+            CliSession.revoked_at.is_(None),
+        ).order_by(CliSession.created_at.desc())
+    ).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "device_description": row.device_description,
+                "created_at": row.created_at.isoformat(),
+                "last_seen_at": row.last_seen_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/cli/sessions/{session_id}")
+def revoke_web_cli_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(
+        select(CliSession).where(
+            CliSession.id == session_id,
+            CliSession.user_id == int(user.id),
+        ).with_for_update()
+    ).first()
+    if row is None:
+        raise HTTPException(404, "CLI session not found")
+    if row.revoked_at is None:
+        row.revoked_at, row.revoke_reason = utc_now(), "website_revoked"
+        session.add(row)
+    return {"status": "revoked"}
+
+
 @router.get("/settings/profile")
 def get_profile_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
@@ -2351,8 +2448,6 @@ def get_assistant_settings(
         int(user.id), internal_account=internal_account,
     )
     tier = selected_swico_tier(session, int(user.id))
-    if tier == "free" and not free_available:
-        tier = "lite"
     return public_tier_settings(tier, free_available=free_available)
 
 
@@ -3312,8 +3407,6 @@ async def upload_document(
     free_available = swico_free_eligible(
         int(user.id), internal_account=billing_exempt,
     )
-    if swico_tier == "free" and not free_available:
-        swico_tier = "lite"
     if swico_tier == "free":
         await file.close()
         return _temporary_error(
@@ -4117,7 +4210,9 @@ async def chat_stream(
                 raise HTTPException(401, "Missing auth token")
             user = get_owned_user(rate_session, auth)
             user_id = int(user.id)
-            resolved_reply_language = _resolved_reply_language(user)
+            resolved_reply_language = resolve_web_reply_language(
+                _resolved_reply_language(user), payload.message,
+            )
             billing_exempt = is_internal_test_user(auth, user)
             free_eligible = swico_free_eligible(
                 user_id, internal_account=billing_exempt,

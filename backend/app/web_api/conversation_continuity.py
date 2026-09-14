@@ -39,7 +39,7 @@ _RESET_RE = re.compile(
 _REFERENCE_RE = re.compile(
     r"(?:"
     r"\b(?:it|its|itself|this|that|these|those|they|them|their|above|previous|"
-    r"earlier|same|former|latter)\b|"
+    r"earlier|same|former|latter|he|she|him|her)\b|"
     r"\b(?:first|second|third|last)\s+one\b|"
     r"\b(?:that|this)\s+(?:section|approach|code|plan|roadmap)\b|"
     r"\bthose\s+steps\b|"
@@ -73,6 +73,21 @@ _MULTI_TURN_RE = re.compile(
     r"continue|go\s+on|previous\s+(?:answer|turns?))\b",
     re.IGNORECASE,
 )
+
+_BOUNDED_INCOMPLETE_RE = re.compile(
+    r"^(?:now\s+)?(?:show|start|begin)\s+(?:phase|step)\s*\d+\.?$|"
+    r"^(?:continue|go\s+on|then\s+what|what\s+next)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_PERSON_REFERENCE_RE = re.compile(r"\b(?:he|she|him|her)\b", re.IGNORECASE)
+
+_REFERENCE_TERMS = frozenset({
+    "above", "earlier", "former", "it", "its", "itself", "same", "that",
+    "these", "they", "them", "their", "those", "this", "previous",
+    "more", "simply", "short", "shorter", "brief", "section", "fix",
+    "advantages", "அடுத்தது", "இதுக்கு", "அதை", "இதை",
+})
 
 _STANDALONE_RE = re.compile(
     r"^(?:(?:can|could|would)\s+you\s+)?(?:what\s+is|who\s+is|define|explain|"
@@ -157,6 +172,15 @@ def decide_same_thread_continuity(
     if selected_mode == "always_last":
         return _decision(selected_mode, True, "always_last", 0.98, 1)
 
+    current_terms = _meaningful_tokens(text)
+    # A subject supplied by the current message always wins. This check must
+    # precede contextual intent and pronoun matching: phrases such as
+    # "Explain this Python code" and "the first option in argparse" contain
+    # reference words, but do not need the previous turn to identify their
+    # subject.
+    if _has_clear_standalone_subject(text, current_terms):
+        return _decision(selected_mode, False, "clear_standalone_subject", 0.92, 0)
+
     explicit = classify_contextual_followup(text)
     if explicit is not None:
         return _decision(
@@ -166,6 +190,8 @@ def decide_same_thread_continuity(
         return _decision(selected_mode, False, "explicit_followup_not_detected", 0.9, 0)
 
     if _REFERENCE_RE.search(text):
+        if _PERSON_REFERENCE_RE.search(text) and not _has_person_antecedent(recent_turns):
+            return _decision(selected_mode, False, "unresolved_person_reference", 0.88, 0)
         return _decision(
             selected_mode, True, "referential_language", 0.96, _preferred_count(text)
         )
@@ -173,13 +199,6 @@ def decide_same_thread_continuity(
         return _decision(
             selected_mode, True, "elliptical_followup", 0.93, _preferred_count(text)
         )
-
-    current_terms = _meaningful_tokens(text)
-    # A named standalone subject wins before lexical overlap. Otherwise a new
-    # question can accidentally inherit history merely because both turns use
-    # a common word such as "change" or "problem".
-    if _has_clear_standalone_subject(text, current_terms):
-        return _decision(selected_mode, False, "clear_standalone_subject", 0.92, 0)
 
     history_terms: set[str] = set()
     for turn in recent_turns[-2:]:
@@ -201,10 +220,12 @@ def decide_same_thread_continuity(
             selected_mode, True, "missing_application_subject", 0.74, 1
         )
 
-    word_count = len(_unicode_tokens(text))
-    if word_count <= 14 or len(current_terms) <= 2:
+    if _BOUNDED_INCOMPLETE_RE.match(text) or (
+        _UNBOUND_SUBJECT_RE.search(text)
+        and not (current_terms - _GENERIC_SUBJECT_TERMS - _REFERENCE_TERMS)
+    ):
         return _decision(
-            selected_mode, True, "ambiguous_short_fallback", 0.62,
+            selected_mode, True, "bounded_incomplete_followup", 0.82,
             _preferred_count(text),
         )
     return _decision(selected_mode, False, "self_contained_no_overlap", 0.78, 0)
@@ -245,20 +266,38 @@ def _overlap_confidence(overlap: set[str]) -> float:
 
 
 def _has_clear_standalone_subject(text: str, terms: set[str]) -> bool:
-    concrete_terms = terms - _GENERIC_SUBJECT_TERMS
+    concrete_terms = terms - _GENERIC_SUBJECT_TERMS - _REFERENCE_TERMS
     if _UNBOUND_SUBJECT_RE.search(text) and not concrete_terms:
         return False
     match = _STANDALONE_RE.match(text)
     if match and (
-        _meaningful_tokens(match.group(1)) - _GENERIC_SUBJECT_TERMS
+        _meaningful_tokens(match.group(1)) - _GENERIC_SUBJECT_TERMS - _REFERENCE_TERMS
     ):
         return True
     how_match = _HOW_STANDALONE_RE.match(text)
     if how_match and _IMPLEMENTATION_FOLLOWUP_RE.match(text):
         return bool(_NAMED_IMPLEMENTATION_SUBJECT_RE.search(how_match.group(1)))
     if how_match and len(
-        _meaningful_tokens(how_match.group(1)) - _GENERIC_SUBJECT_TERMS
+        _meaningful_tokens(how_match.group(1)) - _GENERIC_SUBJECT_TERMS - _REFERENCE_TERMS
     ) >= 2:
+        return True
+    # Short noun-phrase questions and entity switches can be complete current
+    # requests even without "what is" or "who is".
+    if (
+        len(concrete_terms) >= 2
+        and re.search(r"\b(?:of|in|for)\s+[A-Z][\w-]+", text)
+    ):
+        return True
+    if (
+        re.search(r"\b(?:code|function|script|program|class)\b", text, re.I)
+        and concrete_terms
+    ):
+        return True
+    if (
+        re.search(r"[\u0b80-\u0bff]", text)
+        and re.search(r"(?:என்ன|யார்|எப்படி)\s*[?!.]*$", text)
+        and concrete_terms
+    ):
         return True
     # Longer questions/statements with several concrete terms are sufficiently
     # specified to stand alone even when they do not use a canned opening.
@@ -267,6 +306,25 @@ def _has_clear_standalone_subject(text: str, terms: set[str]) -> bool:
         and len(terms) >= 4
         and concrete_terms
     )
+
+
+def _has_person_antecedent(recent_turns: list[dict[str, str]]) -> bool:
+    """Require a bounded, person-shaped antecedent for he/she references."""
+    text = " ".join(
+        str(turn.get(key) or "")
+        for turn in recent_turns[-2:]
+        for key in ("user", "assistant")
+    )
+    if re.search(
+        r"\b(?:person|man|woman|president|prime minister|chief minister|"
+        r"governor|researcher|author|developer|teacher|he|she)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    # Preserve ordinary named-person follow-ups without maintaining a name
+    # database. Two adjacent capitalized words are a conservative antecedent.
+    return bool(re.search(r"\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b", text))
 
 
 def _unicode_tokens(text: str) -> list[str]:

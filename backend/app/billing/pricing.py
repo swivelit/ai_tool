@@ -218,5 +218,57 @@ def reserve_price(provider: str, model: str, input_tokens: int, max_output_token
     return PriceResult(base.amount, base.currency, micros, {**base.snapshot, "reserve_multiplier": str(multiplier)})
 
 
+def live_search_price(
+    model: str, input_tokens: int, output_tokens: int, calls: int = 1,
+    *, include_search_content_tokens: bool = False,
+) -> PriceResult:
+    """Price one hosted web-search call using the Responses tool contract.
+
+    The reservation estimate includes the documented fixed search-content block.
+    A settled response uses the provider-reported input tokens as authoritative;
+    adding the block again would double-count Responses usage such as the
+    8,570-token probe response.
+    """
+    count = max(0, int(calls))
+    token_price = openai_price(
+        model,
+        max(0, int(input_tokens)) + (8_000 * count if include_search_content_tokens else 0),
+        max(0, int(output_tokens)),
+    )
+    tool_fee_usd = Decimal("0.01") * Decimal(count)
+    fx = env_decimal("USD_TO_INR_BILLING_RATE", "90")
+    buffer_percent = env_decimal("OPENAI_FX_BUFFER_PERCENT", "3")
+    tool_fee_inr = tool_fee_usd * fx * (Decimal("1") + buffer_percent / Decimal("100"))
+    return PriceResult(
+        amount=token_price.amount + tool_fee_usd,
+        currency="USD",
+        micros=token_price.micros + _ceil_micros(tool_fee_inr),
+        snapshot={
+            **token_price.snapshot,
+            "usage_kind": "web_search",
+            "web_search_calls": count,
+            "web_search_tool_fee_usd": str(tool_fee_usd),
+            "web_search_content_input_tokens": 8_000 * count if include_search_content_tokens else 0,
+            "web_search_content_pricing_basis": (
+                "reservation_estimate" if include_search_content_tokens
+                else "provider_reported_usage"
+            ),
+        },
+    )
+
+
+def reserve_live_search_price(model: str, input_tokens: int, max_output_tokens: int) -> PriceResult:
+    base = live_search_price(
+        model, input_tokens, max_output_tokens, 1,
+        include_search_content_tokens=True,
+    )
+    multiplier = env_decimal("BILLING_RESERVE_MULTIPLIER", "1.25")
+    micros = int((Decimal(base.micros) * multiplier).to_integral_value(rounding=ROUND_CEILING))
+    return PriceResult(
+        base.amount, base.currency, micros,
+        {**base.snapshot, "reserve_multiplier": str(multiplier)},
+    )
+
+
 def snapshot_json(snapshot: dict[str, Any]) -> str:
     return json.dumps(snapshot, sort_keys=True, separators=(",", ":"))

@@ -36,6 +36,12 @@ _QUERY_CONTEXT_TERMS = {
     "state", "stated", "states", "tell", "that", "the", "this", "use",
     "using", "was", "were", "what", "where", "which", "with", "would",
 }
+_DOCUMENT_OVERVIEW_RE = re.compile(
+    r"\b(?:summari[sz]e|summary|overview|review|go\s+through|read|"
+    r"walk\s+through|what\s+is\s+(?:this|the)\s+document\s+about|"
+    r"tell\s+me\s+about\s+(?:this|the)\s+document|key\s+points?)\b",
+    re.IGNORECASE,
+)
 _UUID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.I,
@@ -157,6 +163,55 @@ def calibrated_query_coverage(query: str, text: str) -> float:
     return len(query_terms & text_tokens) / len(query_terms)
 
 
+def is_document_overview_request(question: str) -> bool:
+    """Whether a request asks for bounded document-wide orientation."""
+    text = " ".join(str(question or "").lower().split())
+    if not (bool(_DOCUMENT_OVERVIEW_RE.search(text)) and bool(
+        re.search(r"\b(?:document|file|pdfs?|attachment|this|it)\b", text)
+    )):
+        return False
+    # A document verb does not turn a targeted fact question into an overview.
+    # Keep the normal missing-fact refusal path for requests such as “read this
+    # and tell me the CEO salary”.
+    if re.search(
+        r"\btell\s+me\b(?!\s+about\s+(?:this|the)\s+document\b)|"
+        r"\b(?:what|who|when|where|which|how\s+much|how\s+many|does|is|are)\b"
+        r".{0,80}\b(?:salary|pay|price|revenue|age|name|date|amount|number|"
+        r"ceo|chief\s+executive|president|author|owner)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return True
+
+
+def _representative_chunks(
+    ranked: list[RankedChunk], *, limit: int = 5,
+) -> list[RankedChunk]:
+    """Select page coverage that does not overclaim a complete review."""
+    by_upload: dict[int, list[RankedChunk]] = {}
+    for item in ranked:
+        by_upload.setdefault(item.upload_index, []).append(item)
+    queues: dict[int, list[RankedChunk]] = {}
+    for upload_index in sorted(by_upload):
+        items = sorted(by_upload[upload_index], key=lambda item: item.chunk_index)
+        indexes = sorted({0, len(items) // 2, len(items) - 1})
+        queues[upload_index] = [items[index] for index in indexes]
+    selected: list[RankedChunk] = []
+    # Round-robin guarantees that a later file gets represented before an
+    # earlier file consumes the five-excerpt bound.
+    while queues and len(selected) < max(1, int(limit)):
+        for upload_index in list(sorted(queues)):
+            if len(selected) >= max(1, int(limit)):
+                break
+            queue = queues[upload_index]
+            if queue:
+                selected.append(queue.pop(0))
+            if not queue:
+                queues.pop(upload_index, None)
+    return sorted(selected, key=lambda item: (item.upload_index, item.chunk_index))
+
+
 def attachment_prompt_max_chars() -> int:
     try:
         value = int(os.getenv("WEB_ATTACHMENT_PROMPT_MAX_CHARS", "6000"))
@@ -208,6 +263,11 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
         selected_keys.add(key)
         seen_text.append(tokens)
 
+    overview_request = is_document_overview_request(question)
+    if overview_request:
+        for item in _representative_chunks(ranked):
+            add(item)
+
     # The website's single-field "Ask questions" long-input flow stores the
     # user's question inside the virtual document and sends a generic provider
     # prompt. Questions are conventionally placed at the tail, so retain the
@@ -227,7 +287,7 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
             if tail is not None:
                 add(tail)
 
-    if not question_tokens:
+    if not overview_request and not question_tokens:
         # Attachment-only turns need one representative excerpt per file, up
         # to the same practical five-chunk ceiling.
         for upload_index, _upload in enumerate(uploads):
@@ -236,7 +296,7 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
                 add(first)
             if len(selected) >= 5:
                 break
-    else:
+    elif not overview_request:
         ordered = sorted(ranked, key=lambda value: (-value.score, value.upload_index, value.chunk_index))
         useful = [item for item in ordered if item.score > 0]
         for item in (useful or ordered[:1]):
@@ -246,6 +306,12 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
 
     blocks: list[str] = []
     used = 0
+    if overview_request:
+        notice = (
+            "[Document coverage: representative excerpts only; the complete document "
+            "was not processed. Do not claim a complete review.]")
+        blocks.append(notice)
+        used = len(notice)
     for item in selected:
         block = f"{item.label}\n{item.text.strip()}"
         separator = 2 if blocks else 0

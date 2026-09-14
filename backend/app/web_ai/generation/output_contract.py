@@ -156,14 +156,16 @@ def apply_reply_language_contract(
 
     normalized = str(reply_language or "").strip().casefold()
     if normalized == "tanglish":
-        # An explicit Tamil-script request wins over the profile's normal
-        # Tanglish contract for this message.
-        if contract.required_script == "tamil":
-            return contract
-        return replace(contract, forbid_tamil_script=True)
-    if normalized != "ta":
-        return contract
-    return replace(contract, required_script="tamil")
+        return replace(contract, required_script=None, forbid_tamil_script=True)
+    if normalized == "ta":
+        return replace(contract, required_script="tamil", forbid_tamil_script=False)
+    if normalized in {
+        "en", "hi", "bn", "te", "kn", "ml", "mr", "gu", "pa", "od",
+    }:
+        # Subject mentions and superseded whole-answer directives cannot leak
+        # a Tamil script requirement into the resolved target language.
+        return replace(contract, required_script=None)
+    return contract
 
 
 def extract_output_contract(message: str) -> OutputContract:
@@ -250,19 +252,59 @@ def extract_output_contract(message: str) -> OutputContract:
     ) or re.search(r"(ஐந்து)\s+.{0,20}வாக்கியங்களில்", text)
     if match:
         sentence_count = _number(match.group(1))
+    # Output-language mentions inside quoted examples or negated clauses are
+    # not script requirements. Keep the original text for all other format
+    # rules, but use a scoped view for this contract field.
+    script_text = re.sub(
+        r"(`[^`]*`|\"[^\"]*\"|'[^']*'|“[^”]*”|‘[^’]*’)",
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+    script_text = re.sub(
+        r"\b(?:do\s+not|don't|don’t|never|must\s+not|avoid)\b[^.!?;\n]*"
+        r"\b(?:reply|answer|respond|write|output|provide|give|use)\b[^.!?;\n]*"
+        r"\bTamil\b[^.!?;\n]*[.!?;]?",
+        " ",
+        script_text,
+        flags=re.IGNORECASE,
+    )
     required_script = None
-    if (
-        re.search(r"\bTamil\b[^.\n]{0,40}\bsentences?\b", text, re.IGNORECASE)
-        or re.search(
-            r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
-            r"[^.\n]{0,50}\bTamil(?:\s+Unicode)?(?:\s+script)?\b",
-            text,
-            re.IGNORECASE,
-        )
-        or ("தமிழ்" in text and "வாக்கிய" in text)
-        or re.search(r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", text)
+    # Only a direct answer-language directive creates a script requirement.
+    # Subject discussion ("explain Tamil sentences") and an earlier directive
+    # superseded by a later one must not contradict the resolved language.
+    directives = list(re.finditer(
+        r"\b(?:write|respond|reply|answer|use|return|output|provide|give)\b"
+        r"[^.!?;\n]{0,32}?\b(?:in|using|with)\s+(?:the\s+)?"
+        r"(Tamil(?!\s+nadu\b)|English|Tanglish)\b",
+        script_text,
+        re.IGNORECASE,
+    ))
+    if directives and directives[-1].group(1).casefold() == "tamil":
+        required_script = "tamil"
+    elif re.search(
+        r"\b(?:in|using)\s+(?:exactly\s+\w+\s+)?(?:simple\s+)?Tamil\s+sentences\b",
+        script_text, re.IGNORECASE,
     ):
         required_script = "tamil"
+    elif ("தமிழ்" in script_text and "வாக்கிய" in script_text) or re.search(
+        r"தமிழ்[^.\n]{0,40}(?:எழுத்து|ஸ்கிரிப்ட்)", script_text
+    ):
+        required_script = "tamil"
+    # A later transformation target supersedes an earlier whole-answer Tamil
+    # instruction. The target language is resolved separately, but removing
+    # this stale script requirement here keeps the final contract consistent
+    # for Tanglish and other supported languages too.
+    if required_script == "tamil" and re.search(
+        r"\btranslate(?:\s+(?:it|this|that|the\s+answer|the\s+result))?\b[^.!?;\n]{0,80}\b"
+        r"(?:to|into|in)\s+(?:English|Tanglish|Hindi|Bengali|Telugu|Kannada|Malayalam|"
+        r"Marathi|Gujarati|Punjabi|Odia|Oriya)\b|"
+        r"\b(?:explain|describe|answer|respond|write)\b[^.!?;\n]{0,50}\b"
+        r"in\s+(?:English|Tanglish|Hindi|Bengali|Telugu|Kannada|Malayalam|Marathi|"
+        r"Gujarati|Punjabi|Odia|Oriya)\b",
+        script_text,
+        re.IGNORECASE,
+    ):
+        required_script = None
 
     question_count = None
     match = re.search(

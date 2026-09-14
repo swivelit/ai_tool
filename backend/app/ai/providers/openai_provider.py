@@ -93,6 +93,16 @@ class OpenAIProvider(AIProvider):
             minimum_visible_output_tokens=request.metadata.get(
                 "minimum_visible_output_tokens"
             ),
+            response_format=(
+                {
+                    "type": "json_schema",
+                    "name": "swico_cli_output",
+                    "strict": True,
+                    "schema": request.metadata["structured_output_schema"],
+                }
+                if isinstance(request.metadata.get("structured_output_schema"), dict)
+                else None
+            ),
             reasoning_effort_override=request.metadata.get(
                 "reasoning_effort_override"
             ),

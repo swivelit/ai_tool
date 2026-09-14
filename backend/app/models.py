@@ -503,6 +503,137 @@ class WebChatThread(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class CliDeviceGrant(SQLModel, table=True):
+    """Short-lived RFC 8628-style grant; secrets are stored only as digests."""
+
+    __tablename__ = "cli_device_grant"
+    __table_args__ = (
+        UniqueConstraint("device_code_digest", name="uq_cli_device_grant_device_digest"),
+        UniqueConstraint("user_code_digest", name="uq_cli_device_grant_user_digest"),
+        Index("ix_cli_device_grant_status_expires", "status", "expires_at"),
+        CheckConstraint("status IN ('pending', 'approved', 'denied', 'consumed', 'expired')", name="ck_cli_device_grant_status"),
+        CheckConstraint("poll_count >= 0 AND user_attempt_count >= 0", name="ck_cli_device_grant_attempts"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    client_id: str = Field(max_length=64)
+    device_code_digest: str = Field(max_length=64, index=True)
+    user_code_digest: str = Field(max_length=64, index=True)
+    code_challenge: str = Field(max_length=128)
+    device_description: str = Field(default="Swico CLI", max_length=120)
+    requested_tier: Optional[str] = Field(default=None, max_length=16)
+    scopes_json: str = Field(default='["chat"]', sa_column=Column(Text, nullable=False, server_default='["chat"]'))
+    status: str = Field(default="pending", max_length=16, index=True)
+    approved_user_id: Optional[int] = Field(default=None, foreign_key="user.id", ondelete="SET NULL", index=True)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    interval_seconds: int = Field(default=5, sa_column=Column(Integer, nullable=False, server_default="5"))
+    poll_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    user_attempt_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    last_poll_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
+    last_user_attempt_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
+
+
+class CliSession(SQLModel, table=True):
+    """Opaque CLI access/refresh session bound to one owned account."""
+
+    __tablename__ = "cli_session"
+    __table_args__ = (
+        UniqueConstraint("access_token_digest", name="uq_cli_session_access_digest"),
+        UniqueConstraint("refresh_token_digest", name="uq_cli_session_refresh_digest"),
+        Index("ix_cli_session_user_active", "user_id", "revoked_at", "refresh_expires_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    client_id: str = Field(max_length=64)
+    access_token_digest: str = Field(max_length=64, index=True)
+    access_expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    refresh_token_digest: str = Field(max_length=64, index=True)
+    previous_refresh_token_digest: Optional[str] = Field(default=None, max_length=64, index=True)
+    refresh_expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    max_expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    selected_tier: str = Field(max_length=16, index=True)
+    scopes_json: str = Field(default='["chat"]', sa_column=Column(Text, nullable=False, server_default='["chat"]'))
+    device_description: str = Field(default="Swico CLI", max_length=120)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    last_seen_at: datetime = Field(default_factory=utc_now, index=True)
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
+    revoke_reason: Optional[str] = Field(default=None, max_length=64)
+
+
+class CliAgentRun(SQLModel, table=True):
+    """Content-free durable run state; raw source/tool payloads stay ephemeral."""
+
+    __tablename__ = "cli_agent_run"
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_cli_agent_run_request_id"),
+        Index("ix_cli_agent_run_user_status", "user_id", "status", "updated_at"),
+        CheckConstraint("status IN ('created', 'running', 'waiting_approval', 'completed', 'cancelled', 'failed', 'expired')", name="ck_cli_agent_run_status"),
+        CheckConstraint("max_steps > 0 AND current_step >= 0", name="ck_cli_agent_run_steps"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    thread_id: Optional[str] = Field(default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True, max_length=36)
+    request_id: str = Field(max_length=64, index=True)
+    tier: str = Field(max_length=16, index=True)
+    status: str = Field(default="created", max_length=24, index=True)
+    max_steps: int = Field(default=8, sa_column=Column(Integer, nullable=False, server_default="8"))
+    current_step: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    task_hash: str = Field(max_length=64)
+    terminal_reason: Optional[str] = Field(default=None, max_length=128)
+    cancellation_requested: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="0"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+
+
+class CliAgentStep(SQLModel, table=True):
+    __tablename__ = "cli_agent_step"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_cli_agent_step_run_sequence"),
+        UniqueConstraint("run_id", "action_id", name="uq_cli_agent_step_run_action"),
+        Index("ix_cli_agent_step_run_status", "run_id", "status"),
+        CheckConstraint("status IN ('pending', 'approved', 'executing', 'succeeded', 'failed', 'unknown', 'expired')", name="ck_cli_agent_step_status"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    run_id: str = Field(foreign_key="cli_agent_run.id", ondelete="CASCADE", index=True)
+    sequence: int = Field(sa_column=Column(Integer, nullable=False))
+    action_id: str = Field(max_length=64)
+    # A planner reservation is created before provider I/O.  The action_id is
+    # filled with a private reservation id until the structured action is
+    # validated, then retained as the binding for the submitted action.
+    reservation_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    action_type: str = Field(max_length=32)
+    status: str = Field(default="pending", max_length=16, index=True)
+    payload_hash: str = Field(max_length=64)
+    result_hash: Optional[str] = Field(default=None, max_length=64)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class CliPendingAction(SQLModel, table=True):
+    __tablename__ = "cli_pending_action"
+    __table_args__ = (
+        UniqueConstraint("action_id", name="uq_cli_pending_action_id"),
+        Index("ix_cli_pending_action_run_status", "run_id", "status", "expires_at"),
+        CheckConstraint("status IN ('pending', 'approved', 'submitted', 'expired', 'rejected')", name="ck_cli_pending_action_status"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    run_id: str = Field(foreign_key="cli_agent_run.id", ondelete="CASCADE", index=True)
+    action_id: str = Field(max_length=64, index=True)
+    action_type: str = Field(max_length=32)
+    payload_hash: str = Field(max_length=64)
+    status: str = Field(default="pending", max_length=16, index=True)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    resolved_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
+
+
 class WebGuestSession(SQLModel, table=True):
     """Opaque website guest credential bound to a synthetic internal User."""
 

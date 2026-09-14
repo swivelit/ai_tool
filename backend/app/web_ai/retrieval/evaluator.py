@@ -12,6 +12,23 @@ _SEMANTIC_SUFFICIENCY_THRESHOLD = 0.55
 _KNOWLEDGE_METADATA_SCORE = 0.5
 
 
+def candidate_support_sufficient(
+    item: RetrievalCandidate,
+    *,
+    semantic_threshold: float = _SEMANTIC_SUFFICIENCY_THRESHOLD,
+    knowledge_metadata_score: float = _KNOWLEDGE_METADATA_SCORE,
+) -> bool:
+    metadata = dict(item.bounded_metadata)
+    if metadata.get("coverage_mode") == "representative" and item.runtime_text.strip():
+        return True
+    coverage = item.query_coverage if item.query_coverage is not None else item.lexical_score
+    return bool(
+        item.semantic_score >= semantic_threshold
+        or item.metadata_score >= knowledge_metadata_score
+        or (item.lexical_score >= 0.45 and coverage >= 0.45)
+    )
+
+
 def _score_thresholds() -> tuple[float, float]:
     try:
         settings = TriagSettings.from_environ()
@@ -38,7 +55,15 @@ def evaluate_retrieval(
         )
         for item in candidates
     ]
-    if not candidates or max(support_scores, default=0) < 0.08:
+    has_representative_coverage = any(
+        dict(item.bounded_metadata).get("coverage_mode") == "representative"
+        and item.runtime_text.strip()
+        for item in candidates
+    )
+    if not candidates or (
+        max(support_scores, default=0) < 0.08
+        and not has_representative_coverage
+    ):
         return "insufficient", ()
     contradiction_keys: dict[str, set[bool]] = {}
     for item in candidates:
@@ -78,10 +103,10 @@ def evaluate_retrieval(
         for item, score, coverage in zip(
             candidates, support_scores, query_coverage, strict=True,
         )
-        if (
-            item.semantic_score >= semantic_threshold
-            or item.metadata_score >= knowledge_metadata_score
-            or (item.lexical_score >= 0.45 and coverage >= 0.45)
+        if candidate_support_sufficient(
+            item,
+            semantic_threshold=semantic_threshold,
+            knowledge_metadata_score=knowledge_metadata_score,
         )
     ]
     if high:

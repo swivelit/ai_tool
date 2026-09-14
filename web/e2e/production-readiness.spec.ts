@@ -196,6 +196,31 @@ async function signIn(page: Page) {
   await expect(page.getByRole('button', { name: 'Start real-time Voice Mode' })).toBeVisible()
 }
 
+test('collapsed search opens a visible focused field and mobile drawer keeps it usable', async ({ page }, testInfo) => {
+  await installBackend(page, { wallet:5_000_000 })
+  await signIn(page)
+  if (testInfo.project.name === 'mobile-chromium') {
+    await page.getByRole('button', { name: 'Open sidebar' }).click()
+    await expect(page.locator('.sidebar')).toHaveClass(/open/)
+    const input = page.getByRole('textbox', { name:'Search chats' })
+    await expect(input).toBeVisible()
+    await input.fill('Tamil')
+    await expect(input).toHaveValue('Tamil')
+    await page.locator('.mobile-close').click()
+    return
+  }
+  await page.getByRole('button', { name:'Collapse sidebar' }).click()
+  const searchButton = page.getByRole('button', { name:'Search chats' })
+  await expect(searchButton).toBeVisible()
+  const input = page.getByRole('textbox', { name:'Search chats' })
+  await expect(input).toBeHidden()
+  await searchButton.click()
+  await expect(input).toBeVisible()
+  await expect(input).toBeFocused()
+  await page.keyboard.press('ControlOrMeta+K')
+  await expect(input).toBeFocused()
+})
+
 test('long prompts keep the native textarea scrollbar at the composer edge', async ({ page }) => {
   await installBackend(page, { wallet:5_000_000 })
   await signIn(page)
@@ -639,6 +664,41 @@ test('settings persist profile, show usage estimates, enforce a monthly cap, and
   await page.keyboard.press('Escape')
   await expect(settings).toBeHidden()
   await expect(page.getByRole('button', { name:/E2E தமிழர்/ })).toBeFocused()
+})
+
+test('Settings exposes terminal sessions and a confirmed revoke updates the controlled account list', async ({ page }, testInfo) => {
+  await installBackend(page, { wallet:5_000_000 })
+  const sessions = [
+    { id:'terminal-e2e-737d9ae3', device_description:'Mac Terminal', created_at:now, last_seen_at:now },
+    { id:'terminal-e2e-other', device_description:'Older laptop', created_at:now, last_seen_at:now },
+  ]
+  let revokedId: string | null = null
+  await page.route(/\/api\/web\/cli\/sessions(?:\/.*)?$/, async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'GET') return json(route, { items:sessions.filter(item => item.id !== revokedId) })
+    if (request.method() === 'DELETE') {
+      revokedId = path.split('/').pop() ?? null
+      return json(route, { status:'revoked' })
+    }
+    return json(route, { detail:`Unhandled terminal-session method: ${request.method()}` }, 405)
+  })
+  await signIn(page)
+  if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name:'Open sidebar' }).click()
+  await page.getByRole('button', { name:/E2E User/ }).click()
+  await page.getByRole('menuitem', { name:'Settings' }).click()
+  const settings = page.getByRole('dialog', { name:'Settings' })
+  await settings.getByRole('button', { name:'Data controls' }).click()
+  await settings.getByRole('link', { name:/Terminal sessions/ }).click()
+  await expect(page).toHaveURL(/\/settings\/cli-sessions$/)
+  await expect(page.getByText('terminal-e2e-737d9ae3')).toBeVisible()
+  await page.getByRole('button', { name:'Revoke' }).first().click()
+  await expect(page.getByRole('group', { name:/Confirm revocation/ })).toBeVisible()
+  await page.getByRole('button', { name:'Confirm revoke' }).click()
+  await expect(page.getByRole('status')).toContainText('was revoked')
+  await expect(page.getByText('terminal-e2e-737d9ae3')).toHaveCount(0)
+  await expect(page.getByText('terminal-e2e-other')).toBeVisible()
+  expect(revokedId).toBe('terminal-e2e-737d9ae3')
 })
 
 test('thread archive and confirmed delete mutate only the selected history item', async ({ page }, testInfo) => {

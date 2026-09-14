@@ -669,7 +669,7 @@ def test_malformed_bullets_are_repaired_and_final_text_is_verified(monkeypatch):
     )
     assert calls == 2
     assert completed.message.content.count("\n-") == 3
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
 
 def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
@@ -691,7 +691,7 @@ def test_b01_semantic_definition_and_retry_example_are_repaired(monkeypatch):
         ],
     )
     assert calls == 2
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     check_types = {
         check["type"] for check in completed.message.quality["checks"]
     }
@@ -771,7 +771,7 @@ def test_b01_stable_outcome_gets_one_flagged_second_semantic_repair(monkeypatch)
         if line.startswith("- ")
     ]) == 4
     assert len(completed.message.content.split()) <= 140
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
     request_id = "contract-second-semantic-stable-outcome-request"
     with SessionLocal() as session:
@@ -945,7 +945,7 @@ def test_adaptive_context_reask_gets_one_bounded_repair(monkeypatch):
         prepared, providers={prepared.route.provider: Provider()},
     )
     assert len(captured_requests) == 2
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     repair_prompt = "\n".join(
         str(item["content"])
         for item in captured_requests[1].metadata["provider_messages"]
@@ -1000,7 +1000,7 @@ Test concurrency, duplicates, ordering, refunds, and failure injection."""
     )
     assert calls == 1
     assert len(captured_requests) == 1
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     task_checks = [
         check for check in completed.message.quality["checks"]
         if (
@@ -1085,7 +1085,7 @@ Use event and payment tables with a unique provider event ID. PostgreSQL is the 
     assert completed.message.content[completed.message.content.index("### 2."):] == (
         answer[answer.index("### 2."):]
     )
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     with SessionLocal() as session:
         audit = build_request_audit(
             session,
@@ -1483,7 +1483,7 @@ Run concurrency and failure-injection integration tests."""
         repair_messages[0]["content"]
     )
     assert "Cover all 10" not in repair_messages[1]["content"]
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     with SessionLocal() as session:
         audit = build_request_audit(
             session,
@@ -1556,7 +1556,7 @@ Verify the X-Razorpay-Signature header against the webhook secret using a consta
         "contract-second-architecture-splice-request:repair:1",
         "contract-second-architecture-splice-request:repair:2",
     ]
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     assert completed.message.content.count("### 6. Out-of-order handling") == 1
     assert completed.message.content.count("### 9. Security checks") == 1
     with SessionLocal() as session:
@@ -1640,7 +1640,7 @@ Prepare coverage for important webhook behavior."""
     )
 
     assert calls == 3
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     final_prefix = completed.message.content[:
         completed.message.content.index("### 10.")
     ]
@@ -1685,7 +1685,7 @@ def test_extra_python_fence_is_canonicalized_before_persistence(monkeypatch):
     assert calls == 1
     assert completed.message.content.count("```python") == 2
     assert "extra.py" not in completed.message.content
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
 
 def test_prose_wrapped_json_is_canonicalized_before_persistence(monkeypatch):
@@ -1703,7 +1703,7 @@ def test_prose_wrapped_json_is_canonicalized_before_persistence(monkeypatch):
     )
     assert calls == 1
     assert json.loads(completed.message.content)["answer"] is True
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
 
 def test_invalid_contract_repair_remains_unverified_and_runs_once(monkeypatch):
@@ -1746,7 +1746,7 @@ def test_exact_120_word_contract_repair_persists_visible_verified_text(
     assert completed.message.content == repaired
     assert completed.message.content.strip()
     assert len(completed.message.content.split()) == 120
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
 
 def test_exact_120_word_contract_allows_one_final_strict_format_correction(
@@ -1790,7 +1790,7 @@ def test_exact_120_word_contract_allows_one_final_strict_format_correction(
     assert not any(character in completed.message.content for character in '\u201c\u201d"')
     assert "\n" not in completed.message.content
     assert completed.message.content.endswith("home")
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
 
     request_id = "contract-exact-120-second-correction-request"
     with SessionLocal() as session:
@@ -1830,7 +1830,7 @@ def test_tamil_sentence_and_script_contract_repair_agrees_with_request_audit(
 
     assert calls == 2
     assert completed.message.content == repaired
-    assert completed.message.quality["status"] == "verified"
+    assert completed.message.quality["status"] == "checked"
     checks = {
         check["type"]: check
         for check in completed.message.quality["checks"]
@@ -1863,8 +1863,8 @@ def test_tamil_sentence_and_script_contract_repair_agrees_with_request_audit(
         "validator_version": "2026-08-03.1",
     }
     assert audit is not None
-    assert audit[0]["quality_status"] == "verified"
-    assert audit[0]["persisted_quality_status"] == "verified"
+    assert audit[0]["quality_status"] == "checked"
+    assert audit[0]["persisted_quality_status"] == "checked"
     assert audit[0]["output_contract_check_status_counts"] == {
         "passed": 2,
     }

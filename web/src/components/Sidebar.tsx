@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
 import type { SearchResult, Thread, Wallet } from '../types'
@@ -30,20 +30,35 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
 }) {
   const [menu, setMenu] = useState<string | null>(null)
   const [account, setAccount] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(!collapsed)
   const searchRef = useRef<HTMLInputElement>(null)
+  const focusSearchAfterRenderRef = useRef(false)
   const closeRef = useRef<HTMLButtonElement>(null)
   const accountButtonRef = useRef<HTMLButtonElement>(null)
   const groups = useMemo(() => groupThreads(threads), [threads])
+  const openSearch = useCallback(() => {
+    setSearchOpen(true)
+    focusSearchAfterRenderRef.current = true
+    if (collapsed) toggleCollapsed()
+    if (!collapsed) searchRef.current?.focus()
+    window.setTimeout(() => searchRef.current?.focus(), 0)
+  }, [collapsed, toggleCollapsed])
+  const collapseSidebar = () => { setSearchOpen(false); toggleCollapsed() }
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault(); searchRef.current?.focus()
+        event.preventDefault(); openSearch()
       }
       if (event.key === 'Escape') { setMenu(null); setAccount(false); if (open) close() }
     }
     window.addEventListener('keydown', shortcuts); return () => window.removeEventListener('keydown', shortcuts)
-  }, [close, open])
+  }, [close, open, openSearch])
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
+  useEffect(() => {
+    if (!focusSearchAfterRenderRef.current || (collapsed && !searchOpen)) return
+    focusSearchAfterRenderRef.current = false
+    searchRef.current?.focus()
+  }, [collapsed, searchOpen])
   const iconButton = (label: string, icon: ReactNode, action: () => void, testId?: string) => <button className={`rail-action ${testId === 'new-chat-button' ? 'new-chat' : ''}`} aria-label={label} title={label} data-testid={testId} onClick={action}>{icon}<span>{label}</span></button>
   const estimatedTokens = wallet?.token_estimate?.estimated_blended_tokens
   const billingExempt = wallet?.billing_exempt === true
@@ -53,11 +68,13 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   return <><aside className={`sidebar ${open ? 'open' : ''} ${collapsed ? 'collapsed' : ''}`} aria-label="Chat history">
     <div className="sidebar-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong>
       <button ref={closeRef} className="mobile-close icon-button" aria-label="Close sidebar" title="Close sidebar" onClick={close}><X size={20} /></button>
-      <button className="collapse-button icon-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={toggleCollapsed}>{collapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>
+      <button className="collapse-button icon-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={collapseSidebar}>{collapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>
     </div>
     <div className="sidebar-primary">
       {iconButton('New chat', <MessageSquarePlus size={19} />, newChat, 'new-chat-button')}
-      <label className="search-action" title="Search chats"><Search size={19} /><input ref={searchRef} aria-label="Search chats" placeholder="Search chats" value={query} onChange={event => setQuery(event.target.value)} /><kbd>⌘K</kbd></label>
+      {collapsed && !searchOpen
+        ? <button type="button" className="search-action" aria-label="Search chats" title="Search chats" onClick={openSearch}><Search size={19} /><span>Search chats</span></button>
+        : <label className="search-action" title="Search chats"><Search size={19} /><input ref={searchRef} aria-label="Search chats" placeholder="Search chats" value={query} onChange={event => setQuery(event.target.value)} /><kbd>⌘K</kbd></label>}
     </div>
     <button className="archive-toggle rail-action" onClick={toggleArchived}><Archive size={18} /><span>{archived ? 'Back to chats' : 'Archived chats'}</span>{archived ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
     <nav className="threads" aria-label={archived ? 'Archived conversations' : 'Conversations'}>

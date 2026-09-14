@@ -11,6 +11,7 @@ from .claim_verifier import (
     deterministic_evidence_support,
     factual_sections,
     optional_model_claim_check,
+    web_evidence_support,
 )
 from .models import (
     AnswerQualityResult, QualityCheck, RepositoryValidationMode,
@@ -139,6 +140,8 @@ class AnswerGuard:
                 checks.append(_citation_coverage(answer))
             if include("evidence_support"):
                 checks.append(deterministic_evidence_support(answer, evidence))
+            if include("web_evidence_support"):
+                checks.append(web_evidence_support(answer, evidence))
             if include("contradiction_warning"):
                 checks.append(QualityCheck(
                     "contradiction_warning",
@@ -214,6 +217,21 @@ class AnswerGuard:
                         "required_repository_checks_not_passed"
                     ),
                 ))
+        evidence_strength = None
+        if evidence is not None:
+            web_items = [
+                item for item in evidence.items if item.source_type == "web_search"
+            ]
+            if web_items:
+                strengths = {
+                    dict(item.safe_attributes).get("verification_strength")
+                    for item in web_items
+                }
+                evidence_strength = (
+                    "independently_source_supported"
+                    if strengths == {"independently_source_supported"}
+                    else "provider_cited_grounding"
+                )
         return build_quality_result(
             checks=tuple(checks),
             evidence_backed=evidence_backed,
@@ -228,6 +246,7 @@ class AnswerGuard:
                 evidence and evidence.retrieval_status == "insufficient"
             ),
             repair_attempted=repair_attempted,
+            evidence_strength=evidence_strength,
             verifier_used=bool(
                 evidence and context.model_verifier_allowed and model_verifier
             ),

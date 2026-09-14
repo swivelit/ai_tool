@@ -1,4 +1,5 @@
 export type SwicoTier = "free" | "lite" | "standard" | "pro";
+export type SwicoReplyLanguage = "en" | "ta" | "tanglish" | "hi" | "bn" | "te" | "kn" | "ml" | "mr" | "gu" | "pa" | "od";
 export type InputMode = "text" | "voice" | "dictation" | "realtime_voice";
 export type CreditBucket = "chat" | "voice";
 
@@ -61,7 +62,7 @@ export type FeatureFlags = {
   web_knowledge_library?: boolean;
 };
 export type Bootstrap = {
-  user: { id: number; name: string; email: string | null; reply_language: string };
+  user: { id: number; name: string; email: string | null; reply_language: SwicoReplyLanguage };
   wallet: Wallet;
   wallets?: Wallets;
   billing: BillingConfig;
@@ -127,7 +128,7 @@ export type Message = {
   attachments?: Attachment[];
   input_mode: InputMode;
   voice_turn_id: string | null;
-  reply_language: "en" | "ta" | null;
+  reply_language: SwicoReplyLanguage | null;
   finish_reason?: string;
   truncated?: boolean;
   can_continue?: boolean;
@@ -173,7 +174,7 @@ export type ProfileSettings = {
   place: string | null;
   timezone: string;
   assistant_name: string;
-  reply_language: "en" | "ta";
+  reply_language: SwicoReplyLanguage;
   email: string | null;
   email_editable: false;
 };
