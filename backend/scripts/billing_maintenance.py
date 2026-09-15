@@ -179,7 +179,13 @@ def _run_command(
 ) -> bool:
     # This import is intentionally after maintenance-specific validation. It is
     # the boundary that may construct an SQLAlchemy engine.
-    from app.database import SessionLocal
+    from app.database import SessionLocal, engine
+    from app.billing.schema_readiness import require_billing_schema
+
+    # Cron jobs never own migrations. Refuse to issue ORM queries until the
+    # API-owned pre-deploy migration has made the current billing contract
+    # readable. This inspector performs metadata reads only.
+    require_billing_schema(engine)
 
     session = SessionLocal()
     try:
@@ -330,7 +336,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Keep app.database consistent if a PostgreSQL alias was normalized.
     os.environ["DATABASE_URL"] = database.url
     _startup_record(args, database, razorpay)
-    has_findings = _run_command(args, razorpay)
+    try:
+        from app.billing.schema_readiness import BillingSchemaNotReady
+        has_findings = _run_command(args, razorpay)
+    except BillingSchemaNotReady as exc:
+        print(f"billing maintenance schema readiness error: {exc}", file=sys.stderr)
+        return CONFIGURATION_ERROR_EXIT_CODE
     if bool(getattr(args, "fail_on_findings", False)) and has_findings:
         return FINDINGS_EXIT_CODE
     return 0

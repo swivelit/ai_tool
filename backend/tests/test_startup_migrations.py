@@ -81,6 +81,92 @@ def test_swico_tier_migration_upgrades_from_preceding_revision(tmp_path):
     }
 
 
+def test_weekly_tester_credit_migration_preserves_billing_data_and_constraints(tmp_path):
+    db_path = tmp_path / "weekly-tester-credit-upgrade.sqlite3"
+    env = os.environ.copy()
+    env.update({
+        "DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
+        "APP_ENV": "test",
+        "AUTO_CREATE_TABLES": "false",
+    })
+    preceding = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "20260913_cli_reservations"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert preceding.returncode == 0, preceding.stderr
+    engine = create_engine(env["DATABASE_URL"])
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO user (id,name,timezone,assistant_name,reply_language,created_at) "
+            "VALUES (901,'Migration User','UTC','Elli','en',CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO usage_charge "
+            "(id,request_id,user_id,provider,model,status,created_at,usage_kind) "
+            "VALUES ('migration-charge','migration-request',901,'openai','swico-test',"
+            "'settled',CURRENT_TIMESTAMP,'chat')"
+        ))
+
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "20260915_weekly_tester_credit"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    repeated = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert repeated.returncode == 0, repeated.stderr
+
+    inspector = inspect(engine)
+    assert "weekly_tester_credit_window" in inspector.get_table_names()
+    usage_columns = {column["name"] for column in inspector.get_columns("usage_charge")}
+    assert "tester_credit_window_id" in usage_columns
+    with engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM weekly_tester_credit_window"
+        )).scalar_one() == 0
+        assert connection.execute(text("SELECT COUNT(*) FROM user WHERE id=901")).scalar_one() == 1
+        assert connection.execute(text("SELECT COUNT(*) FROM usage_charge WHERE id='migration-charge'")).scalar_one() == 1
+        version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert version == "20260915_weekly_tester_credit"
+
+    foreign_keys = inspector.get_foreign_keys("usage_charge")
+    assert any(
+        item["referred_table"] == "weekly_tester_credit_window"
+        and item["constrained_columns"] == ["tester_credit_window_id"]
+        for item in foreign_keys
+    )
+    unique_constraints = inspector.get_unique_constraints("weekly_tester_credit_window")
+    assert any(
+        item["column_names"] == ["user_id", "credit_bucket", "period_start"]
+        for item in unique_constraints
+    )
+    indexes = {
+        item["name"] for item in inspector.get_indexes("weekly_tester_credit_window")
+    }
+    assert {"ix_weekly_tester_credit_window_user_id", "ix_tester_credit_user_period"} <= indexes
+    checks = {
+        item["name"] for item in inspector.get_check_constraints("usage_charge")
+    }
+    assert "ck_usage_charge_funding_source" in checks
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO weekly_tester_credit_window "
+            "(id,user_id,credit_bucket,period_start,period_end,allowance_micros,"
+            "reserved_micros,consumed_micros,version,created_at,updated_at) "
+            "VALUES ('migration-window',901,'chat','2026-09-14 00:00:00',"
+            "'2026-09-21 00:00:00',40000000,0,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "UPDATE usage_charge SET tester_credit_window_id='migration-window', "
+            "funding_source='tester_credit' WHERE id='migration-charge'"
+        ))
+        assert connection.execute(text(
+            "SELECT funding_source FROM usage_charge WHERE id='migration-charge'"
+        )).scalar_one() == "tester_credit"
+
+
 def test_voice_usage_migration_backfills_chat_and_downgrades_additively(tmp_path):
     db_path = tmp_path / "voice-usage-upgrade.sqlite3"
     env = os.environ.copy()

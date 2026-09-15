@@ -330,6 +330,12 @@ def test_expired_ticket_idle_timeout_and_maximum_duration(client, monkeypatch):
     ) as socket:
         socket.receive_json()
         assert socket.receive_json()["reason"] == "idle_timeout"
+        restarted = _session(client, "voice-timeouts", "voice-timeouts@example.com")
+        assert restarted.status_code == 201
+        # The new session owns the lock now; leave the test store clean for
+        # the maximum-duration case below. The old socket's finalizer must not
+        # be able to release this newer session.
+        assert _tickets().force_release_user(int(user.id)) is True
 
     _enable(monkeypatch, idle=30, maximum=1)
     created = _session(client, "voice-timeouts", "voice-timeouts@example.com").json()
@@ -338,6 +344,43 @@ def test_expired_ticket_idle_timeout_and_maximum_duration(client, monkeypatch):
     ) as socket:
         socket.receive_json()
         assert socket.receive_json()["reason"] == "maximum_duration"
+        restarted = _session(client, "voice-timeouts", "voice-timeouts@example.com")
+        assert restarted.status_code == 201
+        assert _tickets().force_release_user(int(user.id)) is True
+
+
+def test_client_close_releases_before_advertising_restart_ready(client, monkeypatch):
+    _enable(monkeypatch)
+    user = create_test_user("voice-client-close", "voice-client-close@example.com")
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", "voice-client-close@example.com")
+    created = _session(client, "voice-client-close", "voice-client-close@example.com").json()
+    with client.websocket_connect(
+        f"/api/web/voice/ws?ticket={created['ticket']}", headers={"origin": ORIGIN}
+    ) as socket:
+        assert socket.receive_json()["type"] == "session.ready"
+        socket.send_json({"protocol_version": 1, "type": "session.close"})
+        assert socket.receive_json() == {
+            "protocol_version": 1, "type": "session.closed", "reason": "client_closed",
+        }
+        restarted = _session(client, "voice-client-close", "voice-client-close@example.com")
+        assert restarted.status_code == 201
+        assert _tickets().force_release_user(int(user.id)) is True
+
+
+def test_old_voice_cleanup_cannot_release_a_newer_session(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    store = VoiceTicketStore(url="")
+    first = VoiceTicket("old", 303, "lite", "en", True, int(time.time()) + 60)
+    second = VoiceTicket("new", 303, "lite", "en", True, int(time.time()) + 60)
+    first_ticket = store.mint(first, 60, 900)
+    assert store.consume(first_ticket) == first
+    store.release(first)
+    second_ticket = store.mint(second, 60, 900)
+    assert store.consume(second_ticket) == second
+    store.release(first)
+    assert store.session_status(303)[0] is True
+    store.release(second)
+    assert store.session_status(303) == (False, 0)
 
 
 class _FakeSocket:

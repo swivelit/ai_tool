@@ -917,6 +917,26 @@ no revision. Do not move balances, rewrite or reclassify historical usage or
 ledger rows, add a `VITE_*` billing setting, or create a service, database,
 Valkey, worker, queue, Cron Job, disk, or object store.
 
+## Schema-changing release order
+
+For any deployment that introduces a database-backed contract, keep the new
+feature flag disabled and confirm backup/recovery capability first. Deploy the
+backend API and let its Pre-Deploy Command run `alembic upgrade head`; verify
+`alembic current` equals `alembic heads`, then run the read-only application
+schema/readiness check. Only after those checks pass should schema-dependent
+financial Cron Jobs be deployed or redeployed. Deploy the website if needed,
+run smoke tests, and enable the feature flag last.
+
+The API remains the sole production migration owner. Cron Jobs must not run
+Alembic, create tables, or assume that their independent Render auto-deploy
+has already observed the API migration. Because all Cron Jobs follow `main`
+independently, the safest production policy for schema-dependent financial
+Cron Jobs is to disable their automatic deployment and manually deploy each
+one after the API migration/readiness verification. If automatic deployment is
+retained, the maintenance schema preflight fails closed with status `78` until
+the API migration is complete; it must never be treated as a migration
+mechanism.
+
 ## Financial Cron Jobs
 
 All three Cron Jobs use branch `main`, region **Virginia**, and a blank Root

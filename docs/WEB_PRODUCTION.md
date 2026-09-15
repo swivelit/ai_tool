@@ -69,6 +69,12 @@
   backend service pre-deploy command is the sole production migration owner.
   Missing or unsafe database configuration exits before engine creation with
   configuration status `78`.
+- For schema changes, keep the feature flag disabled, deploy the API first,
+  verify its Pre-Deploy `alembic upgrade head` completed and `alembic current`
+  equals `alembic heads`, run the read-only readiness check, then manually
+  deploy schema-dependent financial Cron Jobs before deploying the website and
+  enabling the flag. Disable Cron auto-deploy for these jobs where possible;
+  independent Render Cron deploys must not race the API-owned migration.
 - Render service-level environment variables override environment-group
   values. Avoid duplicate `DATABASE_URL` entries and verify the Cron Job sees
   the intended internal PostgreSQL URL without printing it.

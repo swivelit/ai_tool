@@ -1448,6 +1448,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
     generation_cancellation: GenerationCancellation | None = None
     structured_error_sent = False
     cleanup_succeeded = False
+    cleanup_complete = False
     reservations_released = False
     client_closed = False
     stop_event = asyncio.Event()
@@ -2216,6 +2217,65 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         ) * 1000 >= endpoint.max_utterance_ms:
             await schedule_endpoint(maximum=True)
 
+    async def cleanup_session() -> None:
+        """Finish provider/billing work before advertising restart readiness.
+
+        Server-initiated close events are a client-visible lifecycle boundary.
+        Keep the active-session lock until all provider tasks, reservations,
+        and the compare-and-delete release have completed, then let the
+        caller send ``session.closed``. The finalizer calls this idempotently
+        for disconnect and exception paths.
+        """
+        nonlocal cleanup_complete, cleanup_succeeded, stage, state
+        nonlocal current_stt_request, reservations_released
+        if cleanup_complete:
+            return
+        stage = "settlement"
+        if generation_cancellation:
+            generation_cancellation.cancel()
+        for task in (endpoint_task, tts_task):
+            if task and not task.done():
+                task.cancel()
+        # The STT reader owns no settlement and is safe to cancel. The chat
+        # worker receives cooperative cancellation and is awaited before lock release.
+        if stt_task and not stt_task.done():
+            stt_task.cancel()
+        if process_task and not process_task.done():
+            if generation_cancellation:
+                generation_cancellation.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(process_task), timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                process_task.cancel()
+        for task in tuple(process_tasks):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (endpoint_task, stt_task, process_task, tts_task, *process_tasks) if task),
+            return_exceptions=True,
+        )
+        await provider.close()
+        if current_stt_request:
+            with SessionLocal() as billing_session:
+                if metadata.billing_exempt:
+                    release_billing_exempt_usage(
+                        billing_session, current_stt_request, reason="voice_disconnect"
+                    )
+                else:
+                    release_usage_reservation(
+                        billing_session, current_stt_request, reason="voice_disconnect"
+                    )
+                billing_session.commit()
+            reservations_released = True
+            current_stt_request = None
+        # This is compare-and-delete, so an old socket cannot release a newer
+        # session if a future lifecycle path ever overlaps cleanup scheduling.
+        await asyncio.to_thread(_tickets().release, metadata)
+        cleanup_succeeded = True
+        state = VoiceState.CLOSED
+        cleanup_complete = True
+        diagnostic(cleanup=cleanup_succeeded)
+
     try:
         stage = "session_started"
         await _voice_send(
@@ -2227,6 +2287,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         while not stop_event.is_set():
             remaining = max_session - (time.monotonic() - started_at)
             if remaining <= 0:
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="maximum_duration")
                 await websocket.close(
                     code=VOICE_CLOSE_CODES["voice_maximum_duration"], reason="voice_maximum_duration"
@@ -2249,6 +2310,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             if receive_task not in done:
                 maximum = time.monotonic() - started_at >= max_session
                 code = "voice_maximum_duration" if maximum else "voice_idle_timeout"
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="maximum_duration" if maximum else "idle_timeout")
                 await websocket.close(code=VOICE_CLOSE_CODES[code], reason=code)
                 break
@@ -2288,6 +2350,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             elif event_type == "session.close":
                 client_closed = True
                 state = VoiceState.CLOSING
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="client_closed")
                 await websocket.close(code=1000, reason="client_closed")
                 break
@@ -2306,48 +2369,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 "Voice Mode stopped safely. Try again with a fresh session.",
             )
     finally:
-        stage = "settlement"
-        if generation_cancellation:
-            generation_cancellation.cancel()
-        for task in (endpoint_task, tts_task):
-            if task and not task.done():
-                task.cancel()
-        # The STT reader owns no settlement and is safe to cancel. The chat
-        # worker receives cooperative cancellation and is awaited before lock release.
-        if stt_task and not stt_task.done():
-            stt_task.cancel()
-        if process_task and not process_task.done():
-            if generation_cancellation:
-                generation_cancellation.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(process_task), timeout=10)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                process_task.cancel()
-        for task in tuple(process_tasks):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (endpoint_task, stt_task, process_task, tts_task, *process_tasks) if task),
-            return_exceptions=True,
-        )
-        await provider.close()
-        if current_stt_request:
-            with SessionLocal() as billing_session:
-                if metadata.billing_exempt:
-                    release_billing_exempt_usage(
-                        billing_session, current_stt_request, reason="voice_disconnect"
-                    )
-                else:
-                    release_usage_reservation(
-                        billing_session, current_stt_request, reason="voice_disconnect"
-                    )
-                billing_session.commit()
-            reservations_released = True
-            current_stt_request = None
-        await asyncio.to_thread(_tickets().release, metadata)
-        cleanup_succeeded = True
-        state = VoiceState.CLOSED
-        diagnostic(cleanup=cleanup_succeeded)
+        await cleanup_session()
         if not client_closed:
             try:
                 await websocket.close()
