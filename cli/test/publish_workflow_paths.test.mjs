@@ -8,9 +8,13 @@ import { fileURLToPath } from 'node:url'
 const cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(cliRoot, '..')
 const workflowPath = resolve(repoRoot, '.github/workflows/publish-cli.yml')
-const workflow = readFileSync(workflowPath, 'utf8')
+const workflowSource = readFileSync(workflowPath, 'utf8')
 
-function section(startMarker, endMarker) {
+function normalizeNewlines(text) {
+  return text.replace(/\r\n?/g, '\n')
+}
+
+function section(workflow, startMarker, endMarker) {
   const start = workflow.indexOf(startMarker)
   assert.notEqual(start, -1, `workflow is missing ${startMarker}`)
   const end = endMarker ? workflow.indexOf(endMarker, start) : workflow.length
@@ -49,51 +53,57 @@ function assertWorkflowYamlShape(text) {
   }
 }
 
+function assertWorkflowPaths(rawWorkflow) {
+  const workflow = normalizeNewlines(rawWorkflow)
+  const artifactStep = section(
+    workflow,
+    '      - name: Validate and stage exactly two flat files',
+    '      - name: Upload flat canonical release artifact',
+  )
+  assert.match(artifactStep, /working-directory: cli\n/)
+  for (const script of [
+    'scripts/validate-release-artifact.mjs',
+    'scripts/validate-publish-plan.mjs',
+    'scripts/validate-canonical-artifact.mjs',
+  ]) {
+    assert.equal(existsSync(resolve(cliRoot, script)), true, script)
+    assert.match(artifactStep, new RegExp(`node ${script.replaceAll('.', '\\.')}`))
+  }
+  for (const script of nodeScriptReferences(artifactStep)) {
+    assert.equal(resolve(cliRoot, script), resolve(repoRoot, 'cli', script), script)
+  }
+  assert.doesNotMatch(artifactStep, /node cli\/scripts\/validate-canonical-artifact\.mjs/)
+  assert.equal(existsSync(resolve(cliRoot, 'cli/scripts/validate-canonical-artifact.mjs')), false)
+
+  const publishJob = section(workflow, '  publish:\n')
+  assert.doesNotMatch(publishJob, /working-directory:/)
+  const scripts = nodeScriptReferences(publishJob).filter(script => script.startsWith('cli/'))
+  assert.deepEqual(scripts, [
+    'cli/scripts/validate-canonical-artifact.mjs',
+    'cli/scripts/validate-release-artifact.mjs',
+    'cli/scripts/validate-publish-plan.mjs',
+  ])
+  for (const script of scripts) {
+    assert.equal(existsSync(resolve(repoRoot, script)), true, script)
+  }
+
+  const canonicalValidator = resolve(cliRoot, 'scripts/validate-canonical-artifact.mjs')
+  assert.equal(existsSync(canonicalValidator), true)
+  const result = spawnSync(process.execPath, ['--check', canonicalValidator], { encoding: 'utf8' })
+  assert.equal(result.error, undefined, result.error?.message)
+  assert.equal(result.status, 0, result.stderr)
+  assertWorkflowYamlShape(workflow)
+}
+
 describe('publish workflow script paths', () => {
-  it('resolves canonical-artifact scripts relative to its cli working directory', () => {
-    const artifactStep = section(
-      '      - name: Validate and stage exactly two flat files',
-      '      - name: Upload flat canonical release artifact',
-    )
-    assert.match(artifactStep, /working-directory: cli\n/)
-    for (const script of [
-      'scripts/validate-release-artifact.mjs',
-      'scripts/validate-publish-plan.mjs',
-      'scripts/validate-canonical-artifact.mjs',
-    ]) {
-      assert.equal(existsSync(resolve(cliRoot, script)), true, script)
-      assert.match(artifactStep, new RegExp(`node ${script.replaceAll('.', '\\.')}`))
-    }
-    for (const script of nodeScriptReferences(artifactStep)) {
-      assert.equal(resolve(cliRoot, script), resolve(repoRoot, 'cli', script), script)
-    }
-    assert.doesNotMatch(artifactStep, /node cli\/scripts\/validate-canonical-artifact\.mjs/)
-    assert.equal(existsSync(resolve(cliRoot, 'cli/scripts/validate-canonical-artifact.mjs')), false)
+  it('validates the checked-in workflow paths independent of line endings', () => {
+    assertWorkflowPaths(workflowSource)
   })
 
-  it('keeps publish-job cli-relative script paths rooted at the repository', () => {
-    const publishJob = section('  publish:\n')
-    assert.doesNotMatch(publishJob, /working-directory:/)
-    const scripts = nodeScriptReferences(publishJob).filter(script => script.startsWith('cli/'))
-    assert.deepEqual(scripts, [
-      'cli/scripts/validate-canonical-artifact.mjs',
-      'cli/scripts/validate-release-artifact.mjs',
-      'cli/scripts/validate-publish-plan.mjs',
-    ])
-    for (const script of scripts) {
-      assert.equal(existsSync(resolve(repoRoot, script)), true, script)
-    }
-  })
-
-  it('keeps the canonical validator executable by Node', () => {
-    const script = resolve(cliRoot, 'scripts/validate-canonical-artifact.mjs')
-    assert.equal(existsSync(script), true)
-    const result = spawnSync(process.execPath, ['--check', script], { encoding: 'utf8' })
-    assert.equal(result.error, undefined, result.error?.message)
-    assert.equal(result.status, 0, result.stderr)
-  })
-
-  it('keeps the workflow as a valid YAML-shaped document', () => {
-    assertWorkflowYamlShape(workflow)
+  it('passes the same workflow assertions for LF and simulated Windows CRLF', () => {
+    const lfWorkflow = normalizeNewlines(workflowSource)
+    const crlfWorkflow = lfWorkflow.replace(/\n/g, '\r\n')
+    assertWorkflowPaths(lfWorkflow)
+    assertWorkflowPaths(crlfWorkflow)
   })
 })
