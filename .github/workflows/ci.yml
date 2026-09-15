@@ -183,18 +183,28 @@ jobs:
             echo "Expected exactly one RC artifact for ${version}, found ${#artifacts[@]}" >&2
             exit 1
           fi
-          echo "path=${artifacts[0]}" >> "$GITHUB_OUTPUT"
+          expected="swiveltechnologies-swico-${version}.tgz"
+          artifact_filename="$(basename -- "${artifacts[0]}")"
+          if [[ -z "${artifact_filename}" ||
+                "${artifact_filename}" != "${expected}" ||
+                "${artifact_filename}" == */* ||
+                "${artifact_filename}" == *..* ||
+                "${artifact_filename}" == *\\* ]]; then
+            echo "Artifact locator did not produce the expected safe filename: ${artifact_filename}" >&2
+            exit 1
+          fi
+          echo "filename=${artifact_filename}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
       - name: Validate package allowlist and clean build identity
         working-directory: cli
         env:
           RELEASE_MANIFEST: ${{ runner.temp }}/swico-release-manifest.json
-        run: node scripts/validate-release-artifact.mjs "${{ steps.artifact.outputs.path }}" "$RELEASE_MANIFEST"
+        run: node scripts/validate-release-artifact.mjs "${{ steps.artifact.outputs.filename }}" "$RELEASE_MANIFEST"
       - name: Upload canonical release candidate
         uses: actions/upload-artifact@v4
         with:
           name: swico-cli-${{ steps.artifact.outputs.version }}-release-candidate
           if-no-files-found: error
           path: |
-            cli/${{ steps.artifact.outputs.path }}
+            cli/${{ steps.artifact.outputs.filename }}
             ${{ runner.temp }}/swico-release-manifest.json
