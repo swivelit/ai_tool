@@ -47,6 +47,12 @@ cd cli
 npm run release:check
 ```
 
+Future maintainers should use the reviewed, CI-gated procedure in
+[CLI release automation](CLI_RELEASE_AUTOMATION.md). It prepares a version
+before CI builds the canonical artifact and publishes only through the
+protected npm Trusted Publishing workflow; it does not republish the current
+`0.2.0` package.
+
 Customers do not need Python, this repository, TypeScript, or provider keys.
 The production API is built into the client; browser approval remains on the
 server-controlled `https://swico.in` origin.
@@ -240,6 +246,13 @@ mean that the boundary is verified. Network-enabled commands are an explicit
 separate policy and are not enabled by default.
 
 ## Publisher commands
+
+The stable `0.2.0` package is already public and immutable; do not republish
+it. For future versions, use the protected
+[CLI release automation](CLI_RELEASE_AUTOMATION.md) workflow after reviewing
+the exact canonical CI artifact. The command below is retained only as
+owner-operated reference for the exact-artifact publication policy, not as an
+instruction to publish the current version.
 
 After a fresh seven-check CI run has retained the stable artifact and its
 manifest, confirming that the publisher controls the `@swiveltechnologies` npm

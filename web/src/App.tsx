@@ -6,6 +6,7 @@ import { GuestChatPage } from './pages/GuestChatPage'
 import { LoginPage } from './pages/LoginPage'
 import { CliAuthorizePage } from './pages/CliAuthorizePage'
 import { CliSessionsPage } from './pages/CliSessionsPage'
+import { CliGuidePage } from './pages/CliGuidePage'
 
 const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ default: module.LegalPage })))
 
@@ -29,6 +30,7 @@ export function App() {
     <Route path="/privacy" element={<Navigate to="/legal/privacy" replace />} />
     <Route path="/refunds" element={<Navigate to="/legal/refunds" replace />} />
     <Route path="/pricing" element={<Navigate to="/legal/pricing" replace />} />
+    <Route path="/swico-cli" element={<CliGuidePage />} />
     <Route path="/login" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="login" />} />
     <Route path="/signup" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="signup" />} />
     <Route path="/" element={user ? <ChatPage /> : <GuestChatPage />} />

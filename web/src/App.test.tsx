@@ -8,6 +8,7 @@ vi.mock('./auth/useAuth', () => ({ useAuth: () => authState }))
 vi.mock('./pages/ChatPage', () => ({ ChatPage: () => <main>Chat</main> }))
 vi.mock('./pages/GuestChatPage', () => ({ GuestChatPage: () => <main>Guest chat</main> }))
 vi.mock('./pages/CliSessionsPage', () => ({ CliSessionsPage: () => <main>Terminal sessions page</main> }))
+vi.mock('./pages/CliGuidePage', () => ({ CliGuidePage: () => <main>Swico CLI guide</main> }))
 
 it('renders the guest chat at the unauthenticated root and keeps auth routes explicit', async () => {
   const { unmount } = render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
@@ -24,6 +25,17 @@ it('keeps the authenticated root on the existing ChatPage', () => {
   authState.user = { uid:'signed-in-user' }
   render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
   expect(screen.getByText('Chat')).toBeInTheDocument()
+  authState.user = null
+})
+
+it('renders the public Swico CLI guide while signed out and signed in', () => {
+  authState.user = null
+  const guest = render(<MemoryRouter initialEntries={['/swico-cli']}><App /></MemoryRouter>)
+  expect(screen.getByText('Swico CLI guide')).toBeInTheDocument()
+  guest.unmount()
+  authState.user = { uid:'signed-in-user' }
+  render(<MemoryRouter initialEntries={['/swico-cli']}><App /></MemoryRouter>)
+  expect(screen.getByText('Swico CLI guide')).toBeInTheDocument()
   authState.user = null
 })
 
