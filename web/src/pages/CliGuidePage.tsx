@@ -23,17 +23,17 @@ function GuideSection({ id, number, title, children }: { id: string; number: str
   </section>
 }
 
-export function CliGuidePage() {
+export function CliGuidePage({ isAuthenticated = false }: { isAuthenticated?: boolean }) {
   return <main className="cli-guide-page">
     <header className="cli-guide-header">
       <Link className="cli-guide-brand" to="/" aria-label="Back to Swico home"><span className="brand-mark" aria-hidden="true">S</span><span><strong>Swico CLI</strong><small>Terminal Chat</small></span></Link>
-      <nav aria-label="Guide navigation"><Link to="/">Back to Swico</Link><Link className="cli-guide-sign-in" to="/login">Sign in</Link></nav>
+      <nav aria-label="Guide navigation"><Link to="/">Back to Swico</Link>{isAuthenticated ? <Link className="cli-guide-sign-in" to="/">Open Swico</Link> : <Link className="cli-guide-sign-in" to="/login?returnTo=%2Fswico-cli">Sign in</Link>}</nav>
     </header>
 
     <div className="cli-guide-layout">
       <aside className="cli-guide-contents" aria-label="Swico CLI guide sections">
         <span>On this page</span>
-        <a href="#get-started">Get started</a><a href="#install">Install</a><a href="#activate">Sign in</a><a href="#commands">Commands</a><a href="#update">Update</a><a href="#troubleshooting">Troubleshooting</a>
+        <a href="#get-started">Get started</a><a href="#install">Install</a><a href="#activate">Sign in</a><a href="#start">Start Swico</a><a href="#commands">Commands</a><a href="#update">Update</a><a href="#reinstall">Reinstall</a><a href="#uninstall">Uninstall</a><a href="#completion">Shell completion</a><a href="#troubleshooting">Troubleshooting</a><a href="#security">Security</a><a href="#limitation">Current limitation</a>
       </aside>
       <article className="cli-guide-content">
         <div className="cli-guide-hero">

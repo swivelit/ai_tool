@@ -47,12 +47,12 @@ jobs:
       deployment: false
     timeout-minutes: ${{ inputs.mode == 'production-capability' && 180 || 30 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         if: inputs.mode == 'production-capability'
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -223,7 +223,7 @@ jobs:
           exit "$status"
       - name: Upload private failure diagnostics
         if: failure() && inputs.mode != 'production-triag' && inputs.mode != 'production-capability'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployed-playwright-failure-${{ github.run_id }}
           path: |
@@ -233,7 +233,7 @@ jobs:
           retention-days: 7
       - name: Upload private failure diagnostics
         if: failure() && inputs.mode == 'production-capability'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-capability-startup-diagnostic-${{ github.run_id }}
           path: web/test-results/swico-capability-private/*/startup-failure-diagnostic.json
@@ -241,7 +241,7 @@ jobs:
           retention-days: 7
       - name: Upload redacted production TRIAG trace on failure
         if: failure() && inputs.mode == 'production-triag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-triag-redacted-playwright-trace-${{ github.run_id }}
           path: web/test-results/production-triag-safe-trace.json
@@ -249,7 +249,7 @@ jobs:
           retention-days: 7
       - name: Upload safe production TRIAG artifacts
         if: always() && inputs.mode == 'production-triag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-triag-safe-artifacts-${{ github.run_id }}
           path: |
@@ -259,7 +259,7 @@ jobs:
           retention-days: 7
       - name: Upload safe production capability summary
         if: always() && inputs.mode == 'production-capability'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-capability-safe-summary-${{ github.run_id }}
           path: web/test-results/production-capability-summary.json

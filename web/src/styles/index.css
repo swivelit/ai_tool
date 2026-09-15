@@ -791,7 +791,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   color: #ffffff !important;
 }*/
 
-.cli-guide-page { min-height: 100dvh; overflow-y: auto; background: var(--bg); color: var(--text) }
+.cli-guide-page { height: 100dvh; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-gutter: stable; background: var(--bg); color: var(--text) }
 .cli-guide-header { display: flex; width: min(1180px, calc(100% - 40px)); min-height: 72px; align-items: center; justify-content: space-between; gap: 20px; margin: 0 auto; border-bottom: 1px solid var(--line) }
 .cli-guide-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none }
 .cli-guide-brand > span:last-child { display: grid; gap: 1px }
@@ -812,7 +812,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .cli-guide-hero h1 { margin: 18px 0 7px; font-size: clamp(42px, 8vw, 70px); letter-spacing: -.065em; line-height: .98 }
 .cli-guide-hero > p { margin: 0 0 27px; color: var(--muted); font-size: 18px }
 .cli-guide-hero > small { display: block; margin-top: 9px; color: var(--subtle); font-size: 11px }
-.cli-guide-section { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 18px; padding: 31px 0; border-top: 1px solid var(--line) }
+.cli-guide-section { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 18px; padding: 31px 0; border-top: 1px solid var(--line); scroll-margin-top: 28px }
 .cli-guide-section-number { color: var(--subtle); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; padding-top: 5px }
 .cli-guide-section h2 { margin: 0 0 12px; font-size: 23px; letter-spacing: -.035em }
 .cli-guide-section h3 { margin: 25px 0 8px; font-size: 15px }
@@ -836,7 +836,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 @media (max-width: 600px) {
   .cli-guide-header { width: calc(100% - 28px); min-height: 62px }
-  .cli-guide-header nav a:first-child { display: none }
   .cli-guide-layout { width: calc(100% - 28px); padding: 34px 0 70px }
   .cli-guide-section { grid-template-columns: 27px minmax(0, 1fr); gap: 10px; padding: 25px 0 }
   .cli-guide-section h2 { font-size: 21px }

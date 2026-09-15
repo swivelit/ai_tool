@@ -5,8 +5,10 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/release-swico-cli.sh <patch|minor|major|X.Y.Z> [--push] [--allow-non-main] [--dry-run]
 
-Prepares a Swico CLI version bump, validates it, and optionally commits/pushes
-only the two CLI package metadata files. It never publishes to npm.
+Manual/emergency fallback: prepares a Swico CLI version bump, validates it, and
+optionally commits/pushes only the two CLI package metadata files. Normal patch
+releases are automatic after release-worthy CLI changes reach main. It never
+publishes to npm.
 EOF
 }
 

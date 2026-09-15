@@ -6,97 +6,358 @@ on:
     types: [completed]
 
 permissions:
-  contents: read
+  contents: write
   actions: read
   id-token: write
 
+concurrency:
+  group: swico-cli-release
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  plan:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      decision: ${{ steps.plan.outputs.decision }}
+      version: ${{ steps.plan.outputs.version }}
+      needs_version_commit: ${{ steps.plan.outputs.needs_version_commit }}
+    steps:
+      - name: Check out the triggering CI revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Set up supported npm Trusted Publishing runtime
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.14.0'
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@11.5.1
+      - name: Plan a release from the published source revision
+        id: plan
+        env:
+          PACKAGE_NAME: '@swiveltechnologies/swico'
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin main
+          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$TRIGGER_SHA" ]]; then
+            echo "The triggering CI revision is no longer origin/main; the newer main run owns release planning."
+            echo 'decision=defer' >> "$GITHUB_OUTPUT"
+            echo 'version=' >> "$GITHUB_OUTPUT"
+            echo 'needs_version_commit=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          repo_version="$(node -p "require('./cli/package.json').version")"
+          package_name="$(node -p "require('./cli/package.json').name")"
+          [[ "$package_name" == "$PACKAGE_NAME" ]] || { echo "Unexpected repository package: $package_name" >&2; exit 1; }
+          registry_json="$(npm view "$PACKAGE_NAME@latest" name version --json)"
+          REGISTRY_JSON="$registry_json" PACKAGE_NAME="$PACKAGE_NAME" node > "$RUNNER_TEMP/npm-latest.json" <<'NODE'
+          const value = JSON.parse(process.env.REGISTRY_JSON)
+          if (value.name !== process.env.PACKAGE_NAME || typeof value.version !== 'string') throw new Error('npm latest package identity is invalid')
+          process.stdout.write(JSON.stringify(value))
+          NODE
+          npm_latest="$(node -p "require('$RUNNER_TEMP/npm-latest.json').version")"
+          latest_dir="$(mktemp -d "$RUNNER_TEMP/swico-latest.XXXXXX")"
+          trap 'rm -rf "$latest_dir"' EXIT
+          npm pack "$PACKAGE_NAME@latest" --ignore-scripts --pack-destination "$latest_dir" --json > "$latest_dir/pack.json"
+          mapfile -t latest_archives < <(find "$latest_dir" -maxdepth 1 -type f -name '*.tgz' -print)
+          [[ "${#latest_archives[@]}" -eq 1 ]] || { echo "Expected one npm latest archive" >&2; exit 1; }
+          latest_archive="${latest_archives[0]}"
+          tar -xOf "$latest_archive" package/package.json > "$latest_dir/package.json"
+          tar -xOf "$latest_archive" package/dist/build_identity.js > "$latest_dir/build_identity.js"
+          LATEST_DIR="$latest_dir" PACKAGE_NAME="$PACKAGE_NAME" node > "$RUNNER_TEMP/published-identity.json" <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const root = process.env.LATEST_DIR
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+          if (pkg.name !== process.env.PACKAGE_NAME || pkg.bin?.swico !== 'dist/cli.js') throw new Error('published package identity is invalid')
+          const identityText = fs.readFileSync(path.join(root, 'build_identity.js'), 'utf8')
+          if (Buffer.byteLength(identityText, 'utf8') > 16 * 1024) throw new Error('published build identity is unexpectedly large')
+          const match = identityText.match(/Object\.freeze\((\{[^\n]{1,8192}\})\)/)
+          if (!match) throw new Error('published build identity is missing')
+          const identity = JSON.parse(match[1])
+          if (!/^[0-9a-f]{40,64}$/.test(identity.revision) || identity.dirty !== false) throw new Error('published build identity is invalid')
+          process.stdout.write(JSON.stringify({ version:pkg.version, revision:identity.revision }))
+          NODE
+          published_revision="$(node -p "require('$RUNNER_TEMP/published-identity.json').revision")"
+          [[ "$(node -p "require('$RUNNER_TEMP/published-identity.json').version")" == "$npm_latest" ]] || { echo "npm metadata and packed package disagree" >&2; exit 1; }
+          git cat-file -e "$published_revision^{commit}" 2>/dev/null || { echo "Published revision is not present in fetched history: $published_revision" >&2; exit 1; }
+          git merge-base --is-ancestor "$published_revision" "$TRIGGER_SHA" || { echo "Published revision is not an ancestor of the triggering revision" >&2; exit 1; }
+          git diff --name-only "$published_revision" "$TRIGGER_SHA" > "$RUNNER_TEMP/swico-changed-files.txt"
+          plan_json="$(node cli/scripts/plan-release.mjs --repo-version "$repo_version" --npm-latest-version "$npm_latest" --changed-files-file "$RUNNER_TEMP/swico-changed-files.txt")"
+          target_version="$(PLAN_JSON="$plan_json" node -p "JSON.parse(process.env.PLAN_JSON).version || ''")"
+          target_exists=false
+          if [[ -n "$target_version" ]]; then
+            set +e
+            target_response="$(npm view "$PACKAGE_NAME@$target_version" name version --json 2>&1)"
+            target_status=$?
+            set -e
+            if [[ "$target_status" -eq 0 ]]; then
+              TARGET_RESPONSE="$target_response" PACKAGE_NAME="$PACKAGE_NAME" TARGET_VERSION="$target_version" node <<'NODE'
+              const actual = JSON.parse(process.env.TARGET_RESPONSE)
+              if (actual.name !== process.env.PACKAGE_NAME || actual.version !== process.env.TARGET_VERSION) throw new Error('existing npm target has an unexpected package identity')
+              NODE
+              target_exists=true
+            elif ! grep -Eq 'E404|404 Not Found|is not in this registry' <<<"$target_response"; then
+              echo "Could not safely determine target version availability:" >&2
+              echo "$target_response" >&2
+              exit 1
+            fi
+          fi
+          target_arg=()
+          [[ "$target_exists" == true ]] && target_arg+=(--target-exists)
+          final_plan="$(node cli/scripts/plan-release.mjs --repo-version "$repo_version" --npm-latest-version "$npm_latest" --changed-files-file "$RUNNER_TEMP/swico-changed-files.txt" "${target_arg[@]}")"
+          PLAN_JSON="$final_plan" node <<'NODE'
+          const plan = JSON.parse(process.env.PLAN_JSON)
+          console.log(plan.reason)
+          if (plan.changedPaths?.length) console.log(`Release-worthy changes: ${plan.changedPaths.join(', ')}`)
+          NODE
+          decision="$(PLAN_JSON="$final_plan" node -p "JSON.parse(process.env.PLAN_JSON).action")"
+          version="$(PLAN_JSON="$final_plan" node -p "JSON.parse(process.env.PLAN_JSON).version || ''")"
+          needs_version_commit="$(PLAN_JSON="$final_plan" node -p "String(Boolean(JSON.parse(process.env.PLAN_JSON).needsVersionCommit))")"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "needs_version_commit=$needs_version_commit" >> "$GITHUB_OUTPUT"
+
+  version:
+    needs: plan
+    if: needs.plan.outputs.decision == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.version.outputs.release_sha }}
+      status: ${{ steps.version.outputs.status }}
+    steps:
+      - name: Check out the source revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.14.0'
+      - name: Install npm version machinery
+        run: npm install --global npm@11.5.1
+      - name: Create and push the automatic version commit
+        id: version
+        env:
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          NEEDS_VERSION_COMMIT: ${{ needs.plan.outputs.needs_version_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin main
+          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$TRIGGER_SHA" ]]; then
+            echo "main advanced before versioning; deferring to the newer CI run."
+            echo 'release_sha=' >> "$GITHUB_OUTPUT"
+            echo 'status=deferred' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$NEEDS_VERSION_COMMIT" != true ]]; then
+            [[ "$(node -p "require('./cli/package.json').version")" == "$RELEASE_VERSION" ]] || { echo "Pending release version changed unexpectedly" >&2; exit 1; }
+            echo "Reusing pending release $RELEASE_VERSION at $TRIGGER_SHA."
+            echo "release_sha=$TRIGGER_SHA" >> "$GITHUB_OUTPUT"
+            echo 'status=pending' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npm --prefix cli version "$RELEASE_VERSION" --no-git-tag-version
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('cli/package.json', 'utf8'))
+          const lock = JSON.parse(fs.readFileSync('cli/package-lock.json', 'utf8'))
+          const expected = process.env.RELEASE_VERSION
+          if (pkg.name !== '@swiveltechnologies/swico' || pkg.bin?.swico !== 'dist/cli.js') throw new Error('CLI package identity changed')
+          if (pkg.version !== expected || lock.version !== expected || lock.packages?.['']?.version !== expected) throw new Error('package and lock versions do not match')
+          NODE
+          expected_files=$'cli/package-lock.json\ncli/package.json'
+          [[ "$(git diff --name-only | sort)" == "$expected_files" ]] || { echo "Automatic versioning changed files outside CLI package metadata" >&2; git diff --name-only; exit 1; }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add cli/package.json cli/package-lock.json
+          git commit -m "chore(cli): release Swico CLI $RELEASE_VERSION"
+          release_sha="$(git rev-parse HEAD)"
+          [[ "$(git diff-tree --no-commit-id --name-only -r "$release_sha" | sort)" == "$expected_files" ]] || { echo "Release commit contains unexpected files" >&2; exit 1; }
+          git fetch --prune origin main
+          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$TRIGGER_SHA" ]]; then
+            echo "main advanced before push; leaving the local release commit unpublished for the newer run."
+            echo 'release_sha=' >> "$GITHUB_OUTPUT"
+            echo 'status=deferred' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git push origin "HEAD:refs/heads/main"; then
+            remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+            if [[ "$remote_main" != "$TRIGGER_SHA" ]]; then
+              echo "main advanced during push; deferring without force-pushing."
+              echo 'release_sha=' >> "$GITHUB_OUTPUT"
+              echo 'status=deferred' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Normal fast-forward version push failed while main was unchanged." >&2
+            exit 1
+          fi
+          echo "Pushed automatic release commit $release_sha."
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo 'status=pushed' >> "$GITHUB_OUTPUT"
+
+  release-matrix:
+    needs: version
+    if: needs.version.outputs.release_sha != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact release revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
+          fetch-depth: 0
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+      - name: Run CLI typecheck, lint, and tests
+        run: npm run typecheck && npm run lint && npm test
+        working-directory: cli
+      - name: Inspect local sandbox capability (fail-closed readiness only)
+        run: node dist/cli.js sandbox status
+        working-directory: cli
+      - name: Run hostile sandbox verification or assert fail-closed capability
+        run: node dist/cli.js sandbox verify --json --ci
+        working-directory: cli
+      - name: Run native Windows ConPTY helper acceptance
+        if: runner.os == 'Windows'
+        run: npm run test:conpty-native
+        working-directory: cli
+      - name: Run release acceptance check
+        run: npm run release:check
+        working-directory: cli
+
+  canonical-artifact:
+    needs: [version, release-matrix]
+    if: needs.version.outputs.release_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.artifact.outputs.version }}
+      filename: ${{ steps.artifact.outputs.filename }}
+    steps:
+      - name: Check out the exact release revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
+          fetch-depth: 0
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+      - name: Build the exact clean canonical artifact
+        run: npm run release:check -- --keep-artifact
+        working-directory: cli
+      - name: Validate and stage exactly two flat files
+        id: artifact
+        working-directory: cli
+        env:
+          EXPECTED_REVISION: ${{ needs.version.outputs.release_sha }}
+          RELEASE_MANIFEST: ${{ runner.temp }}/swico-release-manifest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mapfile -t artifacts < <(find . -maxdepth 1 -type f -name "swiveltechnologies-swico-${version}.tgz" -print)
+          [[ "${#artifacts[@]}" -eq 1 ]] || { echo "Expected exactly one release artifact" >&2; exit 1; }
+          filename="$(basename -- "${artifacts[0]}")"
+          expected="swiveltechnologies-swico-${version}.tgz"
+          [[ "$filename" == "$expected" && "$filename" != */* && "$filename" != *'\\'* && "$filename" != *'..'* ]] || { echo "Unexpected artifact filename: $filename" >&2; exit 1; }
+          node scripts/validate-release-artifact.mjs "$filename" "$RELEASE_MANIFEST"
+          MANIFEST="$RELEASE_MANIFEST" EXPECTED_REVISION="$EXPECTED_REVISION" EXPECTED_VERSION="$version" TARFILE="$filename" node <<'NODE'
+          const fs = require('node:fs')
+          const crypto = require('node:crypto')
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST, 'utf8'))
+          const expected = { package:'@swiveltechnologies/swico', version:process.env.EXPECTED_VERSION, git_revision:process.env.EXPECTED_REVISION, dirty:false, artifact_filename:process.env.TARFILE }
+          for (const [key, value] of Object.entries(expected)) if (manifest[key] !== value) throw new Error(`manifest ${key} mismatch`)
+          const sha = crypto.createHash('sha256').update(fs.readFileSync(process.env.TARFILE)).digest('hex')
+          if (manifest.sha256 !== sha) throw new Error('manifest SHA-256 does not match the tarball')
+          NODE
+          stage="${RUNNER_TEMP}/swico-canonical-release"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp "$filename" "$stage/$filename"
+          cp "$RELEASE_MANIFEST" "$stage/swico-release-manifest.json"
+          node cli/scripts/validate-canonical-artifact.mjs "$stage" "$version" "$EXPECTED_REVISION"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+      - name: Upload flat canonical release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: swico-cli-${{ steps.artifact.outputs.version }}-canonical
+          if-no-files-found: error
+          path: ${{ runner.temp }}/swico-canonical-release/
+
+  publish:
+    needs: [version, canonical-artifact]
+    if: needs.version.outputs.release_sha != ''
+    runs-on: ubuntu-latest
     environment:
       name: npm-production
     timeout-minutes: 15
     steps:
-      - name: Check out the triggering CI revision
-        uses: actions/checkout@v4
+      - name: Check out the exact release revision
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+          ref: ${{ needs.version.outputs.release_sha }}
+          fetch-depth: 0
+      - name: Set up supported npm Trusted Publishing runtime
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
-
+          node-version: '22.14.0'
       - name: Install npm with trusted-publishing support
         run: npm install --global npm@11.5.1
-
-      - name: Read package release identity
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_name="$(node -p "require('./cli/package.json').name")"
-          version="$(node -p "require('./cli/package.json').version")"
-          [[ "$package_name" == "@swiveltechnologies/swico" ]] || { echo "Unexpected package: $package_name" >&2; exit 1; }
-          if [[ "$version" == *-* ]]; then
-            kind=release-candidate
-            tag=beta
-          else
-            kind=release
-            tag=latest
-          fi
-          echo "name=$package_name" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "kind=$kind" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Download the exact canonical CI artifact
-        uses: actions/download-artifact@v4
+      - name: Download the flat canonical artifact
+        uses: actions/download-artifact@v8
         with:
-          name: swico-cli-${{ steps.package.outputs.version }}-${{ steps.package.outputs.kind }}
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: swico-cli-${{ needs.canonical-artifact.outputs.version }}-canonical
           path: release-artifact
-
-      - name: Validate canonical artifact identity and contents
+      - name: Validate exactly the canonical artifact files
         id: artifact
         env:
-          EXPECTED_PACKAGE: ${{ steps.package.outputs.name }}
-          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
-          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_VERSION: ${{ needs.canonical-artifact.outputs.version }}
+          EXPECTED_REVISION: ${{ needs.version.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t tarballs < <(find release-artifact -type f -name '*.tgz' -print)
-          [[ "${#tarballs[@]}" -eq 1 ]] || { echo "Expected exactly one canonical tarball" >&2; exit 1; }
-          tarball="${tarballs[0]}"
-          filename="$(basename -- "$tarball")"
           expected="swiveltechnologies-swico-${EXPECTED_VERSION}.tgz"
-          [[ "$filename" == "$expected" && "$filename" != *'/'* && "$filename" != *'\\'* && "$filename" != *'..'* ]] || { echo "Unexpected tarball filename: $filename" >&2; exit 1; }
+          [[ -f "release-artifact/$expected" ]] || { echo "Canonical tarball is missing" >&2; exit 1; }
           [[ -f release-artifact/swico-release-manifest.json ]] || { echo "Release manifest is missing" >&2; exit 1; }
-          [[ "$(find release-artifact -type f | wc -l | tr -d ' ')" == 2 ]] || { echo "Canonical artifact contains unexpected files" >&2; exit 1; }
-          TARFILE="$tarball" MANIFEST=release-artifact/swico-release-manifest.json node <<'NODE'
-          const fs = require('node:fs');
-          const crypto = require('node:crypto');
-          const path = require('node:path');
-          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST, 'utf8'));
-          const expected = { package: process.env.EXPECTED_PACKAGE, version: process.env.EXPECTED_VERSION, git_revision: process.env.EXPECTED_REVISION, dirty: false, artifact_filename: path.basename(process.env.TARFILE) };
-          for (const [key, value] of Object.entries(expected)) if (manifest[key] !== value) throw new Error(`manifest ${key} mismatch`);
-          const sha = crypto.createHash('sha256').update(fs.readFileSync(process.env.TARFILE)).digest('hex');
-          if (manifest.sha256 !== sha) throw new Error('manifest SHA-256 does not match the downloaded tarball');
-          NODE
-          node cli/scripts/validate-release-artifact.mjs "$tarball" "$RUNNER_TEMP/revalidated-release-manifest.json"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-
-      - name: Refuse to republish an existing npm version
+          node cli/scripts/validate-canonical-artifact.mjs release-artifact "$EXPECTED_VERSION" "$EXPECTED_REVISION"
+          node cli/scripts/validate-release-artifact.mjs "release-artifact/$expected" "$RUNNER_TEMP/revalidated-release-manifest.json"
+          echo "tarball=release-artifact/$expected" >> "$GITHUB_OUTPUT"
+      - name: Refuse to overwrite an existing npm version
         id: registry
         env:
-          PACKAGE_NAME: ${{ steps.package.outputs.name }}
-          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+          PACKAGE_NAME: '@swiveltechnologies/swico'
+          PACKAGE_VERSION: ${{ needs.canonical-artifact.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -105,24 +366,19 @@ jobs:
           status=$?
           set -e
           if [[ "$status" -eq 0 ]]; then
-            REGISTRY_RESPONSE="$response" node <<'NODE'
-            const actual = JSON.parse(process.env.REGISTRY_RESPONSE);
-            if (actual.name !== process.env.PACKAGE_NAME || actual.version !== process.env.PACKAGE_VERSION) {
-              throw new Error('existing npm version has an unexpected package identity');
-            }
+            PACKAGE_NAME="$PACKAGE_NAME" PACKAGE_VERSION="$PACKAGE_VERSION" REGISTRY_RESPONSE="$response" node <<'NODE'
+            const actual = JSON.parse(process.env.REGISTRY_RESPONSE)
+            if (actual.name !== process.env.PACKAGE_NAME || actual.version !== process.env.PACKAGE_VERSION) throw new Error('existing npm version has an unexpected package identity')
             NODE
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already present on npm; refusing to republish."
-            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists; refusing to publish over immutable npm data."
+            echo 'already=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if ! grep -Eq 'E404|404 Not Found|is not in this registry' <<<"$response"; then
-            echo "Could not safely determine npm version availability:" >&2
             echo "$response" >&2
             exit 1
           fi
-          echo "Version is not currently present in the registry."
-          echo "already=false" >> "$GITHUB_OUTPUT"
-
-      - name: Publish exact canonical artifact with OIDC provenance
+          echo 'already=false' >> "$GITHUB_OUTPUT"
+      - name: Publish the exact canonical tarball with npm OIDC provenance
         if: steps.registry.outputs.already != 'true'
-        run: npm publish "${{ steps.artifact.outputs.tarball }}" --access public --tag "${{ steps.package.outputs.tag }}" --provenance
+        run: npm publish "${{ steps.artifact.outputs.tarball }}" --access public --tag latest --provenance
