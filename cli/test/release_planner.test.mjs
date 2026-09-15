@@ -24,6 +24,13 @@ describe('automatic Swico CLI release planning', () => {
     assert.equal(plan.needsVersionCommit, false)
   })
 
+  it('reuses 0.2.1 for the shipped usage change while it is pending', () => {
+    const plan = planRelease({ repoVersion:'0.2.1', npmLatestVersion:'0.2.0', changedPaths:['cli/src/usage.ts'] })
+    assert.equal(plan.action, 'release')
+    assert.equal(plan.version, '0.2.1')
+    assert.equal(plan.needsVersionCommit, false)
+  })
+
   it('fails closed when npm is newer than the repository', () => {
     assert.throws(() => planRelease({ repoVersion:'0.2.0', npmLatestVersion:'0.2.1', changedPaths:['cli/src/cli.ts'] }), /version regression/)
   })

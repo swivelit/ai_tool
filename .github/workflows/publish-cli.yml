@@ -288,7 +288,7 @@ jobs:
           mkdir -p "$stage"
           cp "$filename" "$stage/$filename"
           cp "$RELEASE_MANIFEST" "$stage/swico-release-manifest.json"
-          node cli/scripts/validate-canonical-artifact.mjs "$stage" "$version" "$EXPECTED_REVISION"
+          node scripts/validate-canonical-artifact.mjs "$stage" "$version" "$EXPECTED_REVISION"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "filename=$filename" >> "$GITHUB_OUTPUT"
       - name: Upload flat canonical release artifact
