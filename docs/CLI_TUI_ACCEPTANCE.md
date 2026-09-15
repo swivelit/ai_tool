@@ -37,4 +37,4 @@ native coding sandbox is accepted. The Windows path uses the dev-only pinned
 `node-pty` ConPTY adapter and the RC8 helper emits a `[conpty-result]` sentinel
 only after the bridge result and bounded diagnostics are flushed. The local Mac
 run does not itself provide Windows evidence; the clean Windows path passed in
-CI run `34908695927`, including the native helper and installed rich terminal.
+CI run `34911573230`, including the native helper and installed rich terminal.

@@ -272,7 +272,8 @@ npm install -g @swiveltechnologies/swico@beta
 ```
 
 Do not publish RC8 as `latest`. The stable workflow is a separately approved
-`0.2.0` build, followed by a fresh six-job CI run and publication with
+`0.2.0` build, followed by a fresh seven-check CI run (including canonical
+artifact retention) and publication with
 `--tag latest`; only then should the unqualified command be used:
 
 ```bash
