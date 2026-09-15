@@ -1,6 +1,6 @@
 # CLI terminal UI acceptance recording
 
-This is a sanitized, non-billable acceptance note for the local
+This is a sanitized, non-billable acceptance note for the accepted historical
 `0.2.0-rc.8` candidate. Installed controller/event coverage uses a disposable
 fake terminal and controlled API fixtures; no real credential or provider was
 used. The release check reports native PTY coverage separately when the host

@@ -180,7 +180,7 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           mapfile -t artifacts < <(find . -maxdepth 1 -type f -name "swiveltechnologies-swico-${version}.tgz" -print)
           if [ "${#artifacts[@]}" -ne 1 ]; then
-            echo "Expected exactly one RC artifact for ${version}, found ${#artifacts[@]}" >&2
+            echo "Expected exactly one release artifact for ${version}, found ${#artifacts[@]}" >&2
             exit 1
           fi
           expected="swiveltechnologies-swico-${version}.tgz"
@@ -193,17 +193,23 @@ jobs:
             echo "Artifact locator did not produce the expected safe filename: ${artifact_filename}" >&2
             exit 1
           fi
+          if [[ "${version}" == *-* ]]; then
+            artifact_kind="release-candidate"
+          else
+            artifact_kind="release"
+          fi
           echo "filename=${artifact_filename}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "kind=${artifact_kind}" >> "$GITHUB_OUTPUT"
       - name: Validate package allowlist and clean build identity
         working-directory: cli
         env:
           RELEASE_MANIFEST: ${{ runner.temp }}/swico-release-manifest.json
         run: node scripts/validate-release-artifact.mjs "${{ steps.artifact.outputs.filename }}" "$RELEASE_MANIFEST"
-      - name: Upload canonical release candidate
+      - name: Upload canonical release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: swico-cli-${{ steps.artifact.outputs.version }}-release-candidate
+          name: swico-cli-${{ steps.artifact.outputs.version }}-${{ steps.artifact.outputs.kind }}
           if-no-files-found: error
           path: |
             cli/${{ steps.artifact.outputs.filename }}

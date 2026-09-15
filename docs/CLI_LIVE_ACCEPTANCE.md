@@ -10,6 +10,19 @@ allowlist, `SWICO_CLI_AGENT_ENABLED=false`,
 `SWICO_CLI_CLOUD_AGENT_ENABLED=false`, and `SWICO_CLI_MAX_AGENT_STEPS=8`. Do
 not substitute Swico Free, a customer provider key, or a different account.
 
+## Historical RC8 live result
+
+The owner-confirmed RC8 acceptance passed once. The tested request was
+`2773b5f9-bd75-4667-a26c-8a3b533bf2dc`; its usage charge was settled with one
+matching `usage-debit:2773b5f9-bd75-4667-a26c-8a3b533bf2dc`. Safe billing
+evidence recorded 16,823 micros debited, wallet `4,936,633` micros before and
+`4,919,810` micros after, with reservation expansion/release reconciled and
+final reserved balance zero. Browser-approved Lite login, API health,
+same-account refresh, native macOS Keychain persistence, logout, and fresh
+browser reauthorization also passed. No credential or token values are part of
+this record. This is historical RC8 evidence; the stable metadata promotion
+does not repeat a paid request automatically.
+
 ## Exact canonical artifact
 
 Download artifact `swico-cli-0.2.0-rc.8-release-candidate` from CI run

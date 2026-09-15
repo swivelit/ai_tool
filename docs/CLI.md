@@ -241,9 +241,10 @@ separate policy and are not enabled by default.
 
 ## Publisher commands
 
-After confirming that the publisher controls the `@swiveltechnologies` npm
-scope and that
-the repository's approved license is included in the release, run explicitly.
+After a fresh seven-check CI run has retained the stable artifact and its
+manifest, confirming that the publisher controls the `@swiveltechnologies` npm
+scope and that the repository's approved license is included in the release,
+run explicitly against the downloaded canonical tarball.
 The CLI package is scoped under the approved MIT terms in `cli/LICENSE` and
 `cli/LICENSE_SCOPE.md`; this does not relicense the monorepo or grant hosted
 service access. Publication remains a separate owner decision: confirm control
@@ -253,27 +254,23 @@ permission.
 
 ```bash
 cd cli
-npm ci
-npm run build
-npm test
-npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swiveltechnologies-swico-0.2.0-rc.8.tgz --access public --tag beta --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-0.2.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
 These are conditional owner-operated commands only; this pass does not run
-them. RC8 is a prerelease pilot: if approved, publish the exact tested archive
-with `--tag beta` (or an explicitly approved `next` tag), then testers install
-it with:
+them. RC8 remains historical prerelease evidence. If a tester needs the RC8
+pilot, its exact retained archive may be published separately with `--tag beta`
+or an explicitly approved `next` tag, never `latest`:
 
 ```bash
 npm install -g @swiveltechnologies/swico@beta
 ```
 
-Do not publish RC8 as `latest`. The stable workflow is a separately approved
-`0.2.0` build, followed by a fresh seven-check CI run (including canonical
-artifact retention) and publication with
+The stable workflow is the `0.2.0` build in this checkout, followed by a fresh
+seven-check CI run (including canonical artifact retention). Publish only the
+exact tarball and SHA-256 recorded by that run's release manifest with
 `--tag latest`; only then should the unqualified command be used:
 
 ```bash
@@ -293,7 +290,7 @@ For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swiveltechnologies-swico-0.2.0-rc.8.tgz
+npm install -g ./swiveltechnologies-swico-0.2.0.tgz
 ```
 
 This is not a public-registry install and does not make the package available
