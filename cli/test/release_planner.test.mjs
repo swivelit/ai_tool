@@ -6,7 +6,7 @@ const base = { repoVersion:'0.2.0', npmLatestVersion:'0.2.0' }
 
 describe('automatic Swico CLI release planning', () => {
   it('skips web-only, docs-only, and cli test-only changes', () => {
-    for (const path of ['web/src/App.tsx', 'docs/CLI.md', 'cli/test/agent.test.mjs']) {
+    for (const path of ['web/src/App.tsx', 'docs/CLI.md', 'cli/test/agent.test.mjs', 'cli/scripts/release-check.mjs']) {
       assert.equal(planRelease({ ...base, changedPaths:[path] }).action, 'skip')
     }
   })

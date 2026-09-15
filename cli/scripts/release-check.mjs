@@ -9,11 +9,11 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { windowsShimInvocation } from './windows-launcher.mjs'
+import { classifyExecFailure, DEFAULT_STAGE_TIMEOUT_MS, safeDiagnostic, timeoutForStage } from './release-check-support.mjs'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
 const keepArtifact = process.argv.includes('--keep-artifact')
-const STAGE_TIMEOUT_MS = 90_000
 
 async function resolveNpmLauncher() {
   const supplied = process.env.npm_execpath
@@ -70,13 +70,6 @@ function finalScreenSnapshot(output) {
   return frame.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, '').replace(/\r/g, '')
 }
 
-function safeDiagnostic(value, limit = 4_000) {
-  return String(value ?? '')
-    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, '')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
-    .slice(-limit)
-}
-
 function parseConptyResult(value) {
   const lines = String(value ?? '').split(/\r?\n/).filter(line => line.startsWith('[conpty-result] '))
   if (lines.length === 0) return { value: null, error: null }
@@ -92,11 +85,13 @@ function parseConptyResult(value) {
 async function run(label, command, args, options = {}) {
   process.stderr.write(`[release-check] ${label}\n`)
   stageResults[label] = 'running'
+  const timeoutMs = options.timeout ?? timeoutForStage(label)
+  const startedAt = Date.now()
   try {
     const result = await exec(command, args, {
       cwd: root,
       maxBuffer: 2 * 1024 * 1024,
-      timeout: STAGE_TIMEOUT_MS,
+      timeout: timeoutMs,
       killSignal: 'SIGTERM',
       env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
       ...options,
@@ -104,9 +99,19 @@ async function run(label, command, args, options = {}) {
     stageResults[label] = 'passed'
     return result
   } catch (error) {
-    stageResults[label] = `failed: ${String(error?.message ?? error).slice(0, 300)}`
-    const detail = [error?.timedOut ? 'timed out' : '', error?.killed ? 'process killed' : '', error?.stderr, error?.stdout, error?.code ? `code=${error.code}` : '']
-      .filter(Boolean).join(' ').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000)
+    const diagnostic = classifyExecFailure({ label, error, startedAt, timeoutMs })
+    const detail = [
+      diagnostic.timed_out ? `timed out after ${diagnostic.timeout_ms} ms` : '',
+      `elapsed_ms=${diagnostic.elapsed_ms}`,
+      `timeout_ms=${diagnostic.timeout_ms}`,
+      `killed=${diagnostic.killed}`,
+      `signal=${diagnostic.signal ?? 'none'}`,
+      `code=${diagnostic.code ?? 'none'}`,
+      diagnostic.stderr ? `stderr=${diagnostic.stderr}` : '',
+      diagnostic.stdout ? `stdout=${diagnostic.stdout}` : '',
+      !diagnostic.timed_out && !diagnostic.killed && !diagnostic.stderr && !diagnostic.stdout ? String(error?.message ?? '') : '',
+    ].filter(Boolean).join(' ')
+    stageResults[label] = `failed: ${detail || 'unknown subprocess failure'}`
     throw new Error(`${label} failed: ${detail || 'unknown subprocess failure'}`)
   }
 }
@@ -118,7 +123,7 @@ async function runAllowFailure(label, command, args, options = {}) {
     const result = await exec(command, args, {
       cwd: root,
       maxBuffer: 2 * 1024 * 1024,
-      timeout: STAGE_TIMEOUT_MS,
+      timeout: DEFAULT_STAGE_TIMEOUT_MS,
       killSignal: 'SIGTERM',
       env: { ...process.env, npm_config_cache: join(work, 'npm-cache') },
       ...options,
@@ -245,7 +250,7 @@ async function runPty(label, command, args, options, onOutput) {
       }
     }, 1_000)
     try { child.kill('SIGTERM') } catch (error) { callbackError = String(error) }
-  }, STAGE_TIMEOUT_MS)
+  }, DEFAULT_STAGE_TIMEOUT_MS)
   return result
 }
 
@@ -301,7 +306,7 @@ try {
   }
 
   const prefix = join(work, 'prefix')
-  await runNpm('clean-prefix install', ['install', '--global', '--prefix', prefix, '--ignore-scripts', archivePath])
+  await runNpm('clean-prefix install', ['install', '--global', '--prefix', prefix, '--ignore-scripts', '--no-audit', '--no-fund', archivePath])
   const executable = process.platform === 'win32' ? join(prefix, 'swico.cmd') : join(prefix, 'bin', 'swico')
   const packageRoot = process.platform === 'win32' ? join(prefix, 'node_modules', '@swiveltechnologies', 'swico') : join(prefix, 'lib', 'node_modules', '@swiveltechnologies', 'swico')
   const appEntry = join(packageRoot, 'dist', 'cli.js')
