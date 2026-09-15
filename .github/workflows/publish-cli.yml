@@ -6,9 +6,8 @@ on:
     types: [completed]
 
 permissions:
-  contents: write
+  contents: read
   actions: read
-  id-token: write
 
 concurrency:
   group: swico-cli-release
@@ -129,6 +128,8 @@ jobs:
   version:
     needs: plan
     if: needs.plan.outputs.decision == 'release'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -318,6 +319,10 @@ jobs:
   publish:
     needs: [version, canonical-artifact]
     if: needs.version.outputs.release_sha != ''
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     runs-on: ubuntu-latest
     environment:
       name: npm-production
