@@ -28,6 +28,7 @@ from ..auth import (
     get_current_user,
     get_owned_user,
     is_internal_test_user,
+    is_weekly_tester_user,
     is_verified_admin_user,
 )
 from ..alembic_utils import repository_alembic_head
@@ -54,6 +55,7 @@ from ..billing.subscriptions import (
     subscription_config_public, subscription_summary, subscriptions_enabled,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
+from ..billing.tester_credit import tester_credit_window_summary
 from ..billing.topups import (
     custom_topup_enabled, topup_bounds, topup_packages, validate_topup_amount,
 )
@@ -912,6 +914,7 @@ def bootstrap(
     response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
     billing_exempt = is_internal_test_user(auth, user)
+    tester_credit_eligible = is_weekly_tester_user(auth, user)
     free_available = swico_free_eligible(
         int(user.id), internal_account=billing_exempt,
     )
@@ -938,6 +941,10 @@ def bootstrap(
         "billing": public_billing_config(swico_tier),
         "subscriptions": subscription_summary(
             session, int(user.id), swico_tier=swico_tier, billing_exempt=billing_exempt,
+        ),
+        "tester_credit": tester_credit_window_summary(
+            session, user_id=int(user.id), swico_tier=swico_tier,
+            eligible=tester_credit_eligible, billing_exempt=billing_exempt,
         ),
         "assistant": public_tier_settings(swico_tier, free_available=free_available),
         "features": {
@@ -2587,6 +2594,7 @@ def get_usage_settings(
     user = get_owned_user(session, auth)
     return usage_preferences_dict(
         session, user=user, billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -2631,6 +2639,7 @@ def patch_usage_settings(
     return usage_preferences_dict(
         session, user=user, row=row,
         billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -2643,6 +2652,7 @@ def get_usage_summary(
     return usage_summary(
         session, user=user, period=period,
         billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -4214,6 +4224,7 @@ async def chat_stream(
                 _resolved_reply_language(user), payload.message,
             )
             billing_exempt = is_internal_test_user(auth, user)
+            tester_credit_eligible = is_weekly_tester_user(auth, user)
             free_eligible = swico_free_eligible(
                 user_id, internal_account=billing_exempt,
             )
@@ -4250,6 +4261,9 @@ async def chat_stream(
                 str(payload.repository_id) if payload.repository_id else None
             ),
             billing_exempt=billing_exempt,
+            tester_credit_eligible=(
+                tester_credit_eligible if guest_identity is None else False
+            ),
             input_mode=payload.input_mode,
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
             continue_message_id=str(payload.continue_message_id) if payload.continue_message_id else None,

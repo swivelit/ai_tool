@@ -17,9 +17,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user
+from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user, is_internal_test_email
 from ..billing.errors import RateLimitError
 from ..billing.service import enforce_rate_limit, get_wallet_summary, release_swico_free_usage
+from ..billing.tester_credit import is_configured_tester_email, tester_credit_window_summary
 from ..database import SessionLocal, get_session
 from ..models import (
     CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession,
@@ -563,7 +564,19 @@ def change_tier(payload: CliTierRequest, authorization: str | None = Header(defa
 def usage(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     row, user = _cli_session_from_header(authorization, session)
     _require_paid_cli_session(row)
-    return {"tier": row.selected_tier, "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"), "wallet": get_wallet_summary(session, int(user.id), swico_tier=row.selected_tier, credit_bucket="chat")}
+    internal = is_internal_test_email(user.email)
+    return {
+        "tier": row.selected_tier,
+        "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"),
+        "wallet": get_wallet_summary(
+            session, int(user.id), swico_tier=row.selected_tier,
+            billing_exempt=internal, credit_bucket="chat",
+        ),
+        "tester_credit": tester_credit_window_summary(
+            session, user_id=int(user.id), swico_tier=row.selected_tier,
+            eligible=is_configured_tester_email(user.email), billing_exempt=internal,
+        ),
+    }
 
 
 @router.get("/threads")
@@ -664,6 +677,11 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
             reply_language=None, attachment_ids=payload.attachment_ids,
             repository_id=payload.repository_id, forced_swico_tier=tier,
             swico_free_eligible=swico_free_eligible(int(user.id)),
+            billing_exempt=is_internal_test_email(user.email),
+            tester_credit_eligible=(
+                is_configured_tester_email(user.email)
+                and not is_internal_test_email(user.email)
+            ),
             input_mode="text", billing_credit_bucket="chat",
             search_mode=payload.search_mode, output_schema=payload.output_schema,
         )
@@ -1064,6 +1082,11 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
             user_id=int(user.id), message=prompt, request_id=request_id,
             thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
             swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
+            billing_exempt=is_internal_test_email(user.email),
+            tester_credit_eligible=(
+                is_configured_tester_email(user.email)
+                and not is_internal_test_email(user.email)
+            ),
         )
         completed = execute_web_turn(prepared)
     except Exception as exc:
@@ -1196,6 +1219,11 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
                 user_id=int(user.id), message=prompt, request_id=request_id,
                 thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
                 swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
+                billing_exempt=is_internal_test_email(user.email),
+                tester_credit_eligible=(
+                    is_configured_tester_email(user.email)
+                    and not is_internal_test_email(user.email)
+                ),
             )
             completed = execute_web_turn(prepared)
             summaries.append({"id": item.id, "summary": completed.message.content[:2_000], "usage": completed.response.input_tokens + completed.response.output_tokens})

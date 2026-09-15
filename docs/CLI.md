@@ -92,7 +92,10 @@ estimate summary; `swico usage --json` returns the stable public usage envelope
 for scripts. Inside an interactive Swico session, use `/usage` instead. These
 commands refresh the selected session when needed but never generate, upload,
 create a reservation, or change tier. Token ranges are estimates and monetary
-values remain integer micros.
+values remain integer micros. Exact verified tester accounts also see their
+Chat-only weekly tester-credit balance and UTC reset time; `swico usage --json`
+exposes only the bounded `tester_credit` object. Internal allowlisted accounts
+report `Unlimited` instead. Tester credit never funds Voice.
 `/model` displays the selected public tier and never accepts a raw vendor
 model. Interactive repository tasks are routed to the local agent when the
 mode is `auto`; `/mode chat`, `/mode plan`, and `/mode agent` select an

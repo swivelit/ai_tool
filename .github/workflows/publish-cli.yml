@@ -56,12 +56,11 @@ jobs:
           repo_version="$(node -p "require('./cli/package.json').version")"
           package_name="$(node -p "require('./cli/package.json').name")"
           [[ "$package_name" == "$PACKAGE_NAME" ]] || { echo "Unexpected repository package: $package_name" >&2; exit 1; }
-          registry_json="$(npm view "$PACKAGE_NAME@latest" name version --json)"
-          REGISTRY_JSON="$registry_json" PACKAGE_NAME="$PACKAGE_NAME" node > "$RUNNER_TEMP/npm-latest.json" <<'NODE'
-          const value = JSON.parse(process.env.REGISTRY_JSON)
-          if (value.name !== process.env.PACKAGE_NAME || typeof value.version !== 'string') throw new Error('npm latest package identity is invalid')
-          process.stdout.write(JSON.stringify(value))
-          NODE
+          npm view "$PACKAGE_NAME@latest" name version --json > "$RUNNER_TEMP/npm-latest-raw.json"
+          node cli/scripts/validate-publish-plan.mjs metadata \
+            --input "$RUNNER_TEMP/npm-latest-raw.json" \
+            --package "$PACKAGE_NAME" \
+            --output "$RUNNER_TEMP/npm-latest.json"
           npm_latest="$(node -p "require('$RUNNER_TEMP/npm-latest.json').version")"
           latest_dir="$(mktemp -d "$RUNNER_TEMP/swico-latest.XXXXXX")"
           trap 'rm -rf "$latest_dir"' EXIT
@@ -71,20 +70,11 @@ jobs:
           latest_archive="${latest_archives[0]}"
           tar -xOf "$latest_archive" package/package.json > "$latest_dir/package.json"
           tar -xOf "$latest_archive" package/dist/build_identity.js > "$latest_dir/build_identity.js"
-          LATEST_DIR="$latest_dir" PACKAGE_NAME="$PACKAGE_NAME" node > "$RUNNER_TEMP/published-identity.json" <<'NODE'
-          const fs = require('node:fs')
-          const path = require('node:path')
-          const root = process.env.LATEST_DIR
-          const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
-          if (pkg.name !== process.env.PACKAGE_NAME || pkg.bin?.swico !== 'dist/cli.js') throw new Error('published package identity is invalid')
-          const identityText = fs.readFileSync(path.join(root, 'build_identity.js'), 'utf8')
-          if (Buffer.byteLength(identityText, 'utf8') > 16 * 1024) throw new Error('published build identity is unexpectedly large')
-          const match = identityText.match(/Object\.freeze\((\{[^\n]{1,8192}\})\)/)
-          if (!match) throw new Error('published build identity is missing')
-          const identity = JSON.parse(match[1])
-          if (!/^[0-9a-f]{40,64}$/.test(identity.revision) || identity.dirty !== false) throw new Error('published build identity is invalid')
-          process.stdout.write(JSON.stringify({ version:pkg.version, revision:identity.revision }))
-          NODE
+          node cli/scripts/validate-publish-plan.mjs identity \
+            --package-json "$latest_dir/package.json" \
+            --identity "$latest_dir/build_identity.js" \
+            --package "$PACKAGE_NAME" \
+            --output "$RUNNER_TEMP/published-identity.json"
           published_revision="$(node -p "require('$RUNNER_TEMP/published-identity.json').revision")"
           [[ "$(node -p "require('$RUNNER_TEMP/published-identity.json').version")" == "$npm_latest" ]] || { echo "npm metadata and packed package disagree" >&2; exit 1; }
           git cat-file -e "$published_revision^{commit}" 2>/dev/null || { echo "Published revision is not present in fetched history: $published_revision" >&2; exit 1; }
@@ -99,10 +89,11 @@ jobs:
             target_status=$?
             set -e
             if [[ "$target_status" -eq 0 ]]; then
-              TARGET_RESPONSE="$target_response" PACKAGE_NAME="$PACKAGE_NAME" TARGET_VERSION="$target_version" node <<'NODE'
-              const actual = JSON.parse(process.env.TARGET_RESPONSE)
-              if (actual.name !== process.env.PACKAGE_NAME || actual.version !== process.env.TARGET_VERSION) throw new Error('existing npm target has an unexpected package identity')
-              NODE
+              printf '%s' "$target_response" > "$RUNNER_TEMP/npm-target.json"
+              node cli/scripts/validate-publish-plan.mjs target \
+                --input "$RUNNER_TEMP/npm-target.json" \
+                --package "$PACKAGE_NAME" \
+                --version "$target_version"
               target_exists=true
             elif ! grep -Eq 'E404|404 Not Found|is not in this registry' <<<"$target_response"; then
               echo "Could not safely determine target version availability:" >&2
@@ -113,11 +104,9 @@ jobs:
           target_arg=()
           [[ "$target_exists" == true ]] && target_arg+=(--target-exists)
           final_plan="$(node cli/scripts/plan-release.mjs --repo-version "$repo_version" --npm-latest-version "$npm_latest" --changed-files-file "$RUNNER_TEMP/swico-changed-files.txt" "${target_arg[@]}")"
-          PLAN_JSON="$final_plan" node <<'NODE'
-          const plan = JSON.parse(process.env.PLAN_JSON)
-          console.log(plan.reason)
-          if (plan.changedPaths?.length) console.log(`Release-worthy changes: ${plan.changedPaths.join(', ')}`)
-          NODE
+          printf '%s' "$final_plan" > "$RUNNER_TEMP/swico-release-plan.json"
+          node cli/scripts/validate-publish-plan.mjs print-plan \
+            --input "$RUNNER_TEMP/swico-release-plan.json"
           decision="$(PLAN_JSON="$final_plan" node -p "JSON.parse(process.env.PLAN_JSON).action")"
           version="$(PLAN_JSON="$final_plan" node -p "JSON.parse(process.env.PLAN_JSON).version || ''")"
           needs_version_commit="$(PLAN_JSON="$final_plan" node -p "String(Boolean(JSON.parse(process.env.PLAN_JSON).needsVersionCommit))")"
@@ -171,14 +160,10 @@ jobs:
             exit 0
           fi
           npm --prefix cli version "$RELEASE_VERSION" --no-git-tag-version
-          node <<'NODE'
-          const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('cli/package.json', 'utf8'))
-          const lock = JSON.parse(fs.readFileSync('cli/package-lock.json', 'utf8'))
-          const expected = process.env.RELEASE_VERSION
-          if (pkg.name !== '@swiveltechnologies/swico' || pkg.bin?.swico !== 'dist/cli.js') throw new Error('CLI package identity changed')
-          if (pkg.version !== expected || lock.version !== expected || lock.packages?.['']?.version !== expected) throw new Error('package and lock versions do not match')
-          NODE
+          node cli/scripts/validate-publish-plan.mjs version \
+            --package-json cli/package.json \
+            --lockfile cli/package-lock.json \
+            --version "$RELEASE_VERSION"
           expected_files=$'cli/package-lock.json\ncli/package.json'
           [[ "$(git diff --name-only | sort)" == "$expected_files" ]] || { echo "Automatic versioning changed files outside CLI package metadata" >&2; git diff --name-only; exit 1; }
           git config user.name 'github-actions[bot]'
@@ -292,15 +277,12 @@ jobs:
           expected="swiveltechnologies-swico-${version}.tgz"
           [[ "$filename" == "$expected" && "$filename" != */* && "$filename" != *'\\'* && "$filename" != *'..'* ]] || { echo "Unexpected artifact filename: $filename" >&2; exit 1; }
           node scripts/validate-release-artifact.mjs "$filename" "$RELEASE_MANIFEST"
-          MANIFEST="$RELEASE_MANIFEST" EXPECTED_REVISION="$EXPECTED_REVISION" EXPECTED_VERSION="$version" TARFILE="$filename" node <<'NODE'
-          const fs = require('node:fs')
-          const crypto = require('node:crypto')
-          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST, 'utf8'))
-          const expected = { package:'@swiveltechnologies/swico', version:process.env.EXPECTED_VERSION, git_revision:process.env.EXPECTED_REVISION, dirty:false, artifact_filename:process.env.TARFILE }
-          for (const [key, value] of Object.entries(expected)) if (manifest[key] !== value) throw new Error(`manifest ${key} mismatch`)
-          const sha = crypto.createHash('sha256').update(fs.readFileSync(process.env.TARFILE)).digest('hex')
-          if (manifest.sha256 !== sha) throw new Error('manifest SHA-256 does not match the tarball')
-          NODE
+          node scripts/validate-publish-plan.mjs manifest \
+            --manifest "$RELEASE_MANIFEST" \
+            --revision "$EXPECTED_REVISION" \
+            --version "$version" \
+            --tarfile-name "$filename" \
+            --tarfile "$filename"
           stage="${RUNNER_TEMP}/swico-canonical-release"
           rm -rf "$stage"
           mkdir -p "$stage"
@@ -371,10 +353,11 @@ jobs:
           status=$?
           set -e
           if [[ "$status" -eq 0 ]]; then
-            PACKAGE_NAME="$PACKAGE_NAME" PACKAGE_VERSION="$PACKAGE_VERSION" REGISTRY_RESPONSE="$response" node <<'NODE'
-            const actual = JSON.parse(process.env.REGISTRY_RESPONSE)
-            if (actual.name !== process.env.PACKAGE_NAME || actual.version !== process.env.PACKAGE_VERSION) throw new Error('existing npm version has an unexpected package identity')
-            NODE
+            printf '%s' "$response" > "$RUNNER_TEMP/npm-existing-target.json"
+            node cli/scripts/validate-publish-plan.mjs target \
+              --input "$RUNNER_TEMP/npm-existing-target.json" \
+              --package "$PACKAGE_NAME" \
+              --version "$PACKAGE_VERSION"
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists; refusing to publish over immutable npm data."
             echo 'already=true' >> "$GITHUB_OUTPUT"
             exit 0

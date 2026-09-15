@@ -50,6 +50,11 @@ def _normalized_email(value: str | None) -> str:
     return str(value or "").strip().casefold()
 
 
+def normalized_email(value: str | None) -> str:
+    """Normalize an account email for exact backend-only comparisons."""
+    return _normalized_email(value)
+
+
 def is_internal_test_email(email: str | None) -> bool:
     """Return whether an exact normalized email is on the backend-only allowlist."""
     normalized = _normalized_email(email)
@@ -72,6 +77,17 @@ def is_internal_test_user(auth_user: AuthUser, user: User) -> bool:
         and token_email
         and token_email == owned_email
         and is_internal_test_email(token_email)
+    )
+
+
+def is_weekly_tester_user(auth_user: AuthUser, user: User) -> bool:
+    """Apply the same verified, owned-email boundary to the tester allowlist."""
+    from .billing.tester_credit import is_weekly_tester_eligible
+
+    return is_weekly_tester_eligible(
+        email_verified=auth_user.email_verified,
+        token_email=auth_user.email,
+        owned_email=user.email,
     )
 
 

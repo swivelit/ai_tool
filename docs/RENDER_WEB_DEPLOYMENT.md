@@ -36,6 +36,16 @@ durable-queue capacity, and Voice-specific rate limits. Ordinary users are assig
 user identifier hash; rollout buckets are never returned by bootstrap,
 settings, diagnostics, or logs. Run the secret-safe probe from Render Shell:
 
+Weekly colleague testing is a separate backend-only opt-in. Add
+`SWICO_WEEKLY_TESTER_CREDITS_ENABLED=false` (set `true` only deliberately),
+`SWICO_WEEKLY_TESTER_EMAILS` as a comma-separated exact normalized list, and
+`SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES=40`. The allowance resets at Monday
+00:00 UTC with no rollover and is Chat-only; internal unlimited accounts take
+precedence. The operational check is content-free:
+`python scripts/weekly_tester_credit_check.py --pretty`. A required reviewer
+on the `npm-production` environment remains an optional safe-auto release
+mode; no local npm credentials are needed.
+
 ```bash
 cd backend
 python scripts/swico_free_probe.py --pretty

@@ -87,6 +87,23 @@ def test_valid_test_mode_production_configuration_passes() -> None:
     validate_production_configuration(valid_environment())
 
 
+def test_weekly_tester_credit_configuration_is_validated_without_exposing_values() -> None:
+    environment = {
+        **valid_environment(),
+        "SWICO_WEEKLY_TESTER_CREDITS_ENABLED": "true",
+        "SWICO_WEEKLY_TESTER_EMAILS": "tester@example.com",
+        "SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES": "40.25",
+    }
+    assert production_configuration_errors(environment) == []
+    malformed = {
+        **environment,
+        "SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES": "not-a-decimal",
+    }
+    errors = production_configuration_errors(malformed)
+    assert any("SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES" in error for error in errors)
+    assert "tester@example.com" not in " ".join(errors)
+
+
 def test_production_https_origins_and_explicit_local_origins_pass() -> None:
     environment = {
         **valid_environment(),

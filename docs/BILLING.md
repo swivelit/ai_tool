@@ -8,6 +8,27 @@ Referral codes are random and unique. Attribution is one-time and must happen be
 
 Backend configuration (website only): `WEB_SUBSCRIPTIONS_ENABLED`, `WEB_REFERRALS_ENABLED`, `WEB_SUBSCRIPTION_1M_PRICE_PAISE`, `WEB_SUBSCRIPTION_6M_PRICE_PAISE`, `WEB_SUBSCRIPTION_1Y_PRICE_PAISE`, `WEB_SUBSCRIPTION_WEEKLY_ALLOWANCE_MICROS`, `WEB_SUBSCRIPTION_PRORATE_FINAL_PARTIAL_WEEK`, `WEB_SUBSCRIPTION_PAYG_FALLBACK_DEFAULT`, `WEB_REFERRAL_REWARD_1M_WEEKS`, `WEB_REFERRAL_REWARD_6M_WEEKS`, and `WEB_REFERRAL_REWARD_1Y_MONTHS`. Safe defaults are in `backend/.env.example`; no `VITE_*` subscription variables are used.
 
+## Weekly tester credit
+
+The backend-only `SWICO_WEEKLY_TESTER_CREDITS_ENABLED`, exact normalized
+`SWICO_WEEKLY_TESTER_EMAILS`, and Decimal-based
+`SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES` settings grant selected verified
+accounts a Chat-only allowance. The default allowance is ₹40 when the feature
+is deliberately enabled; `40` is stored as `40000000` integer micro-INR. The
+window is Monday 00:00 UTC inclusive through the next Monday exclusive, with
+no rollover, and is materialized lazily. A changed allowance applies to new
+reservations in the current window without clawing back settled or in-flight
+usage. The public website bootstrap/usage summary and `swico usage` expose only
+the bounded current-window summary, never the configured email list.
+
+Funding precedence is verified internal exemption, eligible weekly tester
+credit, the existing subscription/wallet path, then the existing insufficient
+credit response. Internal accounts remain Unlimited even if also listed as
+testers. Tester credit never funds Voice, and all reservations/settlements are
+owned, idempotent, row-locked, and auditable as `UsageCharge.funding_source`
+`tester_credit`. Operators can run `python3 backend/scripts/weekly_tester_credit_check.py --pretty`
+without printing configured addresses or secrets.
+
 ## Production website/API deployment check
 
 Before enabling subscriptions or referrals, deploy `ai_tool` and `swico-web` from the same Git commit and verify that the backend release check reports matching repository/database heads, with the required subscription schema revision `b8f2c7d1e4a9` present in the current Alembic ancestry. Newer descendant migrations are valid; the production database must be migrated to the current repository Alembic head. If the backend is updated but the website still shows old billing text, deploy `swico-web → Manual Deploy → Clear build cache & deploy`, then verify the frontend release again. This does not add a Render service or environment variable.

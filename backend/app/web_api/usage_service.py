@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from ..ai.swico_tiers import SWICO_TIER_LABELS, default_swico_tier, normalize_swico_tier
 from ..billing.pricing import MILLION
 from ..billing.service import get_wallet_summaries
+from ..billing.tester_credit import tester_credit_window_summary
 from ..billing.token_estimates import token_estimate
 from ..billing.usage_limits import monthly_period_bounds, validated_timezone
 from ..models import UsageCharge, User, WebUsagePreferences
@@ -54,7 +55,7 @@ def _period_bounds(
 
 def usage_summary(
     session: Session, *, user: User, period: str, now: datetime | None = None,
-    billing_exempt: bool = False,
+    billing_exempt: bool = False, tester_credit_eligible: bool = False,
 ) -> dict[str, Any]:
     current = ensure_utc(now or utc_now())
     swico_tier = selected_swico_tier(session, int(user.id))
@@ -194,6 +195,11 @@ def usage_summary(
     voice_available_token_estimate = token_estimate(
         int(voice_wallet["available_micros"]), tier=swico_tier,
     )
+    tester_credit = tester_credit_window_summary(
+        session, user_id=int(user.id), swico_tier=swico_tier,
+        eligible=tester_credit_eligible, billing_exempt=billing_exempt,
+        now=current,
+    )
     return {
         "period": period,
         "tier": swico_tier,
@@ -220,13 +226,14 @@ def usage_summary(
         "estimated_tokens_remaining": chat_wallet["token_estimate"],
         "token_estimate": chat_wallet["token_estimate"],
         "billing_exempt": bool(billing_exempt),
+        "tester_credit": tester_credit,
         **({"balance_display": "Unlimited"} if billing_exempt else {}),
     }
 
 
 def usage_preferences_dict(
     session: Session, *, user: User, row: WebUsagePreferences | None = None,
-    billing_exempt: bool = False,
+    billing_exempt: bool = False, tester_credit_eligible: bool = False,
 ) -> dict[str, Any]:
     if row is None:
         row = session.exec(select(WebUsagePreferences).where(
@@ -234,6 +241,7 @@ def usage_preferences_dict(
         )).first()
     summary = usage_summary(
         session, user=user, period="current_month", billing_exempt=billing_exempt,
+        tester_credit_eligible=tester_credit_eligible,
     )
     swico_tier = selected_swico_tier(session, int(user.id))
     hard_limit = int(row.hard_limit_micros) if row and row.hard_limit_micros is not None else None

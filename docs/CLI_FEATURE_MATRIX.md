@@ -6,7 +6,7 @@ production browser, native-device, or every OS security boundary was tested.
 
 ## Dated parity baseline
 
-Reviewed 2026-09-14 against the current official Codex CLI feature,
+Reviewed 2026-09-15 against the current official Codex CLI feature,
 reference, and security documentation:
 
 - https://developers.openai.com/codex/cli/features
