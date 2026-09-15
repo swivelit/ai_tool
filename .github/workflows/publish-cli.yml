@@ -325,21 +325,24 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: swico-cli-${{ needs.canonical-artifact.outputs.version }}-canonical
-          path: release-artifact
+          path: ${{ runner.temp }}/swico-canonical-artifact
       - name: Validate exactly the canonical artifact files
         id: artifact
         env:
+          CANONICAL_ARTIFACT_DIR: ${{ runner.temp }}/swico-canonical-artifact
           EXPECTED_VERSION: ${{ needs.canonical-artifact.outputs.version }}
           EXPECTED_REVISION: ${{ needs.version.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
           expected="swiveltechnologies-swico-${EXPECTED_VERSION}.tgz"
-          [[ -f "release-artifact/$expected" ]] || { echo "Canonical tarball is missing" >&2; exit 1; }
-          [[ -f release-artifact/swico-release-manifest.json ]] || { echo "Release manifest is missing" >&2; exit 1; }
-          node cli/scripts/validate-canonical-artifact.mjs release-artifact "$EXPECTED_VERSION" "$EXPECTED_REVISION"
-          node cli/scripts/validate-release-artifact.mjs "release-artifact/$expected" "$RUNNER_TEMP/revalidated-release-manifest.json"
-          echo "tarball=release-artifact/$expected" >> "$GITHUB_OUTPUT"
+          [[ -f "$CANONICAL_ARTIFACT_DIR/$expected" ]] || { echo "Canonical tarball is missing" >&2; exit 1; }
+          [[ -f "$CANONICAL_ARTIFACT_DIR/swico-release-manifest.json" ]] || { echo "Release manifest is missing" >&2; exit 1; }
+          node cli/scripts/validate-canonical-artifact.mjs \
+            "$CANONICAL_ARTIFACT_DIR" "$EXPECTED_VERSION" "$EXPECTED_REVISION"
+          node cli/scripts/validate-release-artifact.mjs \
+            "$CANONICAL_ARTIFACT_DIR/$expected" "$RUNNER_TEMP/revalidated-release-manifest.json"
+          echo "tarball=$CANONICAL_ARTIFACT_DIR/$expected" >> "$GITHUB_OUTPUT"
       - name: Refuse to overwrite an existing npm version
         id: registry
         env:

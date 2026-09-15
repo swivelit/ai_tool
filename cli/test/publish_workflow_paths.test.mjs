@@ -77,6 +77,27 @@ function assertWorkflowPaths(rawWorkflow) {
 
   const publishJob = section(workflow, '  publish:\n')
   assert.doesNotMatch(publishJob, /working-directory:/)
+  const downloadStep = section(
+    publishJob,
+    '      - name: Download the flat canonical artifact',
+    '      - name: Validate exactly the canonical artifact files',
+  )
+  const validationStep = section(
+    publishJob,
+    '      - name: Validate exactly the canonical artifact files',
+    '      - name: Refuse to overwrite an existing npm version',
+  )
+  const externalDirectory = '${{ runner.temp }}/swico-canonical-artifact'
+  assert.match(downloadStep, new RegExp(`path: ${externalDirectory.replace(/[${}]/g, '\\$&')}\\n`))
+  assert.doesNotMatch(downloadStep, /path:\s*release-artifact/)
+  assert.doesNotMatch(publishJob, /release-artifact\//)
+  assert.match(validationStep, new RegExp(`CANONICAL_ARTIFACT_DIR: ${externalDirectory.replace(/[${}]/g, '\\$&')}\\n`))
+  assert.match(validationStep, /\[\[ -f "\$CANONICAL_ARTIFACT_DIR\/\$expected" \]\]/)
+  assert.match(validationStep, /\[\[ -f "\$CANONICAL_ARTIFACT_DIR\/swico-release-manifest\.json" \]\]/)
+  assert.match(validationStep, /node cli\/scripts\/validate-canonical-artifact\.mjs \\\n\s+"\$CANONICAL_ARTIFACT_DIR"/)
+  assert.match(validationStep, /node cli\/scripts\/validate-release-artifact\.mjs \\\n\s+"\$CANONICAL_ARTIFACT_DIR\/\$expected"/)
+  assert.match(validationStep, /echo "tarball=\$CANONICAL_ARTIFACT_DIR\/\$expected" >> "\$GITHUB_OUTPUT"/)
+  assert.match(publishJob, /npm publish "\$\{\{ steps\.artifact\.outputs\.tarball \}\}" --access public --tag latest --provenance/)
   const scripts = nodeScriptReferences(publishJob).filter(script => script.startsWith('cli/'))
   assert.deepEqual(scripts, [
     'cli/scripts/validate-canonical-artifact.mjs',
