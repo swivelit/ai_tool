@@ -56,6 +56,70 @@ it('displays and saves the shared Swico mode in General settings', async () => {
   await waitFor(() => expect(saveTier).toHaveBeenCalledWith('standard'))
 })
 
+it('shows the Personalize SWICO color style selector', async () => {
+  mockSettingsApi()
+
+  render(
+    <SettingsModal
+      user={{} as never}
+      theme="light"
+      setTheme={vi.fn()}
+      colorStyle="swico"
+      setColorStyle={vi.fn()}
+      assistant={assistant}
+      tierSaving={false}
+      saveTier={vi.fn()}
+      close={vi.fn()}
+      addCredits={vi.fn()}
+      openArchived={vi.fn()}
+      savedProfile={vi.fn()}
+    />,
+  )
+
+  await screen.findByRole('heading', { name:'General' })
+
+  const selector = screen.getByLabelText('Personalize SWICO')
+
+  expect(selector).toHaveValue('swico')
+  expect(within(selector).getByRole('option', { name:'Swico Original' })).toBeInTheDocument()
+  expect(within(selector).getByRole('option', { name:'Ocean' })).toBeInTheDocument()
+  expect(within(selector).getByRole('option', { name:'Aurora' })).toBeInTheDocument()
+  expect(within(selector).getByRole('option', { name:'Forest' })).toBeInTheDocument()
+  expect(within(selector).getByRole('option', { name:'Sunset' })).toBeInTheDocument()
+  expect(within(selector).getByRole('option', { name:'Custom' })).toBeInTheDocument()
+})
+
+it('changes the selected SWICO color style', async () => {
+  mockSettingsApi()
+  const setColorStyle = vi.fn()
+
+  render(
+    <SettingsModal
+      user={{} as never}
+      theme="light"
+      setTheme={vi.fn()}
+      colorStyle="swico"
+      setColorStyle={setColorStyle}
+      assistant={assistant}
+      tierSaving={false}
+      saveTier={vi.fn()}
+      close={vi.fn()}
+      addCredits={vi.fn()}
+      openArchived={vi.fn()}
+      savedProfile={vi.fn()}
+    />,
+  )
+
+  await screen.findByRole('heading', { name:'General' })
+
+  await userEvent.selectOptions(
+    screen.getByLabelText('Personalize SWICO'),
+    'ocean',
+  )
+
+  expect(setColorStyle).toHaveBeenCalledWith('ocean')
+})
+
 it('controls owner-scoped cross-chat memory when the backend exposes it', async () => {
   mockSettingsApi([], usage, { available:true, enabled:false, items:[{
     id:'memory-1', category:'reply_style', value_text:'Use concise replies',

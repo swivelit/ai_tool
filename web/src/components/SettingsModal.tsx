@@ -5,7 +5,7 @@ import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { formatRupeesForDisplay, formatRupeesFromPaise, tokenEstimateLabel } from '../credits'
 import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, SubscriptionBucketSummary, SubscriptionSummary, SwicoTier, UsagePreferences, UsageSummary } from '../types'
-import type { Theme } from '../theme'
+import type { ColorStyle, CustomColors, Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
 import { SwicoTierSelector } from './SwicoTierSelector'
 import { KnowledgeLibrary } from './KnowledgeLibrary'
@@ -73,8 +73,28 @@ function UsageBars({ usage }: { usage: UsageSummary }) {
   </div>
 }
 
-export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile, knowledgeLibraryEnabled = false, knowledgeUploads = [], subscriptions }: {
-  user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
+export function SettingsModal({
+  user,
+  theme,
+  setTheme,
+  colorStyle = 'swico',
+  setColorStyle = () => {},
+  customColors,
+  setCustomColors,
+  assistant,
+  tierSaving,
+  saveTier,
+  close,
+  addCredits,
+  openArchived,
+  savedProfile,
+  knowledgeLibraryEnabled = false,
+  knowledgeUploads = [],
+  subscriptions,
+}: {
+  user: User; theme: Theme; setTheme: (theme: Theme) => void; colorStyle?: ColorStyle;
+setColorStyle?: (colorStyle: ColorStyle) => void; customColors?: CustomColors
+setCustomColors?: (colors: CustomColors) => void; close: () => void;
   assistant: AssistantSettings; tierSaving: boolean; saveTier: (tier: SwicoTier) => Promise<void>;
   addCredits: () => void; openArchived: () => void; savedProfile: (profile: ProfileSettings) => void;
   knowledgeLibraryEnabled?: boolean; knowledgeUploads?: ReadyAttachment[]; subscriptions?: SubscriptionSummary;
@@ -229,7 +249,125 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
         <div className="settings-content">
           {loadError && <div className="settings-state" role="alert"><p>{loadError}</p><button onClick={() => void load()}>Retry</button></div>}
           {!loadError && !loaded && <div className="settings-state" role="status">Loading settings…</div>}
-          {loaded && section === 'general' && <section aria-labelledby="general-settings"><h3 id="general-settings">General</h3><div className="general-tier-setting"><h4>Swico mode</h4><SwicoTierSelector assistant={assistant} saving={tierSaving} disabled={tierSaving} onSelect={changeTier} context="settings" /><small>Mode changes apply to your next message.</small></div><label>Theme<select value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Interface language<select value="en" disabled aria-describedby="interface-language-help"><option value="en">English</option></select><small id="interface-language-help">Reply languages are available in Profile. The settings interface currently supports English.</small></label></section>}
+          {loaded && section === 'general' && <section aria-labelledby="general-settings">
+  <h3 id="general-settings">General</h3>
+
+  <div className="general-tier-setting">
+    <h4>Swico mode</h4>
+    <SwicoTierSelector
+      assistant={assistant}
+      saving={tierSaving}
+      disabled={tierSaving}
+      onSelect={changeTier}
+      context="settings"
+    />
+    <small>Mode changes apply to your next message.</small>
+  </div>
+
+  <label>
+    Theme
+    <select
+      value={theme}
+      onChange={event => setTheme(event.target.value as Theme)}
+    >
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </label>
+
+  <label>
+    Personalize SWICO
+    <select
+      value={colorStyle}
+      onChange={event => setColorStyle(event.target.value as ColorStyle)}
+    >
+      <option value="swico">Swico Original</option>
+      <option value="ocean">Ocean</option>
+      <option value="aurora">Aurora</option>
+      <option value="forest">Forest</option>
+      <option value="sunset">Sunset</option>
+      <option value="custom">Custom</option>
+    </select>
+
+  </label>
+  {colorStyle === 'custom' && customColors && setCustomColors && (
+    <div className="custom-color-settings">
+    <h4>Custom colors</h4>
+
+    <label>
+      Primary
+      <span className="custom-color-control">
+        <input
+          type="color"
+          value={customColors.primary}
+          aria-label="Custom primary color"
+          onChange={event =>
+            setCustomColors({
+              ...customColors,
+              primary: event.target.value,
+            })
+          }
+        />
+        <code>{customColors.primary}</code>
+      </span>
+    </label>
+
+    <label>
+      Secondary
+      <span className="custom-color-control">
+        <input
+          type="color"
+          value={customColors.secondary}
+          aria-label="Custom secondary color"
+          onChange={event =>
+            setCustomColors({
+              ...customColors,
+              secondary: event.target.value,
+            })
+          }
+        />
+        <code>{customColors.secondary}</code>
+      </span>
+    </label>
+
+    <label>
+      Accent
+      <span className="custom-color-control">
+        <input
+          type="color"
+          value={customColors.accent}
+          aria-label="Custom accent color"
+          onChange={event =>
+            setCustomColors({
+              ...customColors,
+              accent: event.target.value,
+            })
+          }
+        />
+        <code>{customColors.accent}</code>
+      </span>
+    </label>
+
+    <small>
+     Choose your colors to give SWICO your own look
+    </small>
+    </div>
+)}
+
+  <label>
+    Interface language
+    <select
+      value="en"
+      disabled
+      aria-describedby="interface-language-help"
+    >
+      <option value="en">English</option>
+    </select>
+    <small id="interface-language-help">
+      Reply languages are available in Profile. The settings interface currently supports English.
+    </small>
+  </label>
+</section>}
           {loaded && section === 'profile' && profile && <section aria-labelledby="profile-settings"><h3 id="profile-settings">Profile</h3><div className="settings-form-grid">
             <label>Name<input value={profile.name} maxLength={80} onChange={event => setProfile({ ...profile, name: event.target.value })} /></label>
             <label>Place<input value={profile.place ?? ''} maxLength={120} onChange={event => setProfile({ ...profile, place: event.target.value || null })} /></label>

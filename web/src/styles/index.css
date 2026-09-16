@@ -3,7 +3,7 @@
   color: #171717; background: #fff; font-synthesis: none;
   --bg: #fff; --surface: #f7f7f8; --surface-2: #ececec; --hover: #e8e8e8;
   --text: #171717; --muted: #6b6b6b; --subtle: #8d8d8d; --line: #dedede;
-  --sidebar: #f9f9f9;; --composer: #f4f4f4; --accent: #111; --accent-text: #fff;
+  --sidebar: #f9f9f9; --composer: #f4f4f4; --accent: #111; --accent-text: #fff;
   --danger: #c83232; --danger-bg: #fff0f0; --focus: #7c7c7c; --shadow: 0 10px 35px rgb(0 0 0 / 10%);
   --scrollbar-track: transparent; --scrollbar-thumb: color-mix(in srgb, var(--muted) 55%, transparent); --scrollbar-thumb-hover: color-mix(in srgb, var(--muted) 80%, transparent);
 }
@@ -14,6 +14,192 @@
   --sidebar: #171717; --composer: #303030; --accent: #fff; --accent-text: #171717;
   --danger: #ff8585; --danger-bg: #422727; --focus: #b5b5b5; --shadow: 0 12px 40px rgb(0 0 0 / 35%);
 }
+
+/* =========================
+   SWICO COLOR STYLES
+   ========================= */
+
+:root {
+  --style-primary: var(--accent);
+  --style-secondary: var(--accent);
+  --style-accent: var(--accent);
+  --style-gradient: linear-gradient(90deg, #111, #111);
+  --style-user-bg: var(--surface);
+  --style-hover: var(--hover);
+  --style-focus: var(--focus);
+  --style-chat-bg: var(--bg);
+}
+
+/* Ocean */
+:root[data-color-style='ocean'] {
+  --style-primary: #0ea5e9;
+  --style-secondary: #2563eb;
+    --style-accent: #4f46e5;
+  --style-gradient: linear-gradient(90deg, #0ea5e9 0%, #2563eb 55%, #4f46e5 100%);
+  --style-user-bg: color-mix(in srgb, #0ea5e9 8%, var(--surface));
+  --style-hover: color-mix(in srgb, #0ea5e9 7%, var(--hover));
+  --style-focus: #0ea5e9;
+}
+
+:root[data-theme='dark'][data-color-style='ocean'] {
+  --style-user-bg: color-mix(in srgb, #0ea5e9 12%, var(--surface));
+  --style-hover: color-mix(in srgb, #0ea5e9 10%, var(--hover));
+  --style-chat-bg:
+    radial-gradient(circle at 18% 20%, rgb(14 165 233 / 8%), transparent 30%),
+    radial-gradient(circle at 82% 72%, rgb(37 99 235 / 8%), transparent 34%),
+    var(--bg);
+}
+
+:root[data-color-style='ocean'] {
+  --style-chat-bg:
+    radial-gradient(circle at 15% 18%, rgb(14 165 233 / 5%), transparent 28%),
+    radial-gradient(circle at 85% 75%, rgb(37 99 235 / 5%), transparent 32%),
+    var(--bg);
+}
+
+/* Aurora */
+:root[data-color-style='aurora'] {
+  --style-primary: #8b5cf6;
+  --style-secondary: #06b6d4;
+    --style-accent: #ec4899;
+  --style-gradient: linear-gradient(90deg, #8b5cf6 0%, #ec4899 52%, #06b6d4 100%);
+  --style-user-bg: color-mix(in srgb, #8b5cf6 7%, var(--surface));
+  --style-hover: color-mix(in srgb, #8b5cf6 6%, var(--hover));
+  --style-focus: #8b5cf6;
+  --style-chat-bg:
+    radial-gradient(circle at 18% 20%, rgb(139 92 246 / 5%), transparent 28%),
+    radial-gradient(circle at 82% 72%, rgb(6 182 212 / 5%), transparent 32%),
+    var(--bg);
+}
+
+:root[data-theme='dark'][data-color-style='aurora'] {
+  --style-user-bg: color-mix(in srgb, #8b5cf6 11%, var(--surface));
+  --style-hover: color-mix(in srgb, #8b5cf6 9%, var(--hover));
+  --style-chat-bg:
+    radial-gradient(circle at 18% 20%, rgb(139 92 246 / 9%), transparent 30%),
+    radial-gradient(circle at 82% 72%, rgb(6 182 212 / 8%), transparent 34%),
+    var(--bg);
+}
+
+/* Forest */
+:root[data-color-style='forest'] {
+  --style-primary: #16a34a;
+  --style-secondary: #0d9488;
+  --style-accent: #0d9488;
+  --style-gradient: linear-gradient(90deg, #16a34a 0%, #22c55e 55%, #0d9488 100%);
+  --style-user-bg: color-mix(in srgb, #16a34a 7%, var(--surface));
+  --style-hover: color-mix(in srgb, #16a34a 6%, var(--hover));
+  --style-focus: #16a34a;
+  --style-chat-bg:
+    radial-gradient(circle at 16% 20%, rgb(22 163 74 / 5%), transparent 28%),
+    radial-gradient(circle at 84% 74%, rgb(13 148 136 / 5%), transparent 32%),
+    var(--bg);
+}
+
+:root[data-theme='dark'][data-color-style='forest'] {
+  --style-user-bg: color-mix(in srgb, #16a34a 11%, var(--surface));
+  --style-hover: color-mix(in srgb, #16a34a 9%, var(--hover));
+  --style-chat-bg:
+    radial-gradient(circle at 16% 20%, rgb(22 163 74 / 8%), transparent 30%),
+    radial-gradient(circle at 84% 74%, rgb(13 148 136 / 8%), transparent 34%),
+    var(--bg);
+}
+
+/* Sunset */
+:root[data-color-style='sunset'] {
+  --style-primary: #f97316;
+  --style-secondary: #f43f5e;
+  --style-accent: #f43f5e;
+  --style-gradient: linear-gradient(90deg, #f97316 0%, #fb7185 55%, #f43f5e 100%);
+  --style-user-bg: color-mix(in srgb, #f97316 7%, var(--surface));
+  --style-hover: color-mix(in srgb, #f97316 6%, var(--hover));
+  --style-focus: #f97316;
+  --style-chat-bg:
+    radial-gradient(circle at 16% 20%, rgb(249 115 22 / 5%), transparent 28%),
+    radial-gradient(circle at 84% 74%, rgb(244 63 94 / 5%), transparent 32%),
+    var(--bg);
+}
+
+:root[data-theme='dark'][data-color-style='sunset'] {
+  --style-user-bg: color-mix(in srgb, #f97316 11%, var(--surface));
+  --style-hover: color-mix(in srgb, #f97316 9%, var(--hover));
+  --style-chat-bg:
+    radial-gradient(circle at 16% 20%, rgb(249 115 22 / 8%), transparent 30%),
+    radial-gradient(circle at 84% 74%, rgb(244 63 94 / 8%), transparent 34%),
+    var(--bg);
+}
+
+/* Custom */
+:root[data-color-style='custom'] {
+  --style-primary: var(--custom-primary, #6366f1);
+  --style-secondary: var(--custom-secondary, #8b5cf6);
+  --style-accent: var(--custom-accent, #ec4899);
+  --style-gradient:
+    linear-gradient(
+      90deg,
+      var(--custom-primary, #6366f1) 0%,
+      var(--custom-secondary, #8b5cf6) 100%
+    );
+
+  --style-user-bg:
+    color-mix(
+      in srgb,
+      var(--custom-primary, #6366f1) 6%,
+      var(--surface)
+    );
+
+  --style-hover:
+    color-mix(
+      in srgb,
+      var(--custom-primary, #6366f1) 6%,
+      var(--hover)
+    );
+
+  --style-focus: var(--custom-primary, #6366f1);
+
+  --style-chat-bg:
+    radial-gradient(
+      circle at 16% 20%,
+      color-mix(in srgb, var(--custom-primary, #6366f1) 5%, transparent),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 84% 74%,
+      color-mix(in srgb, var(--custom-secondary, #8b5cf6) 5%, transparent),
+      transparent 32%
+    ),
+    var(--bg);
+}
+
+:root[data-theme='dark'][data-color-style='custom'] {
+  --style-user-bg:
+    color-mix(
+      in srgb,
+      var(--custom-primary, #6366f1) 11%,
+      var(--surface)
+    );
+
+  --style-hover:
+    color-mix(
+      in srgb,
+      var(--custom-primary, #6366f1) 9%,
+      var(--hover)
+    );
+
+  --style-chat-bg:
+    radial-gradient(
+      circle at 16% 20%,
+      color-mix(in srgb, var(--custom-primary, #6366f1) 9%, transparent),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 84% 74%,
+      color-mix(in srgb, var(--custom-secondary, #8b5cf6) 8%, transparent),
+      transparent 34%
+    ),
+    var(--bg);
+}
+
 @media (prefers-color-scheme: dark) { :root:not([data-theme]) { color-scheme: dark; } }
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track) }
 *::-webkit-scrollbar { width: 6px; height: 6px }
@@ -240,6 +426,344 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .send:disabled { opacity: .25; cursor: default }
 .send.stop { color: var(--accent-text) }
 .composer-wrap > p { margin: 8px 0 0; color: var(--subtle); text-align: center; font-size: 11px }
+
+/* =========================
+   COLOR STYLE APPLICATION
+   ========================= */
+
+/* ---------------------------------
+   Chat background / flowing waves
+   --------------------------------- */
+
+.chat-main {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+:root:not([data-color-style='swico']) .chat-main::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 52%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(
+      ellipse at 20% 70%,
+      color-mix(in srgb, var(--style-primary) 14%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse at 80% 72%,
+      color-mix(in srgb, var(--style-secondary) 12%, transparent),
+      transparent 60%
+    );
+}
+
+:root:not([data-color-style='swico']) .chat-wave {
+  position: absolute;
+  left: -10%;
+  width: 120%;
+  height: 180px;
+  pointer-events: none;
+  border-radius: 50%;
+  z-index: 0;
+}
+
+:root:not([data-color-style='swico']) .chat-wave-1 {
+  bottom: -60px;
+  transform: rotate(-6deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--style-primary) 18%, transparent) 18%,
+    color-mix(in srgb, var(--style-secondary) 24%, transparent) 50%,
+    color-mix(in srgb, var(--style-primary) 18%, transparent) 82%,
+    transparent 100%
+  );
+  opacity: .9;
+}
+
+:root:not([data-color-style='swico']) .chat-wave-2 {
+  bottom: -100px;
+  transform: rotate(6deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--style-secondary) 14%, transparent) 15%,
+    color-mix(in srgb, var(--style-primary) 22%, transparent) 48%,
+    color-mix(in srgb, var(--style-secondary) 18%, transparent) 82%,
+    transparent 100%
+  );
+  opacity: .75;
+}
+
+:root:not([data-color-style='swico']) .chat-wave-3 {
+  bottom: -140px;
+  transform: rotate(-3deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--style-primary) 12%, transparent) 12%,
+    color-mix(in srgb, var(--style-secondary) 18%, transparent) 50%,
+    color-mix(in srgb, var(--style-primary) 14%, transparent) 88%,
+    transparent 100%
+  );
+  opacity: .65;
+}
+/* Lower the waves while chatting only */
+.chat-main:not(:has(.empty-chat-home)) .chat-wave-1 {
+  bottom: -90px;
+}
+.chat-main:not(:has(.empty-chat-home)) .chat-wave-2 {
+  bottom: -130px;
+}
+.chat-main:not(:has(.empty-chat-home)) .chat-wave-3 {
+  bottom: -170px;
+}
+/* Floating particles */
+
+:root:not([data-color-style='swico']) .chat-particle {
+  position: absolute;
+  z-index: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--style-primary);
+  box-shadow: 0 0 12px var(--style-primary);
+  opacity: .55;
+  pointer-events: none;
+}
+
+.chat-particle-1 {
+  left: 17%;
+  bottom: 30%;
+}
+
+.chat-particle-2 {
+  left: 36%;
+  bottom: 23%;
+  width: 4px;
+  height: 4px;
+}
+
+.chat-particle-3 {
+  right: 20%;
+  bottom: 34%;
+  width: 6px;
+  height: 6px;
+}
+
+.chat-particle-4 {
+  right: 8%;
+  bottom: 26%;
+  width: 4px;
+  height: 4px;
+}
+
+.chat-particle-5 {
+  left: 68%;
+  bottom: 18%;
+  width: 4px;
+  height: 4px;
+}
+/* ---------------------------------
+   Keep chat content above background
+   --------------------------------- */
+
+.chat-main > * {
+  position: relative;
+  z-index: 1;
+}
+.chat-main > .chat-background-art {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* SWICO Original has no decorative waves or particles */
+:root[data-color-style='swico'] .chat-background-art {
+  display: none;
+}
+/* ---------------------------------
+   Chat background base
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .chat-main,
+:root[data-color-style='aurora'] .chat-main,
+:root[data-color-style='forest'] .chat-main,
+:root[data-color-style='sunset'] .chat-main,
+:root[data-color-style='custom'] .chat-main {
+  background: var(--style-chat-bg);
+}
+
+/* ---------------------------------
+   Sidebar history
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .thread-row:hover,
+:root[data-color-style='ocean'] .thread-row.active,
+:root[data-color-style='aurora'] .thread-row:hover,
+:root[data-color-style='aurora'] .thread-row.active,
+:root[data-color-style='forest'] .thread-row:hover,
+:root[data-color-style='forest'] .thread-row.active,
+:root[data-color-style='sunset'] .thread-row:hover,
+:root[data-color-style='sunset'] .thread-row.active,
+:root[data-color-style='custom'] .thread-row:hover,
+:root[data-color-style='custom'] .thread-row.active {
+  background: var(--style-hover);
+}
+:root[data-color-style='ocean'] .thread-row.active,
+:root[data-color-style='aurora'] .thread-row.active,
+:root[data-color-style='forest'] .thread-row.active,
+:root[data-color-style='sunset'] .thread-row.active,
+:root[data-color-style='custom'] .thread-row.active {
+  box-shadow: inset 2px 0 0 var(--style-accent);
+}
+
+/* ---------------------------------
+   New Chat
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .rail-action.new-chat,
+:root[data-color-style='aurora'] .rail-action.new-chat,
+:root[data-color-style='forest'] .rail-action.new-chat,
+:root[data-color-style='sunset'] .rail-action.new-chat,
+:root[data-color-style='custom'] .rail-action.new-chat {
+  background: var(--style-gradient);
+  color: #fff;
+}
+
+:root[data-color-style='ocean'] .rail-action.new-chat:hover,
+:root[data-color-style='aurora'] .rail-action.new-chat:hover,
+:root[data-color-style='forest'] .rail-action.new-chat:hover,
+:root[data-color-style='sunset'] .rail-action.new-chat:hover,
+:root[data-color-style='custom'] .rail-action.new-chat:hover {
+  filter: brightness(.96);
+}
+
+/* ---------------------------------
+   Username
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .account-button > span:nth-child(2),
+:root[data-color-style='aurora'] .account-button > span:nth-child(2),
+:root[data-color-style='forest'] .account-button > span:nth-child(2),
+:root[data-color-style='sunset'] .account-button > span:nth-child(2),
+:root[data-color-style='custom'] .account-button > span:nth-child(2) {
+  color: var(--style-accent);
+}
+
+/* ---------------------------------
+   User messages
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .user-bubble,
+:root[data-color-style='aurora'] .user-bubble,
+:root[data-color-style='forest'] .user-bubble,
+:root[data-color-style='sunset'] .user-bubble,
+:root[data-color-style='custom'] .user-bubble {
+  background: var(--style-user-bg);
+}
+
+/* ---------------------------------
+   Composer accents
+   --------------------------------- */
+
+:root[data-color-style='ocean'] .composer-tool,
+:root[data-color-style='aurora'] .composer-tool,
+:root[data-color-style='forest'] .composer-tool,
+:root[data-color-style='sunset'] .composer-tool,
+:root[data-color-style='custom'] .composer-tool {
+  color: var(--style-primary);
+}
+
+:root[data-color-style='ocean'] .composer-tool:hover,
+:root[data-color-style='aurora'] .composer-tool:hover,
+:root[data-color-style='forest'] .composer-tool:hover,
+:root[data-color-style='sunset'] .composer-tool:hover,
+:root[data-color-style='custom'] .composer-tool:hover {
+  background: var(--style-hover);
+  color: var(--style-primary);
+}
+
+/* Plain + button */
+
+:root[data-color-style='ocean'] .composer-plus-wrap .composer-tool,
+:root[data-color-style='aurora'] .composer-plus-wrap .composer-tool,
+:root[data-color-style='forest'] .composer-plus-wrap .composer-tool,
+:root[data-color-style='sunset'] .composer-plus-wrap .composer-tool,
+:root[data-color-style='custom'] .composer-plus-wrap .composer-tool {
+  border-radius: 7px;
+  background: transparent;
+}
+
+/* SWICO Lite */
+
+:root[data-color-style='ocean'] .tier-selector-composer .product-selector,
+:root[data-color-style='aurora'] .tier-selector-composer .product-selector,
+:root[data-color-style='forest'] .tier-selector-composer .product-selector,
+:root[data-color-style='sunset'] .tier-selector-composer .product-selector,
+:root[data-color-style='custom'] .tier-selector-composer .product-selector {
+  color: var(--style-primary);
+}
+
+/* Composer focus */
+
+:root[data-color-style='ocean'] .composer-shell:focus-within,
+:root[data-color-style='aurora'] .composer-shell:focus-within,
+:root[data-color-style='forest'] .composer-shell:focus-within,
+:root[data-color-style='sunset'] .composer-shell:focus-within,
+:root[data-color-style='custom'] .composer-shell:focus-within {
+  border-color: var(--style-focus);
+  box-shadow: 0 0 0 1px var(--style-focus);
+}
+
+/* Voice */
+
+:root[data-color-style='ocean'] .voice-mode-button,
+:root[data-color-style='aurora'] .voice-mode-button,
+:root[data-color-style='forest'] .voice-mode-button,
+:root[data-color-style='sunset'] .voice-mode-button,
+:root[data-color-style='custom'] .voice-mode-button {
+  background: var(--style-gradient);
+  color: #fff;
+}
+
+/* Send */
+
+:root[data-color-style='ocean'] .send,
+:root[data-color-style='aurora'] .send,
+:root[data-color-style='forest'] .send,
+:root[data-color-style='sunset'] .send,
+:root[data-color-style='custom'] .send {
+  background: var(--style-primary);
+  color: #fff;
+}
+
+/* Primary controls */
+
+:root[data-color-style='ocean'] .primary,
+:root[data-color-style='aurora'] .primary,
+:root[data-color-style='forest'] .primary,
+:root[data-color-style='sunset'] .primary,
+:root[data-color-style='custom'] .primary {
+  background: var(--style-primary);
+  color: #fff;
+}
+
+/* Usage progress */
+
+:root[data-color-style='ocean'] .usage-progress > span,
+:root[data-color-style='aurora'] .usage-progress > span,
+:root[data-color-style='forest'] .usage-progress > span,
+:root[data-color-style='sunset'] .usage-progress > span,
+:root[data-color-style='custom'] .usage-progress > span {
+  background: var(--style-primary);
+}
+
 .attachment-tray { display: flex; gap: 7px; padding: 9px 9px 2px; overflow-x: auto }
 .attachment-chip { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; flex: 0 0 min(245px, 78vw); align-items: center; gap: 8px; min-width: 0; padding: 8px 7px 8px 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--bg) }
 .attachment-chip.expired, .attachment-chip.unavailable { opacity: .68 }
@@ -803,12 +1327,46 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
     align-items: center;
   }
 }
-/* Sidebar */
-/*aside {
-  background: #000000 !important;
-  color: #ffffff !important;
-}*/
+.custom-color-settings {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
 
+.custom-color-settings h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.custom-color-settings label {
+  display: grid;
+  gap: 7px;
+}
+
+.custom-color-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.custom-color-control input[type='color'] {
+  width: 42px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.custom-color-control code {
+  font-size: 12px;
+  color: var(--muted);
+}
 .cli-guide-page { height: 100dvh; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-gutter: stable; background: var(--bg); color: var(--text) }
 .cli-guide-header { display: flex; width: min(1180px, calc(100% - 40px)); min-height: 72px; align-items: center; justify-content: space-between; gap: 20px; margin: 0 auto; border-bottom: 1px solid var(--line) }
 .cli-guide-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none }
