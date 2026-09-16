@@ -1352,6 +1352,28 @@ class DocumentArtifact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class Reminder(SQLModel, table=True):
+    __tablename__ = "reminder"
+    __table_args__ = (
+        Index("ix_reminder_user_status_scheduled", "user_id", "status", "scheduled_at"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    title: str = Field(max_length=160)
+    message: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    scheduled_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    timezone: str = Field(max_length=64)
+    status: str = Field(default="pending", max_length=16, index=True)
+    job_id: Optional[int] = Field(default=None, foreign_key="job.id", ondelete="SET NULL", index=True)
+    sent_at: Optional[datetime] = Field(default=None)
+    cancelled_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 # --------------------
 # Daily Routine (editable)
 # --------------------

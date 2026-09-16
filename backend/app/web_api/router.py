@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from uuid import UUID, uuid4
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
@@ -114,7 +115,7 @@ from ..models import (
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
-    WebKnowledgeDocument,
+    WebKnowledgeDocument, Reminder, Job,
 )
 from ..web_ai.code_quality.repository_archive import (
     ArchiveLimits, UnsafeRepositoryArchive,
@@ -170,7 +171,7 @@ from .schemas import (
     KnowledgeDocumentResultResponse, KnowledgeJobResultResponse,
     KnowledgeReindexRequest, MessageFeedbackRequest, UsagePreferencesPatch,
     VirtualTextUploadRequest,
-    WebChatRequest, WebTTSRequest,
+    WebChatRequest, WebTTSRequest, ReminderCreate,
     TriagRequestAuditRequest, GuestChatRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
@@ -816,6 +817,34 @@ def _owned_thread(session: Session, user_id: int, thread_id: str) -> WebChatThre
     if row is None:
         raise HTTPException(404, "Thread not found")
     return row
+
+
+def _reminder_response(reminder: Reminder) -> dict[str, Any]:
+    return {
+        "id": reminder.id,
+        "title": reminder.title,
+        "message": reminder.message,
+        "reminder_date": reminder.scheduled_at.astimezone(ZoneInfo(reminder.timezone)).date().isoformat(),
+        "reminder_time": reminder.scheduled_at.astimezone(ZoneInfo(reminder.timezone)).strftime("%H:%M"),
+        "scheduled_at": reminder.scheduled_at.isoformat(),
+        "timezone": reminder.timezone,
+        "status": reminder.status,
+        "created_at": reminder.created_at.isoformat(),
+    }
+
+
+def _reminder_scheduled_at(user: User, payload: ReminderCreate) -> datetime:
+    try:
+        local_value = datetime.strptime(
+            f"{payload.reminder_date} {payload.reminder_time}", "%Y-%m-%d %H:%M"
+        )
+        local_zone = ZoneInfo(str(user.timezone or "UTC"))
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise HTTPException(422, {"code": "invalid_reminder_datetime", "message": "Enter a valid date and time."}) from exc
+    scheduled_at = local_value.replace(tzinfo=local_zone).astimezone(timezone.utc)
+    if scheduled_at <= utc_now():
+        raise HTTPException(422, {"code": "reminder_in_past", "message": "Reminder time must be in the future."})
+    return scheduled_at
 
 
 @router.get("/health")
@@ -2316,6 +2345,73 @@ def get_profile_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     return _profile_response(get_owned_user(session, auth))
+
+
+@router.get("/reminders")
+def list_reminders(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    rows = session.exec(
+        select(Reminder).where(Reminder.user_id == int(user.id)).order_by(Reminder.scheduled_at.asc())
+    ).all()
+    return {"items": [_reminder_response(row) for row in rows]}
+
+
+@router.post("/reminders", status_code=201)
+def create_reminder(
+    payload: ReminderCreate,
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    scheduled_at = _reminder_scheduled_at(user, payload)
+    reminder = Reminder(
+        user_id=int(user.id), title=payload.title, message=payload.message,
+        scheduled_at=scheduled_at, timezone=str(user.timezone or "UTC"),
+    )
+    session.add(reminder)
+    session.flush()
+    job = Job(
+        user_id=int(user.id), job_type="reminder_email", status="queued",
+        payload_json=json.dumps({"reminder_id": reminder.id}, ensure_ascii=False),
+        attempts=0, max_attempts=3, run_at=scheduled_at,
+        created_at=utc_now(), updated_at=utc_now(),
+    )
+    session.add(job)
+    session.flush()
+    reminder.job_id = job.id
+    session.add(reminder)
+    session.commit()
+    session.refresh(reminder)
+    return _reminder_response(reminder)
+
+
+@router.delete("/reminders/{reminder_id}", status_code=204)
+def cancel_reminder(
+    reminder_id: int,
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    reminder = session.exec(select(Reminder).where(
+        Reminder.id == reminder_id, Reminder.user_id == int(user.id)
+    ).with_for_update()).first()
+    if reminder is None:
+        raise HTTPException(404, "Reminder not found")
+    if reminder.status != "pending":
+        raise HTTPException(409, "Only pending reminders can be cancelled")
+    now = utc_now()
+    reminder.status = "cancelled"
+    reminder.cancelled_at = now
+    reminder.updated_at = now
+    if reminder.job_id is not None:
+        job = session.get(Job, reminder.job_id)
+        if job is not None and job.status in {"queued", "retrying"}:
+            job.status = "cancelled"
+            job.finished_at = now
+            job.updated_at = now
+            session.add(job)
+    session.add(reminder)
+    session.commit()
 
 
 @router.patch("/settings/profile")

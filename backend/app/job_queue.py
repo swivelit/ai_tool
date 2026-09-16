@@ -84,6 +84,7 @@ class DBJobQueue:
         self.register("web_embedding_backfill", _handle_web_embedding_backfill)
         self.register("web_triplet_extract", _handle_web_triplet_extract)
         self.register("web_hierarchy_build", _handle_web_hierarchy_build)
+        self.register("reminder_email", _handle_reminder_email)
         if knowledge_embedding_provider_factory is not None:
             self.register(
                 "web_embedding_backfill",
@@ -346,6 +347,14 @@ class DBJobQueue:
                     job.run_at = utc_now() + timedelta(seconds=min(60, max(2, job.attempts * 2)))
                 else:
                     job.finished_at = utc_now()
+                    if job.job_type == "reminder_email":
+                        from .models import Reminder
+
+                        reminder = session.get(Reminder, int(json.loads(job.payload_json or "{}")["reminder_id"]))
+                        if reminder is not None and reminder.status == "pending":
+                            reminder.status = "failed"
+                            reminder.updated_at = utc_now()
+                            session.add(reminder)
                 session.add(job)
                 session.commit()
                 logger.exception("job failed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
@@ -434,6 +443,37 @@ def _handle_web_hierarchy_build(
     from .web_ai.knowledge_jobs import handle_hierarchy_build
 
     return handle_hierarchy_build(session, payload)
+
+
+def _handle_reminder_email(
+    session: Session, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    from .email_service import get_email_sender
+    from .models import Reminder, User
+
+    reminder = session.exec(
+        select(Reminder).where(Reminder.id == int(payload["reminder_id"])).with_for_update()
+    ).first()
+    if reminder is None or reminder.status != "pending":
+        return {"skipped": True, "reason": "reminder_not_pending"}
+    user = session.get(User, reminder.user_id)
+    if user is None or not str(user.email or "").strip():
+        raise RuntimeError("Reminder account email is unavailable")
+
+    body = reminder.title
+    if reminder.message:
+        body += f"\n\n{reminder.message}"
+    get_email_sender().send(
+        to_email=str(user.email).strip(),
+        subject=f"Reminder: {reminder.title}",
+        text_body=body,
+    )
+    now = utc_now()
+    reminder.status = "sent"
+    reminder.sent_at = now
+    reminder.updated_at = now
+    session.add(reminder)
+    return {"sent": True, "reminder_id": reminder.id}
 
 
 def _knowledge_job_types() -> tuple[str, ...]:

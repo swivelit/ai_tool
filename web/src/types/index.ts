@@ -17,6 +17,7 @@ export type AssistantSettings = {
   tier_selection_enabled: boolean; tiers: SwicoTierOption[];
 }
 export type Thread = { id: string; title: string; archived_at: string | null; pinned: boolean; created_at: string; updated_at: string }
+export type Reminder = { id: number; title: string; message: string | null; reminder_date: string; reminder_time: string; scheduled_at: string; timezone: string; status: 'pending' | 'sent' | 'cancelled' | 'failed'; created_at: string }
 export type AttachmentDisplay = {
   id: string; name: string; media_type: string; size_bytes: number;
   created_at: string; expires_at: string; warnings: string[]; warning_codes?: string[];

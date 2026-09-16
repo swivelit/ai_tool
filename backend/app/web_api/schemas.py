@@ -33,6 +33,31 @@ class ThreadPatch(BaseModel):
         return cleaned
 
 
+class ReminderCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=160)
+    message: str | None = Field(default=None, max_length=4000)
+    reminder_date: str = Field(min_length=10, max_length=10)
+    reminder_time: str = Field(min_length=5, max_length=5)
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str) -> str:
+        cleaned = " ".join(value.split()).strip()
+        if not cleaned:
+            raise ValueError("title cannot be empty")
+        return cleaned
+
+    @field_validator("message")
+    @classmethod
+    def clean_message(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
 class TriagRequestAuditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

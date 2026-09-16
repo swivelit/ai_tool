@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, BookOpen, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
+import { Archive, Bell, BookOpen, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
-import { ApiError, ApiNetworkError, apiJson } from '../api/client'
+import { ApiError, ApiNetworkError, apiJson, cancelReminder, createReminder, listReminders } from '../api/client'
 import { formatRupeesForDisplay, formatRupeesFromPaise, tokenEstimateLabel } from '../credits'
-import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, SubscriptionBucketSummary, SubscriptionSummary, SwicoTier, UsagePreferences, UsageSummary } from '../types'
+import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, ReadyAttachment, Reminder, SubscriptionBucketSummary, SubscriptionSummary, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
 import { SwicoTierSelector } from './SwicoTierSelector'
 import { KnowledgeLibrary } from './KnowledgeLibrary'
 import { REPLY_LANGUAGE_NATIVE_LABELS, WEB_REPLY_LANGUAGES, type ReplyLanguage } from '../language'
 
-type Section = 'general' | 'profile' | 'usage' | 'knowledge' | 'data'
-type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[]; memory: MemorySettings }
+type Section = 'general' | 'profile' | 'usage' | 'reminders' | 'knowledge' | 'data'
+type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[]; memory: MemorySettings; reminders: Reminder[] }
 
 const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'profile', label: 'Profile', icon: UserRound },
   { id: 'usage', label: 'Token credits', icon: CreditCard },
+  { id: 'reminders', label: 'Reminders', icon: Bell },
   { id: 'knowledge', label: 'Knowledge Library', icon: BookOpen },
   { id: 'data', label: 'Data controls', icon: Database },
 ]
@@ -81,6 +82,10 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
   const [unlimited, setUnlimited] = useState(true)
   const [warning, setWarning] = useState('80')
   const [notify, setNotify] = useState(true)
+  const [reminderTitle, setReminderTitle] = useState('')
+  const [reminderMessage, setReminderMessage] = useState('')
+  const [reminderDate, setReminderDate] = useState('')
+  const [reminderTime, setReminderTime] = useState('')
   const [subscriptionData, setSubscriptionData] = useState<SubscriptionSummary | undefined>(subscriptions)
   const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null)
 
@@ -88,15 +93,16 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
     if (!navigator.onLine) { setLoadError('You’re offline. Reconnect to load settings.'); return }
     setLoadError('')
     try {
-      const [nextProfile, usage, preferences, payments] = await Promise.all([
+      const [nextProfile, usage, preferences, payments, reminders] = await Promise.all([
         apiJson<ProfileSettings>(user, '/api/web/settings/profile'),
         apiJson<UsageSummary>(user, '/api/web/usage/summary?period=current_month'),
         apiJson<UsagePreferences>(user, '/api/web/settings/usage'),
         apiJson<{ items: PaymentHistory[] }>(user, '/api/web/billing/payments'),
+        listReminders(user).catch(() => []),
       ])
       const memory = await apiJson<MemorySettings>(user, '/api/web/settings/memory')
         .catch(() => ({ available: false, enabled: false, items: [] }))
-      setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items, memory })
+      setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items, memory, reminders })
       setProfile(nextProfile)
       setUnlimited(preferences.hard_limit_micros === null)
       setCap(preferences.hard_limit_token_estimate?.estimated_blended_tokens?.toString() ?? '')
@@ -198,6 +204,24 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
       setSubscriptionData(value => value ? { ...value, [bucket]: value[bucket] ? { ...value[bucket]!, payg_fallback_enabled: enabled } : value[bucket] } : value)
     } catch (error) { setNotice(safeError(error)) }
   }
+  const addReminder = async () => {
+    if (!reminderTitle.trim() || !reminderDate || !reminderTime) { setNotice('Enter a title, date, and time.'); return }
+    setSaving(true); setNotice('')
+    try {
+      const reminder = await createReminder(user, { title: reminderTitle, message: reminderMessage || null, reminder_date: reminderDate, reminder_time: reminderTime })
+      setLoaded(value => value ? { ...value, reminders: [...value.reminders, reminder].sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)) } : value)
+      setReminderTitle(''); setReminderMessage(''); setReminderDate(''); setReminderTime(''); setNotice('Reminder scheduled.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
+  const removeReminder = async (reminder: Reminder) => {
+    if (!window.confirm(`Cancel “${reminder.title}”?`)) return
+    setSaving(true); setNotice('')
+    try {
+      await cancelReminder(user, reminder.id)
+      setLoaded(value => value ? { ...value, reminders: value.reminders.map(item => item.id === reminder.id ? { ...item, status: 'cancelled' } : item) } : value)
+      setNotice('Reminder cancelled.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -225,6 +249,11 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
             {!billingExempt && <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing monetary hard limit using your selected Swico mode. Actual usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>}
             {!billingExempt && <button className="secondary-button" onClick={addCredits}>Top up</button>}
             <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); const paymentBucket = payment.credit_bucket ?? 'chat'; const formatPaymentRupees = payment.purchase_type === 'subscription' ? formatRupeesForDisplay : formatRupeesFromPaise; return <article key={payment.id}><strong>{presentation.heading}</strong><span>{paymentBucket === 'voice' ? 'Voice credits' : 'Chat credits'}</span>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatPaymentRupees(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && paymentBucket === 'chat' && <span>Estimated {tokenEstimateLabel(payment.token_estimate)} added</span>}{presentation.showTokensAdded && paymentBucket === 'voice' && <span>{payment.voice_estimate ? `${payment.voice_estimate.estimated_stt_minutes} STT-only minutes or ${payment.voice_estimate.estimated_tts_characters.toLocaleString()} TTS-only characters; component-only estimates. Realtime Voice also uses Voice credits for AI response generation.` : 'Voice estimate unavailable'}</span>}{presentation.showRefundAmount && <span>{formatPaymentRupees(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {tokenEstimateLabel(payment.reversal_token_estimate)} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
+          </section>}
+          {loaded && section === 'reminders' && <section aria-labelledby="reminder-settings"><h3 id="reminder-settings">Reminders</h3>
+            <div className="settings-form-grid"><label>Title<input value={reminderTitle} maxLength={160} onChange={event => setReminderTitle(event.target.value)} /></label><label>Reminder date<input type="date" value={reminderDate} onChange={event => setReminderDate(event.target.value)} /></label><label>Reminder time<input type="time" value={reminderTime} onChange={event => setReminderTime(event.target.value)} /></label><label>Message (optional)<input value={reminderMessage} maxLength={4000} onChange={event => setReminderMessage(event.target.value)} /></label></div>
+            <button className="primary" disabled={saving} onClick={() => void addReminder()}>{saving ? 'Saving…' : 'Schedule reminder'}</button>
+            <div className="settings-history"><h4>Your reminders</h4>{!loaded.reminders.length ? <p>No reminders yet.</p> : loaded.reminders.map(reminder => <article key={reminder.id}><strong>{reminder.title}</strong><span>{reminder.reminder_date} at {reminder.reminder_time}</span><span>{reminder.message || 'No message'}</span><span>{reminder.status === 'pending' ? <button className="danger-button" type="button" disabled={saving} onClick={() => void removeReminder(reminder)}>Cancel</button> : reminder.status}</span></article>)}</div>
           </section>}
           {loaded && knowledgeLibraryEnabled && section === 'knowledge' && <KnowledgeLibrary user={user} uploads={knowledgeUploads} />}
           {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button>

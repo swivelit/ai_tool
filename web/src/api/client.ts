@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, KnowledgeDocument, KnowledgeDocumentResult, KnowledgeJobSummary, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, RepositorySnapshot, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, KnowledgeDocument, KnowledgeDocumentResult, KnowledgeJobSummary, LongInputMode, QualityCheckStatus, QualityOutcome, ReadyAttachment, Reminder, RepositorySnapshot, ResponseQuality, SSEEvent, SourceSummary, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -206,6 +206,19 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
   const body = await response.json().catch(() => ({})) as unknown
   if (!response.ok) throw new ApiError(response.status, body)
   return body as T
+}
+
+export async function listReminders(user: User): Promise<Reminder[]> {
+  const result = await apiJson<{ items: Reminder[] }>(user, '/api/web/reminders')
+  return result.items
+}
+
+export function createReminder(user: User, payload: Pick<Reminder, 'title' | 'message' | 'reminder_date' | 'reminder_time'>): Promise<Reminder> {
+  return apiJson<Reminder>(user, '/api/web/reminders', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function cancelReminder(user: User, reminderId: number): Promise<void> {
+  return apiJson<void>(user, `/api/web/reminders/${reminderId}`, { method: 'DELETE' })
 }
 
 export async function streamChat(
