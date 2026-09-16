@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import re
+from ..models import User
+from ..email_service import send_response_ready_email
 from threading import Lock
 from time import monotonic, sleep
 from typing import Any, Callable, Literal
