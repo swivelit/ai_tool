@@ -1,9 +1,13 @@
 # Paid Chat CLI release closure and stable promotion
 
-This checklist records the accepted `0.2.0-rc.8` prerelease evidence and the
-bounded `0.2.0` stable promotion candidate. It separates paid Chat, package
-distribution, local agent execution, and full feature parity; it is not npm
-publication approval or a parity claim.
+Current stable release: `@swiveltechnologies/swico@0.2.1` is published from
+the canonical CI artifact with provenance. This checklist separates paid Chat,
+package distribution, local agent execution, and full feature parity; it is not
+npm publication approval or a parity claim.
+
+The remainder of the artifact details below records historical `0.2.0-rc.8`
+evidence and the superseded `0.2.0` promotion plan. Do not treat those hashes,
+run IDs, or pending states as current release evidence.
 
 Historical RC6 and RC7 evidence remains recorded by its original run IDs. The
 accepted RC8 baseline is run `34911573230` at
@@ -26,8 +30,8 @@ release manifest. The retained tarball is
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
 | Paid Chat CLI technical RC | Production Lite completion, wallet-debit smoke, website revoke/rejection, explicit reauthorization, and RC8 request-correlated billing acceptance are recorded. RC8 controlled installed recovery, refresh, streaming, and retained-session checks passed; all seven CI checks passed. | ACCEPTED technical RC | Historical RC8 gate complete. |
-| Stable `0.2.0` promotion candidate | Package metadata is promoted without runtime or server changes. The authoritative stable revision and tarball hash must come from the generated clean CI release manifest. | PENDING FRESH CI | Run fresh seven-check CI and retain the canonical stable artifact. |
-| Public npm distribution | CLI-only MIT notice, scope note, dependency notice index, and RC8 canonical artifact retention are in place; no registry publication was performed. | PUBLICATION PENDING | Confirm npm scope write permission and publish only the exact clean `0.2.0` CI artifact as `latest`. |
+| Historical stable `0.2.0` promotion candidate | Superseded by the published `0.2.1` release. | HISTORICAL | Do not reuse this candidate or its artifact. |
+| Current public npm distribution | `@swiveltechnologies/swico@0.2.1` is published immutably with provenance. | PUBLISHED | Use the protected workflow for future versions. |
 | Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Run the separate native hostile sandbox and disposable coding-workflow milestone; do not infer it from green Chat CI. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
@@ -54,7 +58,7 @@ rebuild:
 - SHA-256: `8866e8eda089ad096f3c11203dbba77af722deb9a594ffd66cdb45a24ca083cb`
 - manifest Node: `v22.23.2`
 
-The stable candidate is now `0.2.0`. Do not record a stable commit SHA or
+The historical stable candidate was `0.2.0`. Do not record a stable commit SHA or
 tarball SHA-256 in tracked documentation before CI generates them. The stable
 release manifest uploaded by the fresh canonical job is authoritative for those
 values and for the exact artifact filename `swiveltechnologies-swico-0.2.0.tgz`.
@@ -81,8 +85,8 @@ helper stderr. It does not retain prompts, environment variables, credentials,
 or disposable credential directories.
 
 The historical RC8 archive is retained by GitHub but is not published to npm.
-The stable archive does not exist until the fresh `0.2.0` CI job generates and
-uploads it. Do
+The superseded `0.2.0` stable archive was not the current release and must not
+be reused. Do
 not claim registry presence or reuse it after any source or approved-license
 change without a new clean build and acceptance. No Render redeploy,
 environment change, or migration is needed for this CLI/docs-only pass.

@@ -6,19 +6,19 @@ law.
 
 ## Current publication basis
 
-The seven Swico policy bodies are published under a business-owner attestation:
+The seven Swico policy bodies are published under the tracked counsel-approval
+record:
 
-- publication status: `owner_approved`;
-- approval type: `owner_attestation`;
-- attestation reference: `SWICO-OWNER-PUBLICATION-2026-07-18`;
-- attestation date: `2026-07-18`;
-- legal-review status: `not_reviewed_by_counsel`.
+- publication status: `approved_by_counsel`;
+- approval type: `counsel_approval`;
+- written approval reference: `SWICO-counsel-PUBLICATION-2026-08-15`;
+- approval date: `2026-08-15`;
+- approved legal-content SHA-256: `98daf16f07bb2e46e112fe12f77ca1cecd8b55e2d6da929fe062450d61317efa`.
 
-The tracked owner record is
+The earlier owner record is retained as historical evidence at
 `docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md`. It permits repository publication
-of the exact policy text adopted by the authorised business representative. The
-policies have not been reviewed or approved by legal counsel. Future
-professional legal review remains recommended.
+of the policy text adopted by the authorised business representative at that
+time; it is superseded for current content by the counsel-approval record.
 
 ## Published policies and routes
 
@@ -43,10 +43,9 @@ effective dates and published versions; empty sections; placeholders and
 drafting markers; the canonical `/pricing` route; explicit publication status;
 and the matching owner-attestation reference and date.
 
-The checker also retains a separate `approved_by_counsel` path for a future
-genuine professional review. That path cannot pass without explicit counsel
-approval metadata. Plain `approved`, status/type mismatches, and incomplete or
-mismatched owner attestations are rejected.
+The checker also retains the `owner_approved` path for historical or future
+owner-attested publication. Plain `approved`, status/type mismatches, and
+incomplete or mismatched approval records are rejected.
 
 Passing repository checks means only that the content and accountable
 publication record are structurally complete. It does not constitute legal

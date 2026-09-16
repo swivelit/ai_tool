@@ -132,12 +132,11 @@ Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one c
 
 ## Legal publication
 
-The revised policy pages in `web/src/content/legalContent.json` are proposed
-content and remain blocked until exact owner/counsel-approved replacement
-wording and a matching canonical SHA-256 approval record are supplied. Do not
-deploy this code or change approval metadata, versions, or effective dates
-speculatively. The checker does not provide legal advice or certify legal
-compliance.
+The tracked policy pages in `web/src/content/legalContent.json` have a matching
+counsel-approval record and pass `scripts/check-legal-publication.py`. That
+check is not legal advice or a certification of legal compliance. Do not
+change approval metadata, versions, or effective dates speculatively. Razorpay
+Live Mode and checkout remain separate operational decisions.
 
 Raw PDFs, DOCX files, counsel correspondence, signatures, private identity
 material and any future private review evidence must remain under the ignored

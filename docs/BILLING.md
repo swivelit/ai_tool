@@ -128,7 +128,12 @@ BILLING_ENFORCE_TOPUP_PACKAGES=false
 
 These are paise values: `1500` means ₹15 and `29900` means ₹299. The ₹500 maximum is configuration, not frontend code. Any maximum change requires deliberate operator review of payment risk, customer copy, tests, and approved legal/pricing publication. Razorpay credentials, webhook events/secrets, the 50/50 calculation, wallet arithmetic, refunds, verification, and idempotency do not change.
 
-The revised Terms, Pricing, subscription and referral wording is proposed content. `scripts/check-legal-publication.py` intentionally blocks release until exact owner/counsel-approved wording and a matching canonical SHA-256 approval record are supplied. Do not deploy this pricing or product-copy change while that blocker remains.
+The tracked Terms, Pricing, subscription and referral wording is published
+under the counsel-approval record documented in
+`web/src/content/legalContent.json` and `docs/LEGAL_PUBLICATION_STATUS.md`.
+`scripts/check-legal-publication.py` is the structural publication gate and
+currently passes. This is not authorization for Razorpay Live Mode; Live
+checkout remains a separate operational cutover.
 
 Payment-order states have deliberately different meanings:
 

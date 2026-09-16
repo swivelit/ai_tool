@@ -82,7 +82,7 @@ weakened sandbox policy in RC8.
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED (RC8 installed path) | Accepted `0.2.0-rc.8` was tested against controlled API/PTY and native Windows ConPTY; `0.2.0` is the stable promotion candidate and requires fresh seven-check CI artifact evidence; not published |
+| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary

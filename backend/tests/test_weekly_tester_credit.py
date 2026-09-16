@@ -60,6 +60,19 @@ def test_allowance_uses_exact_decimal_micros_and_verified_owned_email(monkeypatc
     )
 
 
+def test_weekly_tester_configuration_is_independent_of_cli_allowlist() -> None:
+    from app.billing.tester_credit import weekly_tester_config
+
+    base = {
+        "SWICO_WEEKLY_TESTER_CREDITS_ENABLED": "true",
+        "SWICO_WEEKLY_TESTER_EMAILS": "colleague@example.com",
+        "SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES": "40",
+    }
+    with_cli_allowlist = weekly_tester_config({**base, "SWICO_CLI_ALLOWED_EMAILS": "other@example.com"})
+    without_cli_allowlist = weekly_tester_config(base)
+    assert with_cli_allowlist == without_cli_allowlist
+
+
 def test_tester_reserve_settle_release_are_idempotent(monkeypatch):
     monkeypatch.setenv("SWICO_WEEKLY_TESTER_CREDITS_ENABLED", "true")
     monkeypatch.setenv("SWICO_WEEKLY_TESTER_EMAILS", "tester@example.com")
