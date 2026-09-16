@@ -204,16 +204,23 @@ def _latest_active_code(
     email: str,
     purpose: OtpPurpose,
     now: datetime,
+    lock: bool = False,
 ) -> Optional[EmailOtpCode]:
     current = ensure_utc(now)
-    record = session.exec(
+    query = (
         select(EmailOtpCode)
         .where(EmailOtpCode.email == email)
         .where(EmailOtpCode.purpose == purpose)
         .where(EmailOtpCode.consumed_at.is_(None))
         .where(EmailOtpCode.expires_at > current)
         .order_by(EmailOtpCode.created_at.desc(), EmailOtpCode.id.desc())
-    ).first()
+    )
+    if lock:
+        # PostgreSQL holds this row lock until the caller commits or rolls
+        # back the protected account operation. SQLite ignores FOR UPDATE,
+        # but retains the same API for deterministic unit tests.
+        query = query.with_for_update()
+    record = session.exec(query).first()
     if record is None:
         return None
 
@@ -305,7 +312,7 @@ def create_otp_code(
     )
 
 
-def verify_and_consume_otp(
+def verify_otp_for_action(
     session: Session,
     *,
     email: str,
@@ -314,6 +321,13 @@ def verify_and_consume_otp(
     now: datetime | None = None,
     max_attempts: int | None = None,
 ) -> EmailOtpCode:
+    """Verify an OTP while leaving successful consumption to the caller.
+
+    The successful row is locked for the duration of the caller's protected
+    operation. Incorrect attempts still commit immediately, preserving the
+    persistent lockout boundary. A caller must consume the returned row after
+    the external account mutation succeeds, or roll back on failure.
+    """
     normalized_email = require_valid_email(email)
     normalized_purpose = normalize_purpose(purpose)
     normalized_otp = validate_otp_format(otp)
@@ -325,6 +339,7 @@ def verify_and_consume_otp(
         email=normalized_email,
         purpose=normalized_purpose,
         now=current,
+        lock=True,
     )
     if not record:
         raise EmailOtpError(
@@ -367,16 +382,68 @@ def verify_and_consume_otp(
             status_code=400,
         )
 
-    record.consumed_at = current
     session.add(record)
-    session.commit()
-    session.refresh(record)
-    record.created_at = ensure_utc(record.created_at)
-    record.expires_at = ensure_utc(record.expires_at)
-    record.last_sent_at = ensure_utc(record.last_sent_at)
-    if record.consumed_at is not None:
-        record.consumed_at = ensure_utc(record.consumed_at)
+    session.flush()
     return record
+
+
+def consume_verified_otp(
+    session: Session,
+    record: EmailOtpCode,
+    *,
+    now: datetime | None = None,
+) -> EmailOtpCode:
+    """Consume a previously verified OTP after its protected action succeeds."""
+    current = ensure_utc(now or utc_now())
+    if record.id is None:
+        raise EmailOtpError(
+            "This code is invalid or expired. Request a new code.",
+            code="otp_invalid_or_expired",
+            status_code=400,
+        )
+    persisted = session.get(EmailOtpCode, record.id)
+    if persisted is None or persisted.consumed_at is not None:
+        raise EmailOtpError(
+            "This code is invalid or expired. Request a new code.",
+            code="otp_invalid_or_expired",
+            status_code=400,
+        )
+    if ensure_utc(persisted.expires_at) <= current:
+        raise EmailOtpError(
+            "This code is invalid or expired. Request a new code.",
+            code="otp_invalid_or_expired",
+            status_code=400,
+        )
+    persisted.consumed_at = current
+    session.add(persisted)
+    session.commit()
+    session.refresh(persisted)
+    persisted.created_at = ensure_utc(persisted.created_at)
+    persisted.expires_at = ensure_utc(persisted.expires_at)
+    persisted.last_sent_at = ensure_utc(persisted.last_sent_at)
+    persisted.consumed_at = ensure_utc(persisted.consumed_at)
+    return persisted
+
+
+def verify_and_consume_otp(
+    session: Session,
+    *,
+    email: str,
+    purpose: str,
+    otp: str,
+    now: datetime | None = None,
+    max_attempts: int | None = None,
+) -> EmailOtpCode:
+    """Backward-compatible one-step OTP helper for non-transactional callers."""
+    record = verify_otp_for_action(
+        session,
+        email=email,
+        purpose=purpose,
+        otp=otp,
+        now=now,
+        max_attempts=max_attempts,
+    )
+    return consume_verified_otp(session, record, now=now)
 
 
 def otp_http_exception(error: EmailOtpError) -> HTTPException:

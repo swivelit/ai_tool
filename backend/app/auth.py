@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +25,23 @@ class AuthUser(BaseModel):
 
 class AuthConfigurationError(RuntimeError):
     pass
+
+
+class FirebaseIdentityConflictError(RuntimeError):
+    """A Firebase identity cannot be reconciled to the requested account."""
+
+
+@dataclass(frozen=True)
+class FirebaseIdentityInspection:
+    """The two Firebase lookups needed for safe account recovery.
+
+    The Firebase records stay inside the backend.  This typed result lets the
+    recovery route distinguish a missing identity from an ownership conflict
+    without exposing Firebase implementation details to the browser.
+    """
+
+    email_user: Any | None
+    stored_uid_user: Any | None
 
 
 PRODUCTION_FIREBASE_ADMIN_REQUIRED_MESSAGE = (
@@ -299,13 +317,46 @@ def get_firebase_user_by_email(email: str) -> Any | None:
     try:
         return firebase_auth.get_user_by_email(normalized_email)
     except Exception as exc:
-        if exc.__class__.__name__ == "UserNotFoundError":
+        if _is_firebase_user_not_found(exc):
             return None
         if _looks_like_firebase_configuration_error(exc):
             raise AuthConfigurationError(
                 "Firebase Admin user lookup is not configured correctly. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
             ) from exc
         raise
+
+
+def _is_firebase_user_not_found(exc: Exception) -> bool:
+    """Recognize the Admin SDK's not-found result in one safe boundary."""
+    return exc.__class__.__name__ == "UserNotFoundError"
+
+
+def get_firebase_user_by_uid(firebase_uid: str | None) -> Any | None:
+    normalized_uid = str(firebase_uid or "").strip()
+    if not normalized_uid:
+        return None
+
+    firebase_auth = _firebase_auth_module()
+    try:
+        return firebase_auth.get_user(normalized_uid)
+    except Exception as exc:
+        if _is_firebase_user_not_found(exc):
+            return None
+        if _looks_like_firebase_configuration_error(exc):
+            raise AuthConfigurationError(
+                "Firebase Admin user lookup is not configured correctly. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+            ) from exc
+        raise
+
+
+def inspect_firebase_identity(
+    *, email: str, stored_uid: str | None = None,
+) -> FirebaseIdentityInspection:
+    """Inspect both possible Firebase owners without leaking either record."""
+    return FirebaseIdentityInspection(
+        email_user=get_firebase_user_by_email(email),
+        stored_uid_user=get_firebase_user_by_uid(stored_uid),
+    )
 
 
 def firebase_cli_session_is_active(
@@ -351,14 +402,19 @@ def create_firebase_email_password_user(
     password: str,
     display_name: str,
     email_verified: bool = True,
+    firebase_uid: str | None = None,
 ) -> dict[str, Any]:
     firebase_auth = _firebase_auth_module()
-    user = firebase_auth.create_user(
-        email=str(email or "").strip().lower(),
-        password=password,
-        display_name=display_name.strip() or None,
-        email_verified=email_verified,
-    )
+    create_kwargs: dict[str, Any] = {
+        "email": str(email or "").strip().lower(),
+        "password": password,
+        "display_name": display_name.strip() or None,
+        "email_verified": email_verified,
+    }
+    normalized_uid = str(firebase_uid or "").strip()
+    if normalized_uid:
+        create_kwargs["uid"] = normalized_uid
+    user = firebase_auth.create_user(**create_kwargs)
     return {
         "uid": str(getattr(user, "uid", "") or ""),
         "email": str(getattr(user, "email", "") or email).strip().lower(),
@@ -367,15 +423,30 @@ def create_firebase_email_password_user(
 
 
 def update_firebase_user_password_by_email(*, email: str, new_password: str) -> dict[str, Any]:
-    firebase_auth = _firebase_auth_module()
     user = get_firebase_user_by_email(email)
     if user is None:
         raise ValueError("Firebase user not found")
 
-    updated = firebase_auth.update_user(getattr(user, "uid"), password=new_password)
+    return update_firebase_user_password_by_uid(
+        firebase_uid=str(getattr(user, "uid", "")),
+        new_password=new_password,
+    )
+
+
+def update_firebase_user_password_by_uid(*, firebase_uid: str, new_password: str) -> dict[str, Any]:
+    firebase_auth = _firebase_auth_module()
+
+    # The successful Swico email OTP proves control of this normalized email;
+    # reconcile that proof with Firebase's email_verified state as well as the
+    # password.
+    updated = firebase_auth.update_user(
+        firebase_uid,
+        password=new_password,
+        email_verified=True,
+    )
     return {
-        "uid": str(getattr(updated, "uid", getattr(user, "uid", "")) or ""),
-        "email": str(getattr(updated, "email", email) or email).strip().lower(),
+        "uid": str(getattr(updated, "uid", firebase_uid) or firebase_uid),
+        "email": str(getattr(updated, "email", "") or "").strip().lower(),
     }
 
 
@@ -387,6 +458,11 @@ def revoke_firebase_refresh_tokens_by_email(email: str) -> bool:
 
     firebase_auth.revoke_refresh_tokens(getattr(user, "uid"))
     return True
+
+
+def revoke_firebase_refresh_tokens_by_uid(firebase_uid: str) -> None:
+    firebase_auth = _firebase_auth_module()
+    firebase_auth.revoke_refresh_tokens(str(firebase_uid))
 
 
 async def get_current_user(

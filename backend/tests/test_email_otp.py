@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
 import app.main as main_module
+from app.auth import FirebaseIdentityInspection
 from app.database import SessionLocal
 from app.email_otp import (
     EmailOtpError,
@@ -25,7 +27,8 @@ from app.email_otp import (
     verify_otp_hash,
 )
 from app.email_service import EmailDeliverySendError, email_delivery_runtime_status
-from app.models import EmailOtpCode, User, UserProfile
+from app.cli_api.security import digest
+from app.models import CliSession, EmailOtpCode, User, UserProfile
 from app.time_utils import utc_now
 
 
@@ -779,13 +782,17 @@ def test_password_reset_confirm_updates_firebase_password(
     updates: list[dict[str, str]] = []
     revocations: list[str] = []
 
+    monkeypatch.setattr("app.main.inspect_firebase_identity", lambda **kwargs: FirebaseIdentityInspection(
+        email_user=SimpleNamespace(uid="uid-reset", email="reset@example.com"),
+        stored_uid_user=None,
+    ))
     monkeypatch.setattr(
-        "app.main.update_firebase_user_password_by_email",
+        "app.main.update_firebase_user_password_by_uid",
         lambda **kwargs: updates.append(kwargs) or {"uid": "uid-reset"},
     )
     monkeypatch.setattr(
-        "app.main.revoke_firebase_refresh_tokens_by_email",
-        lambda email: revocations.append(email) or True,
+        "app.main.revoke_firebase_refresh_tokens_by_uid",
+        lambda firebase_uid: revocations.append(firebase_uid),
     )
 
     request_response = client.post(
@@ -805,8 +812,229 @@ def test_password_reset_confirm_updates_firebase_password(
 
     assert response.status_code == 200
     assert response.json()["message"] == "Password updated. Please log in with your new password."
-    assert updates == [{"email": "reset@example.com", "new_password": "newsecret"}]
-    assert revocations == ["reset@example.com"]
+    assert updates == [{"firebase_uid": "uid-reset", "new_password": "newsecret"}]
+    assert revocations == ["uid-reset"]
+    with SessionLocal() as session:
+        record = session.exec(select(EmailOtpCode).where(EmailOtpCode.email == "reset@example.com")).one()
+        assert record.consumed_at is not None
+    reused = client.post(
+        "/auth/email-otp/password-reset/confirm",
+        json={"email": "reset@example.com", "otp": otp, "new_password": "anothersecret"},
+    )
+    assert reused.status_code == 400
+    assert reused.json()["detail"]["code"] == "otp_invalid_or_expired"
+
+
+def _fake_firebase_inspection(email_user=None, stored_uid_user=None):
+    return FirebaseIdentityInspection(
+        email_user=email_user,
+        stored_uid_user=stored_uid_user,
+    )
+
+
+def test_password_reset_repairs_backend_only_orphan_without_new_backend_user(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, False)
+    _patch_email_sender(monkeypatch)
+    with SessionLocal() as session:
+        user = User(
+            firebase_uid="orphan-stored-uid",
+            email="orphan@example.com",
+            name="Orphan User",
+            reply_language="en",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        user_id = int(user.id)
+        session.add(CliSession(
+            user_id=user_id,
+            client_id="swico-cli",
+            access_token_digest=digest("a" * 64),
+            access_expires_at=utc_now() + timedelta(minutes=5),
+            refresh_token_digest=digest("b" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1),
+            max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite",
+        ))
+        session.commit()
+
+    created = []
+    revoked = []
+    monkeypatch.setattr("app.main.inspect_firebase_identity", lambda **kwargs: _fake_firebase_inspection())
+    monkeypatch.setattr(
+        "app.main.create_firebase_email_password_user",
+        lambda **kwargs: created.append(kwargs) or {
+            "uid": "orphan-stored-uid",
+            "email": "orphan@example.com",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        "app.main.revoke_firebase_refresh_tokens_by_uid",
+        lambda firebase_uid: revoked.append(firebase_uid),
+    )
+
+    request = client.post(
+        "/auth/email-otp/password-reset/request",
+        json={"email": "orphan@example.com"},
+    )
+    response = client.post(
+        "/auth/email-otp/password-reset/confirm",
+        json={"email": "orphan@example.com", "otp": request.json()["otp"], "new_password": "newsecret"},
+    )
+
+    assert response.status_code == 200
+    assert created[0]["firebase_uid"] == "orphan-stored-uid"
+    assert created[0]["email_verified"] is True
+    assert revoked == ["orphan-stored-uid"]
+    with SessionLocal() as session:
+        users = session.exec(select(User).where(User.email == "orphan@example.com")).all()
+        assert len(users) == 1 and int(users[0].id) == user_id
+        otp = session.exec(select(EmailOtpCode).where(EmailOtpCode.email == "orphan@example.com")).one()
+        assert otp.consumed_at is not None
+        cli = session.exec(select(CliSession).where(CliSession.user_id == user_id)).one()
+        assert cli.revoked_at is not None and cli.revoke_reason == "password_reset"
+
+
+def test_password_reset_transient_firebase_failure_leaves_correct_otp_usable(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, True)
+    _patch_email_sender(monkeypatch)
+    monkeypatch.setattr(
+        "app.main.inspect_firebase_identity",
+        lambda **kwargs: _fake_firebase_inspection(
+            SimpleNamespace(uid="recoverable-uid", email="retry@example.com")
+        ),
+    )
+    calls = []
+
+    def flaky_update(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("temporary Firebase outage")
+        return {"uid": "recoverable-uid", "email": "retry@example.com"}
+
+    monkeypatch.setattr("app.main.update_firebase_user_password_by_uid", flaky_update)
+    monkeypatch.setattr("app.main.revoke_firebase_refresh_tokens_by_uid", lambda firebase_uid: None)
+    request = client.post(
+        "/auth/email-otp/password-reset/request",
+        json={"email": "retry@example.com"},
+    )
+    body = {"email": "retry@example.com", "otp": request.json()["otp"], "new_password": "newsecret"}
+
+    first = client.post("/auth/email-otp/password-reset/confirm", json=body)
+    assert first.status_code == 503
+    assert "Firebase" not in first.text
+    with SessionLocal() as session:
+        record = session.exec(select(EmailOtpCode).where(EmailOtpCode.email == "retry@example.com")).one()
+        assert record.consumed_at is None
+
+    second = client.post("/auth/email-otp/password-reset/confirm", json=body)
+    assert second.status_code == 200
+    assert len(calls) == 2
+
+
+def test_password_reset_reconciles_replacement_uid_and_preserves_backend_id(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, True)
+    _patch_email_sender(monkeypatch)
+    with SessionLocal() as session:
+        user = User(firebase_uid="stale-uid", email="replacement@example.com", name="Replacement", reply_language="en")
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        user_id = int(user.id)
+    monkeypatch.setattr(
+        "app.main.inspect_firebase_identity",
+        lambda **kwargs: _fake_firebase_inspection(
+            SimpleNamespace(uid="replacement-uid", email="replacement@example.com")
+        ),
+    )
+    monkeypatch.setattr("app.main.update_firebase_user_password_by_uid", lambda **kwargs: {"uid": "replacement-uid"})
+    monkeypatch.setattr("app.main.revoke_firebase_refresh_tokens_by_uid", lambda firebase_uid: None)
+    request = client.post("/auth/email-otp/password-reset/request", json={"email": "replacement@example.com"})
+    response = client.post(
+        "/auth/email-otp/password-reset/confirm",
+        json={"email": "replacement@example.com", "otp": request.json()["otp"], "new_password": "newsecret"},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as session:
+        user = session.get(User, user_id)
+        assert user is not None and int(user.id) == user_id and user.firebase_uid == "replacement-uid"
+
+
+@pytest.mark.parametrize("conflict_kind", ["different_email_stored_uid", "uid_owned_by_other_backend"])
+def test_password_reset_identity_conflicts_fail_closed(
+    client: TestClient,
+    monkeypatch,
+    conflict_kind: str,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, True)
+    _patch_email_sender(monkeypatch)
+    with SessionLocal() as session:
+        user = User(firebase_uid="stored-conflict-uid", email="conflict@example.com", name="Conflict", reply_language="en")
+        session.add(user)
+        session.commit()
+        if conflict_kind == "uid_owned_by_other_backend":
+            session.add(User(firebase_uid="replacement-uid", email="other@example.com", name="Other", reply_language="en"))
+            session.commit()
+    if conflict_kind == "different_email_stored_uid":
+        inspection = _fake_firebase_inspection(
+            stored_uid_user=SimpleNamespace(uid="stored-conflict-uid", email="other@example.com")
+        )
+    else:
+        inspection = _fake_firebase_inspection(
+            email_user=SimpleNamespace(uid="replacement-uid", email="conflict@example.com")
+        )
+    monkeypatch.setattr("app.main.inspect_firebase_identity", lambda **kwargs: inspection)
+    monkeypatch.setattr("app.main.update_firebase_user_password_by_uid", lambda **kwargs: pytest.fail("conflict must not update Firebase"))
+    request = client.post("/auth/email-otp/password-reset/request", json={"email": "conflict@example.com"})
+    response = client.post(
+        "/auth/email-otp/password-reset/confirm",
+        json={"email": "conflict@example.com", "otp": request.json()["otp"], "new_password": "newsecret"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "We couldn't restore this account automatically. Please contact support."
+
+
+def test_password_reset_firebase_configuration_failure_is_safe_503(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, False)
+    _patch_email_sender(monkeypatch)
+    with SessionLocal() as session:
+        session.add(User(firebase_uid="config-uid", email="config@example.com", name="Config", reply_language="en"))
+        session.commit()
+    monkeypatch.setattr(
+        "app.main.inspect_firebase_identity",
+        lambda **kwargs: (_ for _ in ()).throw(main_module.AuthConfigurationError("private config detail")),
+    )
+    request = client.post("/auth/email-otp/password-reset/request", json={"email": "config@example.com"})
+    response = client.post(
+        "/auth/email-otp/password-reset/confirm",
+        json={"email": "config@example.com", "otp": request.json()["otp"], "new_password": "newsecret"},
+    )
+    assert response.status_code == 503
+    assert "private config detail" not in response.text
+    assert "Firebase" not in response.text
 
 
 def test_production_never_returns_dev_otp(client: TestClient, monkeypatch) -> None:

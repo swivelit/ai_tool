@@ -41,16 +41,18 @@ load_dotenv()
 from .auth import (
     AuthConfigurationError,
     AuthUser,
+    FirebaseIdentityConflictError,
     assert_owner,
     create_firebase_email_password_user,
     firebase_auth_runtime_status,
     firebase_user_exists_by_email,
+    inspect_firebase_identity,
     get_current_user,
     get_owned_user,
     is_production_environment,
     normalize_app_env,
-    revoke_firebase_refresh_tokens_by_email,
-    update_firebase_user_password_by_email,
+    revoke_firebase_refresh_tokens_by_uid,
+    update_firebase_user_password_by_uid,
     verify_firebase_id_token,
     validate_auth_configuration,
 )
@@ -69,8 +71,9 @@ from .email_otp import (
     normalize_email as normalize_otp_email,
     otp_http_exception,
     require_valid_email,
+    consume_verified_otp,
     validate_otp_format,
-    verify_and_consume_otp,
+    verify_otp_for_action,
 )
 from .email_service import (
     EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
@@ -89,7 +92,7 @@ from .web_api.swico_free_queue import (
     queue_worker_enabled,
 )
 from .model_runtime import patch_openai_client
-from .models import AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from .models import AgentRun, AgentStep, CliSession, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
     APP_RELEASE,
@@ -3256,6 +3259,12 @@ RESET_SUCCESS_MESSAGE = "Password updated. Please log in with your new password.
 EMAIL_ALREADY_REGISTERED_MESSAGE = (
     "This email is already registered. Please log in or reset your password."
 )
+PASSWORD_RESET_CONFLICT_MESSAGE = (
+    "We couldn't restore this account automatically. Please contact support."
+)
+PASSWORD_RESET_UNAVAILABLE_MESSAGE = (
+    "Password reset is temporarily unavailable. Please try again later."
+)
 
 
 def _email_delivery_error_detail(code: str) -> Dict[str, str]:
@@ -3414,6 +3423,140 @@ def _firebase_email_exists_safe(email: str) -> bool:
 
 def _account_exists_for_email(session: Session, email: str) -> bool:
     return _email_exists_in_backend(session, email) or _firebase_email_exists_safe(email)
+
+
+def _firebase_record_uid(record: Any | None) -> str:
+    return str(getattr(record, "uid", "") or "").strip()
+
+
+def _firebase_record_email(record: Any | None) -> str:
+    return normalize_otp_email(getattr(record, "email", None))
+
+
+def _backend_owner_for_firebase_uid(session: Session, firebase_uid: str) -> Optional[User]:
+    if not firebase_uid:
+        return None
+    return session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
+
+
+def _password_reset_identity_conflict(
+    session: Session,
+    user: Optional[User],
+    reason: str,
+) -> None:
+    logger.warning(
+        "password_reset_identity_conflict",
+        extra={
+            "event": "password_reset_identity_conflict",
+            "user_id": int(user.id) if user and user.id is not None else None,
+            "reason": reason,
+            "request_id": get_request_id(),
+        },
+    )
+    raise FirebaseIdentityConflictError(reason)
+
+
+def _reconcile_firebase_password_reset(
+    session: Session,
+    *,
+    email: str,
+    new_password: str,
+) -> str:
+    """Reset Firebase while preserving an existing backend account owner.
+
+    Email OTP proves control of the normalized email, but it does not by
+    itself authorize merging accounts. Every UID rebind therefore checks both
+    the Firebase record's email and the backend UID owner before changing the
+    existing User row.
+    """
+    backend_user = session.exec(select(User).where(User.email == email)).first()
+    stored_uid = str(backend_user.firebase_uid or "").strip() if backend_user else ""
+    inspection = inspect_firebase_identity(email=email, stored_uid=stored_uid)
+    email_record = inspection.email_user
+    stored_record = inspection.stored_uid_user
+
+    if backend_user is None:
+        if email_record is None:
+            _password_reset_identity_conflict(session, None, "firebase_identity_missing")
+        email_uid = _firebase_record_uid(email_record)
+        owner = _backend_owner_for_firebase_uid(session, email_uid)
+        if owner is not None:
+            _password_reset_identity_conflict(session, None, "firebase_uid_owned_by_backend_account")
+        updated = update_firebase_user_password_by_uid(
+            firebase_uid=email_uid,
+            new_password=new_password,
+        )
+        return str(updated.get("uid") or email_uid).strip()
+
+    if email_record is not None:
+        email_uid = _firebase_record_uid(email_record)
+        if not email_uid or _firebase_record_email(email_record) != email:
+            _password_reset_identity_conflict(session, backend_user, "firebase_email_identity_mismatch")
+        owner = _backend_owner_for_firebase_uid(session, email_uid)
+        if owner is not None and owner.id != backend_user.id:
+            _password_reset_identity_conflict(session, backend_user, "firebase_uid_owned_by_another_backend_account")
+        if stored_record is not None:
+            stored_uid = _firebase_record_uid(stored_record)
+            if stored_uid != email_uid or _firebase_record_email(stored_record) != email:
+                _password_reset_identity_conflict(session, backend_user, "stored_firebase_identity_conflict")
+        elif str(backend_user.firebase_uid or "").strip() != email_uid:
+            # The stored UID disappeared (or was absent) and the email now
+            # resolves to this Firebase identity. Rebinding is safe only after
+            # the owner check.
+            backend_user.firebase_uid = email_uid
+            session.add(backend_user)
+
+        updated = update_firebase_user_password_by_uid(
+            firebase_uid=email_uid,
+            new_password=new_password,
+        )
+        return str(updated.get("uid") or email_uid).strip()
+
+    # No Firebase record exists by email. If the stored UID resolves to a
+    # different email, it is an identity conflict, never a rebind candidate.
+    if stored_record is not None:
+        _password_reset_identity_conflict(session, backend_user, "stored_firebase_uid_has_different_email")
+
+    try:
+        recreated = create_firebase_email_password_user(
+            email=email,
+            password=new_password,
+            display_name=backend_user.name,
+            email_verified=True,
+            firebase_uid=stored_uid or None,
+        )
+    except Exception as exc:
+        # A race with another Firebase creation, or an occupied explicit UID,
+        # is a conflict. Do not fall back to a second account automatically.
+        if exc.__class__.__name__ in {"EmailAlreadyExistsError", "UidAlreadyExistsError"}:
+            _password_reset_identity_conflict(session, backend_user, "firebase_identity_creation_conflict")
+        raise
+
+    recreated_uid = str(recreated.get("uid") or "").strip()
+    recreated_email = normalize_otp_email(recreated.get("email"))
+    if not recreated_uid or recreated_email != email:
+        _password_reset_identity_conflict(session, backend_user, "firebase_identity_creation_invalid")
+    owner = _backend_owner_for_firebase_uid(session, recreated_uid)
+    if owner is not None and owner.id != backend_user.id:
+        _password_reset_identity_conflict(session, backend_user, "firebase_uid_owned_by_another_backend_account")
+    if backend_user.firebase_uid != recreated_uid:
+        backend_user.firebase_uid = recreated_uid
+        session.add(backend_user)
+    return recreated_uid
+
+
+def _revoke_cli_sessions_after_password_reset(session: Session, user_id: int) -> None:
+    now = _utc_now()
+    rows = session.exec(
+        select(CliSession).where(
+            CliSession.user_id == user_id,
+            CliSession.revoked_at.is_(None),
+        ).with_for_update()
+    ).all()
+    for row in rows:
+        row.revoked_at = now
+        row.revoke_reason = "password_reset"
+        session.add(row)
 
 
 def _send_email_otp(*, email: str, code: str, purpose: str) -> None:
@@ -3578,7 +3721,9 @@ def complete_signup_email_otp(
         raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
 
     try:
-        verify_and_consume_otp(session, email=email, purpose="signup", otp=otp)
+        verified_otp = verify_otp_for_action(
+            session, email=email, purpose="signup", otp=otp
+        )
     except EmailOtpError as exc:
         raise otp_http_exception(exc) from exc
     except EmailOtpConfigurationError as exc:
@@ -3595,8 +3740,10 @@ def complete_signup_email_otp(
             email_verified=True,
         )
     except AuthConfigurationError as exc:
+        session.rollback()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        session.rollback()
         if exc.__class__.__name__ in {"EmailAlreadyExistsError", "UidAlreadyExistsError"}:
             raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE) from exc
         logger.exception("Firebase user creation failed")
@@ -3607,6 +3754,7 @@ def complete_signup_email_otp(
 
     firebase_uid = str(firebase_user.get("uid") or "").strip()
     if not firebase_uid:
+        session.rollback()
         raise HTTPException(
             status_code=503,
             detail="Account creation is temporarily unavailable. Please try again later.",
@@ -3615,10 +3763,12 @@ def complete_signup_email_otp(
     existing_by_email = session.exec(select(User).where(User.email == email)).first()
     existing_by_uid = session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
     if existing_by_email and existing_by_uid and existing_by_email.id != existing_by_uid.id:
+        session.rollback()
         raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
 
     user = existing_by_uid or existing_by_email
     if user and user.firebase_uid and user.firebase_uid != firebase_uid:
+        session.rollback()
         raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
 
     try:
@@ -3644,9 +3794,13 @@ def complete_signup_email_otp(
         session.add(user)
         safe_commit(session, "complete_signup_email_otp")
         session.refresh(user)
+        consume_verified_otp(session, verified_otp)
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE) from exc
+    except EmailOtpError as exc:
+        session.rollback()
+        raise otp_http_exception(exc) from exc
 
     profile = _ensure_user_profile(session, int(user.id))
     _get_agentic_service().persist_profile_snapshot(session, int(user.id))
@@ -3685,7 +3839,7 @@ def confirm_password_reset_email_otp(
     otp = _validate_otp_or_http(payload.otp)
 
     try:
-        verify_and_consume_otp(
+        verified_otp = verify_otp_for_action(
             session,
             email=email,
             purpose="password_reset",
@@ -3700,18 +3854,41 @@ def confirm_password_reset_email_otp(
         ) from exc
 
     try:
-        update_firebase_user_password_by_email(email=email, new_password=new_password)
+        firebase_uid = _reconcile_firebase_password_reset(
+            session,
+            email=email,
+            new_password=new_password,
+        )
         try:
-            revoke_firebase_refresh_tokens_by_email(email)
+            revoke_firebase_refresh_tokens_by_uid(firebase_uid)
         except Exception:
             logger.warning("Firebase token revocation failed after password reset.")
+        backend_user = session.exec(select(User).where(User.email == email)).first()
+        if backend_user is not None and backend_user.id is not None:
+            _revoke_cli_sessions_after_password_reset(session, int(backend_user.id))
+        consume_verified_otp(session, verified_otp)
+    except FirebaseIdentityConflictError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=PASSWORD_RESET_CONFLICT_MESSAGE) from exc
     except AuthConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        session.rollback()
+        raise HTTPException(status_code=503, detail=PASSWORD_RESET_UNAVAILABLE_MESSAGE) from exc
+    except EmailOtpError as exc:
+        session.rollback()
+        raise otp_http_exception(exc) from exc
     except Exception as exc:
-        logger.exception("Firebase password reset failed")
+        session.rollback()
+        logger.error(
+            "password_reset_recovery_failed",
+            extra={
+                "event": "password_reset_recovery_failed",
+                "request_id": get_request_id(),
+                "exception_class": exc.__class__.__name__,
+            },
+        )
         raise HTTPException(
-            status_code=400,
-            detail="Password reset could not be completed. Request a new code and try again.",
+            status_code=503,
+            detail=PASSWORD_RESET_UNAVAILABLE_MESSAGE,
         ) from exc
 
     return {"ok": True, "message": RESET_SUCCESS_MESSAGE}

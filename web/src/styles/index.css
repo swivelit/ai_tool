@@ -731,6 +731,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   font-weight: 650;
 }
 
+.auth-resend {
+  display: block;
+  margin: 14px auto 0;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.auth-resend:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 /* Status */
 .auth-status {
   margin-top: 14px;
