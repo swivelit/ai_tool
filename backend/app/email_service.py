@@ -323,6 +323,51 @@ def build_otp_email_body(*, code: str, purpose: str, ttl_minutes: int) -> tuple[
     return subject, body
 
 
+def build_response_ready_email_body(
+    *,
+    message_preview: str | None = None,
+    thread_id: str | None = None,
+    request_id: str | None = None,
+) -> tuple[str, str]:
+    subject = "Swico AI response is ready"
+    preview = " ".join(str(message_preview or "").split())
+    if preview:
+        if len(preview) > 160:
+            preview = preview[:157] + "..."
+        preview_text = f"Your recent search: {preview}"
+    else:
+        preview_text = ""
+
+    lines = ["Your Swico AI response is ready."]
+    if preview_text:
+        lines.append("")
+        lines.append(preview_text)
+    lines.append("")
+    lines.append("Open the Swico AI app to view the answer.")
+    if thread_id:
+        lines.append(f"Thread: {thread_id}")
+    if request_id:
+        lines.append(f"Request: {request_id}")
+    lines.append("")
+    lines.append("Thanks for using Swico AI.")
+    return subject, "\n".join(lines)
+
+
+def send_response_ready_email(
+    *,
+    to_email: str,
+    message_preview: str | None = None,
+    thread_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    subject, body = build_response_ready_email_body(
+        message_preview=message_preview,
+        thread_id=thread_id,
+        request_id=request_id,
+    )
+    get_email_sender().send(to_email=to_email, subject=subject, text_body=body)
+
+
 def safe_email_unavailable_detail() -> str:
     if is_production_environment():
         return EMAIL_DELIVERY_UNAVAILABLE_MESSAGE

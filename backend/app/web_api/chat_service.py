@@ -189,6 +189,60 @@ from .web_memory import (
 logger = logging.getLogger(__name__)
 
 
+def _response_ready_email_delay_seconds() -> int:
+    try:
+        return max(
+            0,
+            int(
+                str(
+                    os.getenv("WEB_RESPONSE_READY_EMAIL_DELAY_SECONDS", "20")
+                ).strip(),
+            ),
+        )
+    except (TypeError, ValueError):
+        return 20
+
+
+def _maybe_send_response_ready_email(
+    prepared: PreparedWebTurn,
+    response: AIProviderResponse,
+    *,
+    elapsed_seconds: float,
+) -> None:
+    if not _env_bool("WEB_RESPONSE_READY_EMAIL_ENABLED", True):
+        return
+    if response.provider == "cache" or bool(response.raw.get("cache_hit")):
+        return
+    threshold_seconds = _response_ready_email_delay_seconds()
+    if elapsed_seconds < threshold_seconds:
+        return
+    with SessionLocal() as session:
+        user = session.get(User, prepared.user_id)
+        if user is None:
+            return
+        to_email = str(user.email or "").strip()
+        if not to_email:
+            return
+        message_preview = str(prepared.ai_request.message or "").strip()
+        try:
+            send_response_ready_email(
+                to_email=to_email,
+                message_preview=message_preview,
+                thread_id=prepared.thread_id,
+                request_id=prepared.request_id,
+            )
+        except Exception:
+            logger.exception(
+                "response_ready_email_send_failed",
+                extra={
+                    "event": "response_ready_email_send_failed",
+                    "user_id": prepared.user_id,
+                    "request_id": prepared.request_id,
+                    "thread_id": prepared.thread_id,
+                },
+            )
+
+
 _SECOND_TASK_REPAIR_CHECK_TYPES = frozenset({
     "task_requirement_definition",
     "task_requirement_example",
@@ -4403,6 +4457,7 @@ def execute_web_turn(
     on_progress: Callable[[int], None] | None = None,
     providers: dict[str, Any] | None = None,
 ) -> CompletedWebTurn:
+    turn_started_at = monotonic()
     if prepared.existing_response_id is not None:
         with SessionLocal() as session:
             stored = session.get(WebChatMessage, prepared.existing_response_id)
@@ -6770,6 +6825,11 @@ def execute_web_turn(
     )
     if on_status and guard_enabled:
         on_status("complete")
+    _maybe_send_response_ready_email(
+        prepared,
+        response,
+        elapsed_seconds=monotonic() - turn_started_at,
+    )
     return CompletedWebTurn(
         prepared.thread_id, assistant_snapshot, wallet, response
     )
