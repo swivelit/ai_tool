@@ -151,6 +151,23 @@ export class Workspace {
     return output
   }
 
+  async findPaths(query: string, limit = 20): Promise<string[]> {
+    if (query.length > 128 || limit < 1 || limit > 50) throw new Error('Mention search is outside the supported bound.')
+    const needle = query.trim().toLocaleLowerCase(), matches: Array<{ path: string; score: number }> = []
+    const walk = async (dir: string): Promise<void> => {
+      if (matches.length >= 500) return
+      for (const entry of (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = join(dir, entry.name), rel = slash(relative(this.root, full))
+        if (blocked.test(rel) || entry.isSymbolicLink()) continue
+        if (entry.isDirectory()) { if (!needle || rel.toLocaleLowerCase().includes(needle)) matches.push({ path: rel + '/', score: rel.toLocaleLowerCase() === needle ? 0 : 1 }); await walk(full) }
+        else if (entry.isFile() && (!needle || rel.toLocaleLowerCase().includes(needle))) matches.push({ path: rel, score: rel.toLocaleLowerCase() === needle ? 0 : 1 })
+        if (matches.length >= 500) return
+      }
+    }
+    await walk(this.root)
+    return matches.sort((a, b) => a.score - b.score || a.path.localeCompare(b.path)).slice(0, limit).map(item => item.path)
+  }
+
   async readFile(path: string): Promise<{ path: string; text: string; sha256: string }> {
     const target = await this.confined(path)
     const info = await lstat(target)

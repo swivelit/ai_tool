@@ -100,7 +100,7 @@ function parseToml(text: string, source: ConfigSource, path: string): SwicoConfi
       base.autoSkills = value
     } else if (key === 'search_mode' && (value === 'auto' || value === 'on' || value === 'off')) base.searchMode = value
     else if (key === 'default_mode' && (value === 'auto' || value === 'chat' || value === 'agent' || value === 'plan')) base.defaultMode = value
-    else if (key === 'permission_profile' && (value === 'read-only' || value === 'approval-required')) base.permissionProfile = value
+    else if (key === 'permission_profile' && (value === 'read-only' || value === 'approval-required' || value === 'workspace-write')) base.permissionProfile = value
     else if (key === 'sandbox_policy' && (value === 'read-only' || value === 'workspace-write')) base.sandboxPolicy = value
     else if (key === 'approval_policy' && (value === 'on-request' || value === 'always')) base.approvalPolicy = value
     else throw new Error(`Unsupported or invalid setting '${key}' in ${path}.`)

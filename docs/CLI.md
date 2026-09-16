@@ -226,10 +226,11 @@ action; it returns through the authenticated shared Chat endpoint with
 `search_mode=on`, so the backend remains authoritative for eligibility,
 evidence, billing, and limits.
 
-Cloud commands are explicit (`swico cloud exec|status|resume|cancel`). They
-currently return `cloud_execution_unavailable`: no isolated runner or job
-capability service is configured, and repository code is never executed in
-the API process. There is no fallback to Render.
+Cloud commands are explicit (`swico cloud exec|list|status|logs|events|resume|cancel`).
+They use the owner-scoped durable control plane when a separately isolated
+runner is configured and handshaken. The default remains disabled and the API
+never executes repository code; queued jobs are not evidence that cloud
+execution is ready.
 
 ## Sandbox verification and platform support
 

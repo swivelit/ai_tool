@@ -7,6 +7,7 @@ import { LoginPage } from './pages/LoginPage'
 import { CliAuthorizePage } from './pages/CliAuthorizePage'
 import { CliSessionsPage } from './pages/CliSessionsPage'
 import { CliGuidePage } from './pages/CliGuidePage'
+import { CloudTasksPage } from './pages/CloudTasksPage'
 
 const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ default: module.LegalPage })))
 
@@ -25,6 +26,7 @@ export function App() {
   return <Routes>
     <Route path="/cli/authorize" element={<CliAuthorizePage />} />
     <Route path="/settings/cli-sessions" element={user ? <CliSessionsPage /> : <Navigate to={`/login?returnTo=${encodeURIComponent(`${location.pathname}${location.search}`)}`} replace />} />
+    <Route path="/tasks" element={user ? <CloudTasksPage /> : <Navigate to={`/login?returnTo=%2Ftasks`} replace />} />
     <Route path="/legal/:page" element={<Suspense fallback={<div className="app-loading">Loading…</div>}><LegalPage /></Suspense>} />
     <Route path="/terms" element={<Navigate to="/legal/terms" replace />} />
     <Route path="/privacy" element={<Navigate to="/legal/privacy" replace />} />

@@ -69,6 +69,24 @@ def test_agent_pilot_rejects_development_auth_bypass_without_exposing_values() -
     assert errors == ["AUTH_ALLOW_DEV_TOKENS must be false for agent pilot"]
 
 
+def test_cloud_pilot_requires_verified_runner_without_blocking_public_chat() -> None:
+    assert rollout_configuration_errors(_settings(), public=True) == []
+    settings = _settings(
+        SWICO_CLI_AGENT_ENABLED="true", SWICO_CLI_CLOUD_AGENT_ENABLED="true",
+        SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com",
+    )
+    errors = rollout_configuration_errors(settings, cloud_pilot=True, environ={})
+    assert "cloud runner URL and credential must be configured for cloud pilot" in errors
+    assert "cloud runner handshake must be verified for cloud pilot" in errors
+    ready = _settings(
+        SWICO_CLI_AGENT_ENABLED="true", SWICO_CLI_CLOUD_AGENT_ENABLED="true",
+        SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com",
+        SWICO_CLI_CLOUD_RUNNER_URL="https://runner.example.test",
+        SWICO_CLI_CLOUD_RUNNER_TOKEN="synthetic", SWICO_CLI_CLOUD_RUNNER_HANDSHAKE="true",
+    )
+    assert rollout_configuration_errors(ready, cloud_pilot=True, environ={}) == []
+
+
 def test_public_schema_check_requires_all_cli_tables_and_repository_head() -> None:
     head = "20260915_weekly_tester_credit"
     assert schema_readiness_errors(REQUIRED_CLI_TABLES, head, head) == []

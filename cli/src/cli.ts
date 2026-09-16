@@ -29,7 +29,8 @@ import { runMcpServer } from './mcp_server.js'
 import { createSandboxAdapter, verifySandbox } from './sandbox.js'
 import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
-import { cloudCancel, cloudExec, cloudStatus } from './cloud.js'
+import { cloudCancel, cloudEvents, cloudExec, cloudList, cloudStatus } from './cloud.js'
+import { copyToClipboard } from './clipboard.js'
 import { parseTaskArguments, positionalAfter, taskText } from './arguments.js'
 import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from './output_schema.js'
 import { CommandUsageError, parseInteractiveCommand, topLevelCommand, validateTopLevelArguments } from './command_registry.js'
@@ -165,6 +166,22 @@ async function askTrust(line: Interface, root: string): Promise<boolean> {
   return /^y(?:es)?$/i.test((await line.question(`Trust ${root} and send selected repository context to Swico? (y/N) `)).trim())
 }
 
+async function runLocalCommand(line: Interface, command: string, env = process.env, profile: PermissionProfile = 'approval-required', present: Presentation = console.log): Promise<void> {
+  if (!command) throw new Error('Usage: !COMMAND')
+  if (profile === 'read-only') throw new Error('The read-only permission profile blocks local command execution.')
+  if (/[;&|<>`$(){}\n\r]/.test(command)) throw new Error('Shell operators are not supported; provide a bounded executable and arguments.')
+  const argv = command.trim().split(/\s+/).filter(Boolean)
+  if (!argv.length || argv.length > 32 || argv.some(value => value.length > 512)) throw new Error('Local command is outside the supported bound.')
+  const info = await repositoryInfo(env), sandbox = createSandboxAdapter(info.metadata.root), verification = await verifySandbox(info.metadata.root)
+  if (!verification.verified) throw new Error(`Local command unavailable: sandbox verification did not pass (${verification.diagnostic}).`)
+  if (!await askTrust(line, info.metadata.root)) throw new Error('Workspace trust was not granted; no command was executed.')
+  const workspace = new Workspace(info.metadata.root, sandbox, profile === 'workspace-write' ? 'workspace-write' : 'read-only', true)
+  const result = await workspace.runCommand(argv, 120_000, async description => /^y(?:es)?$/i.test((await line.question(`${description} (y/N) `)).trim()), undefined, 'disabled')
+  if (result.stdout) present(result.stdout)
+  if (result.stderr) present(result.stderr)
+  if (result.code !== 0 || result.timed_out || result.cancelled) throw new Error(`Local command failed (exit ${result.code ?? 'unknown'}${result.timed_out ? ', timed out' : ''}${result.cancelled ? ', cancelled' : ''}).`)
+}
+
 async function runPlan(tokens: CliTokens, task: string, env = process.env, line?: Interface): Promise<void> {
   const { metadata } = await repositoryInfo(env)
   const trusted = line ? await askTrust(line, metadata.root) : false
@@ -269,7 +286,9 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
       const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash, reservation_id: next.reservation_id }
       present(`\nTool: ${action.action_type}`)
-      const result = await agent.execute(run.run_id, action, async description => (profile === 'approval-required' || config.effective.approvalPolicy === 'always') ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : false)
+      const highRisk = ['delete_file', 'move_file', 'run_command', 'mcp_tool'].includes(action.action_type)
+      const requiresApproval = profile === 'approval-required' || highRisk || (profile !== 'workspace-write' && config.effective.approvalPolicy === 'always')
+      const result = await agent.execute(run.run_id, action, async description => requiresApproval ? /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()) : true)
       context.observations.push(`${action.action_type}: ${JSON.stringify(result.result).slice(0, 10_000)}`)
       actions.push({ action_id: action.action_id, payload_hash: next.payload_hash ?? '', status: result.status })
       plan.advance(result.status === 'succeeded' ? 'completed' : 'blocked')
@@ -353,9 +372,11 @@ async function worktreeCommand(args: string[], env = process.env, line?: Interfa
 async function cloudCommand(args: string[], tokens: CliTokens, env = process.env, line?: Interface): Promise<void> {
   const action = args[1] ?? 'status'
   if (action === 'exec') { const task = args.slice(2).join(' '); if (!task) throw new Error('Usage: swico cloud exec TASK'); console.log(JSON.stringify(await cloudExec(tokens, task, env), null, 2)); return }
+  if (action === 'list') { console.log(JSON.stringify(await cloudList(tokens, env), null, 2)); return }
   if (action === 'status' || action === 'resume') { const id = args[2]; if (!id) throw new Error('Usage: swico cloud status JOB'); console.log(JSON.stringify(await cloudStatus(tokens, id, env), null, 2)); return }
+  if (action === 'logs' || action === 'events') { const id = args[2]; if (!id) throw new Error(`Usage: swico cloud ${action} JOB`); console.log(JSON.stringify(await cloudEvents(tokens, id, env), null, 2)); return }
   if (action === 'cancel') { const id = args[2]; if (!id) throw new Error('Usage: swico cloud cancel JOB'); if (line && !/^y(?:es)?$/i.test((await line.question(`Cancel cloud job ${id}? (y/N) `)).trim())) throw new Error('Cloud cancellation was not approved.'); console.log(JSON.stringify(await cloudCancel(tokens, id, env), null, 2)); return }
-  throw new Error('Cloud command must be exec, status, resume, or cancel.')
+  throw new Error('Cloud command must be exec, list, status, logs, events, resume, or cancel.')
 }
 
 async function mcpCommand(args: string[], env = process.env): Promise<void> {
@@ -418,7 +439,7 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
   let ui: RichTerminalUI
   const promptLine = { question: (text: string) => ui.prompt(text), close: () => undefined } as unknown as Interface
   ui = new RichTerminalUI({
-    input, output, version: VERSION, tierLabel: currentTokens.tier_label, modeLabel: () => mode === 'agent' ? 'Agent' : mode === 'plan' ? 'Plan' : 'Chat', directory: metadata.root, branch: metadata.branch,
+    input, output, version: VERSION, tierLabel: currentTokens.tier_label, modeLabel: () => mode === 'agent' ? 'Agent' : mode === 'plan' ? 'Plan' : 'Chat', permissionLabel: () => profile, sandboxLabel: () => createSandboxAdapter(metadata.root).status().available ? 'verification required' : 'unavailable', directory: metadata.root, branch: metadata.branch,
     onMessage: async (message, events) => {
       ui.setCancel(() => activeInterrupt?.())
       try {
@@ -437,6 +458,7 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
       if (command.name === 'help') { context.block(help); return }
       if (command.name === 'new') { thread = undefined; context.clearConversation(); context.notice('Started a new Chat thread.'); return }
       if (command.name === 'clear') { context.clearConversation(); context.notice('Cleared the local transcript view.'); return }
+      if (command.name === 'copy') { await context.copyLatest(); return }
       if (command.name === 'mode') { if (argument) mode = argument as Mode; context.notice(`Mode: ${mode} (Chat, Plan, Agent)`); return }
       if (command.name === 'status') { context.block(await statusText(currentTokens, mode, profile, env)); return }
       if (command.name === 'whoami') { const selected = await ensureTokens(env); currentTokens = selected; context.block(JSON.stringify(await json('/me', {}, selected.access_token, env), null, 2)); return }
@@ -454,9 +476,12 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
       if (command.name === 'agent') { currentTokens = await runAgent(currentTokens, argument!, env, promptLine, profile, undefined, context.block); return }
       if (command.name === 'resume') { currentTokens = await resumeSession(promptLine, currentTokens, argument, env, context.block); return }
       if (command.name === 'review') { await showReview(currentTokens, env, promptLine, context.block); return }
+      if (command.name === 'mention') { const paths = await (await repositoryInfo(env)).workspace.findPaths(argument ?? ''); context.block(paths.length ? paths.join('\n') : 'No matching workspace paths.'); return }
       if (command.name === 'init') { await initInstructions(promptLine, env, context.block); return }
       context.notice(`/${command.name} is available in the line-oriented interface with swico --plain.`)
     },
+    onCopy: text => copyToClipboard(text),
+    onLocalCommand: command => runLocalCommand(promptLine, command, env, profile, text => ui.block(text)),
   })
   startupDiagnostic('rich-ui:run', startupState())
   try { await ui.run() } finally { startupDiagnostic('rich-ui:restored', startupState()) }
@@ -476,6 +501,8 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
           if (parsed.name === 'help') { console.log(help); continue }
           if (parsed.name === 'new') { thread = undefined; console.log('Started a new chat.'); continue }
           if (parsed.name === 'clear') { console.clear(); console.log('Cleared the local transcript view.'); continue }
+          if (parsed.name === 'copy') { console.log('Copy is available in the rich terminal UI.'); continue }
+          if (parsed.name === 'mention') { const { workspace } = await repositoryInfo(env); console.log((await workspace.findPaths(argument ?? '')).join('\n') || 'No matching workspace paths.'); continue }
           if (parsed.name === 'mode') { if (!argument) console.log(`Mode: ${mode} (chat, agent, plan; auto routes repository tasks)`); else { mode = argument as Mode; console.log(`Mode: ${mode}`) }; continue }
           if (parsed.name === 'status') { await showStatus(tokens, mode, profile, env); continue }
           if (parsed.name === 'sandbox') { await sandboxCommand(['sandbox', argument ?? 'status'], env); continue }
@@ -487,7 +514,7 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
           if (parsed.name === 'mcp') { await mcpCommand(['mcp', argument ?? 'list'], env); continue }
           if (parsed.name === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()); for (const skill of await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)) console.log(`${skill.name}\t${skill.description}`); continue }
           if (parsed.name === 'plan') { await runPlan(tokens, 'Current repository task', env, line); continue }
-          if (parsed.name === 'permissions') { if (!argument) console.log(`Permission profile: ${profile}\nProfiles: read-only, approval-required`); else { profile = argument as PermissionProfile; await savePermissionProfile(profile); console.log(`Permission profile: ${profile}`) }; continue }
+          if (parsed.name === 'permissions') { if (!argument) console.log(`Permission profile: ${profile}\nProfiles: read-only, approval-required, workspace-write (requires verified sandbox)`); else { profile = argument as PermissionProfile; await savePermissionProfile(profile); console.log(`Permission profile: ${profile}`) }; continue }
           if (parsed.name === 'init') { await initInstructions(line, env); continue }
           if (parsed.name === 'review') { await showReview(tokens, env, line); continue }
           if (parsed.name === 'history') { await showHistory(tokens, env); continue }
@@ -588,7 +615,15 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   }
   if (command === 'mcp') { await mcpCommand(argv.slice(argv.indexOf(command)), env); return 0 }
   if (command === 'skills') { const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), items = await listSkills(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env); if (argv[1] === 'show' && argv[2]) console.log((await (await import('./skills.js')).showSkill(argv[2], metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions); else for (const item of items) console.log(`${item.name}\t${item.description}`); return 0 }
-  if (command === 'plugins') { const { metadata } = await repositoryInfo(env); if (argv[1] === 'inspect' && argv[2]) console.log(JSON.stringify(await (await import('./plugins.js')).inspectPlugin(argv[2]), null, 2)); else console.log(JSON.stringify(await (await import('./plugins.js')).listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd()), null, 2)); return 0 }
+  if (command === 'plugins') {
+    const { metadata } = await repositoryInfo(env), pluginApi = await import('./plugins.js'), action = argv[1] ?? 'list', target = argv[2]
+    if (action === 'inspect' && target) console.log(JSON.stringify(await pluginApi.inspectPlugin(target, env), null, 2))
+    else if (action === 'trust' && target) console.log(JSON.stringify(await pluginApi.trustPlugin(target, env), null, 2))
+    else if (action === 'untrust' && target) { await pluginApi.untrustPlugin(target, env); console.log(`Untrusted plugin ${target}.`) }
+    else if (action === 'list') console.log(JSON.stringify(await pluginApi.listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), null, 2))
+    else throw new Error('Plugins command must be list, inspect PATH, trust PATH, or untrust PATH.')
+    return 0
+  }
   if (command === 'completion') { console.log(completion(argv[commandIndex + 1])); return 0 }
   if (command === 'login') { const tierValue = option(argv, '--tier'); if (tierValue && !['lite', 'standard', 'pro'].includes(tierValue)) throw new Error('--tier must be lite, standard, or pro.'); await login(env, argv.includes('--agent') ? ['chat', 'agent'] : ['chat'], { memoryOnly: argv.includes('--memory-only'), tier: tierValue as Exclude<CliTokens['tier'], 'free'> | undefined }); return 0 }
   if (command === 'logout') {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -60,7 +60,35 @@ class CliTierRequest(BaseModel):
 
 class CloudJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    request_id: UUID = Field(default_factory=uuid4)
+    source: Literal["workspace_snapshot", "task_only"] = "workspace_snapshot"
     task: str = Field(min_length=1, max_length=8_000)
+
+    @field_validator("task")
+    @classmethod
+    def validate_task(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("task must contain non-whitespace text")
+        return value.strip()
+
+
+class CloudJobClaimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class CloudJobResultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["completed", "failed", "cancelled"]
+    result: dict[str, Any] = Field(default_factory=dict)
+    failure_code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("result")
+    @classmethod
+    def validate_result(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) > 16 * 1024:
+            raise ValueError("result metadata exceeds the 16 KiB limit")
+        return value
 
 
 class AgentRunRequest(BaseModel):

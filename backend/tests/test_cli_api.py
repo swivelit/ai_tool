@@ -15,7 +15,7 @@ from app.auth import AuthUser
 from app.ai.types import AIProviderResponse
 from app.web_api.chat_service import CompletedWebMessage, CompletedWebTurn
 from app.database import SessionLocal
-from app.models import CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession, User, WalletAccount
+from app.models import CliAgentRun, CliAgentStep, CliCloudJob, CliCloudJobEvent, CliDeviceGrant, CliPendingAction, CliSession, User, WalletAccount
 from app.cli_api.security import digest
 from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
@@ -306,6 +306,76 @@ def test_cloud_execution_is_explicitly_unavailable_without_an_isolated_runner(cl
     response = client.post("/api/cli/v1/cloud/jobs", headers={"Authorization": f"Bearer {raw_access}"}, json={"task": "inspect"})
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "cloud_execution_unavailable"
+
+
+def test_cloud_control_plane_is_owner_scoped_idempotent_and_cancelable(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_URL", "https://runner.example.test")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_TOKEN", "test-only-runner-token")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_HANDSHAKE", "true")
+    owner = create_test_user("cloud-control-owner", "cloud-control-owner@example.com")
+    other = create_test_user("cloud-control-other", "cloud-control-other@example.com")
+    raw_access, other_access = "q" * 64, "w" * 64
+    with SessionLocal() as session:
+        for user, access in ((owner, raw_access), (other, other_access)):
+            session.add(CliSession(
+                user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(access),
+                access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest(access[::-1]),
+                refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+                selected_tier="lite", scopes_json='["chat", "agent"]', device_description="cloud control",
+            ))
+        session.commit()
+    request_id = str(uuid4())
+    headers = {"Authorization": f"Bearer {raw_access}"}
+    created = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"request_id": request_id, "task": "inspect repository"})
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "queued"
+    duplicate = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"request_id": request_id, "task": "inspect repository"})
+    assert duplicate.status_code == 200 and duplicate.json()["id"] == created.json()["id"] and duplicate.json()["idempotent"] is True
+    conflict = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"request_id": request_id, "task": "different task"})
+    assert conflict.status_code == 409
+    listed = client.get("/api/cli/v1/cloud/jobs", headers=headers)
+    assert listed.status_code == 200 and [item["id"] for item in listed.json()["items"]] == [created.json()["id"]]
+    foreign = client.get(f"/api/cli/v1/cloud/jobs/{created.json()['id']}", headers={"Authorization": f"Bearer {other_access}"})
+    assert foreign.status_code == 404
+    cancelled = client.post(f"/api/cli/v1/cloud/jobs/{created.json()['id']}/cancel", headers=headers)
+    assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
+    events = client.get(f"/api/cli/v1/cloud/jobs/{created.json()['id']}/events", headers=headers)
+    assert events.status_code == 200 and [event["event_type"] for event in events.json()["items"]] == ["queued", "cancel_requested"]
+    with SessionLocal() as session:
+        assert session.exec(select(CliCloudJob).where(CliCloudJob.user_id == int(owner.id))).all()
+        assert session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == created.json()["id"])).all()
+
+
+def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    for name, value in {
+        "SWICO_CLI_ENABLED": "true", "SWICO_CLI_AGENT_ENABLED": "true", "SWICO_CLI_CLOUD_AGENT_ENABLED": "true",
+        "SWICO_CLI_CLOUD_RUNNER_URL": "https://runner.example.test", "SWICO_CLI_CLOUD_RUNNER_TOKEN": "runner-secret",
+        "SWICO_CLI_CLOUD_RUNNER_HANDSHAKE": "true",
+    }.items(): monkeypatch.setenv(name, value)
+    user = create_test_user("cloud-runner-owner", "cloud-runner-owner@example.com")
+    raw_access = "z" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("y" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat", "agent"]', device_description="runner lease",
+        )); session.commit()
+    headers = {"Authorization": f"Bearer {raw_access}"}
+    created = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"task": "lease me"})
+    job_id = created.json()["id"]
+    assert client.post("/api/cli/v1/cloud/runner/jobs/claim", headers={"X-Swico-Runner-Id": "runner-1", "X-Swico-Runner-Token": "wrong"}, json={}).status_code == 403
+    runner_headers = {"X-Swico-Runner-Id": "runner-1", "X-Swico-Runner-Token": "runner-secret"}
+    claimed = client.post("/api/cli/v1/cloud/runner/jobs/claim", headers=runner_headers, json={})
+    assert claimed.status_code == 200 and claimed.json()["job"]["id"] == job_id and claimed.json()["job"]["status"] == "dispatching"
+    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/heartbeat", headers={**runner_headers, "X-Swico-Runner-Id": "runner-2"}).status_code == 409
+    completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=runner_headers, json={"status": "completed", "result": {"changed_files": []}})
+    assert completed.status_code == 200 and completed.json()["status"] == "completed"
+    replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=runner_headers, json={"status": "failed"})
+    assert replay.status_code == 409
 
 
 def test_agent_action_result_is_owner_scoped_idempotent_and_recoverable(client: TestClient, monkeypatch: pytest.MonkeyPatch):

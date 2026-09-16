@@ -25,15 +25,15 @@ explicitly bounded.
 | Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and local slash controls are implemented; ordered eight-prompt queued follow-ups are covered; true mid-turn steering remains partial and is never simulated |
 | Repository instructions, planning, local edits | IMPLEMENTED + UNVERIFIED | Disposable coding-loop acceptance covers discovery, AGENTS.md, hash-bound approval, atomic edits, bounded test/repair, and Git result reporting; native sandbox proof remains host-specific |
 | Plans and approval loops | IMPLEMENTED + UNVERIFIED | Task-only plans and explicit approvals are tested; the deterministic disposable lifecycle is covered, but native hostile sandbox evidence is required per host |
-| Approvals and local permissions | IMPLEMENTED + VERIFIED | Read-only/approval-required only; no full-auto mode |
-| Skills, declarative plugins, hooks | PARTIAL | Skills and inspection work; executable hooks/plugins remain disabled |
+| Approvals and local permissions | IMPLEMENTED + UNVERIFIED | Read-only, approval-required, and workspace-write are persisted; workspace-write is usable only after hostile sandbox proof |
+| Skills, declarative plugins, hooks | IMPLEMENTED + UNVERIFIED | Skills plus explicit hash-bound executable-plugin trust and sandbox-gated hooks; project code is never trusted merely by existing |
 | MCP | PARTIAL | Explicit stdio/HTTPS configuration; local stdio needs verified sandbox |
 | Review, exec, completion | IMPLEMENTED + VERIFIED | Read-only review and bounded command paths; schema/agent automation remains limited |
 | Sessions, resume, worktrees | PARTIAL | Owner-scoped metadata and detached worktrees; no automatic merge |
 | Images and web search | IMPLEMENTED + UNVERIFIED | Server-controlled paid capabilities; live/device acceptance still pending |
 | Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
 | Sandboxed local execution | FAIL-CLOSED / DISABLED | Latest ordinary macOS desktop diagnostic ends in `unknown_failure`/`SIGABRT`; hostile enforcement is not accepted; Linux/Windows not proven here |
-| Cloud tasks | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
+| Cloud tasks | IMPLEMENTED + UNVERIFIED | Durable owner-scoped control-plane jobs/events exist; execution remains disabled without a verified isolated runner |
 
 The comparison follows the current official Codex CLI feature, reference, and
 security pages linked above. Those pages describe the broader interactive
@@ -60,15 +60,15 @@ weakened sandbox policy in RC8.
 | Read, search, ranges | IMPLEMENTED + VERIFIED | ripgrep/fallback and path confinement tests |
 | Patch, create/delete/move | IMPLEMENTED + VERIFIED | Approval, hash and atomic workspace tests |
 | Commands and cancellation | IMPLEMENTED + VERIFIED | Explicit approval, bounded output and cleanup tests |
-| Permission profiles | IMPLEMENTED + VERIFIED | Read-only and approval-required behavior |
+| Permission profiles | IMPLEMENTED + UNVERIFIED | Read-only, approval-required, and persisted workspace-write; workspace-write requires hostile sandbox proof |
 | Plans and context compaction | IMPLEMENTED + VERIFIED | Task-only noninteractive plans; repository context requires explicit workspace consent |
 | Resume and review | IMPLEMENTED + VERIFIED | Owner/workspace checks and read-only review |
 | Non-interactive exec | IMPLEMENTED + VERIFIED | Agent mutations fail closed without approval |
 | MCP stdio | PARTIAL | SDK transport and sandbox gate; host sandbox is unavailable here |
 | MCP HTTP | PARTIAL | Streamable HTTPS transport; broader hostile-server coverage remains |
 | Swico MCP server | IMPLEMENTED + VERIFIED | Read-only stdio capabilities only |
-| Skills and declarative plugins | IMPLEMENTED + VERIFIED | Bounded discovery/inspection; no executable plugins |
-| Hooks | FAIL-CLOSED / DISABLED | Event bus exists; executable hooks remain disabled |
+| Skills and declarative plugins | IMPLEMENTED + UNVERIFIED | Bounded discovery plus explicit hash-bound executable-plugin trust; repository plugins are never trusted merely by existing |
+| Hooks | IMPLEMENTED + UNVERIFIED | Executable hooks require explicit trust, current hash, verified sandbox, bounded environment/output, and timeout |
 | Images | PARTIAL | CLI upload reuses temporary paid image path; live/device verification pending |
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
@@ -78,12 +78,15 @@ weakened sandbox policy in RC8.
 | Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
 | Secret environment isolation | IMPLEMENTED + UNVERIFIED | Cleared/minimal child environment plus fake-secret probe; cross-platform proof pending |
 | Worktrees | IMPLEMENTED + VERIFIED | Owned detached worktrees preserve dirty primary tree |
-| Mutating subagents | NOT IMPLEMENTED | No shared-tree mutation or automatic merge |
-| Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
+| Mutating subagents | IMPLEMENTED + UNVERIFIED | Review-first coordinator uses an owned detached worktree and clean-primary apply; no automatic merge |
+| Cloud control plane | IMPLEMENTED + UNVERIFIED | Durable owner-scoped jobs, idempotency, cancellation, and bounded lifecycle events; no API-local execution |
+| Cloud execution | FAIL-CLOSED / DISABLED | Separate runner protocol/service exists, but native isolated executor and production handshake are not verified |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
 | npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
+| Queue and shell shorthand | IMPLEMENTED + UNVERIFIED | Bounded follow-up queue plus `!command` approval/sandbox path; native sandbox evidence remains host-specific |
+| File mentions and local copy/history | IMPLEMENTED + VERIFIED | Bounded confined `/mention`, Ctrl+R local prompt search, Ctrl+O and `/copy` clipboard path |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary
 check. `swico release-readiness --json` reports `agent_sandbox_ready` as

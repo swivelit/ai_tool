@@ -634,6 +634,59 @@ class CliPendingAction(SQLModel, table=True):
     resolved_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True, index=True))
 
 
+class CliCloudJob(SQLModel, table=True):
+    """Durable cloud control-plane state; execution belongs to an isolated runner."""
+
+    __tablename__ = "cli_cloud_job"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_id", name="uq_cli_cloud_job_user_request"),
+        Index("ix_cli_cloud_job_user_status", "user_id", "status", "created_at"),
+        CheckConstraint(
+            "status IN ('queued', 'dispatching', 'starting', 'running', 'waiting_for_approval', 'cancelling', 'completed', 'failed', 'cancelled', 'expired')",
+            name="ck_cli_cloud_job_status",
+        ),
+        CheckConstraint("attempt >= 0", name="ck_cli_cloud_job_attempt"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    request_id: str = Field(max_length=64, index=True)
+    source: str = Field(default="workspace_snapshot", max_length=32)
+    tier: str = Field(max_length=16, index=True)
+    task: str = Field(sa_column=Column(Text, nullable=False))
+    task_hash: str = Field(max_length=64)
+    status: str = Field(default="queued", max_length=24, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    started_at: Optional[datetime] = Field(default=None, index=True)
+    finished_at: Optional[datetime] = Field(default=None, index=True)
+    cancel_requested_at: Optional[datetime] = Field(default=None, index=True)
+    expires_at: datetime = Field(index=True)
+    runner_id: Optional[str] = Field(default=None, max_length=128, index=True)
+    attempt: int = Field(default=0)
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
+    reservation_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    snapshot_metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    result_metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    failure_code: Optional[str] = Field(default=None, max_length=64)
+
+
+class CliCloudJobEvent(SQLModel, table=True):
+    """Bounded, safe cloud lifecycle events; payloads contain no credentials."""
+
+    __tablename__ = "cli_cloud_job_event"
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_cli_cloud_job_event_sequence"),
+        Index("ix_cli_cloud_job_event_job_created", "job_id", "created_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    job_id: str = Field(foreign_key="cli_cloud_job.id", ondelete="CASCADE", index=True)
+    sequence: int = Field()
+    event_type: str = Field(max_length=32)
+    payload_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class WebGuestSession(SQLModel, table=True):
     """Opaque website guest credential bound to a synthetic internal User."""
 

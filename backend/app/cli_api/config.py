@@ -40,6 +40,9 @@ class CliSettings:
     session_max_seconds: int = 30 * 24 * 60 * 60
     action_retention_seconds: int = 300
     cloud_agent_enabled: bool = False
+    cloud_runner_url: str = ""
+    cloud_runner_configured: bool = False
+    cloud_runner_handshake: bool = False
 
 
 TIER_AGENT_STEP_CEILINGS = {"lite": 12, "standard": 20, "pro": 32, "free": 0}
@@ -54,6 +57,13 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     enabled = _bool("SWICO_CLI_ENABLED", False, values)
     agent_enabled = _bool("SWICO_CLI_AGENT_ENABLED", False, values)
     cloud_agent_enabled = _bool("SWICO_CLI_CLOUD_AGENT_ENABLED", False, values)
+    cloud_runner_url = values.get("SWICO_CLI_CLOUD_RUNNER_URL", "").strip().rstrip("/")
+    cloud_runner_token = values.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "").strip()
+    cloud_runner_handshake = _bool("SWICO_CLI_CLOUD_RUNNER_HANDSHAKE", False, values)
+    if cloud_runner_url:
+        runner_parsed = urlparse(cloud_runner_url)
+        if runner_parsed.scheme != "https" or runner_parsed.username or runner_parsed.password or runner_parsed.query or runner_parsed.fragment:
+            raise CliConfigurationError("SWICO_CLI_CLOUD_RUNNER_URL must be an HTTPS URL without credentials or query parameters.")
     origin = values.get("SWICO_CLI_WEB_ORIGIN", "https://swico.in").strip().rstrip("/")
     parsed = urlparse(origin)
     if parsed.scheme != "https" or parsed.hostname not in {"swico.in", "www.swico.in"} or parsed.username or parsed.password:
@@ -83,6 +93,9 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         max_agent_steps=max_steps,
         agent_run_seconds=agent_run_seconds,
         cloud_agent_enabled=cloud_agent_enabled,
+        cloud_runner_url=cloud_runner_url,
+        cloud_runner_configured=bool(cloud_runner_url and cloud_runner_token),
+        cloud_runner_handshake=cloud_runner_handshake,
     )
 
 

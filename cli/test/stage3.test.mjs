@@ -8,6 +8,8 @@ import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
 import { createSandboxAdapter, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
+import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
+import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
 import { Workspace } from '../dist/workspace.js'
 import { releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
@@ -194,6 +196,24 @@ test('explicit Swico worktrees are detached, owned, and do not alter a dirty pri
     assert.equal((await manager.list()).length, 0)
     assert.equal(await readFile(join(root, 'uncommitted.txt'), 'utf8'), 'preserve\n')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('workspace-write is persisted and mutating workers stay reviewable in separate worktrees', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-worker-')), stateRoot = await mkdtemp(join(tmpdir(), 'swico-worker-state-'))
+  try {
+    await run('git', ['init', '-q', root]); await run('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', '-C', root, 'commit', '--allow-empty', '-m', 'init'])
+    const preferences = join(stateRoot, 'preferences.json'), env = { ...process.env, SWICO_CLI_PREFERENCES_FILE: preferences, SWICO_CLI_WORKTREE_ROOT: join(stateRoot, 'workers'), SWICO_CLI_WORKTREES_FILE: join(stateRoot, 'worktrees.json') }
+    await savePermissionProfile('workspace-write', env)
+    assert.equal(await loadPermissionProfile(env), 'workspace-write')
+    const metadata = { root, gitAvailable: true, head: (await run('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim(), branch: 'master', dirty: false, staged: [], unstaged: [], untracked: [] }
+    const coordinator = new MutatingWorkerCoordinator(metadata, env, 1), worker = await coordinator.start('repair fixture')
+    assert.notEqual(worker.worktree.path, root)
+    await writeFile(join(worker.worktree.path, 'changed.txt'), 'review me\n')
+    const completed = await coordinator.complete(worker.id)
+    assert.equal(completed.status, 'completed'); assert.match(completed.diff, /changed\.txt/)
+    assert.equal((await run('git', ['-C', root, 'status', '--porcelain'])).stdout.trim(), '')
+    await coordinator.discard(worker.id, async () => true)
+  } finally { await rm(root, { recursive: true, force: true }); await rm(stateRoot, { recursive: true, force: true }) }
 })
 
 test('non-interactive worktree cleanup fails closed before touching an owned worktree', async () => {

@@ -47,7 +47,7 @@ test('rich UI keeps the active assistant identity across status, quality, and us
       emit({ event: 'done', data: { cancelled: false } })
       return { text: 'ANSWER_MARKER', threadId: 'thread-1' }
     },
-    onCommand: async () => undefined,
+    onCommand: async (command, context) => { commands.push(command.name); context.notice('usage shown') },
   })
   const running = ui.run()
   terminal.input.emit('data', Buffer.from('first\r', 'utf8'))
@@ -107,6 +107,29 @@ test('rich UI slash menu selection and malformed commands remain local', async (
   assert.deepEqual(commands, ['usage'])
   assert.match(notices[0], /Unknown interactive command \"\/bogus\"/)
   assert.match(notices[0], /usage shown/)
+})
+
+test('rich UI supports local prompt history search and copying the latest answer', async () => {
+  const terminal = fakeTerminal(), copied = [], messages = []
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.1', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    onMessage: async (message, emit) => { messages.push(message); emit({ event: 'delta', data: { text: 'copy me' } }); emit({ event: 'done', data: { cancelled: false } }); return { text: 'copy me', threadId: null } },
+    onCommand: async (command, context) => { if (command.name === 'copy') await context.copyLatest() },
+    onCopy: async text => { copied.push(text) },
+  })
+  const running = ui.run()
+  terminal.input.emit('data', 'first\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', 'second\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '\u0012\u0003')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '\u000f')
+  terminal.input.emit('data', '/copy\r')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  terminal.input.emit('data', '/exit\r'); await running
+  assert.deepEqual(messages, ['first', 'second'])
+  assert.deepEqual(copied, ['copy me', 'copy me'])
 })
 
 test('rich UI decodes fragmented UTF-8, escape input, CRLF, and split paste markers', async () => {

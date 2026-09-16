@@ -91,6 +91,7 @@ export const INTERACTIVE_COMMANDS = [
   { name: 'help', description: 'Show interactive help' },
   { name: 'new', description: 'Start a new Chat thread' },
   { name: 'clear', description: 'Clear the local transcript view' },
+  { name: 'copy', description: 'Copy the latest completed response' },
   { name: 'history', description: 'List your Chat history' },
   { name: 'resume', description: 'Resume a local coding run' },
   { name: 'mode', description: 'Choose auto, chat, agent, or plan' },
@@ -103,6 +104,7 @@ export const INTERACTIVE_COMMANDS = [
   { name: 'image', description: 'Attach a paid Chat image' },
   { name: 'plan', description: 'Request a task-only plan' },
   { name: 'review', description: 'Review local Git changes' },
+  { name: 'mention', description: 'Search workspace files and folders' },
   { name: 'ask', description: 'Send deliberate text, including slash text' },
   { name: 'exit', description: 'Exit Swico' },
 ] as const
@@ -110,7 +112,7 @@ export const INTERACTIVE_COMMANDS = [
 const NO_ARGUMENT_COMMANDS = new Set([
   'exit', 'help', 'new', 'clear', 'mode', 'status', 'sandbox', 'worktree', 'cloud', 'config',
   'mcp', 'skills', 'plan', 'permissions', 'init', 'review', 'history', 'whoami',
-  'usage', 'diff',
+  'usage', 'diff', 'copy',
 ])
 
 function commandError(name: string, detail: string): never {
@@ -132,7 +134,7 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
   if (name === 'mode' && argument && !['chat', 'agent', 'plan'].includes(argument)) commandError(name, 'Mode must be chat, agent, or plan.')
   if ((name === 'model' || name === 'tier') && argument && !['lite', 'standard', 'pro'].includes(argument)) commandError(name, 'Tier must be lite, standard, or pro.')
   if (name === 'search' && argument && !['auto', 'on', 'off'].includes(argument)) commandError(name, 'Search must be auto, on, or off.')
-  if (name === 'permissions' && argument && !['read-only', 'approval-required'].includes(argument)) commandError(name, 'Permission profile must be read-only or approval-required.')
+  if (name === 'permissions' && argument && !['read-only', 'approval-required', 'workspace-write'].includes(argument)) commandError(name, 'Permission profile must be read-only, approval-required, or workspace-write.')
   if (name === 'image' && !argument) commandError(name, 'Usage: /image PATH (paths containing spaces are accepted).')
   if (name === 'agent' && !argument) commandError(name, 'Usage: /agent TASK')
   if (name === 'ask' && !argument) commandError(name, 'Usage: /ask TEXT')
@@ -141,5 +143,6 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
   if (name === 'sandbox' && argument && argument !== 'status') commandError(name, 'Usage: /sandbox or /sandbox status')
   if (name === 'worktree' && argument && argument !== 'list') commandError(name, 'Usage: /worktree or /worktree list')
   if (name === 'cloud' && argument) commandError(name, 'Usage: /cloud')
+  if (name === 'mention' && !argument) commandError(name, 'Usage: /mention QUERY')
   return argument === undefined ? { kind: 'command', name } : { kind: 'command', name, argument }
 }

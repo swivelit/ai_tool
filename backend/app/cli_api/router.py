@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+from secrets import compare_digest
 from typing import Any
 from pathlib import Path
 from uuid import uuid4
@@ -23,7 +24,7 @@ from ..billing.service import enforce_rate_limit, get_wallet_summary, release_sw
 from ..billing.tester_credit import is_configured_tester_email, tester_credit_window_summary
 from ..database import SessionLocal, get_session
 from ..models import (
-    CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession,
+    CliAgentRun, CliAgentStep, CliCloudJob, CliCloudJobEvent, CliDeviceGrant, CliPendingAction, CliSession,
     User, WebChatThread,
 )
 from ..time_utils import ensure_utc, utc_now
@@ -49,7 +50,7 @@ from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, AgentSubagentRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
-    DeviceTokenRequest, CloudJobRequest,
+    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest,
 )
 from .security import (
     digest, human_code, random_secret, valid_code_challenge,
@@ -70,16 +71,58 @@ _BLOCKED_AGENT_PATH = re.compile(
 )
 
 
-def _cloud_unavailable() -> None:
-    """Cloud control-plane placeholder: never execute repository code in API workers."""
-    runner = configured_isolated_runner()
-    raise HTTPException(
-        503,
-        {
-            "code": "cloud_execution_unavailable",
-            "message": f"Cloud execution unavailable: {getattr(runner, 'reason', 'no isolated runner is configured')}.",
-        },
-    )
+def _cloud_access(authorization: str | None, session: Session):
+    """Authorize cloud control-plane access without executing repository code."""
+    settings = _require_agent_enabled()
+    if not settings.cloud_agent_enabled:
+        raise HTTPException(503, {"code": "cloud_execution_disabled", "message": "Swico Cloud is not enabled."})
+    if not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
+        runner = configured_isolated_runner()
+        raise HTTPException(
+            503,
+            {
+                "code": "cloud_execution_unavailable",
+                "message": f"Cloud execution unavailable: {getattr(runner, 'reason', 'isolated runner is not ready')}.",
+            },
+        )
+    cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(settings, user)
+    _require_paid_cli_session(cli_session)
+    return settings, cli_session, user
+
+
+def _cloud_job_view(job: CliCloudJob, *, idempotent: bool = False) -> dict[str, object]:
+    try:
+        result = json.loads(job.result_metadata_json or "{}")
+    except (TypeError, ValueError):
+        result = {}
+    return {
+        "id": job.id,
+        "request_id": job.request_id,
+        "source": job.source,
+        "tier": job.tier,
+        "task": job.task,
+        "status": job.status,
+        "created_at": job.created_at.isoformat(),
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "cancel_requested_at": job.cancel_requested_at.isoformat() if job.cancel_requested_at else None,
+        "expires_at": job.expires_at.isoformat(),
+        "attempt": job.attempt,
+        "result": result,
+        "failure_code": job.failure_code,
+        "idempotent": idempotent,
+    }
+
+
+def _append_cloud_event(session: Session, job: CliCloudJob, event_type: str, payload: dict[str, object] | None = None) -> None:
+    latest = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.desc())).first()
+    session.add(CliCloudJobEvent(
+        job_id=job.id,
+        sequence=(latest.sequence + 1 if latest else 0),
+        event_type=event_type,
+        payload_json=json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False),
+    ))
 
 
 def _settings():
@@ -124,25 +167,125 @@ def cli_health():
 
 @router.post("/cloud/jobs")
 def create_cloud_job(payload: CloudJobRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    """Reserve no work and fail closed until a separately isolated runner exists."""
-    _cli_session_from_header(authorization, session, required_scope="agent")
-    _cloud_unavailable()
+    """Create durable job intent; a separate runner must claim it later."""
+    settings, cli_session, user = _cloud_access(authorization, session)
+    task = payload.task.strip()
+    task_hash = hashlib.sha256(task.encode("utf-8")).hexdigest()
+    existing = session.exec(select(CliCloudJob).where(
+        CliCloudJob.user_id == int(user.id), CliCloudJob.request_id == str(payload.request_id)
+    ).with_for_update()).first()
+    if existing:
+        if existing.task_hash != task_hash or existing.source != payload.source:
+            raise HTTPException(409, {"code": "cloud_request_id_reused", "message": "This request ID was already used for a different cloud task."})
+        return _cloud_job_view(existing, idempotent=True)
+    job = CliCloudJob(
+        user_id=int(user.id), request_id=str(payload.request_id), source=payload.source,
+        tier=cli_session.selected_tier, task=task, task_hash=task_hash,
+        expires_at=utc_now() + timedelta(seconds=settings.agent_run_seconds),
+    )
+    session.add(job)
+    session.flush()
+    _append_cloud_event(session, job, "queued", {"source": payload.source})
+    session.commit()
+    return _cloud_job_view(job)
+
+
+@router.get("/cloud/jobs")
+def list_cloud_jobs(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    _settings, _cli_session, user = _cloud_access(authorization, session)
+    rows = session.exec(select(CliCloudJob).where(CliCloudJob.user_id == int(user.id)).order_by(CliCloudJob.created_at.desc()).limit(100)).all()
+    return {"items": [_cloud_job_view(row) for row in rows]}
 
 
 @router.get("/cloud/jobs/{job_id}")
 def get_cloud_job(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     if not job_id or len(job_id) > 128:
         raise HTTPException(404, "Cloud job not found")
-    _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
-    _cloud_unavailable()
+    _settings, _cli_session, user = _cloud_access(authorization, session)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None:
+        raise HTTPException(404, "Cloud job not found")
+    return _cloud_job_view(job)
 
 
 @router.post("/cloud/jobs/{job_id}/cancel")
 def cancel_cloud_job(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     if not job_id or len(job_id) > 128:
         raise HTTPException(404, "Cloud job not found")
-    _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
-    _cloud_unavailable()
+    _settings, _cli_session, user = _cloud_access(authorization, session)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id)).with_for_update()).first()
+    if job is None:
+        raise HTTPException(404, "Cloud job not found")
+    if job.status in {"completed", "failed", "cancelled", "expired"}:
+        return _cloud_job_view(job)
+    job.cancel_requested_at = utc_now()
+    job.status = "cancelled" if job.status == "queued" else "cancelling"
+    session.add(job)
+    _append_cloud_event(session, job, "cancel_requested", {})
+    session.commit()
+    return _cloud_job_view(job)
+
+
+@router.get("/cloud/jobs/{job_id}/events")
+def cloud_job_events(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    if not job_id or len(job_id) > 128:
+        raise HTTPException(404, "Cloud job not found")
+    _settings, _cli_session, user = _cloud_access(authorization, session)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None:
+        raise HTTPException(404, "Cloud job not found")
+    events = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
+    items = []
+    for event in events:
+        try:
+            event_payload = json.loads(event.payload_json or "{}")
+        except (TypeError, ValueError):
+            event_payload = {}
+        items.append({"sequence": event.sequence, "event_type": event.event_type, "payload": event_payload, "created_at": event.created_at.isoformat()})
+    return {"job_id": job.id, "items": items}
+
+
+def _runner_access(runner_token: str | None, runner_id: str | None):
+    settings = _settings()
+    if not settings.cloud_agent_enabled or not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
+        raise HTTPException(503, {"code": "cloud_execution_unavailable", "message": "The cloud runner is not ready."})
+    expected = os.environ.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "").strip()
+    if not expected or not runner_token or not compare_digest(runner_token, expected) or not runner_id or len(runner_id) > 128:
+        raise HTTPException(403, {"code": "invalid_runner_authentication", "message": "Runner authentication was rejected."})
+    return settings, runner_id
+
+
+@router.post("/cloud/runner/jobs/claim")
+def claim_cloud_job(payload: CloudJobClaimRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), session: Session = Depends(get_session)):
+    settings, runner_id = _runner_access(runner_token, runner_id)
+    query = select(CliCloudJob).where(CliCloudJob.status == "queued", CliCloudJob.expires_at > utc_now()).order_by(CliCloudJob.created_at.asc()).limit(1).with_for_update()
+    if payload.job_id: query = select(CliCloudJob).where(CliCloudJob.id == payload.job_id, CliCloudJob.status == "queued", CliCloudJob.expires_at > utc_now()).with_for_update()
+    job = session.exec(query).first()
+    if job is None: return {"job": None}
+    job.status = "dispatching"; job.runner_id = runner_id; job.attempt += 1; job.lease_expires_at = utc_now() + timedelta(seconds=60); session.add(job)
+    _append_cloud_event(session, job, "claimed", {"attempt": job.attempt})
+    session.commit()
+    return {"job": _cloud_job_view(job), "lease_seconds": 60, "runner_url": settings.cloud_runner_url}
+
+
+@router.post("/cloud/runner/jobs/{job_id}/heartbeat")
+def heartbeat_cloud_job(job_id: str, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), session: Session = Depends(get_session)):
+    _settings, runner_id = _runner_access(runner_token, runner_id)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
+    if job is None or job.status in {"completed", "failed", "cancelled", "expired"}: raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
+    job.lease_expires_at = utc_now() + timedelta(seconds=60); session.add(job); session.commit()
+    return {"job_id": job.id, "status": job.status, "lease_seconds": 60}
+
+
+@router.post("/cloud/runner/jobs/{job_id}/result")
+def complete_cloud_job(job_id: str, payload: CloudJobResultRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), session: Session = Depends(get_session)):
+    _settings, runner_id = _runner_access(runner_token, runner_id)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
+    if job is None or job.status in {"completed", "failed", "cancelled", "expired"}: raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
+    job.status = payload.status; job.finished_at = utc_now(); job.result_metadata_json = json.dumps(payload.result, ensure_ascii=False, separators=(",", ":")); job.failure_code = payload.failure_code; session.add(job)
+    _append_cloud_event(session, job, payload.status, {"has_result": bool(payload.result)})
+    session.commit()
+    return _cloud_job_view(job)
 
 
 def _grant_error(code: str, description: str, status: int = 400):

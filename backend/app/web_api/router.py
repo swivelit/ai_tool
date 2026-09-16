@@ -31,6 +31,8 @@ from ..auth import (
     is_weekly_tester_user,
     is_verified_admin_user,
 )
+from ..cli_api.config import CliConfigurationError, cli_settings
+from ..cli_api.contracts import CloudJobRequest
 from ..alembic_utils import repository_alembic_head
 from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
@@ -115,7 +117,7 @@ from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
-    CliSession,
+    CliCloudJob, CliCloudJobEvent, CliSession,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
     WebKnowledgeDocument,
 )
@@ -2435,6 +2437,87 @@ def revoke_web_cli_session(
         row.revoked_at, row.revoke_reason = utc_now(), "website_revoked"
         session.add(row)
     return {"status": "revoked"}
+
+
+def _web_cloud_access(session: Session, auth: AuthUser):
+    try:
+        settings = cli_settings()
+    except CliConfigurationError as exc:
+        raise HTTPException(503, {"code": "cli_configuration_invalid", "message": str(exc)}) from exc
+    user = get_owned_user(session, auth)
+    if not settings.enabled or not settings.agent_enabled or not settings.cloud_agent_enabled:
+        raise HTTPException(503, {"code": "cloud_execution_disabled", "message": "Swico Cloud is not enabled."})
+    if not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
+        raise HTTPException(503, {"code": "cloud_execution_unavailable", "message": "Swico Cloud runner is not ready."})
+    email = str(user.email or "").strip().casefold()
+    if settings.agent_allowed_emails and email not in settings.agent_allowed_emails:
+        raise HTTPException(403, {"code": "cli_agent_pilot_required", "message": "The local coding agent is limited to its current pilot group."})
+    selected_tier = selected_swico_tier(session, int(user.id))
+    if selected_tier not in {"lite", "standard", "pro"} or (selected_tier == "pro" and not pro_enabled()):
+        raise HTTPException(403, {"code": "cli_paid_tier_required", "message": "Swico Cloud requires an eligible paid tier."})
+    return settings, user
+
+
+def _web_cloud_view(job: CliCloudJob) -> dict[str, object]:
+    try: result = json.loads(job.result_metadata_json or "{}")
+    except (TypeError, ValueError): result = {}
+    return {
+        "id": job.id, "source": job.source, "tier": job.tier, "task": job.task, "status": job.status,
+        "created_at": job.created_at.isoformat(), "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None, "cancel_requested_at": job.cancel_requested_at.isoformat() if job.cancel_requested_at else None,
+        "expires_at": job.expires_at.isoformat(), "attempt": job.attempt, "result": result, "failure_code": job.failure_code,
+    }
+
+
+@router.get("/cloud/jobs")
+def list_web_cloud_jobs(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    _settings, user = _web_cloud_access(session, auth)
+    rows = session.exec(select(CliCloudJob).where(CliCloudJob.user_id == int(user.id)).order_by(CliCloudJob.created_at.desc()).limit(100)).all()
+    return {"items": [_web_cloud_view(row) for row in rows]}
+
+
+@router.post("/cloud/jobs")
+def create_web_cloud_job(payload: CloudJobRequest, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    settings, user = _web_cloud_access(session, auth)
+    task = payload.task.strip(); task_hash = hashlib.sha256(task.encode("utf-8")).hexdigest()
+    existing = session.exec(select(CliCloudJob).where(CliCloudJob.user_id == int(user.id), CliCloudJob.request_id == str(payload.request_id)).with_for_update()).first()
+    if existing:
+        if existing.task_hash != task_hash or existing.source != payload.source:
+            raise HTTPException(409, {"code": "cloud_request_id_reused", "message": "This request ID was already used for a different cloud task."})
+        return _web_cloud_view(existing) | {"idempotent": True}
+    job = CliCloudJob(user_id=int(user.id), request_id=str(payload.request_id), source=payload.source, tier=selected_swico_tier(session, int(user.id)), task=task, task_hash=task_hash, expires_at=utc_now() + timedelta(seconds=settings.agent_run_seconds))
+    session.add(job); session.flush(); session.add(CliCloudJobEvent(job_id=job.id, sequence=0, event_type="queued", payload_json=json.dumps({"source": payload.source}, separators=(",", ":")))); session.commit()
+    return _web_cloud_view(job)
+
+
+@router.get("/cloud/jobs/{job_id}")
+def get_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    if not job_id or len(job_id) > 128: raise HTTPException(404, "Cloud job not found")
+    _settings, user = _web_cloud_access(session, auth)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None: raise HTTPException(404, "Cloud job not found")
+    return _web_cloud_view(job)
+
+
+@router.post("/cloud/jobs/{job_id}/cancel")
+def cancel_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    _settings, user = _web_cloud_access(session, auth)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id)).with_for_update()).first()
+    if job is None: raise HTTPException(404, "Cloud job not found")
+    if job.status in {"completed", "failed", "cancelled", "expired"}: return _web_cloud_view(job)
+    job.cancel_requested_at = utc_now(); job.status = "cancelled" if job.status == "queued" else "cancelling"; session.add(job)
+    latest = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.desc())).first()
+    session.add(CliCloudJobEvent(job_id=job.id, sequence=latest.sequence + 1 if latest else 0, event_type="cancel_requested", payload_json="{}")); session.commit()
+    return _web_cloud_view(job)
+
+
+@router.get("/cloud/jobs/{job_id}/events")
+def events_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    _settings, user = _web_cloud_access(session, auth)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None: raise HTTPException(404, "Cloud job not found")
+    rows = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
+    return {"job_id": job.id, "items": [{"sequence": row.sequence, "event_type": row.event_type, "payload": json.loads(row.payload_json or "{}"), "created_at": row.created_at.isoformat()} for row in rows]}
 
 
 @router.get("/settings/profile")

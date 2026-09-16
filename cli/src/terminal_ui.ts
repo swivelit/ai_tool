@@ -12,6 +12,7 @@ export type RichTerminalCommandContext = {
   prompt: (text: string) => Promise<string>
   clearConversation: () => void
   setThread: (threadId: string | null) => void
+  copyLatest: () => Promise<void>
 }
 
 export type RichTerminalOptions = {
@@ -22,8 +23,12 @@ export type RichTerminalOptions = {
   modeLabel?: () => string
   directory: string
   branch: string | null
+  permissionLabel?: () => string
+  sandboxLabel?: () => string
   onMessage: (message: string, events: (event: SSEEvent) => void) => Promise<{ text: string; threadId: string | null }>
   onCommand: (command: Extract<InteractiveCommand, { kind: 'command' }>, context: RichTerminalCommandContext) => Promise<boolean | void>
+  onCopy?: (text: string) => Promise<void>
+  onLocalCommand?: (command: string) => Promise<void>
 }
 
 const CSI = '\u001b['
@@ -131,6 +136,8 @@ export class RichTerminalUI {
   private finishRun: (() => void) | undefined
   private promptWaiter: { resolve: (value: string) => void; reject: (error: Error) => void } | undefined
   private activeTurn: ActiveTurn | undefined
+  private lastCompletedAssistant = ''
+  private historySearchQuery: string | undefined
   private readonly onInput = (chunk: Buffer | string) => this.consume(typeof chunk === 'string' ? chunk : this.decoder.write(chunk))
   private readonly onInputEnd = () => { this.consume(this.decoder.end()); this.rejectPrompt(new Error('Terminal input closed.')); this.exit() }
   private readonly onResize = () => { this.needsFullClear = true; this.render() }
@@ -216,6 +223,8 @@ export class RichTerminalUI {
       if (char === '\u0003') { if (this.busy && this.cancelCurrent) { this.activeTurn && (this.activeTurn.cancelled = true); this.cancelCurrent(); this.notice('Cancellation requested.'); this.cancelCurrent = undefined } else if (this.draft) { this.draft = ''; this.cursor = 0; this.render() } else this.exit(); continue }
       if (char === '\u0004') { if (!this.draft && !this.busy) this.exit(); else this.deleteForward(); continue }
       if (char === '\u0009') { if (this.busy && this.draft.trim()) this.queueDraft(); else this.selectMenu(); continue }
+      if (char === '\u000f') { void this.copyLatest(); continue }
+      if (char === '\u0012') { this.searchHistory(); continue }
       if (char === '\n') { if (this.ignoreNextLf) this.ignoreNextLf = false; else this.insert('\n'); continue }
       if (char === '\r') { this.ignoreNextLf = this.inputBuffer.startsWith('\n'); void this.submit(); continue }
       if (char === '\u007f') { this.deleteBackward(); continue }
@@ -235,7 +244,7 @@ export class RichTerminalUI {
   private insert(value: string): void {
     if (!value) return
     this.draft = this.draft.slice(0, this.cursor) + value + this.draft.slice(this.cursor)
-    this.cursor += value.length; this.historyIndex = -1; this.scrollOffset = 0; this.menuDismissed = false; this.render()
+    this.cursor += value.length; this.historyIndex = -1; this.historySearchQuery = undefined; this.scrollOffset = 0; this.menuDismissed = false; this.render()
   }
 
   private deleteBackward(): void {
@@ -256,6 +265,25 @@ export class RichTerminalUI {
     this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + direction))
     this.draft = this.historyIndex === this.history.length ? '' : this.history[this.historyIndex]
     this.cursor = this.draft.length; this.render()
+  }
+
+  private searchHistory(): void {
+    if (!this.history.length) { this.notice('No local prompt history is available.'); return }
+    const query = this.historySearchQuery ?? this.draft.trim()
+    this.historySearchQuery = query
+    const match = [...this.history].reverse().find(item => !query || item.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+    if (!match) { this.notice('No matching local prompt found.'); return }
+    this.draft = match; this.cursor = match.length; this.historyIndex = -1; this.render()
+  }
+
+  private async copyLatest(): Promise<void> {
+    if (!this.lastCompletedAssistant) { this.notice('There is no completed Swico response to copy.'); return }
+    if (!this.options.onCopy) { this.notice('Clipboard support is unavailable in this terminal.'); return }
+    try { await this.options.onCopy(this.lastCompletedAssistant); this.notice('Copied the latest Swico response.') } catch (error) { this.notice(error instanceof Error ? error.message : 'Clipboard copy failed.') }
+  }
+
+  private commandContext(): RichTerminalCommandContext {
+    return { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId), copyLatest: () => this.copyLatest() }
   }
 
   private filteredCommands(): readonly (typeof INTERACTIVE_COMMANDS[number])[] {
@@ -285,12 +313,16 @@ export class RichTerminalUI {
     const value = this.draft
     if (!value.trim()) return
     this.history.push(value); this.historyIndex = -1; this.draft = ''; this.cursor = 0; this.scrollOffset = 0
+    if (value.trimStart().startsWith('!')) {
+      try { if (!this.options.onLocalCommand) throw new Error('Local command execution is unavailable in this terminal.'); await this.options.onLocalCommand(value.trimStart().slice(1).trim()) } catch (error) { this.notice(error instanceof Error ? error.message : 'Local command failed.') }
+      return
+    }
     let parsed: InteractiveCommand
     try { parsed = parseInteractiveCommand(value) } catch (error) { this.notice(error instanceof Error ? error.message : 'Invalid interactive command.'); return }
     if (parsed.kind === 'command') {
       if (parsed.name === 'exit') { this.exit(); return }
       if (parsed.name === 'ask') { await this.sendMessage(parsed.argument ?? ''); return }
-      try { await this.options.onCommand(parsed, { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId) }) } catch (error) { this.notice(error instanceof Error ? error.message : 'Swico operation failed.') }
+      try { await this.options.onCommand(parsed, this.commandContext()) } catch (error) { this.notice(error instanceof Error ? error.message : 'Swico operation failed.') }
       return
     }
     await this.sendMessage(parsed.text)
@@ -312,12 +344,13 @@ export class RichTerminalUI {
   private async processNextQueued(): Promise<void> {
     const value = this.queued.shift()
     if (!value || !this.running) return
+    if (value.trimStart().startsWith('!')) { try { if (!this.options.onLocalCommand) throw new Error('Local command execution is unavailable in this terminal.'); await this.options.onLocalCommand(value.trimStart().slice(1).trim()) } catch (error) { this.notice(error instanceof Error ? error.message : 'Local command failed.') }; await this.processNextQueued(); return }
     let parsed: InteractiveCommand
     try { parsed = parseInteractiveCommand(value) } catch (error) { this.notice(error instanceof Error ? error.message : 'Invalid queued command.'); await this.processNextQueued(); return }
     if (parsed.kind === 'message') { await this.sendMessage(parsed.text); return }
     if (parsed.name === 'ask') { await this.sendMessage(parsed.argument ?? ''); return }
     if (parsed.name === 'exit') { this.exit(); return }
-    try { await this.options.onCommand(parsed, { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId) }) } catch (error) { this.notice(error instanceof Error ? error.message : 'Swico operation failed.') }
+    try { await this.options.onCommand(parsed, this.commandContext()) } catch (error) { this.notice(error instanceof Error ? error.message : 'Swico operation failed.') }
     await this.processNextQueued()
   }
 
@@ -330,6 +363,7 @@ export class RichTerminalUI {
     try {
       const answer = await this.options.onMessage(text, event => this.receive(event, turn))
       if (turn.active && !turn.cancelled && !turn.failed && !assistant.text) assistant.text = answer.text ? safeText(answer.text) : assistant.text
+      if (turn.active && !turn.cancelled && !turn.failed) this.lastCompletedAssistant = safeText(answer.text || assistant.text)
       turn.active = false
       if (this.activeTurn === turn) this.activeTurn = undefined
       this.busy = false; this.cancelCurrent = undefined; this.render()
@@ -400,6 +434,8 @@ export class RichTerminalUI {
       card.push(`│ ${cyan(padCells(`Swico ${this.options.version} · ${this.options.tierLabel}`, inner - 1))}│`)
       card.push(`│ ${dim(padCells(`${abbreviatedDirectory(this.options.directory, inner - 1)}${branch}`, inner - 1))}│`)
       if (this.options.modeLabel) card.push(`│ ${dim(padCells(`Mode: ${this.options.modeLabel()}`, inner - 1))}│`)
+      if (this.options.permissionLabel) card.push(`│ ${dim(padCells(`Permissions: ${this.options.permissionLabel()}`, inner - 1))}│`)
+      if (this.options.sandboxLabel) card.push(`│ ${dim(padCells(`Sandbox: ${this.options.sandboxLabel()}`, inner - 1))}│`)
       card.push(`╰${'─'.repeat(inner)}╯`)
     } else card.push(padCells('Swico', layoutWidth))
 
@@ -420,7 +456,7 @@ export class RichTerminalUI {
         wrapped.forEach((part, index) => composerLines.push(padCells(`${lineIndex === 0 && index === 0 ? '> ' : '· '}${part}`, layoutWidth)))
       }
     } else composerLines.push(padCells(`> ${dim('Ask Swico anything…')}`, layoutWidth))
-    const footer = [padCells(dim(this.busy ? 'Working · Ctrl+C cancels' : 'Enter send · Ctrl+J newline · ↑↓ history · Ctrl+D exit'), layoutWidth)]
+    const footer = [padCells(dim(this.busy ? `Working · Ctrl+C cancels · ${this.queued.length} queued` : 'Enter send · Ctrl+J newline · ↑↓ history · Ctrl+D exit'), layoutWidth)]
     const available = Math.max(1, rows - card.length - composerLines.length - menu.length - footer.length - 2)
     const start = Math.max(0, transcript.length - available - this.scrollOffset), visible = transcript.slice(start, start + available)
     const lines = [...card, ...visible, ...menu, '', ...composerLines, ...footer].slice(0, rows).map(line => padCells(line, layoutWidth))

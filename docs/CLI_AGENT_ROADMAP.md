@@ -32,9 +32,13 @@ server billing path; only bounded local observations are sent and the root
 agent remains the sole mutating actor. These do not create a second provider
 or billing path.
 
-Stage 3 remains intentionally bounded: unattended mutating MCP tools, remote
-plugin installation, executable hooks, image workflows requiring a new
-server capability, and mutating/parallel worktree subagents remain deferred.
+This implementation pass adds a persisted `workspace-write` profile (still
+hard-gated by hostile sandbox proof), explicit hash-bound executable plugin
+trust, sandbox-gated executable hooks, a review-first mutating worktree
+coordinator, bounded workspace mention search, local history search, clipboard
+copy, and a durable cloud control-plane job/event API. Unattended mutating MCP
+tools, remote plugin installation, automatic worker merge, and provider-backed
+cloud execution remain deferred.
 Each requires reviewed capability negotiation, owner-scoped billing, bounded
 data flow, approval and cancellation semantics, and platform security tests.
 Full-auto or dangerous modes are not planned until a real platform-enforced
@@ -73,12 +77,12 @@ and child environments are reduced to basic runtime variables. Stage 3 does
 not claim an OS sandbox for the API service.
 
 Explicit Swico-owned detached Git worktrees are available through
-`swico worktree`; the primary tree is never stashed or reset. Mutating
-parallel subagents and automatic merge are not enabled yet. Cloud commands
-are wired to a fail-closed control-plane seam, but no isolated runner is
-configured, so no repository code can execute in the API process.
+`swico worktree`; the primary tree is never stashed or reset. The new
+mutating-worker coordinator gives each worker an owned detached worktree and
+requires review plus a clean-primary check before apply. Cloud jobs are
+persisted and owner-scoped, but no runner executor is configured, so no
+repository code can execute in the API process.
 
 The following remain later-stage work: a reviewed Windows sandbox, a verified
-cross-platform hostile runtime, durable
-isolated cloud runners and snapshot handoff, mutating subagents with merge
-review, sandboxed executable hooks, and unattended side-effecting MCP.
+cross-platform hostile runtime, runner-native execution and snapshot transfer,
+provider-backed worker execution, and unattended side-effecting MCP.

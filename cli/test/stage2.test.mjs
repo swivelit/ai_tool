@@ -7,10 +7,13 @@ import { configSummary, loadConfig, validateMcpDefinition } from '../dist/config
 import { McpManager } from '../dist/mcp.js'
 import { completion } from '../dist/completion.js'
 import { listSkills, selectSkill } from '../dist/skills.js'
-import { inspectPlugin } from '../dist/plugins.js'
+import { inspectPlugin, trustPlugin } from '../dist/plugins.js'
+import { executableHookHash } from '../dist/hooks.js'
+import { runExecutableHook as runHook } from '../dist/hooks.js'
 import { probeEndpoint, streamChat } from '../dist/api.js'
 import { parseTaskArguments, taskText } from '../dist/arguments.js'
 import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from '../dist/output_schema.js'
+import { cloudExec, cloudEvents, cloudList } from '../dist/cloud.js'
 
 test('task parser keeps boolean search switches from consuming the prompt', () => {
   const parsed = parseTaskArguments(['ask', '--search', 'latest', 'status'], 'ask')
@@ -42,6 +45,19 @@ test('doctor probes the explicit no-cost rollout health contract', async () => {
   try {
     assert.deepEqual(await probeEndpoint({ SWICO_API_BASE_URL: 'https://api.example.test' }), { status: 200, state: 'disabled', agent_enabled: false, detail: 'Swico CLI is disabled.' })
     assert.match(calls[0], /\/api\/cli\/v1\/health$/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('cloud CLI uses durable job/list/event endpoints and an idempotent request identity', async () => {
+  const originalFetch = globalThis.fetch, requests = []
+  globalThis.fetch = async (url, init = {}) => { requests.push({ url: String(url), body: init.body ? JSON.parse(String(init.body)) : undefined }); return new Response(JSON.stringify({ id: 'job-1', status: 'queued', items: [] }), { status: 200, headers: { 'content-type': 'application/json' } }) }
+  try {
+    const tokens = { access_token: 'opaque', refresh_token: 'opaque', expires_in: 900, session_id: 'cloud', tier: 'lite', tier_label: 'Swico Lite', scopes: ['chat', 'agent'], account: { email: 'test@example.com', name: 'Test' } }
+    await cloudExec(tokens, 'inspect', { SWICO_API_BASE_URL: 'https://api.example.test' })
+    await cloudList(tokens, { SWICO_API_BASE_URL: 'https://api.example.test' })
+    await cloudEvents(tokens, 'job-1', { SWICO_API_BASE_URL: 'https://api.example.test' })
+    assert.equal(requests[0].body.source, 'workspace_snapshot'); assert.match(requests[0].body.request_id, /^[0-9a-f-]{36}$/)
+    assert.match(requests[2].url, /\/cloud\/jobs\/job-1\/events$/)
   } finally { globalThis.fetch = originalFetch }
 })
 
@@ -90,9 +106,32 @@ test('skills load descriptions before bounded instructions and completion is off
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('declarative plugin inspection rejects executable manifests', async () => {
+test('plugin trust is explicit and invalidated by manifest or entrypoint changes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-plugin-'))
-  try { await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'safe', version: '1.0.0', skills: ['review'] })); assert.equal((await inspectPlugin(root)).name, 'safe'); await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'bad', version: '1', main: 'index.js' })); await assert.rejects(() => inspectPlugin(root), /executable field/) } finally { await rm(root, { recursive: true, force: true }) }
+  try {
+    const env = { ...process.env, SWICO_CLI_PLUGIN_TRUST_FILE: join(root, 'trust.json') }
+    await writeFile(join(root, 'index.mjs'), 'console.log("safe")\n')
+    await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'safe', version: '1.0.0', entrypoint: 'index.mjs', permissions: ['read'] }))
+    assert.equal((await inspectPlugin(root, env)).trusted, false)
+    assert.equal((await trustPlugin(root, env)).trusted, true)
+    await writeFile(join(root, 'index.mjs'), 'console.log("changed")\n')
+    assert.equal((await inspectPlugin(root, env)).trusted, false)
+    await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'bad', version: '1', main: 'index.js' }))
+    await assert.rejects(() => inspectPlugin(root, env), /executable field/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('executable hooks require a current hash and verified sandbox', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-hook-'))
+  try {
+    const sandbox = { status: () => ({ implementation: 'test', available: true, reason: 'verified', policy: 'read-only', network: 'disabled', writable_roots: [] }), wrap: argv => ({ command: argv[0], args: argv.slice(1) }) }
+    const hook = { event: 'user_prompt', command: process.execPath, args: ['-e', 'process.stdout.write("hook-ok")'], trusted: true, approvedHash: '' }
+    hook.approvedHash = await executableHookHash(hook)
+    const result = await runHook(hook, { event: 'user_prompt', summary: 'bounded' }, sandbox, true)
+    assert.equal(result.code, 0); assert.equal(result.stdout, 'hook-ok')
+    await assert.rejects(() => runHook({ ...hook, approvedHash: '0'.repeat(64) }, { event: 'user_prompt' }, sandbox, true), /trust is invalid/)
+    await assert.rejects(() => runHook(hook, { event: 'user_prompt' }, sandbox, false), /verified sandbox/)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('CLI chat carries server-controlled search mode and temporary attachments through the real stream client', async () => {
