@@ -1571,8 +1571,9 @@ it('sends an edited transcript as dictation without automatic synthesis, then re
   expect(voicePayload).toMatchObject({ message:'editable transcript changed', input_mode:'dictation' })
   expect(voicePayload.voice_turn_id).toMatch(/^[0-9a-f-]{36}$/)
   expect(vi.mocked(transcribeAudio).mock.calls[0][2]).not.toBe(voicePayload.voice_turn_id)
-  expect(screen.getByText('Visible answer')).toBeInTheDocument()
+  expect(await screen.findByText('Visible answer')).toBeInTheDocument()
 
+  await waitFor(() => expect(screen.queryByRole('button', { name:'Stop generation' })).not.toBeInTheDocument())
   await userEvent.type(composer, 'normal typed message')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))

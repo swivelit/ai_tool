@@ -24,8 +24,14 @@ export function formatUsage(value: unknown): string {
   const lines = [`Swico Chat usage (${tier})`]
   lines.push(`Available Chat credit: ${available === undefined ? 'unavailable' : `${available} micros`}`)
   lines.push(`Reserved Chat credit: ${reserved === undefined ? 'unavailable' : `${reserved} micros`}`)
-  if (wallet.billing_exempt === true) lines.push('Allowance/eligibility: exempt account (as reported by the usage endpoint)')
-  else lines.push('Allowance/eligibility: not shown by the usage endpoint')
+  const tester = object(body.tester_credit)
+  if (wallet.billing_exempt === true || tester?.source === 'billing_exempt') {
+    lines.push('Allowance/eligibility: exempt account; Unlimited (internal account)')
+  } else if (tester?.active === true) {
+    const testerAvailable = integerLabel(tester.available_micros)
+    const testerEnd = typeof tester.period_end === 'string' ? tester.period_end : undefined
+    lines.push(`Weekly tester credit: ${testerAvailable === undefined ? 'unavailable' : `${testerAvailable} micros remaining`}${testerEnd ? `; resets ${testerEnd}` : ''}`)
+  } else lines.push('Allowance/eligibility: not shown by the usage endpoint')
   if (blended || minimum || maximum) {
     const range = minimum && maximum ? `${minimum}–${maximum}` : blended ?? 'unavailable'
     lines.push(`Estimated token range: ${range} tokens (estimate, not exact provider-token balance)`)

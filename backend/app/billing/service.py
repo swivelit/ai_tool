@@ -233,6 +233,7 @@ def create_usage_reservation(
     credit_bucket: str | None = None,
     voice_turn_id: str | None = None, audio_milliseconds: int = 0,
     characters: int = 0, assistant_message_id: str | None = None,
+    tester_credit_eligible: bool = False,
 ) -> UsageCharge:
     usage_kind = _usage_kind(usage_kind)
     bucket = normalize_credit_bucket(credit_bucket or usage_credit_bucket(usage_kind))
@@ -251,8 +252,18 @@ def create_usage_reservation(
         except (TypeError, ValueError):
             attempt = 2
     subscription_window = None
+    tester_window = None
     funding_source = "wallet"
     if required:
+        if tester_credit_eligible and bucket == "chat":
+            from .tester_credit import reserve_tester_credit
+            tester_window = reserve_tester_credit(
+                session, user_id=user_id, amount_micros=required,
+                request_id=request_id, eligible=True, swico_tier=swico_tier,
+            )
+            if tester_window is not None:
+                funding_source = "tester_credit"
+    if required and funding_source == "wallet":
         from .subscriptions import (
             payg_fallback_enabled, reserve_subscription_window,
             subscription_window_remaining,
@@ -302,6 +313,7 @@ def create_usage_reservation(
         charge.reserved_micros = required
         charge.funding_source = funding_source
         charge.subscription_window_id = subscription_window.id if subscription_window is not None else None
+        charge.tester_credit_window_id = tester_window.id if tester_window is not None else None
         charge.status = "reserved"
         charge.settled_at = None
         charge.pricing_snapshot_json = pricing_snapshot_json
@@ -313,6 +325,7 @@ def create_usage_reservation(
             credit_bucket=bucket,
             funding_source=funding_source,
             subscription_window_id=subscription_window.id if subscription_window is not None else None,
+            tester_credit_window_id=tester_window.id if tester_window is not None else None,
             voice_turn_id=voice_turn_id, audio_milliseconds=max(0, int(audio_milliseconds)),
             characters=max(0, int(characters)), assistant_message_id=assistant_message_id,
         )
@@ -336,7 +349,7 @@ def create_usage_reservation(
         if marker is not None:
             marker.usage_charge_id = charge.id
             session.add(marker)
-    else:
+    elif funding_source == "wallet":
         assert wallet is not None
         _ledger(
             session, wallet, entry_type="reservation", amount_micros=-required,
@@ -386,6 +399,7 @@ def create_billing_exempt_usage(
     charge.assistant_message_id = assistant_message_id
     charge.funding_source = "billing_exempt"
     charge.subscription_window_id = None
+    charge.tester_credit_window_id = None
     charge.reserved_micros = 0
     charge.debited_micros = 0
     charge.billing_exemption_reason = reason
@@ -438,6 +452,7 @@ def create_swico_free_usage(
     charge.assistant_message_id = assistant_message_id
     charge.funding_source = "free"
     charge.subscription_window_id = None
+    charge.tester_credit_window_id = None
     charge.reserved_micros = 0
     charge.provider_cost_micros = 0
     charge.debited_micros = 0
@@ -556,6 +571,12 @@ def expand_usage_reservation(
         charge.reserved_micros += delta
         session.add(charge)
         return charge
+    if charge.funding_source == "tester_credit":
+        from .tester_credit import expand_tester_credit
+        return expand_tester_credit(
+            session, charge=charge, additional_micros=delta,
+            expansion_id=expansion_id,
+        )
     wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     key = f"usage-expand:{request_id}:{expansion_id}"
     existing = session.exec(
@@ -685,6 +706,64 @@ def settle_usage_reservation(
         return charge
     if charge.status != "reserved":
         raise PaymentValidationError("Usage reservation is not active.")
+    if charge.funding_source == "tester_credit":
+        from .tester_credit import settle_tester_credit
+        reserved_provider = charge.provider
+        reserved_model = charge.model
+        reserved_before = int(charge.reserved_micros)
+        provider_debit = max(0, int(provider_cost_micros))
+        try:
+            reservation_pricing_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+        except (TypeError, ValueError):
+            reservation_pricing_snapshot = {}
+        if provider:
+            charge.provider = provider
+        if model:
+            charge.model = model
+        if usage_kind is not None:
+            charge.usage_kind = _usage_kind(usage_kind)
+        if voice_turn_id is not None:
+            charge.voice_turn_id = voice_turn_id
+        if audio_milliseconds is not None:
+            charge.audio_milliseconds = max(0, int(audio_milliseconds))
+        if characters is not None:
+            charge.characters = max(0, int(characters))
+        if swico_tier is not None:
+            charge.swico_tier = swico_tier
+        debit = settle_tester_credit(
+            session, charge=charge, provider_cost_micros=provider_debit,
+            customer_debit_micros=customer_debit_micros,
+        )
+        charge.provider_cost_amount_decimal = provider_cost_amount
+        charge.provider_cost_currency = provider_cost_currency
+        charge.provider_cost_micros = provider_debit
+        charge.reserved_micros = 0
+        charge.debited_micros = debit
+        charge.input_tokens = max(0, input_tokens)
+        charge.cached_input_tokens = max(0, cached_input_tokens)
+        charge.output_tokens = max(0, output_tokens)
+        charge.usage_source = usage_source if usage_source in {"actual", "estimated"} else "estimated"
+        try:
+            pricing_snapshot = json.loads(pricing_snapshot_json or "{}")
+        except (TypeError, ValueError):
+            pricing_snapshot = {}
+        pricing_snapshot["reservation"] = {
+            "provider": reserved_provider, "model": reserved_model,
+            "reserved_micros": reserved_before,
+            "pricing_snapshot": reservation_pricing_snapshot,
+        }
+        if provider_debit > debit:
+            pricing_snapshot["reconciliation"] = {
+                "state": "platform_absorbed_overage",
+                "amount_micros": provider_debit - debit,
+            }
+        charge.pricing_snapshot_json = json.dumps(pricing_snapshot, sort_keys=True, separators=(",", ":"))
+        charge.usd_to_inr_rate = usd_to_inr_rate
+        charge.assistant_message_id = assistant_message_id
+        charge.status = "settled"
+        charge.settled_at = utc_now()
+        session.add(charge)
+        return charge
     if charge.funding_source == "subscription":
         reserved_provider = charge.provider
         reserved_model = charge.model
@@ -862,6 +941,15 @@ def release_usage_reservation(
         )
         charge.status = "released"
         charge.settled_at = utc_now()
+        _annotate_release_reason(charge, bounded_reason)
+        session.add(charge)
+        return charge
+    if charge.funding_source == "tester_credit":
+        from .tester_credit import release_tester_credit
+        release_tester_credit(session, charge=charge)
+        charge.status = "released"
+        charge.settled_at = utc_now()
+        bounded_reason = _bounded_release_reason(reason)
         _annotate_release_reason(charge, bounded_reason)
         session.add(charge)
         return charge

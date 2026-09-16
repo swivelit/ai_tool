@@ -17,9 +17,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
 
-from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user
+from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user, is_internal_test_email
 from ..billing.errors import RateLimitError
 from ..billing.service import enforce_rate_limit, get_wallet_summary, release_swico_free_usage
+from ..billing.tester_credit import is_configured_tester_email, tester_credit_window_summary
 from ..database import SessionLocal, get_session
 from ..models import (
     CliAgentRun, CliAgentStep, CliDeviceGrant, CliPendingAction, CliSession,
@@ -563,7 +564,19 @@ def change_tier(payload: CliTierRequest, authorization: str | None = Header(defa
 def usage(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     row, user = _cli_session_from_header(authorization, session)
     _require_paid_cli_session(row)
-    return {"tier": row.selected_tier, "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"), "wallet": get_wallet_summary(session, int(user.id), swico_tier=row.selected_tier, credit_bucket="chat")}
+    internal = is_internal_test_email(user.email)
+    return {
+        "tier": row.selected_tier,
+        "tier_label": SWICO_TIER_LABELS.get(row.selected_tier, "Swico"),
+        "wallet": get_wallet_summary(
+            session, int(user.id), swico_tier=row.selected_tier,
+            billing_exempt=internal, credit_bucket="chat",
+        ),
+        "tester_credit": tester_credit_window_summary(
+            session, user_id=int(user.id), swico_tier=row.selected_tier,
+            eligible=is_configured_tester_email(user.email), billing_exempt=internal,
+        ),
+    }
 
 
 @router.get("/threads")
@@ -664,6 +677,11 @@ async def chat_stream(payload: CliChatRequest, request: Request, authorization: 
             reply_language=None, attachment_ids=payload.attachment_ids,
             repository_id=payload.repository_id, forced_swico_tier=tier,
             swico_free_eligible=swico_free_eligible(int(user.id)),
+            billing_exempt=is_internal_test_email(user.email),
+            tester_credit_eligible=(
+                is_configured_tester_email(user.email)
+                and not is_internal_test_email(user.email)
+            ),
             input_mode="text", billing_credit_bucket="chat",
             search_mode=payload.search_mode, output_schema=payload.output_schema,
         )
@@ -884,6 +902,29 @@ def _fail_planner_reservation(run_id: str, reservation_id: str) -> None:
             failure_session.commit()
 
 
+def _expire_planner_reservation(run_id: str, reservation_id: str) -> None:
+    """Close a reservation after cancellation/expiry without calling it a provider failure."""
+    with SessionLocal() as expiry_session:
+        run = expiry_session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id).with_for_update()).first()
+        step = expiry_session.exec(select(CliAgentStep).where(
+            CliAgentStep.run_id == run_id, CliAgentStep.reservation_id == reservation_id,
+        ).with_for_update()).first()
+        if run is None or step is None or step.status != "pending":
+            return
+        cancelled = run.cancellation_requested or run.status == "cancelled"
+        expired = ensure_utc(run.expires_at) <= utc_now() or run.status == "expired"
+        terminal = run.status in {"cancelled", "completed", "failed", "expired"}
+        if cancelled or expired or terminal:
+            step.status = "expired"
+            step.updated_at = utc_now()
+            if expired and run.status in {"running", "waiting_approval"}:
+                run.status, run.terminal_reason = "expired", "agent_run_expired"
+                run.updated_at = utc_now()
+                expiry_session.add(run)
+            expiry_session.add(step)
+            expiry_session.commit()
+
+
 def _planner_payload_contract() -> str:
     return (
         "Exact action payload schemas (additional fields are invalid): "
@@ -1041,11 +1082,19 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
             user_id=int(user.id), message=prompt, request_id=request_id,
             thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
             swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
+            billing_exempt=is_internal_test_email(user.email),
+            tester_credit_eligible=(
+                is_configured_tester_email(user.email)
+                and not is_internal_test_email(user.email)
+            ),
         )
         completed = execute_web_turn(prepared)
     except Exception as exc:
-        _fail_planner_reservation(run_id_value, reservation_id)
-        _fail_agent_run(run_id_value, "planner_generation_failed")
+        if _active_agent_run(run_id_value, int(user.id)) is None:
+            _expire_planner_reservation(run_id_value, reservation_id)
+        else:
+            _fail_planner_reservation(run_id_value, reservation_id)
+            _fail_agent_run(run_id_value, "planner_generation_failed")
         raise HTTPException(502, "The coding-agent planner could not complete safely.") from exc
     finally:
         if prepared is not None:
@@ -1053,11 +1102,14 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     try:
         parsed = json.loads(completed.message.content)
     except (TypeError, ValueError) as exc:
-        _fail_planner_reservation(run_id_value, reservation_id)
-        _fail_agent_run(run_id_value, "planner_returned_unstructured_output")
+        if _active_agent_run(run_id_value, int(user.id)) is None:
+            _expire_planner_reservation(run_id_value, reservation_id)
+        else:
+            _fail_planner_reservation(run_id_value, reservation_id)
+            _fail_agent_run(run_id_value, "planner_returned_unstructured_output")
         raise HTTPException(422, "The selected model did not return a supported structured action.") from exc
     if _active_agent_run(run_id_value, int(user.id)) is None:
-        _fail_planner_reservation(run_id_value, reservation_id)
+        _expire_planner_reservation(run_id_value, reservation_id)
         raise HTTPException(409, "The agent run was cancelled or became terminal while planning.")
     if not isinstance(parsed, dict) or parsed.get("kind") not in {"assistant", "action"}:
         _fail_planner_reservation(run_id_value, reservation_id)
@@ -1167,6 +1219,11 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
                 user_id=int(user.id), message=prompt, request_id=request_id,
                 thread_id=run_thread_id, reply_language="en", forced_swico_tier=run_tier,
                 swico_free_eligible=False, input_mode="text", billing_credit_bucket="chat",
+                billing_exempt=is_internal_test_email(user.email),
+                tester_credit_eligible=(
+                    is_configured_tester_email(user.email)
+                    and not is_internal_test_email(user.email)
+                ),
             )
             completed = execute_web_turn(prepared)
             summaries.append({"id": item.id, "summary": completed.message.content[:2_000], "usage": completed.response.input_tokens + completed.response.output_tokens})
@@ -1201,7 +1258,9 @@ def submit_agent_action(run_id: str, payload: AgentAction, authorization: str | 
     payload_hash = _validate_agent_action_payload(payload)
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()
     if run is None:
-        raise HTTPException(409, "Agent run is unavailable")
+        # Do not reveal whether a run exists for another account. Owned
+        # conflicting resources continue to use 409 below.
+        raise HTTPException(404, "Agent run not found")
     duplicate = session.exec(select(CliAgentStep).where(CliAgentStep.run_id == run.id, CliAgentStep.action_id == payload.action_id)).first()
     if duplicate is not None:
         if duplicate.payload_hash != payload_hash:

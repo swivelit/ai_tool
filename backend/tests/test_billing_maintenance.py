@@ -8,9 +8,11 @@ import subprocess
 import sys
 
 import pytest
+from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.billing.service import get_wallet_summary
+from app.billing.schema_readiness import BillingSchemaNotReady, inspect_billing_schema, require_billing_schema
 from app.database import DATABASE_URL, SessionLocal
 from app.models import PaymentOrder, UsageCharge, User, WalletAccount, WalletLedger
 from app.time_utils import utc_now
@@ -212,6 +214,69 @@ def test_missing_database_url_does_not_create_default_sqlite_file(tmp_path: Path
 
     assert result.returncode == CONFIGURATION_ERROR_EXIT_CODE
     assert not (isolated / "data" / "db" / "ai_tool.sqlite3").exists()
+
+
+def _schema_fixture_engine(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'schema.sqlite3').as_posix()}")
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+def test_current_billing_schema_preflight_passes_without_writes(tmp_path: Path) -> None:
+    engine = _schema_fixture_engine(tmp_path)
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.strip().upper())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    readiness = inspect_billing_schema(engine)
+    assert readiness.ready is True
+    assert readiness.missing_tables == ()
+    assert readiness.missing_columns == ()
+    assert not any(statement.startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP")) for statement in statements)
+
+
+def test_missing_tester_credit_column_fails_before_orm_usage_select(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'missing-column.sqlite3').as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE usage_charge (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE weekly_tester_credit_window (id VARCHAR(36) PRIMARY KEY, user_id INTEGER, credit_bucket VARCHAR(16), period_start DATETIME, period_end DATETIME, allowance_micros BIGINT, reserved_micros BIGINT, consumed_micros BIGINT, version INTEGER)"))
+    monkeypatch.setattr("app.database.engine", engine)
+
+    def session_must_not_open():
+        raise AssertionError("ORM session opened before schema preflight")
+
+    monkeypatch.setattr("app.database.SessionLocal", session_must_not_open)
+    with pytest.raises(BillingSchemaNotReady, match="usage_charge.tester_credit_window_id"):
+        billing_maintenance._run_command(
+            billing_maintenance._parser().parse_args(["audit"]), None
+        )
+
+
+def test_missing_tester_credit_table_fails_cleanly_without_database_write(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'missing-table.sqlite3').as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE usage_charge (id VARCHAR(36) PRIMARY KEY, tester_credit_window_id VARCHAR(36))"))
+    with pytest.raises(BillingSchemaNotReady, match="weekly_tester_credit_window"):
+        require_billing_schema(engine)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='weekly_tester_credit_window'")).first() is None
+
+
+def test_schema_mismatch_message_is_operator_safe(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'safe-message.sqlite3').as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE usage_charge (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE weekly_tester_credit_window (id VARCHAR(36) PRIMARY KEY, user_id INTEGER, credit_bucket VARCHAR(16), period_start DATETIME, period_end DATETIME, allowance_micros BIGINT, reserved_micros BIGINT, consumed_micros BIGINT, version INTEGER)"))
+    monkeypatch.setattr("app.database.engine", engine)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://billing-user@db.invalid/swico")
+    assert billing_maintenance.main(["audit"]) == CONFIGURATION_ERROR_EXIT_CODE
+    output = capsys.readouterr()
+    combined = output.out + output.err
+    assert "backend pre-deploy Alembic migration must run first" in combined
+    assert "postgresql://" not in combined
+    assert "db.invalid" not in combined
 
 
 def test_blank_database_url_fails() -> None:

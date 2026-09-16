@@ -1,28 +1,34 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Swico terminal client for authenticated Chat",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "swico": "dist/cli.js"
   },
   "files": [
     "dist/**/*.js",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "LICENSE_SCOPE.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build",
-    "release:check": "npm run build && node scripts/release-check.mjs"
+    "release:check": "npm run build && node scripts/release-check.mjs",
+    "test:conpty-native": "node scripts/test-conpty-native.mjs"
   },
   "devDependencies": {
     "@types/node": "22.10.7",
+    "node-pty": "1.1.0",
     "typescript": "5.7.3"
   },
   "publishConfig": {

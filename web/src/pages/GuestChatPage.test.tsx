@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
@@ -40,6 +40,7 @@ function renderGuest() {
 
 it('renders the restricted guest experience without account controls', () => {
   renderGuest()
+  expect(screen.getByRole('link', { name:'Swico CLI' })).toHaveAttribute('href', '/swico-cli')
   expect(screen.getByRole('link', { name:'Log in' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name:'Sign up for free' })).toBeInTheDocument()
   expect(screen.getByRole('heading', { name:'How can Swico help?' })).toBeInTheDocument()
@@ -49,6 +50,17 @@ it('renders the restricted guest experience without account controls', () => {
   expect(screen.queryByRole('button', { name:'Add to prompt' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name:/Voice/ })).not.toBeInTheDocument()
   expect(screen.queryByText(/wallet|billing|settings|search chats|archived/i)).not.toBeInTheDocument()
+})
+
+it('opens the guest drawer and keeps the public Swico CLI destination available', async () => {
+  const user = userEvent.setup()
+  renderGuest()
+  await user.click(screen.getByRole('button', { name:'Open sidebar' }))
+  expect(screen.getAllByRole('button', { name:'Close sidebar' })).toHaveLength(2)
+  const cliLink = screen.getByRole('link', { name:'Swico CLI' })
+  expect(cliLink).toHaveAttribute('href', '/swico-cli')
+  fireEvent.click(cliLink)
+  await waitFor(() => expect(document.querySelector('.guest-sidebar')).not.toHaveClass('open'))
 })
 
 it('creates a guest session lazily and renders incremental Free SSE events', async () => {

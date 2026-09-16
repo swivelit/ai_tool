@@ -47,6 +47,12 @@ cd cli
 npm run release:check
 ```
 
+Future maintainers should use the reviewed, CI-gated procedure in
+[CLI release automation](CLI_RELEASE_AUTOMATION.md). It prepares a version
+before CI builds the canonical artifact and publishes only through the
+protected npm Trusted Publishing workflow; it does not republish the current
+`0.2.1` package.
+
 Customers do not need Python, this repository, TypeScript, or provider keys.
 The production API is built into the client; browser approval remains on the
 server-controlled `https://swico.in` origin.
@@ -72,12 +78,24 @@ environment. Revoke sessions at `/settings/cli-sessions`.
 ## Chat and agent
 
 `swico ask "question"` and the interactive client stream normal Chat replies.
+On a capable TTY, bare `swico` uses the default rich terminal UI: a compact
+startup card, distinct user/Swico turns, incremental output, readable notices,
+and a multiline composer. Enter submits; Ctrl+J inserts a newline and is the
+portable fallback for terminals that cannot distinguish Shift+Enter. Bracketed
+paste stays in the draft, slash suggestions come from the exact command
+registry, and Ctrl+C cancels an active turn without an automatic retry. `Esc`
+and `/exit` restore the terminal. Use `swico --plain`, a non-TTY, or
+`TERM=dumb` for the line-oriented interface; `NO_COLOR` only disables color.
+Machine output and MCP stdio remain on their existing non-rich paths.
 At the macOS shell, `swico usage` prints a readable, read-only Chat wallet and
 estimate summary; `swico usage --json` returns the stable public usage envelope
 for scripts. Inside an interactive Swico session, use `/usage` instead. These
 commands refresh the selected session when needed but never generate, upload,
 create a reservation, or change tier. Token ranges are estimates and monetary
-values remain integer micros.
+values remain integer micros. Exact verified tester accounts also see their
+Chat-only weekly tester-credit balance and UTC reset time; `swico usage --json`
+exposes only the bounded `tester_credit` object. Internal allowlisted accounts
+report `Unlimited` instead. Tester credit never funds Voice.
 `/model` displays the selected public tier and never accepts a raw vendor
 model. Interactive repository tasks are routed to the local agent when the
 mode is `auto`; `/mode chat`, `/mode plan`, and `/mode agent` select an
@@ -232,44 +250,62 @@ separate policy and are not enabled by default.
 
 ## Publisher commands
 
-After confirming that the publisher controls the `@swiveltechnologies` npm
-scope and that
-the repository's approved license is included in the release, run explicitly.
-This checkout has no owner-approved CLI package license expression or
-referenced notice. Publication remains gated on the owner's licensing decision;
-do not add MIT, Apache, proprietary, or placeholder terms here. An approved
-SPDX expression or `SEE LICENSE IN <file>` decision must include that notice
-and dependency notices in the exact package before publication.
+The stable `0.2.1` package is already public and immutable; do not republish
+it. For future versions, use the protected
+[CLI release automation](CLI_RELEASE_AUTOMATION.md) workflow after reviewing
+the exact canonical CI artifact. The command below is retained only as
+owner-operated reference for the exact-artifact publication policy, not as an
+instruction to publish the current version.
+
+After a fresh seven-check CI run has retained the stable artifact and its
+manifest, confirming that the publisher controls the `@swiveltechnologies` npm
+scope and that the repository's approved license is included in the release,
+run explicitly against the downloaded canonical tarball.
+The CLI package is scoped under the approved MIT terms in `cli/LICENSE` and
+`cli/LICENSE_SCOPE.md`; this does not relicense the monorepo or grant hosted
+service access. Publication remains a separate owner decision: confirm control
+of the `@swiveltechnologies` npm scope and preserve the packaged license and
+dependency notices. npm identity proves account identity, not scope write
+permission.
 
 ```bash
 cd cli
-npm ci
-npm run build
-npm test
-npm run release:check -- --keep-artifact
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm publish ./swiveltechnologies-swico-0.1.0.tgz --access public --tag latest --registry=https://registry.npmjs.org/
+npm publish ./swiveltechnologies-swico-X.Y.Z.tgz --access public --tag latest --registry=https://registry.npmjs.org/
 ```
 
 These are conditional owner-operated commands only; this pass does not run
-them. `npm whoami` proves npm identity, not write access to the
+them. RC8 remains historical prerelease evidence. If a tester needs the RC8
+pilot, its exact retained archive may be published separately with `--tag beta`
+or an explicitly approved `next` tag, never `latest`:
+
+```bash
+npm install -g @swiveltechnologies/swico@beta
+```
+
+The stable workflow is the published `0.2.1` build in this checkout. For
+future versions, publish only the exact tarball and SHA-256 recorded by that
+run's release manifest with `--tag latest`:
+
+```bash
+npm install -g @swiveltechnologies/swico
+```
+
+`npm whoami` proves npm identity, not write access to the
 `@swiveltechnologies` scope. Check scope permissions with the authorized owner
 before publishing. npm account identity is separate from Swico browser login:
 downloading the package never grants API access, and server rollout/paid
 eligibility still governs use. Use the exact artifact filename and hash emitted
-by the final release check. If the owner chooses a beta tag, publish the same
-tested archive with `--tag beta` and have testers install
-`@swiveltechnologies/swico@beta`; it does not change `latest` automatically.
-On Windows use `npm.cmd` and `swico.cmd` equivalents. Scope
-creation/joining and interactive publish authentication belong to the owner,
-not customers or Render.
+by the final release check. On Windows use `npm.cmd` and `swico.cmd`
+equivalents. Scope creation/joining and interactive publish authentication
+belong to the owner, not customers or Render.
 
 For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swiveltechnologies-swico-0.1.0.tgz
+npm install -g ./swiveltechnologies-swico-0.2.1.tgz
 ```
 
 This is not a public-registry install and does not make the package available

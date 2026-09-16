@@ -69,6 +69,12 @@
   backend service pre-deploy command is the sole production migration owner.
   Missing or unsafe database configuration exits before engine creation with
   configuration status `78`.
+- For schema changes, keep the feature flag disabled, deploy the API first,
+  verify its Pre-Deploy `alembic upgrade head` completed and `alembic current`
+  equals `alembic heads`, run the read-only readiness check, then manually
+  deploy schema-dependent financial Cron Jobs before deploying the website and
+  enabling the flag. Disable Cron auto-deploy for these jobs where possible;
+  independent Render Cron deploys must not race the API-owned migration.
 - Render service-level environment variables override environment-group
   values. Avoid duplicate `DATABASE_URL` entries and verify the Cron Job sees
   the intended internal PostgreSQL URL without printing it.
@@ -126,12 +132,11 @@ Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one c
 
 ## Legal publication
 
-The revised policy pages in `web/src/content/legalContent.json` are proposed
-content and remain blocked until exact owner/counsel-approved replacement
-wording and a matching canonical SHA-256 approval record are supplied. Do not
-deploy this code or change approval metadata, versions, or effective dates
-speculatively. The checker does not provide legal advice or certify legal
-compliance.
+The tracked policy pages in `web/src/content/legalContent.json` have a matching
+counsel-approval record and pass `scripts/check-legal-publication.py`. That
+check is not legal advice or a certification of legal compliance. Do not
+change approval metadata, versions, or effective dates speculatively. Razorpay
+Live Mode and checkout remain separate operational decisions.
 
 Raw PDFs, DOCX files, counsel correspondence, signatures, private identity
 material and any future private review evidence must remain under the ignored

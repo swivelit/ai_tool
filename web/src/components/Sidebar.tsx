@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
+import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, Settings, SquareTerminal, SunMoon, Trash2, X } from 'lucide-react'
+import { Link, useInRouterContext } from 'react-router-dom'
 import type { SearchResult, Thread, Wallet } from '../types'
 import { compactTokens, estimatedTokenLabel } from '../credits'
 
@@ -35,6 +36,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   const focusSearchAfterRenderRef = useRef(false)
   const closeRef = useRef<HTMLButtonElement>(null)
   const accountButtonRef = useRef<HTMLButtonElement>(null)
+  const inRouter = useInRouterContext()
   const groups = useMemo(() => groupThreads(threads), [threads])
   const openSearch = useCallback(() => {
     setSearchOpen(true)
@@ -70,6 +72,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       <button ref={closeRef} className="mobile-close icon-button" aria-label="Close sidebar" title="Close sidebar" onClick={close}><X size={20} /></button>
       <button className="collapse-button icon-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={collapseSidebar}>{collapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>
     </div>
+    {inRouter ? <Link className="rail-action cli-sidebar-link" to="/swico-cli" aria-label="Swico CLI" title="Swico CLI" onClick={close}><SquareTerminal size={19} /><span>Swico CLI</span></Link> : <a className="rail-action cli-sidebar-link" href="/swico-cli" aria-label="Swico CLI" title="Swico CLI" onClick={close}><SquareTerminal size={19} /><span>Swico CLI</span></a>}
     <div className="sidebar-primary">
       {iconButton('New chat', <MessageSquarePlus size={19} />, newChat, 'new-chat-button')}
       {collapsed && !searchOpen

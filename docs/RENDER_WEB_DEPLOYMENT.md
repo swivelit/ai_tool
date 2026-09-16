@@ -36,6 +36,16 @@ durable-queue capacity, and Voice-specific rate limits. Ordinary users are assig
 user identifier hash; rollout buckets are never returned by bootstrap,
 settings, diagnostics, or logs. Run the secret-safe probe from Render Shell:
 
+Weekly colleague testing is a separate backend-only opt-in. Add
+`SWICO_WEEKLY_TESTER_CREDITS_ENABLED=false` (set `true` only deliberately),
+`SWICO_WEEKLY_TESTER_EMAILS` as a comma-separated exact normalized list, and
+`SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES=40`. The allowance resets at Monday
+00:00 UTC with no rollover and is Chat-only; internal unlimited accounts take
+precedence. The operational check is content-free:
+`python scripts/weekly_tester_credit_check.py --pretty`. A required reviewer
+on the `npm-production` environment remains an optional safe-auto release
+mode; no local npm credentials are needed.
+
 ```bash
 cd backend
 python scripts/swico_free_probe.py --pretty
@@ -344,7 +354,8 @@ Never give it Firebase, Razorpay, SMTP, download-token, validator-token, Valkey
 or public-site variables. The current GA worker and API both keep
 `WEB_KNOWLEDGE_WORKER_ENABLED=true`; do not change only one side.
 
-The database is already at Alembic head/current `7b4c9e1a2d6f`. No migration is
+The database is already at Alembic head/current `20260915_weekly_tester_credit`.
+No migration is
 required for the acceptance endpoint. Keep the deployed GA settings below and
 correct any non-zero rollout percentages to `0` in one reviewed update to the
 existing API service:
@@ -530,7 +541,7 @@ worker declared in `render.staging.yaml`. Keep production API and worker flags
 false until the staging billing, claim-isolation, cancellation, and restart
 gates pass; the direct-GA procedure below then covers the separately created
 production worker. Neither service adds a public variable.
-The single Alembic head `7b4c9e1a2d6f` (which descends from
+The single Alembic head `20260915_weekly_tester_credit` (which descends from
 `d6f1a8c3e9b4`, `b4e8c1d6a2f9` and includes revisions `3a7d9c2e5f10` and
 `f9c2d7a4e1b6`) must run before deploying this release.
 The historical `f9c2d7a4e1b6` requirement still applies before enabling message editing or
@@ -755,7 +766,7 @@ The billing amounts above are integer paise: `1500` is ₹15 and `29900` is ₹2
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. The current single
-head is `7b4c9e1a2d6f`. Historical revision `b4e8c1d6a2f9` adds the
+head is `20260915_weekly_tester_credit`. Historical revision `b4e8c1d6a2f9` adds the
 content-free Phase 1 TRIAG-RAG telemetry tables; the Phase 4 head adds
 temporary repository index metadata
 and includes the earlier additive message revision, per-user memory,
@@ -906,6 +917,26 @@ Retain the normal pre-deploy `upgrade head` safety command, but this patch adds
 no revision. Do not move balances, rewrite or reclassify historical usage or
 ledger rows, add a `VITE_*` billing setting, or create a service, database,
 Valkey, worker, queue, Cron Job, disk, or object store.
+
+## Schema-changing release order
+
+For any deployment that introduces a database-backed contract, keep the new
+feature flag disabled and confirm backup/recovery capability first. Deploy the
+backend API and let its Pre-Deploy Command run `alembic upgrade head`; verify
+`alembic current` equals `alembic heads`, then run the read-only application
+schema/readiness check. Only after those checks pass should schema-dependent
+financial Cron Jobs be deployed or redeployed. Deploy the website if needed,
+run smoke tests, and enable the feature flag last.
+
+The API remains the sole production migration owner. Cron Jobs must not run
+Alembic, create tables, or assume that their independent Render auto-deploy
+has already observed the API migration. Because all Cron Jobs follow `main`
+independently, the safest production policy for schema-dependent financial
+Cron Jobs is to disable their automatic deployment and manually deploy each
+one after the API migration/readiness verification. If automatic deployment is
+retained, the maintenance schema preflight fails closed with status `78` until
+the API migration is complete; it must never be treated as a migration
+mechanism.
 
 ## Financial Cron Jobs
 
@@ -1122,9 +1153,15 @@ Create separate Test and Live webhooks targeting `https://<api-domain>/api/web/b
 
 The API returns an explicit `razorpay_mode` enum and validates its public-key prefix. For a future cutover, keep checkout disabled, replace `RAZORPAY_MODE`, key ID, key secret, and webhook secret as one reviewed change, deploy/verify the API public config, then enable checkout as a separate reviewed change. Never mix Test and Live values.
 
-Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the owner-attested legal publication and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
+Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the tracked legal publication record and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
 
-For this package change the legal portion is expected to block: the revised Terms, Pricing, and subscription/referral wording is proposed but not yet covered by a new authorised owner/counsel approval record and matching legal-content fingerprint. Do not deploy the purchasable product change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from product copy or code.
+For this package change the tracked Terms, Pricing, and subscription/referral
+wording has a matching counsel-approval record and
+`python scripts/check-legal-publication.py` passes. That structural check is
+not legal advice or automatic authorization for Razorpay Live Mode. Do not
+enable checkout or proceed to Live cutover until the separate operational and
+owner approvals are complete; do not infer payment approval from product copy
+or repository checks alone.
 
 ### Two-phase Live cutover
 
@@ -1141,7 +1178,7 @@ It does not modify wallet or payment balances. Recordings, transcripts, and
 generated audio are not stored in the database or Key Value service.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm the repository-derived head `7b4c9e1a2d6f`.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm the repository-derived head `20260915_weekly_tester_credit`.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
 5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. Revision `e2b7c4d9a1f3` permits downgrade only before any Voice payment, usage, ledger entry, or non-zero Voice wallet exists; it refuses a lossy downgrade after Voice financial activity. In production, preserve additive tables and fix forward.
@@ -1226,12 +1263,9 @@ reconciliation dry-run, and financial audit.
 
 ## Production launch checks
 
-Run `python scripts/check-legal-publication.py`. The revised legal pages are
-proposed content and remain blocked until authorised owner/counsel approval and
-the matching canonical SHA-256 fingerprint are recorded. Do not change approval
-metadata or effective dates speculatively. The checker validates content and
-accountable publication metadata; it is not legal advice or legal-compliance
-certification. Verify provider prices/FX policy;
+Run `python scripts/check-legal-publication.py`. The tracked legal pages pass
+the counsel-approval publication gate; the checker is not legal advice or
+legal-compliance certification. Verify provider prices/FX policy;
 configure alerts/reconciliation; validate the refund/incident ownership
 template; load-test PostgreSQL connections/rate limiting; and confirm edge
 headers/CORS. Razorpay Live Mode and Live checkout remain blocked until every
@@ -1259,37 +1293,56 @@ Mode.
 
 After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹15 payment with owner-controlled payment details, verify the expected server-calculated credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
 
-## Swico CLI rollout
+## Swico CLI public Chat launch runbook
 
-The CLI is an additional client of the existing API and Chat billing bucket.
-Keep these backend settings disabled by default:
+The CLI is an additional client of the existing paid Chat API and billing
+bucket. This runbook applies to the website and CLI Chat surfaces only; the
+local and cloud agents remain disabled.
 
-```text
-SWICO_CLI_ENABLED=false
-SWICO_CLI_AGENT_ENABLED=false
-SWICO_CLI_WEB_ORIGIN=https://swico.in
-SWICO_CLI_ALLOWED_EMAILS=
-SWICO_CLI_MAX_AGENT_STEPS=8
-SWICO_CLI_CLOUD_AGENT_ENABLED=false
-```
+1. Deploy the API and website from the same tested `main` revision.
+2. On the backend Render service set:
 
-Deploy the API and `swico-web` from the same tested commit, run the API-owned
-Alembic pre-deploy migration and the read-only CLI readiness check, then enable
-chat for a test account. Verify device authorization, account ownership, Chat
-reservation/settlement and session revocation before enabling the agent for
-that account. Remove the allowlist only for a wider rollout. Roll back by
-setting either feature flag to `false`; retain schema and billing records.
-There is no new Render service, database, browser localhost origin, or
-provider credential. `/cli/authorize` is served by the existing SPA rewrite.
-Cloud remains disabled and fail-closed: no repository code may run in the API
-or web process until a separately isolated runner and short-lived job
-capability service are reviewed and deployed.
+   ```dotenv
+   SWICO_CLI_ENABLED=true
+   SWICO_CLI_ALLOWED_EMAILS=
+   SWICO_CLI_AGENT_ENABLED=false
+   SWICO_CLI_CLOUD_AGENT_ENABLED=false
+   SWICO_CLI_WEB_ORIGIN=https://swico.in
+   ```
 
-Readiness check (no paid provider call):
+   Removing the old non-empty allowlist is an operator environment change for
+   public rollout; it is intentionally not hardcoded in this repository.
+   Keep the separate weekly tester settings unchanged:
+   `SWICO_WEEKLY_TESTER_CREDITS_ENABLED`, `SWICO_WEEKLY_TESTER_EMAILS`, and
+   `SWICO_WEEKLY_TESTER_ALLOWANCE_RUPEES` do not derive from CLI access.
+3. Use the API service pre-deploy command:
 
-```bash
-cd backend
-python scripts/swico_cli_release_check.py --pretty
-```
+   ```bash
+   cd backend && python -m alembic -c alembic.ini upgrade head
+   ```
 
-CLI installation/authentication details are in `docs/CLI.md`.
+   Confirm `alembic current` and `alembic heads` both report the single head
+   `20260915_weekly_tester_credit`.
+4. From the backend directory, run the read-only gates. They do not call a
+   provider or mutate the database:
+
+   ```bash
+   python scripts/swico_cli_release_check.py --pretty --public
+   python scripts/weekly_tester_credit_check.py --pretty
+   python scripts/triag_release_check.py --pretty
+   python scripts/web_live_search_check.py --pretty
+   ```
+
+   If subscriptions are enabled, also run
+   `python scripts/subscription_release_check.py --pretty`.
+5. Deploy the static site from the same tested revision, then perform the
+   public CLI smoke with a paid, email-verified account that was not in the old
+   CLI tester allowlist. Verify device ownership, tier admission, persistence,
+   logout, and website-driven session revocation.
+6. Keep `SWICO_CLI_AGENT_ENABLED=false` and
+   `SWICO_CLI_CLOUD_AGENT_ENABLED=false`. Do not enable unsandboxed execution.
+7. Razorpay Live checkout is a separate two-phase operational cutover. This
+   runbook does not authorize Live credentials or enable checkout.
+
+CLI installation and acceptance details are in `docs/CLI.md` and
+`docs/CLI_LIVE_ACCEPTANCE.md`.

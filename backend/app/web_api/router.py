@@ -28,6 +28,7 @@ from ..auth import (
     get_current_user,
     get_owned_user,
     is_internal_test_user,
+    is_weekly_tester_user,
     is_verified_admin_user,
 )
 from ..alembic_utils import repository_alembic_head
@@ -54,6 +55,7 @@ from ..billing.subscriptions import (
     subscription_config_public, subscription_summary, subscriptions_enabled,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
+from ..billing.tester_credit import tester_credit_window_summary
 from ..billing.topups import (
     custom_topup_enabled, topup_bounds, topup_packages, validate_topup_amount,
 )
@@ -912,6 +914,7 @@ def bootstrap(
     response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
     billing_exempt = is_internal_test_user(auth, user)
+    tester_credit_eligible = is_weekly_tester_user(auth, user)
     free_available = swico_free_eligible(
         int(user.id), internal_account=billing_exempt,
     )
@@ -938,6 +941,10 @@ def bootstrap(
         "billing": public_billing_config(swico_tier),
         "subscriptions": subscription_summary(
             session, int(user.id), swico_tier=swico_tier, billing_exempt=billing_exempt,
+        ),
+        "tester_credit": tester_credit_window_summary(
+            session, user_id=int(user.id), swico_tier=swico_tier,
+            eligible=tester_credit_eligible, billing_exempt=billing_exempt,
         ),
         "assistant": public_tier_settings(swico_tier, free_available=free_available),
         "features": {
@@ -1441,6 +1448,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
     generation_cancellation: GenerationCancellation | None = None
     structured_error_sent = False
     cleanup_succeeded = False
+    cleanup_complete = False
     reservations_released = False
     client_closed = False
     stop_event = asyncio.Event()
@@ -2209,6 +2217,65 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         ) * 1000 >= endpoint.max_utterance_ms:
             await schedule_endpoint(maximum=True)
 
+    async def cleanup_session() -> None:
+        """Finish provider/billing work before advertising restart readiness.
+
+        Server-initiated close events are a client-visible lifecycle boundary.
+        Keep the active-session lock until all provider tasks, reservations,
+        and the compare-and-delete release have completed, then let the
+        caller send ``session.closed``. The finalizer calls this idempotently
+        for disconnect and exception paths.
+        """
+        nonlocal cleanup_complete, cleanup_succeeded, stage, state
+        nonlocal current_stt_request, reservations_released
+        if cleanup_complete:
+            return
+        stage = "settlement"
+        if generation_cancellation:
+            generation_cancellation.cancel()
+        for task in (endpoint_task, tts_task):
+            if task and not task.done():
+                task.cancel()
+        # The STT reader owns no settlement and is safe to cancel. The chat
+        # worker receives cooperative cancellation and is awaited before lock release.
+        if stt_task and not stt_task.done():
+            stt_task.cancel()
+        if process_task and not process_task.done():
+            if generation_cancellation:
+                generation_cancellation.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(process_task), timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                process_task.cancel()
+        for task in tuple(process_tasks):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (endpoint_task, stt_task, process_task, tts_task, *process_tasks) if task),
+            return_exceptions=True,
+        )
+        await provider.close()
+        if current_stt_request:
+            with SessionLocal() as billing_session:
+                if metadata.billing_exempt:
+                    release_billing_exempt_usage(
+                        billing_session, current_stt_request, reason="voice_disconnect"
+                    )
+                else:
+                    release_usage_reservation(
+                        billing_session, current_stt_request, reason="voice_disconnect"
+                    )
+                billing_session.commit()
+            reservations_released = True
+            current_stt_request = None
+        # This is compare-and-delete, so an old socket cannot release a newer
+        # session if a future lifecycle path ever overlaps cleanup scheduling.
+        await asyncio.to_thread(_tickets().release, metadata)
+        cleanup_succeeded = True
+        state = VoiceState.CLOSED
+        cleanup_complete = True
+        diagnostic(cleanup=cleanup_succeeded)
+
     try:
         stage = "session_started"
         await _voice_send(
@@ -2220,6 +2287,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         while not stop_event.is_set():
             remaining = max_session - (time.monotonic() - started_at)
             if remaining <= 0:
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="maximum_duration")
                 await websocket.close(
                     code=VOICE_CLOSE_CODES["voice_maximum_duration"], reason="voice_maximum_duration"
@@ -2242,6 +2310,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             if receive_task not in done:
                 maximum = time.monotonic() - started_at >= max_session
                 code = "voice_maximum_duration" if maximum else "voice_idle_timeout"
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="maximum_duration" if maximum else "idle_timeout")
                 await websocket.close(code=VOICE_CLOSE_CODES[code], reason=code)
                 break
@@ -2281,6 +2350,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             elif event_type == "session.close":
                 client_closed = True
                 state = VoiceState.CLOSING
+                await cleanup_session()
                 await _voice_send(websocket, "session.closed", reason="client_closed")
                 await websocket.close(code=1000, reason="client_closed")
                 break
@@ -2299,48 +2369,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 "Voice Mode stopped safely. Try again with a fresh session.",
             )
     finally:
-        stage = "settlement"
-        if generation_cancellation:
-            generation_cancellation.cancel()
-        for task in (endpoint_task, tts_task):
-            if task and not task.done():
-                task.cancel()
-        # The STT reader owns no settlement and is safe to cancel. The chat
-        # worker receives cooperative cancellation and is awaited before lock release.
-        if stt_task and not stt_task.done():
-            stt_task.cancel()
-        if process_task and not process_task.done():
-            if generation_cancellation:
-                generation_cancellation.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(process_task), timeout=10)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                process_task.cancel()
-        for task in tuple(process_tasks):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (endpoint_task, stt_task, process_task, tts_task, *process_tasks) if task),
-            return_exceptions=True,
-        )
-        await provider.close()
-        if current_stt_request:
-            with SessionLocal() as billing_session:
-                if metadata.billing_exempt:
-                    release_billing_exempt_usage(
-                        billing_session, current_stt_request, reason="voice_disconnect"
-                    )
-                else:
-                    release_usage_reservation(
-                        billing_session, current_stt_request, reason="voice_disconnect"
-                    )
-                billing_session.commit()
-            reservations_released = True
-            current_stt_request = None
-        await asyncio.to_thread(_tickets().release, metadata)
-        cleanup_succeeded = True
-        state = VoiceState.CLOSED
-        diagnostic(cleanup=cleanup_succeeded)
+        await cleanup_session()
         if not client_closed:
             try:
                 await websocket.close()
@@ -2587,6 +2616,7 @@ def get_usage_settings(
     user = get_owned_user(session, auth)
     return usage_preferences_dict(
         session, user=user, billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -2631,6 +2661,7 @@ def patch_usage_settings(
     return usage_preferences_dict(
         session, user=user, row=row,
         billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -2643,6 +2674,7 @@ def get_usage_summary(
     return usage_summary(
         session, user=user, period=period,
         billing_exempt=is_internal_test_user(auth, user),
+        tester_credit_eligible=is_weekly_tester_user(auth, user),
     )
 
 
@@ -4214,6 +4246,7 @@ async def chat_stream(
                 _resolved_reply_language(user), payload.message,
             )
             billing_exempt = is_internal_test_user(auth, user)
+            tester_credit_eligible = is_weekly_tester_user(auth, user)
             free_eligible = swico_free_eligible(
                 user_id, internal_account=billing_exempt,
             )
@@ -4250,6 +4283,9 @@ async def chat_stream(
                 str(payload.repository_id) if payload.repository_id else None
             ),
             billing_exempt=billing_exempt,
+            tester_credit_eligible=(
+                tester_credit_eligible if guest_identity is None else False
+            ),
             input_mode=payload.input_mode,
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
             continue_message_id=str(payload.continue_message_id) if payload.continue_message_id else None,

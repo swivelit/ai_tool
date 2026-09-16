@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -11,6 +12,7 @@ export type McpCapability = 'read' | 'write' | 'network' | 'unknown'
 export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; capability: McpCapability }
 export type McpDiagnostic = { name: string; transport: string; status: 'unconfigured' | 'ready' | 'failed'; toolCount: number; error?: string }
 const MAX_TOOLS = 32, MAX_RESULT = 64 * 1024, MAX_SCHEMA = 8 * 1024, MAX_ARGS = 32 * 1024
+const packageJson = createRequire(import.meta.url)('../package.json') as { version?: string }
 
 function bounded(value: unknown, max: number): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value)
@@ -40,7 +42,7 @@ export class McpManager {
   private definition(name: string): McpServerDefinition { const item = this.config.mcp.find(value => value.name === name); if (!item) throw new Error(`MCP server '${name}' is not configured.`); validateMcpDefinition(item, item.source === 'user'); if (!item.trusted) throw new Error(`MCP server '${name}' is project configuration and must be explicitly added by the user before use.`); return item }
   private async connect(definition: McpServerDefinition): Promise<{ client: Client; tools: McpTool[] }> {
     const cached = this.clients.get(definition.name); if (cached) return cached
-    const client = new Client({ name: 'swico', version: '0.1.0' }, { capabilities: {} })
+    const client = new Client({ name: 'swico', version: packageJson.version ?? 'unknown' }, { capabilities: {} })
     let transport: StdioClientTransport | StreamableHTTPClientTransport
     if (definition.transport === 'stdio') {
       if (!this.sandbox.status().available || !this.sandboxVerified) throw new Error(`MCP server requires verified local confinement before stdio discovery or calls: ${this.sandbox.status().reason}`)

@@ -7,7 +7,7 @@ jobs:
   legal-publication:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: python scripts/check-legal-publication.py
       - uses: actions/setup-python@v5
         with:

@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Menu, SquareTerminal, X } from 'lucide-react'
 import type { Message, SSEEvent } from '../types'
 import {
   ApiError, ApiNetworkError, clearStoredGuestToken, createGuestSession,
@@ -36,6 +37,7 @@ export function GuestChatPage() {
   const [focusKey, setFocusKey] = useState('guest-initial')
   const [controller, setController] = useState<AbortController | null>(null)
   const [requestId, setRequestId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
   const tokenRef = useRef<string | null>(getStoredGuestToken())
   const acceptedRef = useRef(false)
@@ -147,14 +149,16 @@ export function GuestChatPage() {
   }
 
   return <main className="app-shell guest-app-shell">
-    <aside className="guest-sidebar">
-      <div className="sidebar-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong></div>
-      <button className="rail-action guest-new-chat" type="button" onClick={newChat} disabled={streaming}>＋ <span>New chat</span></button>
+    <aside className={`guest-sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <div className="sidebar-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong><button className="guest-sidebar-close icon-button" aria-label="Close sidebar" title="Close sidebar" onClick={() => setSidebarOpen(false)}><X size={20} /></button></div>
+      <Link className="rail-action guest-cli-link" to="/swico-cli" aria-label="Swico CLI" title="Swico CLI" onClick={() => setSidebarOpen(false)}><SquareTerminal size={19} /><span>Swico CLI</span></Link>
+      <button className="rail-action guest-new-chat" type="button" onClick={() => { setSidebarOpen(false); newChat() }} disabled={streaming}>＋ <span>New chat</span></button>
       <p className="guest-note">You’re using Swico Free as a guest. Sign up to save chats and access more features.</p>
       <nav className="guest-legal"><Link to="/legal/terms">Terms</Link><Link to="/legal/privacy">Privacy</Link><Link to="/legal/contact">Help</Link></nav>
     </aside>
+    {sidebarOpen && <button className="guest-drawer-scrim" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />}
     <section className="chat-main guest-chat-main">
-      <header className="guest-header"><div className="guest-mobile-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong></div><div className="guest-auth-actions"><Link to="/login">Log in</Link><Link className="primary guest-signup" to="/signup">Sign up for free</Link></div></header>
+      <header className="guest-header"><button className="guest-menu-button icon-button" aria-label="Open sidebar" title="Open sidebar" onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><div className="guest-mobile-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong></div><div className="guest-auth-actions"><Link to="/login">Log in</Link><Link className="primary guest-signup" to="/signup">Sign up for free</Link></div></header>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
       <Conversation messages={messages} phase={streamState.phase} queuePosition={streamState.queuePosition} estimatedWaitSeconds={streamState.estimatedWaitSeconds}
         retry={retry} suggest={setDraft} editingAvailable={false} continuationAvailable={false} voiceReplyEnabled={false} feedbackEnabled={false} emptyTitle="How can Swico help?" />

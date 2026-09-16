@@ -11,6 +11,7 @@ from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
 from .ai.provider_pool import configured_provider_aliases
 from .ai.agents.web_search_agent import LiveSearchConfigurationError, live_search_config
 from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
+from .billing.tester_credit import weekly_tester_config, TesterCreditConfigurationError
 from .web_ai.settings import TriagConfigurationError, TriagSettings
 from .web_ai.rollout import (
     RolloutConfigurationError,
@@ -104,6 +105,14 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
 
     if _value(env, "APP_ENV").lower() not in {"prod", "production"}:
         errors.append("APP_ENV must be production")
+
+    tester_enabled = _bool(env, "SWICO_WEEKLY_TESTER_CREDITS_ENABLED", False)
+    if tester_enabled is None:
+        errors.append("SWICO_WEEKLY_TESTER_CREDITS_ENABLED must be a boolean")
+    try:
+        weekly_tester_config(env)
+    except TesterCreditConfigurationError as exc:
+        errors.append(str(exc))
 
     required_false = (
         "LOG_CHAT_CONTENT",

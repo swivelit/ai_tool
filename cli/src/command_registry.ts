@@ -87,10 +87,29 @@ export type InteractiveCommand =
   | { kind: 'message'; text: string }
   | { kind: 'command'; name: string; argument?: string }
 
+export const INTERACTIVE_COMMANDS = [
+  { name: 'help', description: 'Show interactive help' },
+  { name: 'new', description: 'Start a new Chat thread' },
+  { name: 'history', description: 'List your Chat history' },
+  { name: 'resume', description: 'Resume a local coding run' },
+  { name: 'mode', description: 'Choose auto, chat, agent, or plan' },
+  { name: 'model', description: 'Show the server-selected public tier' },
+  { name: 'tier', description: 'Choose a paid CLI tier through explicit login' },
+  { name: 'usage', description: 'Show read-only Chat credit usage' },
+  { name: 'status', description: 'Show account and workspace status' },
+  { name: 'permissions', description: 'Show or choose local permissions' },
+  { name: 'search', description: 'Choose server-controlled search' },
+  { name: 'image', description: 'Attach a paid Chat image' },
+  { name: 'plan', description: 'Request a task-only plan' },
+  { name: 'review', description: 'Review local Git changes' },
+  { name: 'ask', description: 'Send deliberate text, including slash text' },
+  { name: 'exit', description: 'Exit Swico' },
+] as const
+
 const NO_ARGUMENT_COMMANDS = new Set([
   'exit', 'help', 'new', 'mode', 'status', 'sandbox', 'worktree', 'cloud', 'config',
   'mcp', 'skills', 'plan', 'permissions', 'init', 'review', 'history', 'whoami',
-  'model', 'usage', 'diff',
+  'usage', 'diff',
 ])
 
 function commandError(name: string, detail: string): never {
@@ -105,11 +124,12 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
   const name = match[1]
   const argument = match[2]?.trim() || undefined
   const known = new Set([
-    ...NO_ARGUMENT_COMMANDS, 'mode', 'search', 'image', 'resume', 'permissions', 'agent', 'ask',
+    ...NO_ARGUMENT_COMMANDS, ...INTERACTIVE_COMMANDS.map(item => item.name), 'mode', 'search', 'image', 'resume', 'permissions', 'agent', 'ask',
   ])
   if (!known.has(name)) throw new CommandUsageError(`Unknown interactive command "/${name}". Use /ask TEXT for an intentional slash-prefixed Chat message.`)
   if (NO_ARGUMENT_COMMANDS.has(name) && name !== 'mode' && name !== 'sandbox' && name !== 'worktree' && name !== 'cloud' && name !== 'mcp' && name !== 'permissions' && argument) commandError(name, `/${name} does not accept arguments.`)
   if (name === 'mode' && argument && !['chat', 'agent', 'plan'].includes(argument)) commandError(name, 'Mode must be chat, agent, or plan.')
+  if ((name === 'model' || name === 'tier') && argument && !['lite', 'standard', 'pro'].includes(argument)) commandError(name, 'Tier must be lite, standard, or pro.')
   if (name === 'search' && argument && !['auto', 'on', 'off'].includes(argument)) commandError(name, 'Search must be auto, on, or off.')
   if (name === 'permissions' && argument && !['read-only', 'approval-required'].includes(argument)) commandError(name, 'Permission profile must be read-only or approval-required.')
   if (name === 'image' && !argument) commandError(name, 'Usage: /image PATH (paths containing spaces are accepted).')

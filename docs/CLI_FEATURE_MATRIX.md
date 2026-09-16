@@ -6,7 +6,7 @@ production browser, native-device, or every OS security boundary was tested.
 
 ## Dated parity baseline
 
-Reviewed 2026-09-13 against the current official Codex CLI feature,
+Reviewed 2026-09-15 against the current official Codex CLI feature,
 reference, and security documentation:
 
 - https://developers.openai.com/codex/cli/features
@@ -21,8 +21,10 @@ explicitly bounded.
 
 | Workflow area | Swico status | Current boundary |
 |---|---|---|
-| Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route; no live-provider proof in this check |
+| Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route plus installed rich/plain terminal paths; no new live-provider call in this check |
+| Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and local slash controls are implemented; mid-turn steering and richer queued-turn controls are not accepted |
 | Repository instructions, planning, local edits | PARTIAL | Bounded agent protocol; local agent blocked unless hostile sandbox proof passes |
+| Plans and approval loops | PARTIAL | Task-only plans and explicit approvals are tested; a complete disposable coding loop still needs native sandbox and lifecycle acceptance |
 | Approvals and local permissions | IMPLEMENTED + VERIFIED | Read-only/approval-required only; no full-auto mode |
 | Skills, declarative plugins, hooks | PARTIAL | Skills and inspection work; executable hooks/plugins remain disabled |
 | MCP | PARTIAL | Explicit stdio/HTTPS configuration; local stdio needs verified sandbox |
@@ -32,6 +34,21 @@ explicitly bounded.
 | Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
 | Sandboxed local execution | FAIL-CLOSED / DISABLED | Latest ordinary macOS desktop diagnostic ends in `unknown_failure`/`SIGABRT`; hostile enforcement is not accepted; Linux/Windows not proven here |
 | Cloud tasks | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
+
+The comparison follows the current official Codex CLI feature, reference, and
+security pages linked above. Those pages describe the broader interactive
+editing/steering, approvals and sandbox controls, repository instructions,
+plans, MCP, skills/plugins, subagents/worktrees, non-interactive execution and
+cloud surfaces. Swico's rows intentionally distinguish implemented code from
+native, live-provider, billing, or hosted-runner acceptance; public Swico tiers
+and server-owned routing remain unchanged.
+
+Next bounded coding milestone: on a genuinely verified host, run one
+disposable repository through inspect → plan → hash-bound approved edit →
+sandboxed test → repair → diff/result, then exercise cancellation/resume and
+request-correlated usage settlement. This is the next acceptance task, not a
+request to add cloud runners, executable plugins, mutating parallel agents, or
+weakened sandbox policy in RC8.
 
 | Capability | Status | Boundary / evidence |
 |---|---|---|
@@ -65,8 +82,8 @@ explicitly bounded.
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED (installed path) | Final artifact passed clean-prefix checks against a controlled API; not published |
-| License | FAIL-CLOSED / DISABLED | No owner-approved CLI package SPDX expression or `SEE LICENSE IN` notice; publication decision required |
+| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |
+| License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 
 `swico sandbox verify --json` is the authoritative local hostile-boundary
 check. `swico release-readiness --json` reports `agent_sandbox_ready` as

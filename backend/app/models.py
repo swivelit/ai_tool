@@ -768,7 +768,7 @@ class UsageCharge(SQLModel, table=True):
         Index("ix_usage_charge_user_kind_settled", "user_id", "usage_kind", "settled_at"),
         UniqueConstraint("request_id", name="uq_usage_charge_request_id"),
         CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_usage_charge_credit_bucket"),
-        CheckConstraint("funding_source IN ('wallet', 'subscription', 'billing_exempt', 'free')", name="ck_usage_charge_funding_source"),
+        CheckConstraint("funding_source IN ('wallet', 'subscription', 'tester_credit', 'billing_exempt', 'free')", name="ck_usage_charge_funding_source"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
@@ -806,11 +806,42 @@ class UsageCharge(SQLModel, table=True):
         index=True,
         max_length=36,
     )
+    tester_credit_window_id: Optional[str] = Field(
+        default=None,
+        foreign_key="weekly_tester_credit_window.id",
+        ondelete="SET NULL",
+        index=True,
+        max_length=36,
+    )
     billing_exemption_reason: Optional[str] = Field(default=None, max_length=64)
     status: str = Field(default="reserving", max_length=16, index=True)
     pricing_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
     created_at: datetime = Field(default_factory=utc_now, index=True)
     settled_at: Optional[datetime] = None
+
+
+class WeeklyTesterCreditWindow(SQLModel, table=True):
+    """One transactional, chat-only allowance window for an eligible account."""
+
+    __tablename__ = "weekly_tester_credit_window"
+    __table_args__ = (
+        UniqueConstraint("user_id", "credit_bucket", "period_start", name="uq_tester_credit_user_bucket_week"),
+        CheckConstraint("credit_bucket = 'chat'", name="ck_tester_credit_chat_bucket"),
+        CheckConstraint("allowance_micros >= 0 AND reserved_micros >= 0 AND consumed_micros >= 0 AND reserved_micros + consumed_micros <= allowance_micros", name="ck_tester_credit_nonnegative"),
+        Index("ix_tester_credit_user_period", "user_id", "period_start", "period_end"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
+    period_start: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    period_end: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    allowance_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    consumed_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    version: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class WebRetrievalTrace(SQLModel, table=True):

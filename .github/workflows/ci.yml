@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -43,7 +43,7 @@ jobs:
           --health-retries 12
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -75,13 +75,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -122,9 +122,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -141,6 +141,88 @@ jobs:
       - name: Run hostile sandbox verification or assert fail-closed capability
         run: node dist/cli.js sandbox verify --json --ci
         working-directory: cli
+      - name: Run native Windows ConPTY helper acceptance
+        if: runner.os == 'Windows'
+        run: npm run test:conpty-native
+        working-directory: cli
       - name: Build, pack, inspect, and install release artifact
         run: npm run release:check
         working-directory: cli
+
+  cli-release-artifact:
+    needs: [backend, backend-postgres-cli-lifecycle, web, cli]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+      - name: Run locked CLI validation
+        run: npm run typecheck && npm run lint && npm test
+        working-directory: cli
+      - name: Build and accept canonical release artifact
+        run: npm run release:check -- --keep-artifact
+        working-directory: cli
+      - name: Locate exactly the versioned artifact
+        id: artifact
+        working-directory: cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mapfile -t artifacts < <(find . -maxdepth 1 -type f -name "swiveltechnologies-swico-${version}.tgz" -print)
+          if [ "${#artifacts[@]}" -ne 1 ]; then
+            echo "Expected exactly one release artifact for ${version}, found ${#artifacts[@]}" >&2
+            exit 1
+          fi
+          expected="swiveltechnologies-swico-${version}.tgz"
+          artifact_filename="$(basename -- "${artifacts[0]}")"
+          if [[ -z "${artifact_filename}" ||
+                "${artifact_filename}" != "${expected}" ||
+                "${artifact_filename}" == */* ||
+                "${artifact_filename}" == *..* ||
+                "${artifact_filename}" == *\\* ]]; then
+            echo "Artifact locator did not produce the expected safe filename: ${artifact_filename}" >&2
+            exit 1
+          fi
+          if [[ "${version}" == *-* ]]; then
+            artifact_kind="release-candidate"
+          else
+            artifact_kind="release"
+          fi
+          echo "filename=${artifact_filename}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "kind=${artifact_kind}" >> "$GITHUB_OUTPUT"
+      - name: Validate package allowlist and clean build identity
+        working-directory: cli
+        env:
+          RELEASE_MANIFEST: ${{ runner.temp }}/swico-release-manifest.json
+        run: node scripts/validate-release-artifact.mjs "${{ steps.artifact.outputs.filename }}" "$RELEASE_MANIFEST"
+      - name: Stage the flat canonical release artifact
+        id: canonical
+        working-directory: cli
+        env:
+          RELEASE_MANIFEST: ${{ runner.temp }}/swico-release-manifest.json
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/swico-canonical-release"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp "${{ steps.artifact.outputs.filename }}" "$stage/${{ steps.artifact.outputs.filename }}"
+          cp "$RELEASE_MANIFEST" "$stage/swico-release-manifest.json"
+          [[ "$(find "$stage" -type f | wc -l | tr -d ' ')" == 2 ]] || { echo "Canonical staging directory must contain exactly two files" >&2; exit 1; }
+          [[ -f "$stage/${{ steps.artifact.outputs.filename }}" && -f "$stage/swico-release-manifest.json" ]] || { echo "Canonical staging files are missing" >&2; exit 1; }
+      - name: Upload canonical release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: swico-cli-${{ steps.artifact.outputs.version }}-${{ steps.artifact.outputs.kind }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/swico-canonical-release/

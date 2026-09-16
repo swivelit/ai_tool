@@ -545,6 +545,7 @@ class PreparedWebTurn:
     voice_turn_id: str | None = None
     reply_language: str = "en"
     billing_exempt: bool = False
+    tester_credit_eligible: bool = False
     existing_response_id: str | None = None
     provider_messages: list[dict[str, Any]] | None = None
     optimization: WebTurnOptimization | None = None
@@ -1358,6 +1359,7 @@ def prepare_web_turn(
     *, user_id: int, message: str, request_id: str, thread_id: str | None,
     reply_language: str | None, attachment_ids: list[str] | None = None,
     billing_exempt: bool = False, input_mode: str = "text",
+    tester_credit_eligible: bool = False,
     voice_turn_id: str | None = None,
     continue_message_id: str | None = None,
     edit_message_id: str | None = None,
@@ -1439,6 +1441,7 @@ def prepare_web_turn(
                 swico_tier=swico_tier, input_mode=input_mode,
                 voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
                 billing_exempt=billing_exempt,
+                tester_credit_eligible=tester_credit_eligible,
                 existing_response_id=existing_assistant.id,
                 billing_credit_bucket=stored_bucket,
                 rollout_decision=rollout_decision,
@@ -3209,6 +3212,7 @@ def prepare_web_turn(
                 swico_tier=swico_tier,
                 usage_kind="chat", credit_bucket=authoritative_bucket,
                 voice_turn_id=voice_turn_id,
+                tester_credit_eligible=tester_credit_eligible,
             )
         if freshness_search_pending:
             # Admit the normal turn first. The bounded search call is an
@@ -3438,6 +3442,7 @@ def prepare_web_turn(
                         swico_tier=swico_tier,
                         usage_kind="chat",
                         credit_bucket=authoritative_bucket,
+                        tester_credit_eligible=tester_credit_eligible,
                     )
                 elif billing_exempt:
                     embedding_charge = create_billing_exempt_usage(
@@ -3505,6 +3510,7 @@ def prepare_web_turn(
             swico_tier=swico_tier, input_mode=input_mode,
             voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
             billing_exempt=billing_exempt,
+            tester_credit_eligible=tester_credit_eligible,
             provider_messages=provider_messages, optimization=optimization,
             coordinator_decision=coordinator_decision,
             continuity_decision=continuity,

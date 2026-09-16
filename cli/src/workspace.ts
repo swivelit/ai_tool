@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs'
 import { chmod, lstat, link, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, win32, posix } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { NetworkPolicy, SandboxAdapter, SandboxPolicy } from './sandbox.js'
 
@@ -18,9 +18,36 @@ export type SearchOptions = { regex?: boolean; glob?: string; contextLines?: num
 export type FileRange = { path: string; start: number; end: number; text: string; sha256: string }
 export type GitStatus = { branch: string | null; head: string | null; dirty: boolean; staged: string[]; unstaged: string[]; untracked: string[] }
 
+function nativeRealpathSync(value: string): string {
+  const native = (realpathSync as unknown as { native?: typeof realpathSync }).native
+  return (process.platform === 'win32' && native ? native : realpathSync)(value)
+}
+
+function canonicalPath(value: string, platform = process.platform): string {
+  if (platform === 'win32') {
+    // Node may return a normal, short-name, UNC, or extended-length spelling
+    // for the same object. Normalize the supported filesystem spellings before
+    // comparing identities; device namespaces remain outside this policy.
+    let raw = value.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '')
+    let result = win32.normalize(win32.resolve(raw)).replaceAll('/', '\\')
+    if (/^[a-z]:$/i.test(result)) result += '\\'
+    else if (result.length > 1) result = result.replace(/[\\]+$/, '')
+    return result.toLowerCase()
+  }
+  const result = posix.resolve(value)
+  return result.replace(/[\\/]+$/, '') || posix.parse(result).root
+}
+
+export function isPathWithinRoot(root: string, candidate: string, platform = process.platform): boolean {
+  const normalizedRoot = canonicalPath(root, platform)
+  const normalizedCandidate = canonicalPath(candidate, platform)
+  if (normalizedRoot === normalizedCandidate) return true
+  const relativePath = platform === 'win32' ? win32.relative(normalizedRoot, normalizedCandidate) : posix.relative(normalizedRoot, normalizedCandidate)
+  return Boolean(relativePath) && !relativePath.startsWith('..') && !(platform === 'win32' ? win32.isAbsolute(relativePath) : posix.isAbsolute(relativePath))
+}
+
 function inside(root: string, candidate: string): boolean {
-  const rel = slash(relative(root, candidate))
-  return rel === '' || (!rel.startsWith('../') && rel !== '..')
+  return isPathWithinRoot(root, candidate)
 }
 
 function unifiedPatch(original: string, patch: string): string {
@@ -61,26 +88,39 @@ function hash(data: Uint8Array | string): string { return createHash('sha256').u
 
 export class Workspace {
   readonly root: string
-  constructor(root: string, private readonly sandbox?: SandboxAdapter, private readonly sandboxPolicy: SandboxPolicy = 'workspace-write') { this.root = realpathSync(resolve(root)) }
+  constructor(root: string, private readonly sandbox?: SandboxAdapter, private readonly sandboxPolicy: SandboxPolicy = 'workspace-write') { this.root = nativeRealpathSync(resolve(root)) }
 
-  private lexicalPath(input: string): string {
+  private lexicalPath(input: string, allowMissing = false): string {
     const candidate = resolve(this.root, input)
     const rel = slash(relative(this.root, candidate))
-    if (!inside(this.root, candidate) || blocked.test(rel)) throw new Error('Path is outside the trusted, safe workspace.')
+    if (!inside(this.root, candidate)) {
+      // Windows can present the same existing file through a short (8.3) or
+      // extended-length spelling. Resolve that spelling before applying the
+      // root boundary, while leaving the later symlink check authoritative.
+      if (process.platform === 'win32') {
+        try { if (inside(this.root, nativeRealpathSync(candidate))) return candidate } catch {
+          if (allowMissing) {
+            try { if (inside(this.root, nativeRealpathSync(dirname(candidate)))) return candidate } catch { /* rejected below */ }
+          }
+        }
+      }
+      throw new Error('Path is outside the trusted, safe workspace.')
+    }
+    if (blocked.test(rel)) throw new Error('Path is outside the trusted, safe workspace.')
     return candidate
   }
 
   private async confined(input: string, allowMissing = false): Promise<string> {
-    const candidate = this.lexicalPath(input)
+    const candidate = this.lexicalPath(input, allowMissing)
     try {
       const entry = await lstat(candidate)
       if (entry.isSymbolicLink()) throw new Error('Symlinked paths are not allowed.')
-      const real = await realpath(candidate)
+      const real = process.platform === 'win32' ? nativeRealpathSync(candidate) : await realpath(candidate)
       if (!inside(this.root, real)) throw new Error('Path resolves outside the trusted workspace.')
       return real
     } catch (error) {
       if (!allowMissing || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      const parent = await realpath(dirname(candidate))
+      const parent = process.platform === 'win32' ? nativeRealpathSync(dirname(candidate)) : await realpath(dirname(candidate))
       if (!inside(this.root, parent)) throw new Error('Path resolves outside the trusted workspace.')
       return candidate
     }

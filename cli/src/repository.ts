@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { realpath, lstat, readFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { dirname, relative, resolve } from 'node:path'
+import { isPathWithinRoot } from './workspace.js'
 
 const exec = promisify(execFile)
 const MAX_INSTRUCTIONS = 32 * 1024
@@ -56,8 +57,11 @@ export async function discoverRepository(start = process.cwd()): Promise<Reposit
 }
 
 function inside(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate).replaceAll('\\', '/')
-  return rel === '' || (!rel.startsWith('..') && !rel.includes('/..') && !rel.includes('\\..'))
+  return isPathWithinRoot(root, candidate)
+}
+
+function displayPath(root: string, candidate: string): string {
+  return relative(root, candidate).replaceAll('\\', '/')
 }
 
 export async function loadRepositoryInstructions(metadata: RepositoryMetadata, cwd = process.cwd()): Promise<RepositoryInstructions> {
@@ -82,8 +86,9 @@ export async function loadRepositoryInstructions(metadata: RepositoryMetadata, c
       if (remaining <= 0) { truncated = true; break }
       const fullContent = await readFile(real, 'utf8')
       const content = fullContent.slice(0, remaining)
-      chunks.push(`\n# Instructions from ${relative(metadata.root, real) || 'AGENTS.md'}\n${content}`)
-      files.push(relative(metadata.root, real) || 'AGENTS.md')
+      const displayed = displayPath(metadata.root, real) || 'AGENTS.md'
+      chunks.push(`\n# Instructions from ${displayed}\n${content}`)
+      files.push(displayed)
       used += content.length
       if (content.length < fullContent.length) { truncated = true; break }
     } catch { /* absent or unreadable instructions are not fatal */ }

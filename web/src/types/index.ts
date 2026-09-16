@@ -8,6 +8,12 @@ export type Wallet = {
 }
 export type CreditBucket = 'chat' | 'voice'
 export type Wallets = { chat: Wallet; voice: Wallet }
+export type TesterCredit = {
+  active: boolean; source: 'tester_credit' | 'billing_exempt' | 'none'; category: 'chat';
+  allowance_micros?: number; reserved_micros?: number; consumed_micros?: number;
+  available_micros?: number; token_estimate?: TokenEstimate | null;
+  period_start?: string; period_end?: string; balance_display?: 'Unlimited';
+}
 export type SwicoTier = 'free' | 'lite' | 'standard' | 'pro'
 export type SwicoTierOption = {
   id: SwicoTier; label: string; description: string; available: boolean; selected: boolean;
@@ -167,7 +173,7 @@ export type ReferralSummary = {
 }
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: ReplyLanguage };
-  wallet: Wallet; wallets?: Wallets; billing: BillingConfig; assistant: AssistantSettings;
+  wallet: Wallet; wallets?: Wallets; tester_credit?: TesterCredit; billing: BillingConfig; assistant: AssistantSettings;
   subscriptions?: SubscriptionSummary;
   features: {
     web_chat: boolean; prepaid_billing: boolean;
@@ -238,6 +244,7 @@ export type UsagePreferences = {
   next_reset_at: string; timezone: string; updated_at: string | null;
   tier: SwicoTier; tier_label: string;
   billing_exempt?: boolean;
+  tester_credit?: TesterCredit;
 }
 export type MemoryFact = {
   id: string; value_text: string; category: string; created_at: string; updated_at: string;
@@ -299,6 +306,7 @@ export type UsageSummary = {
   by_tier: Record<SwicoTier, TierUsageBreakdown>;
   voice: VoiceUsageBreakdown;
   billing_exempt?: boolean; balance_display?: 'Unlimited';
+  tester_credit?: TesterCredit;
 }
 export type TranscriptionResponse = {
   transcript: string; detected_language: string; duration_seconds: number;

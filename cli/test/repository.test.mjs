@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../dist/workspace.js'
 import { discoverRepository, loadRepositoryInstructions } from '../dist/repository.js'
+import { isPathWithinRoot } from '../dist/workspace.js'
 
 test('repository discovery loads root-to-nearest AGENTS instructions with a bound', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-repo-'))
@@ -40,4 +41,14 @@ test('workspace rejects symlink escapes and protects mutating operations with ap
   await assert.rejects(() => workspace.createFile('new.txt', 'x', async () => false), /not approved/)
   await workspace.createFile('new.txt', 'x', async () => true)
   await assert.rejects(() => workspace.deleteFile('new.txt', async () => false), /not approved/)
+})
+
+test('path confinement rejects Windows cross-drive and accepts canonical path variants', () => {
+  assert.equal(isPathWithinRoot('C:\\Work\\Repo', 'C:\\Work\\Repo\\src\\file.ts', 'win32'), true)
+  assert.equal(isPathWithinRoot('C:\\Work\\Repo', 'c:\\work\\repo\\src\\file.ts', 'win32'), true)
+  assert.equal(isPathWithinRoot('C:\\Work\\Repo', '\\\\?\\C:\\Work\\Repo\\src\\file.ts', 'win32'), true)
+  assert.equal(isPathWithinRoot('\\\\server\\share\\repo', '\\\\?\\UNC\\server\\share\\repo\\src', 'win32'), true)
+  assert.equal(isPathWithinRoot('C:\\Work\\Repo', 'D:\\secret.txt', 'win32'), false)
+  assert.equal(isPathWithinRoot('\\\\server\\share\\repo', '\\\\server\\share\\repo\\src', 'win32'), true)
+  assert.equal(isPathWithinRoot('C:\\Work\\Repo', 'C:\\Work\\Repo-other', 'win32'), false)
 })
