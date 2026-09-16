@@ -311,5 +311,11 @@ npm install -g ./swiveltechnologies-swico-0.2.1.tgz
 This is not a public-registry install and does not make the package available
 to customers.
 
-The initial Chat release keeps `SWICO_CLI_AGENT_ENABLED=false`; agent release
-gates are separate from package installation.
+The public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` and
+`SWICO_CLI_CLOUD_AGENT_ENABLED=false`. A restricted agent pilot, only after
+native sandbox and disposable coding-loop acceptance, adds
+`SWICO_CLI_AGENT_ALLOWED_EMAILS=<comma-separated verified tester emails>`.
+That pilot setting affects agent scope/actions only; it does not restrict
+public Chat or grant weekly tester credits. Run
+`python scripts/swico_cli_release_check.py --pretty --agent-pilot` from the
+backend directory when evaluating that pilot configuration.

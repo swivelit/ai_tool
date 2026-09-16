@@ -1346,3 +1346,33 @@ local and cloud agents remain disabled.
 
 CLI installation and acceptance details are in `docs/CLI.md` and
 `docs/CLI_LIVE_ACCEPTANCE.md`.
+
+## Optional local-agent pilot (apply only after acceptance)
+
+The public Chat settings above remain the production default. After a native
+`swico sandbox verify --json` pass on each target host and the disposable
+coding-loop acceptance, the API service may be configured for a restricted
+pilot. This is an operator environment change, not a repository default:
+
+```dotenv
+SWICO_CLI_ENABLED=true
+SWICO_CLI_ALLOWED_EMAILS=
+SWICO_CLI_AGENT_ENABLED=true
+SWICO_CLI_AGENT_ALLOWED_EMAILS=<comma-separated verified tester emails>
+SWICO_CLI_CLOUD_AGENT_ENABLED=false
+SWICO_CLI_WEB_ORIGIN=https://swico.in
+```
+
+The agent allowlist is independent from `SWICO_WEEKLY_TESTER_EMAILS`; never
+remove or copy the weekly tester list as part of public CLI rollout. From the
+backend directory, run the read-only pilot gate before enabling traffic:
+
+```bash
+python scripts/swico_cli_release_check.py --pretty --agent-pilot
+python scripts/weekly_tester_credit_check.py --pretty
+python scripts/triag_release_check.py --pretty
+```
+
+The pilot does not enable cloud execution, executable hooks, mutating
+subagents, or any unsandboxed fallback. Windows and any host without positive
+hostile sandbox evidence remain fail-closed.

@@ -359,10 +359,11 @@ text messages appear in ordinary chat, then refresh the browser and confirm
 they persist. Test 320 px portrait and mobile landscape with keyboard focus,
 Escape, reduced motion, and microphone denial.
 
-Before the live smoke, `GET /api/version` must include
-`"alembic":{"current":"7b4c9e1a2d6f","head":"7b4c9e1a2d6f","ok":true}`.
+Before the live smoke, `GET /api/version` must report the deployed repository
+head `20260915_weekly_tester_credit` for both Alembic current and head, with
+`ok: true`.
 Use the internal diagnostics endpoint/panel to verify
-matching frontend/backend releases, Alembic head `7b4c9e1a2d6f`, all three
+matching frontend/backend releases, Alembic head `20260915_weekly_tester_credit`, all three
 Voice features, billing exemption, Valkey and Sarvam configuration, and Origin.
 In DevTools filter `voice/sessions` or **All**, not only `ws`, so prerequisite
 HTTP 201/402/409/503 remains visible. Ignore extension `background.js`, service

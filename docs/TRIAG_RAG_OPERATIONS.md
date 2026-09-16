@@ -187,7 +187,9 @@ self-check is unavailable and never falls back to weak execution.
 
 ## Phase 5 knowledge operations
 
-The current additive head is `7b4c9e1a2d6f`. Inspect content-free counts only:
+These content-free knowledge-operation queries are retained from an earlier
+schema snapshot. The current repository Alembic head is
+`20260915_weekly_tester_credit`; inspect counts only:
 
 ```sql
 select status, count(*) from web_knowledge_document group by status;

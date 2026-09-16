@@ -90,6 +90,7 @@ export type InteractiveCommand =
 export const INTERACTIVE_COMMANDS = [
   { name: 'help', description: 'Show interactive help' },
   { name: 'new', description: 'Start a new Chat thread' },
+  { name: 'clear', description: 'Clear the local transcript view' },
   { name: 'history', description: 'List your Chat history' },
   { name: 'resume', description: 'Resume a local coding run' },
   { name: 'mode', description: 'Choose auto, chat, agent, or plan' },
@@ -107,7 +108,7 @@ export const INTERACTIVE_COMMANDS = [
 ] as const
 
 const NO_ARGUMENT_COMMANDS = new Set([
-  'exit', 'help', 'new', 'mode', 'status', 'sandbox', 'worktree', 'cloud', 'config',
+  'exit', 'help', 'new', 'clear', 'mode', 'status', 'sandbox', 'worktree', 'cloud', 'config',
   'mcp', 'skills', 'plan', 'permissions', 'init', 'review', 'history', 'whoami',
   'usage', 'diff',
 ])

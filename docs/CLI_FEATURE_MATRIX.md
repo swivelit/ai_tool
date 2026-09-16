@@ -22,9 +22,9 @@ explicitly bounded.
 | Workflow area | Swico status | Current boundary |
 |---|---|---|
 | Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route plus installed rich/plain terminal paths; no new live-provider call in this check |
-| Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and local slash controls are implemented; mid-turn steering and richer queued-turn controls are not accepted |
-| Repository instructions, planning, local edits | PARTIAL | Bounded agent protocol; local agent blocked unless hostile sandbox proof passes |
-| Plans and approval loops | PARTIAL | Task-only plans and explicit approvals are tested; a complete disposable coding loop still needs native sandbox and lifecycle acceptance |
+| Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and local slash controls are implemented; ordered eight-prompt queued follow-ups are covered; true mid-turn steering remains partial and is never simulated |
+| Repository instructions, planning, local edits | IMPLEMENTED + UNVERIFIED | Disposable coding-loop acceptance covers discovery, AGENTS.md, hash-bound approval, atomic edits, bounded test/repair, and Git result reporting; native sandbox proof remains host-specific |
+| Plans and approval loops | IMPLEMENTED + UNVERIFIED | Task-only plans and explicit approvals are tested; the deterministic disposable lifecycle is covered, but native hostile sandbox evidence is required per host |
 | Approvals and local permissions | IMPLEMENTED + VERIFIED | Read-only/approval-required only; no full-auto mode |
 | Skills, declarative plugins, hooks | PARTIAL | Skills and inspection work; executable hooks/plugins remain disabled |
 | MCP | PARTIAL | Explicit stdio/HTTPS configuration; local stdio needs verified sandbox |
@@ -81,7 +81,7 @@ weakened sandbox policy in RC8.
 | Mutating subagents | NOT IMPLEMENTED | No shared-tree mutation or automatic merge |
 | Cloud execution | FAIL-CLOSED / DISABLED | No isolated runner; API never executes repository code |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
-| Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | No-cost public health endpoint and truly offline credential diagnostics; live/auth readiness remains unverified |
+| Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
 | npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 
@@ -93,5 +93,8 @@ correctly not run because the latest ordinary desktop readiness control is
 inconclusive (`unknown_failure`/`SIGABRT`). This is not evidence of native
 enforcement and does not change the fail-closed agent decision.
 
-The initial production controls remain `SWICO_CLI_AGENT_ENABLED=false` and
-`SWICO_CLI_CLOUD_AGENT_ENABLED=false`.
+The public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` and
+`SWICO_CLI_CLOUD_AGENT_ENABLED=false`. A future agent pilot additionally uses
+`SWICO_CLI_AGENT_ALLOWED_EMAILS` as a case-insensitive server-owned verified
+email restriction; it does not change public Chat access or weekly tester
+credits.

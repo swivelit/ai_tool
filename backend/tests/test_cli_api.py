@@ -47,6 +47,31 @@ def test_cli_health_reports_public_rollout_without_device_or_provider_request(cl
     assert enabled.json()["cloud_agent_enabled"] is True
 
 
+def test_agent_pilot_restriction_preserves_chat_for_nonpilot_user(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", "pilot@example.com")
+    user = create_test_user("cli-nonpilot-chat", "chat-only@example.com")
+    raw_access = "a" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("b" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat", "agent"]', device_description="pilot boundary",
+        ))
+        session.commit()
+
+    denied = client.post(
+        "/api/cli/v1/agent/runs",
+        headers={"Authorization": f"Bearer {raw_access}"},
+        json={"request_id": str(uuid4()), "task": "inspect"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "cli_agent_pilot_required"
+    assert client.get("/api/cli/v1/me", headers={"Authorization": f"Bearer {raw_access}"}).status_code == 200
+
+
 def _start(client: TestClient, *, scopes: list[str] | None = None):
     verifier = _verifier()
     response = client.post("/api/cli/v1/device", json={

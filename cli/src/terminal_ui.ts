@@ -110,6 +110,7 @@ export class RichTerminalUI {
   private readonly useColor = !process.env.NO_COLOR
   private readonly messages: Message[] = []
   private readonly history: string[] = []
+  private readonly queued: string[] = []
   private readonly decoder = new StringDecoder('utf8')
   private draft = ''
   private cursor = 0
@@ -214,7 +215,7 @@ export class RichTerminalUI {
       this.inputBuffer = this.inputBuffer.slice(size)
       if (char === '\u0003') { if (this.busy && this.cancelCurrent) { this.activeTurn && (this.activeTurn.cancelled = true); this.cancelCurrent(); this.notice('Cancellation requested.'); this.cancelCurrent = undefined } else if (this.draft) { this.draft = ''; this.cursor = 0; this.render() } else this.exit(); continue }
       if (char === '\u0004') { if (!this.draft && !this.busy) this.exit(); else this.deleteForward(); continue }
-      if (char === '\u0009') { this.selectMenu(); continue }
+      if (char === '\u0009') { if (this.busy && this.draft.trim()) this.queueDraft(); else this.selectMenu(); continue }
       if (char === '\n') { if (this.ignoreNextLf) this.ignoreNextLf = false; else this.insert('\n'); continue }
       if (char === '\r') { this.ignoreNextLf = this.inputBuffer.startsWith('\n'); void this.submit(); continue }
       if (char === '\u007f') { this.deleteBackward(); continue }
@@ -280,7 +281,7 @@ export class RichTerminalUI {
 
   private async submit(): Promise<void> {
     if (this.promptWaiter) { const waiter = this.promptWaiter; this.promptWaiter = undefined; waiter.resolve(this.draft); this.draft = ''; this.cursor = 0; this.render(); return }
-    if (this.busy) { this.notice('A Chat request is still running. Ctrl+C cancels it.'); return }
+    if (this.busy) { if (this.draft.trim()) this.queueDraft(); else this.notice('A Chat request is still running. Type a follow-up and press Tab to queue it.'); return }
     const value = this.draft
     if (!value.trim()) return
     this.history.push(value); this.historyIndex = -1; this.draft = ''; this.cursor = 0; this.scrollOffset = 0
@@ -295,6 +296,31 @@ export class RichTerminalUI {
     await this.sendMessage(parsed.text)
   }
 
+  private queueDraft(): void {
+    const value = this.draft.trim()
+    if (!value) return
+    if (this.queued.length >= 8) { this.notice('Follow-up queue is full (8 prompts).'); return }
+    this.queued.push(value)
+    this.history.push(value)
+    this.historyIndex = -1
+    this.draft = ''
+    this.cursor = 0
+    this.notice(`Queued follow-up ${this.queued.length}/8. It will run after the active turn.`)
+    this.render()
+  }
+
+  private async processNextQueued(): Promise<void> {
+    const value = this.queued.shift()
+    if (!value || !this.running) return
+    let parsed: InteractiveCommand
+    try { parsed = parseInteractiveCommand(value) } catch (error) { this.notice(error instanceof Error ? error.message : 'Invalid queued command.'); await this.processNextQueued(); return }
+    if (parsed.kind === 'message') { await this.sendMessage(parsed.text); return }
+    if (parsed.name === 'ask') { await this.sendMessage(parsed.argument ?? ''); return }
+    if (parsed.name === 'exit') { this.exit(); return }
+    try { await this.options.onCommand(parsed, { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId) }) } catch (error) { this.notice(error instanceof Error ? error.message : 'Swico operation failed.') }
+    await this.processNextQueued()
+  }
+
   private async sendMessage(text: string): Promise<void> {
     if (!text.trim() || this.busy || !this.running) return
     const assistant: Message = { role: 'assistant', text: '' }
@@ -307,6 +333,7 @@ export class RichTerminalUI {
       turn.active = false
       if (this.activeTurn === turn) this.activeTurn = undefined
       this.busy = false; this.cancelCurrent = undefined; this.render()
+      void this.processNextQueued()
     } catch (error) {
       turn.active = false
       if (this.activeTurn === turn) this.activeTurn = undefined

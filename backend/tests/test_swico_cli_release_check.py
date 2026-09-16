@@ -42,6 +42,33 @@ def test_public_rollout_requires_enabled_unallowlisted_chat_only_configuration()
     assert all("@" not in error for error in errors)
 
 
+def test_agent_pilot_requires_explicit_restricted_agent_configuration() -> None:
+    settings = _settings(
+        SWICO_CLI_AGENT_ENABLED="true",
+        SWICO_CLI_AGENT_ALLOWED_EMAILS=" Pilot@Example.com ",
+    )
+    assert rollout_configuration_errors(settings, agent_pilot=True, environ={}) == []
+    missing_allowlist = rollout_configuration_errors(
+        _settings(SWICO_CLI_AGENT_ENABLED="true"), agent_pilot=True, environ={},
+    )
+    assert missing_allowlist == ["SWICO_CLI_AGENT_ALLOWED_EMAILS must be non-empty for agent pilot"]
+    disabled = rollout_configuration_errors(
+        _settings(SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com"), agent_pilot=True, environ={},
+    )
+    assert "SWICO_CLI_AGENT_ENABLED must be true for agent pilot" in disabled
+
+
+def test_agent_pilot_rejects_development_auth_bypass_without_exposing_values() -> None:
+    settings = _settings(
+        SWICO_CLI_AGENT_ENABLED="true",
+        SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com",
+    )
+    errors = rollout_configuration_errors(
+        settings, agent_pilot=True, environ={"AUTH_ALLOW_DEV_TOKENS": "true"},
+    )
+    assert errors == ["AUTH_ALLOW_DEV_TOKENS must be false for agent pilot"]
+
+
 def test_public_schema_check_requires_all_cli_tables_and_repository_head() -> None:
     head = "20260915_weekly_tester_credit"
     assert schema_readiness_errors(REQUIRED_CLI_TABLES, head, head) == []

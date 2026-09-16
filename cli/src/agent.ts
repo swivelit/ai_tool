@@ -30,6 +30,7 @@ export class LocalAgent {
     const previous = await this.journal.latest(action.action_id, payloadHash)
     if (previous === 'succeeded' || previous === 'failed' || previous === 'unknown') return { status: previous, result: `This action was already recorded as ${previous}; it was not run again.` }
     if (this.profile === 'read-only' && ['apply_patch', 'create_file', 'delete_file', 'move_file', 'run_command'].includes(action.action_type)) return { status: 'failed', result: 'The read-only permission profile blocks mutations and commands.' }
+    if (['apply_patch', 'create_file', 'delete_file', 'move_file', 'run_command'].includes(action.action_type) && !this.workspace.agentSideEffectsAllowed()) return { status: 'failed', result: 'Local agent side effects require a positively verified OS sandbox; no action was admitted or executed.' }
     await this.journal.record({ action_id: action.action_id, action_type: action.action_type, payload_hash: payloadHash, status: 'prepared' })
     const accepted = await json<{ action_id: string; status?: string }>(`/agent/runs/${runId}/actions`, { method: 'POST', body: JSON.stringify({ protocol_version: action.protocol_version, action_id: action.action_id || randomUUID(), action_type: action.action_type, payload: action.payload, payload_hash: payloadHash, ...(action.reservation_id ? { reservation_id: action.reservation_id } : {}) }) }, await this.currentAccessToken(), this.env)
     if (accepted.action_id !== action.action_id) throw new Error('Server returned a different action identity.')

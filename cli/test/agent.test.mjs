@@ -53,3 +53,17 @@ test('read-only LocalAgent blocks the actual mutation path before server admissi
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('LocalAgent refuses side effects unless the workspace carries positive sandbox proof', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-agent-unverified-'))
+  const originalFetch = globalThis.fetch
+  let admitted = false
+  globalThis.fetch = async () => { admitted = true; return new Response('{}') }
+  try {
+    const agent = new LocalAgent(new Workspace(root), 'token', { SWICO_API_BASE_URL: 'https://api.example.test', SWICO_CLI_JOURNAL_FILE: join(root, 'journal.jsonl') }, 'approval-required')
+    const result = await agent.execute('run-1', { protocol_version: 1, action_id: 'unverified-edit', action_type: 'create_file', payload: { path: 'new.txt', content: 'blocked' } }, async () => true)
+    assert.equal(result.status, 'failed')
+    assert.match(String(result.result), /verified OS sandbox/)
+    assert.equal(admitted, false)
+  } finally { globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }) }
+})

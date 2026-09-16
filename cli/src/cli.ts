@@ -89,7 +89,7 @@ function doctorAuthState(error: unknown): string {
   return 'request_error'
 }
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /history /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -254,7 +254,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
     if (skill) { context.skill = (await showSkill(skill.name, info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions; present(`Using skill: ${skill.name}`) }
     const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
-    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp)
+    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy, verification.verified), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp)
     const sessionId = resume?.id ?? run.run_id
     const actions = [...(resume?.actions ?? [])]
     await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
@@ -436,6 +436,7 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
       const argument = command.argument
       if (command.name === 'help') { context.block(help); return }
       if (command.name === 'new') { thread = undefined; context.clearConversation(); context.notice('Started a new Chat thread.'); return }
+      if (command.name === 'clear') { context.clearConversation(); context.notice('Cleared the local transcript view.'); return }
       if (command.name === 'mode') { if (argument) mode = argument as Mode; context.notice(`Mode: ${mode} (Chat, Plan, Agent)`); return }
       if (command.name === 'status') { context.block(await statusText(currentTokens, mode, profile, env)); return }
       if (command.name === 'whoami') { const selected = await ensureTokens(env); currentTokens = selected; context.block(JSON.stringify(await json('/me', {}, selected.access_token, env), null, 2)); return }
@@ -474,6 +475,7 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
           if (parsed.name === 'exit') break
           if (parsed.name === 'help') { console.log(help); continue }
           if (parsed.name === 'new') { thread = undefined; console.log('Started a new chat.'); continue }
+          if (parsed.name === 'clear') { console.clear(); console.log('Cleared the local transcript view.'); continue }
           if (parsed.name === 'mode') { if (!argument) console.log(`Mode: ${mode} (chat, agent, plan; auto routes repository tasks)`); else { mode = argument as Mode; console.log(`Mode: ${mode}`) }; continue }
           if (parsed.name === 'status') { await showStatus(tokens, mode, profile, env); continue }
           if (parsed.name === 'sandbox') { await sandboxCommand(['sandbox', argument ?? 'status'], env); continue }

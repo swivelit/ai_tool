@@ -40,9 +40,23 @@ data flow, approval and cancellation semantics, and platform security tests.
 Full-auto or dangerous modes are not planned until a real platform-enforced
 sandbox exists on the target platform.
 
-The production rollout remains `SWICO_CLI_AGENT_ENABLED=false` until the
- agent's provider budgeting, cancellation/recovery, and cross-platform local
-side-effect gates are separately approved.
+The production public Chat rollout remains `SWICO_CLI_AGENT_ENABLED=false`.
+After native hostile sandbox proof and the disposable coding-loop acceptance,
+an agent pilot may use:
+
+```dotenv
+SWICO_CLI_ENABLED=true
+SWICO_CLI_ALLOWED_EMAILS=
+SWICO_CLI_AGENT_ENABLED=true
+SWICO_CLI_AGENT_ALLOWED_EMAILS=<comma-separated verified tester emails>
+SWICO_CLI_CLOUD_AGENT_ENABLED=false
+SWICO_CLI_WEB_ORIGIN=https://swico.in
+```
+
+The agent allowlist is independent of public CLI access and weekly tester
+credits. An empty agent allowlist means no additional per-email restriction
+when the agent flag is enabled, but the pilot release gate requires a
+non-empty list so the first rollout is deliberately restricted.
 
 ## Stage 3 security boundary in this checkout
 

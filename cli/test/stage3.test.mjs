@@ -149,7 +149,8 @@ test('release readiness reports sandbox proof as a required local-agent gate wit
     const report = await releaseReadiness(root)
     assert.equal(report.checks.chat_ready, 'unverified')
     assert.equal(report.checks.cloud_ready, 'disabled-optional')
-    assert.ok(report.required_blockers.some(item => /sandbox/i.test(item)))
+    assert.ok(report.agent_blockers.some(item => /sandbox/i.test(item)))
+    assert.ok(report.required_blockers.every(item => !/sandbox/i.test(item)))
     assert.equal(report.checks.agent_sandbox_ready, report.sandbox.verified ? 'ready' : 'blocked')
   } finally { await rm(root, { recursive: true, force: true }) }
 })

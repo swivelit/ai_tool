@@ -62,6 +62,33 @@ test('rich UI keeps the active assistant identity across status, quality, and us
   assert.equal((output.match(/ANSWER_MARKER/g) ?? []).length >= 2, true)
 })
 
+test('rich UI queues bounded follow-ups with Tab and runs them in order after the active turn', async () => {
+  const terminal = fakeTerminal(), answers = []
+  let releaseFirst
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.1', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    onMessage: async (message, emit) => {
+      answers.push(message)
+      if (message === 'first') await new Promise(resolve => { releaseFirst = resolve })
+      emit({ event: 'delta', data: { text: message } }); emit({ event: 'done', data: { cancelled: false } })
+      return { text: message, threadId: null }
+    },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  terminal.input.emit('data', 'first\r')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  terminal.input.emit('data', 'second\t')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(answers, ['first'])
+  assert.match(terminal.text(), /Queued follow-up 1\/8/)
+  releaseFirst?.()
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.deepEqual(answers, ['first', 'second'])
+  terminal.input.emit('data', '/exit\r')
+  await running
+})
+
 test('rich UI slash menu selection and malformed commands remain local', async () => {
   const terminal = fakeTerminal(), commands = [], notices = []
   const ui = new RichTerminalUI({

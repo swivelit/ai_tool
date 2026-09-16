@@ -303,6 +303,23 @@ def _email_allowed(settings, auth: AuthUser, user: User) -> bool:
     )
 
 
+def _agent_email_allowed(settings, user: User) -> bool:
+    """Apply only the optional agent-pilot restriction to server-owned identity."""
+    email = str(user.email or "").strip().casefold()
+    return bool(email and (not settings.agent_allowed_emails or email in settings.agent_allowed_emails))
+
+
+def _require_agent_pilot(settings, user: User) -> None:
+    if not _agent_email_allowed(settings, user):
+        raise HTTPException(
+            403,
+            {
+                "code": "cli_agent_pilot_required",
+                "message": "The local coding agent is limited to its current pilot group.",
+            },
+        )
+
+
 def _require_cli_paid_tier(value: object, *, unavailable_status: int = 403) -> str:
     tier = str(value or "").strip().lower()
     if tier not in CLI_PAID_TIERS:
@@ -321,7 +338,9 @@ def _issue_session(session: Session, grant: CliDeviceGrant, user: User, settings
     access, refresh = random_secret(32), random_secret(48)
     selected = _require_cli_paid_tier(grant.requested_tier or selected_swico_tier(session, int(user.id)))
     scopes = _scope_list(grant.scopes_json)
-    if "agent" in scopes and (not settings.agent_enabled or selected == "free"):
+    if "agent" in scopes and (
+        not settings.agent_enabled or selected == "free" or not _agent_email_allowed(settings, user)
+    ):
         scopes = [item for item in scopes if item != "agent"]
     row = CliSession(
         user_id=int(user.id), client_id=grant.client_id,
@@ -950,6 +969,7 @@ def create_agent_run(payload: AgentRunRequest, authorization: str | None = Heade
     if not settings.agent_enabled:
         raise HTTPException(404, {"code": "cli_agent_disabled", "message": "The local coding agent is not enabled."})
     cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(settings, user)
     _require_paid_cli_session(cli_session)
     existing = session.exec(select(CliAgentRun).where(CliAgentRun.request_id == str(payload.request_id))).first()
     if existing is not None:
@@ -974,7 +994,9 @@ def create_agent_run(payload: AgentRunRequest, authorization: str | None = Heade
 
 @router.get("/agent/runs/{run_id}")
 def get_agent_run(run_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    settings = _require_agent_enabled()
+    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(settings, user)
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id))).first()
     if run is None:
         raise HTTPException(404, "Agent run not found")
@@ -983,7 +1005,9 @@ def get_agent_run(run_id: str, authorization: str | None = Header(default=None),
 
 @router.post("/agent/runs/{run_id}/complete")
 def complete_agent_run(run_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    settings = _require_agent_enabled()
+    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(settings, user)
     run = session.exec(select(CliAgentRun).where(
         CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)
     ).with_for_update()).first()
@@ -998,7 +1022,9 @@ def complete_agent_run(run_id: str, authorization: str | None = Header(default=N
 
 @router.post("/agent/runs/{run_id}/cancel")
 def cancel_agent_run(run_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    settings = _require_agent_enabled()
+    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(settings, user)
     run = session.exec(select(CliAgentRun).where(
         CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)
     ).with_for_update()).first()
@@ -1019,6 +1045,7 @@ def plan_agent_step(run_id: str, payload: AgentPlanRequest, authorization: str |
     """
     _require_agent_enabled()
     _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(_settings(), user)
     _require_paid_cli_session(_cli_session)
     try:
         # Planner rounds are metered Chat operations. Reuse the shared user
@@ -1162,6 +1189,7 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
     """
     _require_agent_enabled()
     _cli_session, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(_settings(), user)
     _require_paid_cli_session(_cli_session)
     run = session.exec(select(CliAgentRun).where(
         CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)
@@ -1252,6 +1280,7 @@ def run_read_only_subagents(run_id: str, payload: AgentSubagentRequest, authoriz
 def submit_agent_action(run_id: str, payload: AgentAction, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     _require_agent_enabled()
     _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(_settings(), user)
     _require_paid_cli_session(_cli)
     if not payload.payload_hash:
         raise HTTPException(422, "Action payload hash is required when submitting a local action")
@@ -1302,7 +1331,8 @@ def submit_agent_action(run_id: str, payload: AgentAction, authorization: str | 
 
 @router.post("/agent/runs/{run_id}/actions/{action_id}/result")
 def submit_agent_result(run_id: str, action_id: str, payload: AgentResultRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent", allow_disabled=True)
+    _cli, user = _cli_session_from_header(authorization, session, required_scope="agent")
+    _require_agent_pilot(_settings(), user)
     if payload.action_id != action_id:
         raise HTTPException(409, "Action identity mismatch")
     run = session.exec(select(CliAgentRun).where(CliAgentRun.id == run_id, CliAgentRun.user_id == int(user.id)).with_for_update()).first()

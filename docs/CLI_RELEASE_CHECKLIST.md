@@ -58,10 +58,10 @@ rebuild:
 - SHA-256: `8866e8eda089ad096f3c11203dbba77af722deb9a594ffd66cdb45a24ca083cb`
 - manifest Node: `v22.23.2`
 
-The historical stable candidate was `0.2.0`. Do not record a stable commit SHA or
-tarball SHA-256 in tracked documentation before CI generates them. The stable
-release manifest uploaded by the fresh canonical job is authoritative for those
-values and for the exact artifact filename `swiveltechnologies-swico-0.2.0.tgz`.
+The superseded historical stable candidate was `0.2.0`. Do not use it for a
+current install or record it as the current release. The published `0.2.1`
+manifest and tarball from the canonical workflow are authoritative for the
+current package identity and artifact details.
 
 If the owner later requires `@swico/swico`, update package.json, both package
 identity entries in package-lock.json, README/install/publish guidance, license
@@ -86,30 +86,30 @@ or disposable credential directories.
 
 The historical RC8 archive is retained by GitHub but is not published to npm.
 The superseded `0.2.0` stable archive was not the current release and must not
-be reused. Do
-not claim registry presence or reuse it after any source or approved-license
-change without a new clean build and acceptance. No Render redeploy,
-environment change, or migration is needed for this CLI/docs-only pass.
-Rollback is schema-preserving: restore the previous retained artifact and
-leave the deployed database and migration at `20260913_cli_reservations`.
+be reused. Do not claim registry presence or reuse it after any source or
+approved-license change without a new clean build and acceptance. Rollback is
+schema-preserving: restore the previous retained artifact and leave the
+deployed database at the current repository head,
+`20260915_weekly_tester_credit`.
 
 For the operator: the RC8 live acceptance record and exact artifact procedure
 are in `docs/CLI_LIVE_ACCEPTANCE.md`. Use `swico usage` at the macOS shell and
-`/usage` inside an interactive Swico session. Stable acceptance must use the
-fresh `0.2.0` CI artifact and its generated manifest, not the RC8 tarball.
+`/usage` inside an interactive Swico session. Current stable acceptance must
+use the published `0.2.1` canonical CI artifact and its generated manifest,
+not the historical RC8 tarball.
 Render is not involved in this CLI-only change. The installed UI scope is
 recorded in `docs/CLI_TUI_ACCEPTANCE.md`.
 
-For a stable desktop pilot prefix after fresh CI, use the explicit absolute
+For a current `0.2.1` desktop acceptance prefix, use the explicit absolute
 path in every new Terminal tab; compare the downloaded hash to the generated
 manifest and do not replace the older global installation:
 
 ```sh
-mkdir -p "$HOME/.local/share/swico-0.2.0"
-shasum -a 256 ./swiveltechnologies-swico-0.2.0.tgz
-npm install --global --prefix "$HOME/.local/share/swico-0.2.0" ./swiveltechnologies-swico-0.2.0.tgz
-"$HOME/.local/share/swico-0.2.0/bin/swico" --version --json
-"$HOME/.local/share/swico-0.2.0/bin/swico" usage --json
+mkdir -p "$HOME/.local/share/swico-0.2.1"
+shasum -a 256 ./swiveltechnologies-swico-0.2.1.tgz
+npm install --global --prefix "$HOME/.local/share/swico-0.2.1" ./swiveltechnologies-swico-0.2.1.tgz
+"$HOME/.local/share/swico-0.2.1/bin/swico" --version --json
+"$HOME/.local/share/swico-0.2.1/bin/swico" usage --json
 ```
 
 `swico usage` is a macOS shell command. `/usage`, `/exit`, `you>` and the

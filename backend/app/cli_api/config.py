@@ -31,6 +31,7 @@ class CliSettings:
     agent_enabled: bool
     web_origin: str
     allowed_emails: frozenset[str]
+    agent_allowed_emails: frozenset[str]
     max_agent_steps: int
     agent_run_seconds: int = 300
     device_grant_seconds: int = 600
@@ -64,6 +65,11 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         for item in values.get("SWICO_CLI_ALLOWED_EMAILS", "").split(",")
         if item.strip()
     )
+    agent_allowlist = frozenset(
+        item.strip().casefold()
+        for item in values.get("SWICO_CLI_AGENT_ALLOWED_EMAILS", "").split(",")
+        if item.strip()
+    )
     max_steps = _int("SWICO_CLI_MAX_AGENT_STEPS", 8, 1, 32, values)
     agent_run_seconds = _int("SWICO_CLI_AGENT_RUN_SECONDS", 300, 60, 1800, values)
     # A disabled rollout is safe, but malformed limits must still be visible
@@ -73,6 +79,7 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         agent_enabled=agent_enabled,
         web_origin=origin,
         allowed_emails=allowlist,
+        agent_allowed_emails=agent_allowlist,
         max_agent_steps=max_steps,
         agent_run_seconds=agent_run_seconds,
         cloud_agent_enabled=cloud_agent_enabled,

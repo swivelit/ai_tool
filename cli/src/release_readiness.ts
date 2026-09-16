@@ -11,6 +11,7 @@ export type ReleaseReadiness = {
     chat_ready: ReadinessState
     credential_store_ready: ReadinessState
     agent_sandbox_ready: ReadinessState
+    agent_e2e_ready: ReadinessState
     mcp_ready: ReadinessState
     images_ready: ReadinessState
     search_ready: ReadinessState
@@ -21,6 +22,7 @@ export type ReleaseReadiness = {
   sandbox: SandboxVerification
   credential_storage: string
   required_blockers: string[]
+  agent_blockers: string[]
   optional_notes: string[]
 }
 
@@ -75,7 +77,8 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
   } catch { /* reported as blocked */ }
   const license = packageLicense && packageLicense.toUpperCase() !== 'UNLICENSED' && validPackageLicense(packageLicense) && (!/^SEE LICENSE IN /i.test(packageLicense) || licenseReferenceExists) ? 'ready' : 'blocked'
   const required_blockers: string[] = []
-  if (!sandbox.verified) required_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
+  const agent_blockers: string[] = []
+  if (!sandbox.verified) agent_blockers.push(`Local agent sandbox is not verified: ${sandbox.diagnostic}`)
   if (license === 'blocked') required_blockers.push('Package license metadata or its referenced notice is invalid; public npm release remains blocked until approved terms are present.')
   const mcpHasStdio = config.effective.mcp.some(item => item.transport === 'stdio')
   const checks: ReleaseReadiness['checks'] = {
@@ -83,6 +86,7 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
     chat_ready: 'unverified',
     credential_store_ready: /unavailable/i.test(credential) ? 'blocked' : 'ready',
     agent_sandbox_ready: sandboxReady,
+    agent_e2e_ready: 'unverified',
     // HTTP MCP does not become ready merely because a local sandbox passed;
     // stdio MCP additionally requires a verified local runtime.
     mcp_ready: mcpHasStdio && !sandbox.verified ? 'blocked' : 'unverified',
@@ -98,10 +102,12 @@ export async function releaseReadiness(root: string): Promise<ReleaseReadiness> 
     sandbox,
     credential_storage: credential,
     required_blockers,
+    agent_blockers,
     optional_notes: [
       `Sandbox readiness probe: ${status.implementation} (${status.diagnostic}).`,
       'Chat readiness is unverified offline; use doctor and a controlled authenticated smoke test to prove the deployed API path.',
       'Images, web search, and model-backed subagents have no live-provider verification in this check.',
+      `Local agent end-to-end acceptance is unverified; run the disposable coding-loop harness before enabling an agent pilot.${agent_blockers.length ? ` Current agent blocker: ${agent_blockers[0]}` : ''}`,
       'Cloud execution is optional and remains fail-closed until an isolated runner is configured.',
     ],
   }
@@ -112,6 +118,7 @@ export function formatReadiness(report: ReleaseReadiness): string {
   for (const [name, state] of Object.entries(report.checks)) lines.push(`${name}: ${state}`)
   lines.push(`Sandbox verification: ${report.sandbox.verified ? 'passed' : 'not passed'} (${report.sandbox.diagnostic})`)
   if (report.required_blockers.length) lines.push('', 'Required blockers:', ...report.required_blockers.map(item => `- ${item}`))
+  if (report.agent_blockers.length) lines.push('', 'Local-agent blockers:', ...report.agent_blockers.map(item => `- ${item}`))
   if (report.optional_notes.length) lines.push('', 'Notes:', ...report.optional_notes.map(item => `- ${item}`))
   return lines.join('\n')
 }

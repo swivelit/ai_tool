@@ -88,7 +88,10 @@ function hash(data: Uint8Array | string): string { return createHash('sha256').u
 
 export class Workspace {
   readonly root: string
-  constructor(root: string, private readonly sandbox?: SandboxAdapter, private readonly sandboxPolicy: SandboxPolicy = 'workspace-write') { this.root = nativeRealpathSync(resolve(root)) }
+  constructor(root: string, private readonly sandbox?: SandboxAdapter, private readonly sandboxPolicy: SandboxPolicy = 'workspace-write', private readonly sandboxVerified = false) { this.root = nativeRealpathSync(resolve(root)) }
+
+  /** Agent side effects require an explicit positive hostile-boundary result. */
+  agentSideEffectsAllowed(): boolean { return Boolean(this.sandbox && this.sandboxVerified) }
 
   private lexicalPath(input: string, allowMissing = false): string {
     const candidate = resolve(this.root, input)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,21 +29,44 @@ REQUIRED_CLI_TABLES = frozenset({
 PUBLIC_CLI_WEB_ORIGIN = "https://swico.in"
 
 
-def rollout_configuration_errors(settings, *, public: bool = False) -> list[str]:
+def rollout_configuration_errors(
+    settings,
+    *,
+    public: bool = False,
+    agent_pilot: bool = False,
+    environ: dict[str, str] | None = None,
+) -> list[str]:
     """Return safe, non-secret configuration errors for the requested rollout."""
-    if not public:
+    if not public and not agent_pilot:
         return []
     errors: list[str] = []
-    if not settings.enabled:
-        errors.append("SWICO_CLI_ENABLED must be true for public rollout")
-    if settings.allowed_emails:
-        errors.append("SWICO_CLI_ALLOWED_EMAILS must be empty for public rollout")
-    if settings.agent_enabled:
-        errors.append("SWICO_CLI_AGENT_ENABLED must be false for public rollout")
+    if public:
+        if not settings.enabled:
+            errors.append("SWICO_CLI_ENABLED must be true for public rollout")
+        if settings.allowed_emails:
+            errors.append("SWICO_CLI_ALLOWED_EMAILS must be empty for public rollout")
+        if settings.agent_enabled:
+            errors.append("SWICO_CLI_AGENT_ENABLED must be false for public rollout")
+    if agent_pilot:
+        if not settings.enabled:
+            errors.append("SWICO_CLI_ENABLED must be true for agent pilot")
+        if not settings.agent_enabled:
+            errors.append("SWICO_CLI_AGENT_ENABLED must be true for agent pilot")
+        if not settings.agent_allowed_emails:
+            errors.append("SWICO_CLI_AGENT_ALLOWED_EMAILS must be non-empty for agent pilot")
+        auth_environment = os.environ if environ is None else environ
+        if str(auth_environment.get("AUTH_ALLOW_DEV_TOKENS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            errors.append("AUTH_ALLOW_DEV_TOKENS must be false for agent pilot")
     if settings.cloud_agent_enabled:
-        errors.append("SWICO_CLI_CLOUD_AGENT_ENABLED must be false for public rollout")
+        errors.append(
+            "SWICO_CLI_CLOUD_AGENT_ENABLED must be false for "
+            f"{'agent pilot' if agent_pilot else 'public rollout'}"
+        )
     if settings.web_origin != PUBLIC_CLI_WEB_ORIGIN:
-        errors.append("SWICO_CLI_WEB_ORIGIN must be https://swico.in for public rollout")
+        errors.append(
+            "SWICO_CLI_WEB_ORIGIN must be https://swico.in for "
+            f"{'agent pilot' if agent_pilot else 'public rollout'}"
+        )
     return errors
 
 
@@ -69,11 +93,16 @@ def main() -> int:
         action="store_true",
         help="require the unallowlisted public paid-CLI rollout configuration",
     )
+    parser.add_argument(
+        "--agent-pilot",
+        action="store_true",
+        help="require the restricted local coding-agent pilot configuration",
+    )
     args = parser.parse_args()
     output: dict[str, object] = {
         "check": "swico_cli",
         "paid_provider_request": False,
-        "rollout": "public" if args.public else "staged",
+        "rollout": "agent-pilot" if args.agent_pilot else ("public" if args.public else "staged"),
     }
     try:
         settings = validate_cli_configuration()
@@ -85,15 +114,20 @@ def main() -> int:
             "cloud_runner": "not configured; API never executes repository code",
             "web_origin": settings.web_origin,
             "allowlist_configured": bool(settings.allowed_emails),
+            "agent_allowlist_configured": bool(settings.agent_allowed_emails),
             "max_agent_steps": settings.max_agent_steps,
             "device_grant_seconds": settings.device_grant_seconds,
             "access_token_seconds": settings.access_token_seconds,
             "session_max_seconds": settings.session_max_seconds,
             "action_retention_seconds": settings.action_retention_seconds,
         })
-        configuration_errors = rollout_configuration_errors(settings, public=args.public)
+        configuration_errors = rollout_configuration_errors(
+            settings, public=args.public, agent_pilot=args.agent_pilot,
+        )
         if args.public:
             output["public_rollout_errors"] = configuration_errors
+        if args.agent_pilot:
+            output["agent_pilot_errors"] = configuration_errors
     except CliConfigurationError as exc:
         output.update({"status": "invalid", "error": str(exc)})
         print(json.dumps(output, indent=2 if args.pretty else None, sort_keys=True))
@@ -116,15 +150,15 @@ def main() -> int:
         output["schema"] = {"status": "unreachable_or_not_migrated", "error": type(exc).__name__}
         output["status"] = "not_ready" if output.get("enabled") else output["status"]
         print(json.dumps(output, indent=2 if args.pretty else None, sort_keys=True))
-        return 1 if args.public or output.get("enabled") else 0
+        return 1 if args.public or args.agent_pilot or output.get("enabled") else 0
     ready = not schema_errors and not settings.cloud_agent_enabled
-    if args.public:
+    if args.public or args.agent_pilot:
         ready = ready and not configuration_errors
-    output["ready"] = ready if output.get("enabled") or args.public else None
+    output["ready"] = ready if output.get("enabled") or args.public or args.agent_pilot else None
     if output.get("enabled") and not ready:
         output["status"] = "not_ready"
     print(json.dumps(output, indent=2 if args.pretty else None, sort_keys=True))
-    return 0 if ((not output.get("enabled") and not args.public) or ready) else 1
+    return 0 if ((not output.get("enabled") and not args.public and not args.agent_pilot) or ready) else 1
 
 
 if __name__ == "__main__":
