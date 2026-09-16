@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronRight, Code2, CreditCard, FileText, Gift, Headphones, History, Image as ImageIcon, Infinity, MessageCircle, Mic, Pencil, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
+import { Check, ChevronRight, Code2, CreditCard, FileText, Gift, Headphones, History, Image as ImageIcon, Infinity as InfinityIcon, MessageCircle, Mic, Pencil, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { apiJson } from '../api/client'
 import { formatRupeesForDisplay, formatRupeesFromPaise, tokenEstimateAvailable, tokenEstimateLabel } from '../credits'
@@ -831,7 +831,7 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
         <div className="billing-security-row" aria-label="Payment assurances">
           <div className="billing-security-item"><ShieldCheck size={17} /><span><strong>Secure checkout</strong><br />Razorpay payment flow</span></div>
           <div className="billing-security-item"><Zap size={17} /><span><strong>Server confirmed</strong><br />Checkout amount is verified</span></div>
-          <div className="billing-security-item"><Infinity size={17} /><span><strong>Prepaid credits</strong><br />Credits are added after fulfillment</span></div>
+          <div className="billing-security-item"><InfinityIcon size={17} /><span><strong>Prepaid credits</strong><br />Credits are added after fulfillment</span></div>
           <div className="billing-security-item"><Headphones size={17} /><span><strong>Chat &amp; Voice</strong><br />Separate credit buckets</span></div>
         </div>
 
