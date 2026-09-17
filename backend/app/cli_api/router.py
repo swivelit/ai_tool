@@ -13,7 +13,7 @@ from typing import Any
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
@@ -50,13 +50,13 @@ from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, AgentSubagentRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
-    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest, SteeringRequest,
+    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest, CloudSnapshotRequest, SteeringRequest,
 )
 from .security import (
     digest, human_code, random_secret, valid_code_challenge,
     valid_code_verifier, verify_code_challenge,
 )
-from .isolated_runner import configured_isolated_runner
+from .isolated_runner import configured_isolated_runner, issue_runner_capability, verify_runner_capability
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cli/v1", tags=["cli"])
@@ -190,6 +190,45 @@ def create_cloud_job(payload: CloudJobRequest, authorization: str | None = Heade
     return _cloud_job_view(job)
 
 
+@router.post("/cloud/jobs/{job_id}/snapshot")
+def upload_cloud_snapshot(job_id: str, payload: CloudSnapshotRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    """Store an explicit, bounded snapshot before a queued job is claimed.
+
+    The API stores only the caller-approved bytes and hashes; it never accepts
+    a host path and never reads a repository itself. The runner revalidates
+    every hash before materialization.
+    """
+    settings, _cli_session, user = _cloud_access(authorization, session)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id)).with_for_update()).first()
+    if job is None or job.source != "workspace_snapshot" or job.status != "queued":
+        raise HTTPException(409, {"code": "cloud_snapshot_not_accepting", "message": "This cloud job cannot accept a snapshot."})
+    files: list[dict[str, object]] = []
+    seen: set[str] = set(); total = 0
+    for item in payload.files:
+        normalized = item.path.replace("\\", "/")
+        if (not normalized or normalized.startswith(("/", "//")) or ".." in normalized.split("/")
+                or _BLOCKED_AGENT_PATH.search(normalized) or normalized in {".swico-task.json", ".git", ".swico"}):
+            raise HTTPException(422, {"code": "cloud_snapshot_path_blocked", "message": "The snapshot contains a protected or unsafe path."})
+        if normalized in seen:
+            raise HTTPException(422, {"code": "cloud_snapshot_duplicate_path", "message": "The snapshot contains duplicate paths."})
+        seen.add(normalized)
+        try:
+            data = base64.b64decode(item.data_base64, validate=True)
+        except (ValueError, TypeError):
+            raise HTTPException(422, {"code": "cloud_snapshot_encoding_invalid", "message": "The snapshot contains invalid file bytes."})
+        if hashlib.sha256(data).hexdigest() != item.sha256:
+            raise HTTPException(422, {"code": "cloud_snapshot_hash_mismatch", "message": "The snapshot hash did not match its bytes."})
+        total += len(data)
+        if total > 50 * 1024 * 1024:
+            raise HTTPException(413, {"code": "cloud_snapshot_too_large", "message": "The snapshot exceeds the supported size."})
+        files.append({"path": normalized, "data_base64": item.data_base64, "sha256": item.sha256})
+    job.snapshot_metadata_json = json.dumps({"version": 1, "file_count": len(files), "total_bytes": total, "files": files}, separators=(",", ":"), ensure_ascii=False)
+    session.add(job)
+    _append_cloud_event(session, job, "snapshot_uploaded", {"file_count": len(files), "total_bytes": total})
+    session.commit()
+    return {"job_id": job.id, "file_count": len(files), "total_bytes": total, "status": job.status}
+
+
 @router.get("/cloud/jobs")
 def list_cloud_jobs(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     _settings, _cli_session, user = _cloud_access(authorization, session)
@@ -227,14 +266,14 @@ def cancel_cloud_job(job_id: str, authorization: str | None = Header(default=Non
 
 
 @router.get("/cloud/jobs/{job_id}/events")
-def cloud_job_events(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+def cloud_job_events(job_id: str, after: int = Query(default=-1, ge=-1, le=1_000_000_000), authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
     if not job_id or len(job_id) > 128:
         raise HTTPException(404, "Cloud job not found")
     _settings, _cli_session, user = _cloud_access(authorization, session)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
     if job is None:
         raise HTTPException(404, "Cloud job not found")
-    events = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
+    events = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id, CliCloudJobEvent.sequence > after).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
     items = []
     for event in events:
         try:
@@ -265,23 +304,41 @@ def claim_cloud_job(payload: CloudJobClaimRequest, runner_token: str | None = He
     job.status = "dispatching"; job.runner_id = runner_id; job.attempt += 1; job.lease_expires_at = utc_now() + timedelta(seconds=60); session.add(job)
     _append_cloud_event(session, job, "claimed", {"attempt": job.attempt})
     session.commit()
-    return {"job": _cloud_job_view(job), "lease_seconds": 60, "runner_url": settings.cloud_runner_url}
+    try:
+        capability = issue_runner_capability(
+            job_id=job.id,
+            runner_id=runner_id,
+            actions=("claim", "execute", "cancel"),
+            attempt=job.attempt,
+        )
+    except RuntimeError as exc:
+        job.status = "queued"
+        job.runner_id = None
+        job.lease_expires_at = None
+        session.add(job)
+        session.commit()
+        raise HTTPException(503, {"code": "cloud_runner_capability_unavailable", "message": "The cloud runner capability could not be issued."}) from exc
+    try:
+        snapshot = json.loads(job.snapshot_metadata_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    return {"job": _cloud_job_view(job), "lease_seconds": 60, "runner_url": settings.cloud_runner_url, "runner_capability": capability, "snapshot": snapshot if isinstance(snapshot, dict) else {}}
 
 
 @router.post("/cloud/runner/jobs/{job_id}/heartbeat")
-def heartbeat_cloud_job(job_id: str, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), session: Session = Depends(get_session)):
+def heartbeat_cloud_job(job_id: str, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), runner_capability: str | None = Header(default=None, alias="X-Swico-Runner-Capability"), session: Session = Depends(get_session)):
     _settings, runner_id = _runner_access(runner_token, runner_id)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
-    if job is None or job.status in {"completed", "failed", "cancelled", "expired"}: raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
+    if job is None or job.status in {"completed", "failed", "cancelled", "expired"} or not verify_runner_capability(runner_capability or "", job_id=job_id, runner_id=runner_id, attempt=job.attempt, action="execute"): raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
     job.lease_expires_at = utc_now() + timedelta(seconds=60); session.add(job); session.commit()
     return {"job_id": job.id, "status": job.status, "lease_seconds": 60}
 
 
 @router.post("/cloud/runner/jobs/{job_id}/result")
-def complete_cloud_job(job_id: str, payload: CloudJobResultRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), session: Session = Depends(get_session)):
+def complete_cloud_job(job_id: str, payload: CloudJobResultRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), runner_capability: str | None = Header(default=None, alias="X-Swico-Runner-Capability"), session: Session = Depends(get_session)):
     _settings, runner_id = _runner_access(runner_token, runner_id)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
-    if job is None or job.status in {"completed", "failed", "cancelled", "expired"}: raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
+    if job is None or job.status in {"completed", "failed", "cancelled", "expired"} or not verify_runner_capability(runner_capability or "", job_id=job_id, runner_id=runner_id, attempt=job.attempt, action="execute"): raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
     job.status = payload.status; job.finished_at = utc_now(); job.result_metadata_json = json.dumps(payload.result, ensure_ascii=False, separators=(",", ":")); job.failure_code = payload.failure_code; session.add(job)
     _append_cloud_event(session, job, payload.status, {"has_result": bool(payload.result)})
     session.commit()
@@ -954,13 +1011,7 @@ def cancel_chat(request_id: str, authorization: str | None = Header(default=None
 
 @router.post("/chat/requests/{request_id}/steer")
 def steer_chat(request_id: str, payload: SteeringRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
-    """Attempt provider-independent between-step steering for one live turn.
-
-    Providers currently expose no safe mid-request mutation primitive. The
-    shared registry therefore acknowledges the request only as deferred input;
-    callers must present it as a successor turn and must not claim that the
-    active provider request was changed.
-    """
+    """Queue one owner-bound instruction for the active turn's safe checkpoint."""
     _row, user = _cli_session_from_header(authorization, session)
     from ..web_api.router import request_generation_steering
     result = request_generation_steering(request_id, int(user.id), payload.instruction, payload.sequence, payload.idempotency_key)

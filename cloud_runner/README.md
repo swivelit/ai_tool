@@ -10,6 +10,20 @@ The production architecture is:
 
 `API/auth/billing → durable DB queue → runner claim/lease → isolated ephemeral workspace → bounded events/artifacts → cleanup`
 
+The deployable controller is `cloud_runner.controller`. It polls the durable
+claim endpoint, forwards task-only jobs to the private runner, renews the API
+lease, and records a bounded terminal result. It does not read or execute a
+repository on its own host. Start it separately with:
+
+```sh
+python -m cloud_runner.controller
+```
+
+The controller executes `task_only` jobs and forwards explicitly uploaded
+`workspace_snapshot` bytes. A manifest or a host path is never interpreted as
+repository contents; missing snapshot bytes fail closed with
+`snapshot_transfer_unavailable`.
+
 Before enabling `SWICO_CLI_CLOUD_AGENT_ENABLED`, deploy this service privately,
 configure the matching backend runner URL and shared secret, complete native
 filesystem/symlink/network/environment/process hostile probes, and provide a

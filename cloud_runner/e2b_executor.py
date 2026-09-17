@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shlex
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -29,11 +30,15 @@ class SnapshotFile:
     data: bytes
     sha256: str
 
+    @property
+    def normalized_path(self) -> str:
+        return self.path.replace("\\", "/")
+
     def validate(self) -> None:
-        normalized = self.path.replace("\\", "/")
-        if not normalized or normalized.startswith("/") or ".." in normalized.split("/") or "\x00" in normalized:
+        normalized = self.normalized_path
+        if not normalized or normalized.startswith(("/", "//")) or ".." in normalized.split("/") or "\x00" in normalized:
             raise E2BExecutionError("snapshot path is outside the workspace")
-        if normalized.startswith((".git/", ".swico/")) or normalized in {".env", ".npmrc", ".pypirc"}:
+        if normalized == ".swico-task.json" or normalized.startswith((".git/", ".swico/")) or normalized in {".git", ".swico", ".env", ".npmrc", ".pypirc"}:
             raise E2BExecutionError("snapshot contains a protected path")
         if hashlib.sha256(self.data).hexdigest() != self.sha256:
             raise E2BExecutionError("snapshot hash mismatch")
@@ -69,12 +74,29 @@ class E2BSettings:
 class E2BExecutor:
     def __init__(self, settings: E2BSettings):
         self.settings = settings
+        self._active: dict[str, Any] = {}
+        self._active_lock = threading.Lock()
+
+    def cancel(self, job_id: str) -> bool:
+        """Request termination of the sandbox currently executing one job."""
+        with self._active_lock:
+            sandbox = self._active.get(job_id)
+        if sandbox is None:
+            return False
+        try:
+            sandbox.kill()
+            return True
+        except Exception:
+            return False
 
     def execute(self, *, job_id: str, task: str, files: list[SnapshotFile], on_event: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         for item in files:
             item.validate()
         if len(files) > 5_000 or sum(len(item.data) for item in files) > 50 * 1024 * 1024:
             raise E2BExecutionError("snapshot exceeds runner bounds")
+        normalized_paths = [item.normalized_path for item in files]
+        if len(set(normalized_paths)) != len(normalized_paths):
+            raise E2BExecutionError("snapshot contains duplicate paths")
         if not task.strip() or len(task) > 8_000:
             raise E2BExecutionError("task is outside runner bounds")
         try:
@@ -95,8 +117,10 @@ class E2BExecutor:
                 secure=True,
                 allow_internet_access=False,
             )
+            with self._active_lock:
+                self._active[job_id] = sandbox
             for item in files:
-                sandbox_path = item.path.replace("\\", "/")
+                sandbox_path = item.normalized_path
                 sandbox.files.write(f"/workspace/{sandbox_path}", item.data, request_timeout=15)
             sandbox.files.write("/workspace/.swico-task.json", json.dumps({"version": 1, "job_id": job_id, "task": task}, separators=(",", ":")), request_timeout=15)
             if on_event:
@@ -110,6 +134,8 @@ class E2BExecutor:
         except Exception as exc:
             raise E2BExecutionError("The isolated Cloud task failed safely.") from exc
         finally:
+            with self._active_lock:
+                self._active.pop(job_id, None)
             if sandbox is not None:
                 try:
                     sandbox.kill()

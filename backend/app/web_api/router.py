@@ -237,7 +237,11 @@ def request_generation_cancellation(request_id: str, user_id: int) -> bool:
 def register_generation(request_id: str, user_id: int, cancellation: GenerationCancellation) -> None:
     with _active_generations_lock:
         _active_generations[str(request_id)] = (int(user_id), cancellation)
-        _generation_steering[str(request_id)] = {"last_sequence": 0, "keys": set()}
+        _generation_steering[str(request_id)] = {
+            "last_sequence": 0,
+            "keys": {},
+            "pending": [],
+        }
         if _pending_generation_cancellations.pop(str(request_id), None) == int(user_id):
             cancellation.cancel()
 
@@ -246,14 +250,17 @@ def unregister_generation(request_id: str) -> None:
     with _active_generations_lock:
         _active_generations.pop(str(request_id), None)
         _generation_steering.pop(str(request_id), None)
+        _pending_generation_cancellations.pop(str(request_id), None)
 
 
 def request_generation_steering(request_id: str, user_id: int, instruction: str, sequence: int, idempotency_key: str) -> dict[str, object]:
-    """Record an authenticated steering request only while its turn is live.
+    """Queue an authenticated instruction for the exact live turn.
 
-    This is deliberately a deferred acknowledgement until a provider-neutral
-    safe-checkpoint consumer exists. It cannot be mistaken for a new request
-    or for provider-native mid-stream mutation.
+    Providers are not mutated from the HTTP handler. The generation loop
+    consumes this record at a provider-independent checkpoint (before a
+    generation or before a bounded repair continuation). This makes the
+    acknowledgement truthful and prevents a stale instruction being attached
+    to a later request.
     """
     with _active_generations_lock:
         active = _active_generations.get(str(request_id))
@@ -261,15 +268,45 @@ def request_generation_steering(request_id: str, user_id: int, instruction: str,
         if active is None or active[0] != int(user_id) or state is None:
             return {"status": "rejected", "reason": "turn_not_active"}
         keys = state["keys"]
-        if not isinstance(keys, set):
+        pending = state["pending"]
+        if not isinstance(keys, dict) or not isinstance(pending, list):
             return {"status": "rejected", "reason": "steering_state_invalid"}
         if idempotency_key in keys:
-            return {"status": "replayed", "sequence": int(state["last_sequence"])}
+            original = keys[idempotency_key]
+            return {
+                "status": "duplicate",
+                "sequence": int(original.get("sequence", 0)),
+                "original_status": str(original.get("status", "queued")),
+            }
         if sequence <= int(state["last_sequence"]):
             return {"status": "rejected", "reason": "stale_sequence"}
-        keys.add(idempotency_key)
+        record = {
+            "sequence": int(sequence),
+            "idempotency_key": idempotency_key,
+            "instruction": instruction,
+            "status": "queued",
+        }
+        keys[idempotency_key] = record
+        pending.append(record)
         state["last_sequence"] = sequence
-        return {"status": "deferred", "sequence": sequence, "reason": "provider_checkpoint_unavailable"}
+        return {"status": "queued", "sequence": sequence, "reason": "awaiting_safe_generation_checkpoint"}
+
+
+def consume_generation_steering(request_id: str, user_id: int) -> dict[str, object] | None:
+    """Atomically consume the oldest queued instruction for a live owner turn."""
+    with _active_generations_lock:
+        active = _active_generations.get(str(request_id))
+        state = _generation_steering.get(str(request_id))
+        if active is None or active[0] != int(user_id) or state is None:
+            return None
+        pending = state.get("pending")
+        if not isinstance(pending, list):
+            return None
+        for record in pending:
+            if isinstance(record, dict) and record.get("status") == "queued":
+                record["status"] = "applied"
+                return dict(record)
+        return None
 
 
 def _tickets() -> VoiceTicketStore:
@@ -2539,11 +2576,11 @@ def cancel_web_cloud_job(job_id: str, session: Session = Depends(get_session), a
 
 
 @router.get("/cloud/jobs/{job_id}/events")
-def events_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+def events_web_cloud_job(job_id: str, after: int = Query(default=-1, ge=-1, le=1_000_000_000), session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     _settings, user = _web_cloud_access(session, auth)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
     if job is None: raise HTTPException(404, "Cloud job not found")
-    rows = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
+    rows = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id, CliCloudJobEvent.sequence > after).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
     return {"job_id": job.id, "items": [{"sequence": row.sequence, "event_type": row.event_type, "payload": json.loads(row.payload_json or "{}"), "created_at": row.created_at.isoformat()} for row in rows]}
 
 
@@ -4502,6 +4539,12 @@ async def chat_stream(
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
+    # The callback is intentionally a capability held only by this live
+    # request. chat_service consumes it at a safe generation/repair boundary;
+    # it cannot be reused by a later turn.
+    prepared.ai_request.metadata["steering_consumer"] = lambda: consume_generation_steering(
+        prepared.request_id, user_id
+    )
     record_web_turn_lifecycle(prepared, "reserved")
 
     async def events():
@@ -4538,11 +4581,7 @@ async def chat_stream(
         task: asyncio.Task[Any] | None = None
 
         def unregister(done_task: asyncio.Task[Any]) -> None:
-            with _active_generations_lock:
-                _active_generations.pop(prepared.request_id, None)
-                _pending_generation_cancellations.pop(
-                    prepared.request_id, None
-                )
+            unregister_generation(prepared.request_id)
             if not ownership["generator_closed"] or ownership["observed"]:
                 return
             ownership["observed"] = True
@@ -4561,15 +4600,7 @@ async def chat_stream(
                 )
 
         try:
-            with _active_generations_lock:
-                _active_generations[prepared.request_id] = (
-                    user_id, cancellation,
-                )
-                pending_owner = _pending_generation_cancellations.pop(
-                    prepared.request_id, None
-                )
-            if pending_owner == user_id:
-                cancellation.cancel()
+            register_generation(prepared.request_id, user_id, cancellation)
             task = asyncio.create_task(asyncio.to_thread(
                 execute_web_turn,
                 prepared,

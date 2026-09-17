@@ -5,22 +5,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { gunzipSync } from 'node:zlib'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { RELEASE_PACKAGE_ENTRIES } from './release-artifact-allowlist.mjs'
 
 const archivePath = resolve(process.argv[2] ?? '')
 const manifestPath = resolve(process.argv[3] ?? 'release-artifact-manifest.json')
 const cliRoot = fileURLToPath(new URL('../', import.meta.url))
 const sourceManifest = JSON.parse(await readFile(resolve(cliRoot, 'package.json'), 'utf8'))
-
-const requiredEntries = [
-  'package/package.json', 'package/README.md', 'package/LICENSE', 'package/LICENSE_SCOPE.md', 'package/THIRD_PARTY_NOTICES.md',
-  'package/dist/agent.js', 'package/dist/api.js', 'package/dist/arguments.js', 'package/dist/build_identity.js', 'package/dist/cli.js',
-  'package/dist/cloud.js', 'package/dist/command_registry.js', 'package/dist/completion.js', 'package/dist/config.js', 'package/dist/configuration.js',
-  'package/dist/context.js', 'package/dist/contracts.js', 'package/dist/credentials.js', 'package/dist/hooks.js', 'package/dist/journal.js',
-  'package/dist/local_sessions.js', 'package/dist/mcp.js', 'package/dist/mcp_server.js', 'package/dist/output_schema.js', 'package/dist/permissions.js',
-  'package/dist/plan.js', 'package/dist/plugins.js', 'package/dist/release_readiness.js', 'package/dist/repository.js', 'package/dist/sandbox.js',
-  'package/dist/session.js', 'package/dist/skills.js', 'package/dist/sse.js', 'package/dist/subagents.js', 'package/dist/terminal_output.js',
-  'package/dist/terminal_ui.js', 'package/dist/usage.js', 'package/dist/workspace.js', 'package/dist/worktrees.js',
-]
 
 function archiveEntries(buffer) {
   const entries = new Map()
@@ -47,9 +37,11 @@ if (basename(archivePath) !== `swiveltechnologies-swico-${sourceManifest.version
 const archive = await readFile(archivePath)
 const entries = archiveEntries(gunzipSync(archive))
 const actualEntries = [...entries.keys()].sort()
-const expectedEntries = [...requiredEntries].sort()
+const expectedEntries = [...RELEASE_PACKAGE_ENTRIES].sort()
 if (actualEntries.length !== expectedEntries.length || actualEntries.some((entry, index) => entry !== expectedEntries[index])) {
-  throw new Error(`package contents differ from the approved allowlist: ${actualEntries.filter(entry => !expectedEntries.includes(entry)).join(', ')}`)
+  const unexpected = actualEntries.filter(entry => !expectedEntries.includes(entry))
+  const missing = expectedEntries.filter(entry => !actualEntries.includes(entry))
+  throw new Error(`package contents differ from the approved allowlist: unexpected=[${unexpected.join(', ')}]; missing=[${missing.join(', ')}]`)
 }
 for (const entry of actualEntries) {
   if (entry.includes('node_modules/') || entry.startsWith('package/test/') || entry.startsWith('package/src/') || entry.endsWith('.ts') || entry.endsWith('.map') || /(^|\/)(?:\.env[^/]*|\.npmrc|credentials(?:\.(?:json|toml|ya?ml)|$)|secrets(?:\.(?:json|toml|ya?ml)|\/)|action-journal)/i.test(entry)) throw new Error(`forbidden package entry: ${entry}`)

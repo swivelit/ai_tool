@@ -50,6 +50,31 @@ def test_thread_ownership_for_read_rename_delete(client):
     assert client.get(f"/api/web/threads/{thread_id}/messages", headers=headers).status_code == 404
 
 
+def test_turn_steering_is_owner_scoped_idempotent_and_consumed_once():
+    from app.ai.providers.base import GenerationCancellation
+    from app.web_api.router import (
+        consume_generation_steering,
+        register_generation,
+        request_generation_steering,
+        unregister_generation,
+    )
+
+    request_id = "steering-test-request"
+    register_generation(request_id, 41, GenerationCancellation())
+    try:
+        queued = request_generation_steering(request_id, 41, "Use the failing test output.", 1, "steer-1")
+        assert queued["status"] == "queued"
+        assert request_generation_steering(request_id, 99, "wrong owner", 2, "steer-2")["status"] == "rejected"
+        duplicate = request_generation_steering(request_id, 41, "different text", 1, "steer-1")
+        assert duplicate["status"] == "duplicate"
+        assert duplicate["original_status"] == "queued"
+        applied = consume_generation_steering(request_id, 41)
+        assert applied and applied["instruction"] == "Use the failing test output."
+        assert consume_generation_steering(request_id, 41) is None
+    finally:
+        unregister_generation(request_id)
+
+
 def test_insufficient_credit_returns_402_before_provider(client, monkeypatch):
     create_test_user()
     called = {"value": False}

@@ -1325,7 +1325,8 @@ local and cloud agents remain disabled.
    ```
 
    Confirm `alembic current` and `alembic heads` both report the single head
-   `20260915_weekly_tester_credit`.
+   `20260916_cli_cloud_jobs` (which descends from
+   `20260915_weekly_tester_credit`).
 4. From the backend directory, run the read-only gates. They do not call a
    provider or mutate the database:
 
@@ -1385,9 +1386,11 @@ hostile sandbox evidence remain fail-closed.
 Cloud control-plane jobs are now persisted and owner-scoped, but production
 cloud remains disabled until a separate runner proves native/container
 isolation. Do not set `SWICO_CLI_CLOUD_AGENT_ENABLED=true` on the API service
-from this repository alone. A future private Render service must use root
-directory `cloud_runner`, build `pip install -r requirements.txt`, and start
-`uvicorn cloud_runner.app:app --host 0.0.0.0 --port $PORT`. Its `/health` must
+from this repository alone. A future private Render **Docker** service must
+use root directory `cloud_runner`, Dockerfile `Dockerfile`, and the checked-in
+Dockerfile's command, which binds to Render's injected `$PORT` (with `8080` as
+the local fallback): `uvicorn cloud_runner.app:app --host 0.0.0.0 --port $PORT`.
+Its `/health` must
 report `ready=true` only after the selected executor has passed hostile
 verification; the current service intentionally reports false.
 
@@ -1398,7 +1401,11 @@ reviewed isolation backend. The runner must provide fresh signed
 The backend needs matching
 `SWICO_CLI_CLOUD_RUNNER_URL`, `SWICO_CLI_CLOUD_RUNNER_TOKEN`, and the
 short-lived `SWICO_CLI_CLOUD_RUNNER_ATTESTATION`. Keep all shared
-credentials secret, keep the runner private, run the normal pre-deploy
+credentials secret, keep the runner private. Start the separate controller
+from the repository root with `python -m cloud_runner.controller`; it uses
+`SWICO_RUNNER_CONTROL_URL`, `SWICO_RUNNER_ID`, and the matching runner token,
+and forwards task-only jobs or explicitly consented snapshot bytes without
+reading its own host filesystem. Run the normal pre-deploy
 `cd backend && python -m alembic -c alembic.ini upgrade head`, confirm the
 current single head, then run `python scripts/swico_cli_release_check.py
 --pretty --cloud-pilot`. Roll back by disabling the cloud flag and routing

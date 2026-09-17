@@ -209,8 +209,11 @@ over stdio. Legacy MCP SSE is not enabled in this release.
 
 `swico skills list|show NAME` discovers bounded `SKILL.md` descriptions from
 user/project locations; full instructions load only after selection.
-`swico plugins` only validates local declarative `swico-plugin.json` files and
-never executes plugin code. `swico completion bash|zsh|fish|powershell`
+`swico plugins` validates local `swico-plugin.json` files and supports
+explicitly trusted executable plugins only through a positively verified
+read-only sandbox (`swico plugins trust PATH` followed by
+`swico plugins run PATH [ARGS]`); repository presence never grants trust.
+`swico completion bash|zsh|fish|powershell`
 prints static scripts without network access. Hook events exist as an
 in-process abstraction; executable hooks remain disabled because a reviewed
 sandboxed hook runner is not available yet.
@@ -232,7 +235,9 @@ evidence, billing, and limits.
 
 Cloud commands are explicit (`swico cloud exec|list|status|logs|events|resume|cancel`).
 They use the owner-scoped durable control plane when a separately isolated
-runner is configured and has fresh authenticated isolation evidence. The default remains disabled and the API
+runner is configured and has fresh authenticated isolation evidence. Interactive
+workspace execution requires an explicit snapshot-upload consent prompt; task-only
+jobs contain no repository. The default remains disabled and the API
 never executes repository code; queued jobs are not evidence that cloud
 execution is ready.
 

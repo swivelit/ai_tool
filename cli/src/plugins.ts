@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, extname, join, relative, resolve } from 'node:path'
 import type { RepositoryMetadata } from './repository.js'
+import type { SandboxAdapter } from './sandbox.js'
 
 export type SwicoPlugin = {
   name: string; version: string; description?: string; skills?: string[]; mcp?: string[]; hooks?: string[]
@@ -16,9 +17,10 @@ const forbidden = new Set(['main', 'entry', 'scripts', 'dependencies', 'install'
 const trustFile = (env: NodeJS.ProcessEnv = process.env) => env.SWICO_CLI_PLUGIN_TRUST_FILE ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'swico', 'plugin-trust.json')
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex')
 
-async function executableBundleHash(root: string): Promise<string> {
+async function executableBundleHash(root: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const files: Array<{ path: string; content: Buffer }> = []
   let bytes = 0
+  const trustRecord = resolve(trustFile(env))
   const visit = async (directory: string): Promise<void> => {
     for (const item of await readdir(directory, { withFileTypes: true })) {
       if (item.isSymbolicLink()) throw new Error('Plugin bundles cannot contain symbolic links.')
@@ -26,6 +28,10 @@ async function executableBundleHash(root: string): Promise<string> {
       if (item.isDirectory()) { await visit(path); continue }
       if (!item.isFile()) throw new Error('Plugin bundles may contain only regular files.')
       const content = await readFile(path); bytes += content.byteLength
+      // The local trust record is controller metadata, not executable plugin
+      // content. Excluding it keeps a trust grant stable when it is stored
+      // beneath a disposable plugin fixture or user-selected bundle root.
+      if (resolve(path) === trustRecord) continue
       if (files.length >= 512 || bytes > 16 * 1024 * 1024) throw new Error('Plugin executable bundle is outside the supported bound.')
       files.push({ path: relative(root, path).replaceAll('\\', '/'), content })
     }
@@ -80,7 +86,7 @@ export async function inspectPlugin(path: string, env: NodeJS.ProcessEnv = proce
     const entryInfo = await lstat(entry); if (!entryInfo.isFile() || entryInfo.isSymbolicLink()) throw new Error('Plugin entrypoint must be a regular local file.')
     // Bind trust to the complete local bundle, including loaded scripts and
     // dependencies, rather than only to the top-level entrypoint.
-    plugin.entrypoint_hash = await executableBundleHash(root)
+    plugin.entrypoint_hash = await executableBundleHash(root, env)
   }
   plugin.trusted = await pluginTrusted(plugin, env)
   return plugin
@@ -93,6 +99,42 @@ export async function trustPlugin(path: string, env: NodeJS.ProcessEnv = process
   return { ...plugin, trusted: true }
 }
 export async function untrustPlugin(path: string, env: NodeJS.ProcessEnv = process.env): Promise<void> { const plugin = await inspectPlugin(path, env); await writeTrust((await readTrust(env)).filter(item => item.path !== plugin.path), env) }
+
+export async function runTrustedPlugin(
+  path: string,
+  args: string[] = [],
+  sandbox: SandboxAdapter,
+  sandboxVerified: boolean,
+  signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  const plugin = await inspectPlugin(path, env)
+  if (!plugin.entrypoint || !plugin.trusted) throw new Error('Executable plugins require an explicit, current trust grant.')
+  if (!sandboxVerified || !sandbox.status().available) throw new Error('Executable plugins require verified sandbox confinement.')
+  if (args.length > 16 || args.some(value => typeof value !== 'string' || value.length > 512)) throw new Error('Plugin arguments are outside the supported bound.')
+  const entrypoint = resolve(plugin.path, plugin.entrypoint)
+  // Node entrypoints are launched through the reviewed runtime explicitly;
+  // this is portable on Windows and avoids depending on executable bits.
+  const command = ['.js', '.mjs', '.cjs'].includes(extname(entrypoint).toLowerCase()) ? [process.execPath, entrypoint, ...args] : [entrypoint, ...args]
+  const child = sandbox.spawn(command, {
+    cwd: plugin.path,
+    env: { PATH: process.env.PATH ?? '', LANG: process.env.LANG ?? 'C.UTF-8', LC_ALL: process.env.LC_ALL ?? 'C.UTF-8' },
+    policy: 'read-only', network: 'disabled',
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  })
+  let stdout = '', stderr = '', settled = false
+  return await new Promise((resolveResult, reject) => {
+    const finish = (value: { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }) => { if (!settled) { settled = true; resolveResult(value) } }
+    const kill = () => { try { child.kill('SIGTERM') } catch { /* already gone */ } }
+    const timer = setTimeout(() => { kill(); finish({ code: null, signal: 'SIGTERM', stdout, stderr: `${stderr}\nPlugin timed out.`.slice(-64 * 1024) }) }, 15_000)
+    child.stdout?.on('data', chunk => { stdout = `${stdout}${chunk.toString()}`.slice(0, 64 * 1024) })
+    child.stderr?.on('data', chunk => { stderr = `${stderr}${chunk.toString()}`.slice(0, 64 * 1024) })
+    child.once('error', error => { clearTimeout(timer); if (!settled) { settled = true; reject(error) } })
+    child.once('close', (code, closeSignal) => { clearTimeout(timer); finish({ code, signal: closeSignal, stdout, stderr }) })
+    const abort = () => kill()
+    if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true })
+  })
+}
 
 export async function listPlugins(metadata?: RepositoryMetadata, cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Promise<SwicoPlugin[]> {
   const paths = [join(cwd, '.swico', 'plugins'), ...(metadata ? [join(metadata.root, '.swico', 'plugins')] : [])], result: SwicoPlugin[] = []

@@ -55,14 +55,21 @@ export class McpManager {
       const fetchNoRedirect: typeof fetch = (input, init) => fetch(input, { ...init, redirect: 'error', headers: { ...(init?.headers ?? {}), ...headers } })
       transport = new StreamableHTTPClientTransport(url, { fetch: fetchNoRedirect, requestInit: { redirect: 'error' }, reconnectionOptions: { maxReconnectionDelay: 0, initialReconnectionDelay: 0, reconnectionDelayGrowFactor: 1, maxRetries: 0 } })
     }
-    await client.connect(transport, { timeout: 15_000 })
-    const response = await client.listTools({}, { timeout: 15_000 })
-    const tools = (response.tools ?? []).slice(0, MAX_TOOLS).map((tool) => {
-      const schema = tool.inputSchema as Record<string, unknown> | undefined
-      if (Buffer.byteLength(JSON.stringify(schema ?? {})) > MAX_SCHEMA) throw new Error(`MCP tool schema is too large: ${tool.name}`)
-      return { name: tool.name, description: bounded(tool.description ?? '', 4_000), inputSchema: schema, annotations: tool.annotations as Record<string, unknown> | undefined, capability: capability(tool) }
-    })
-    const result = { client, transport, tools }; this.clients.set(definition.name, result); return result
+    try {
+      await client.connect(transport, { timeout: 15_000 })
+      const response = await client.listTools({}, { timeout: 15_000 })
+      const tools = (response.tools ?? []).slice(0, MAX_TOOLS).map((tool) => {
+        const schema = tool.inputSchema as Record<string, unknown> | undefined
+        if (Buffer.byteLength(JSON.stringify(schema ?? {})) > MAX_SCHEMA) throw new Error(`MCP tool schema is too large: ${tool.name}`)
+        return { name: tool.name, description: bounded(tool.description ?? '', 4_000), inputSchema: schema, annotations: tool.annotations as Record<string, unknown> | undefined, capability: capability(tool) }
+      })
+      const result = { client, transport, tools }; this.clients.set(definition.name, result); return result
+    } catch (error) {
+      // Discovery can fail after a process/session has already been opened.
+      // Close both protocol and transport state before surfacing the error.
+      await client.close().catch(() => undefined)
+      throw error
+    }
   }
   async discover(name: string): Promise<McpTool[]> { return (await this.connect(this.definition(name))).tools }
   async diagnostics(): Promise<McpDiagnostic[]> {

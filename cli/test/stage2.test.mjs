@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,13 +8,14 @@ import { configSummary, loadConfig, validateMcpDefinition } from '../dist/config
 import { McpManager } from '../dist/mcp.js'
 import { completion } from '../dist/completion.js'
 import { listSkills, selectSkill } from '../dist/skills.js'
-import { inspectPlugin, trustPlugin } from '../dist/plugins.js'
+import { inspectPlugin, trustPlugin, runTrustedPlugin } from '../dist/plugins.js'
 import { executableHookHash } from '../dist/hooks.js'
 import { runExecutableHook as runHook } from '../dist/hooks.js'
 import { probeEndpoint, streamChat } from '../dist/api.js'
 import { parseTaskArguments, taskText } from '../dist/arguments.js'
 import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from '../dist/output_schema.js'
 import { cloudExec, cloudEvents, cloudList } from '../dist/cloud.js'
+import { createCloudSnapshot } from '../dist/cloud_snapshot.js'
 
 test('task parser keeps boolean search switches from consuming the prompt', () => {
   const parsed = parseTaskArguments(['ask', '--search', 'latest', 'status'], 'ask')
@@ -59,6 +61,18 @@ test('cloud CLI uses durable job/list/event endpoints and an idempotent request 
     assert.equal(requests[0].body.source, 'workspace_snapshot'); assert.match(requests[0].body.request_id, /^[0-9a-f-]{36}$/)
     assert.match(requests[2].url, /\/cloud\/jobs\/job-1\/events$/)
   } finally { globalThis.fetch = originalFetch }
+})
+
+test('cloud snapshot transfers bytes only after explicit caller consent and filters secrets', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-cloud-snapshot-'))
+  try {
+    await writeFile(join(root, 'main.txt'), 'safe\n')
+    await writeFile(join(root, '.env.staging'), 'secret\n')
+    const snapshot = await createCloudSnapshot(root)
+    assert.deepEqual(snapshot.files.map(item => item.path), ['main.txt'])
+    assert.equal(Buffer.from(snapshot.files[0].data_base64, 'base64').toString(), 'safe\n')
+    assert.equal(snapshot.files[0].sha256.length, 64)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('project configuration can narrow but cannot trust an MCP server or enable hooks', async () => {
@@ -119,6 +133,21 @@ test('plugin trust is explicit and invalidated by manifest or entrypoint changes
     await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'bad', version: '1', main: 'index.js' }))
     await assert.rejects(() => inspectPlugin(root, env), /executable field/)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('trusted executable plugin dispatches only through the verified sandbox', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-plugin-run-'))
+  const trustPath = join(root, '..', 'swico-plugin-run-trust.json')
+  try {
+    const env = { ...process.env, SWICO_CLI_PLUGIN_TRUST_FILE: trustPath }
+    await writeFile(join(root, 'index.mjs'), 'process.stdout.write("plugin-ok")\n')
+    await writeFile(join(root, 'swico-plugin.json'), JSON.stringify({ name: 'runner', version: '1.0.0', entrypoint: 'index.mjs', permissions: ['read'] }))
+    await trustPlugin(root, env)
+    const sandbox = { status: () => ({ implementation: 'unavailable', available: true, reason: 'test verified', policy: 'read-only', network: 'disabled', writable_roots: [] }), spawn: (argv, options) => spawn(argv[0], argv.slice(1), options) }
+    const result = await runTrustedPlugin(root, [], sandbox, true, undefined, env)
+    assert.equal(result.code, 0); assert.equal(result.stdout, 'plugin-ok')
+    await assert.rejects(() => runTrustedPlugin(root, [], sandbox, false, undefined, env), /verified sandbox/)
+  } finally { await rm(root, { recursive: true, force: true }); await rm(trustPath, { force: true }) }
 })
 
 test('executable hooks require a current hash and verified sandbox', async () => {

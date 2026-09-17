@@ -15,6 +15,7 @@ export async function loadPermissionProfile(env: NodeJS.ProcessEnv = process.env
 }
 
 export async function savePermissionProfile(profile: PermissionProfile, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (profile !== 'read-only' && profile !== 'approval-required' && profile !== 'workspace-write') throw new Error('Permission profile must be read-only, approval-required, or workspace-write.')
   const target = filename(env), directory = dirname(target), temporary = `${target}.${randomUUID()}.tmp`
   await mkdir(directory, { recursive: true, mode: 0o700 })
   try {

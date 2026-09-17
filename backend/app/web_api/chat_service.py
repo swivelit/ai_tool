@@ -4953,6 +4953,39 @@ def _generation_cancellation_requested(prepared: PreparedWebTurn) -> bool:
     return bool(cancelled() if callable(cancelled) else cancelled)
 
 
+def _consume_turn_steering(prepared: PreparedWebTurn) -> dict[str, object] | None:
+    """Consume one instruction only at a coordinator-owned safe checkpoint."""
+    consumer = prepared.ai_request.metadata.get("steering_consumer")
+    if not callable(consumer):
+        return None
+    try:
+        value = consumer()
+    except Exception:
+        logger.warning(
+            "web_chat_steering_consumer_failed",
+            extra={"event": "web_chat_steering_consumer_failed", "request_id": prepared.request_id},
+        )
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _append_turn_steering(prepared: PreparedWebTurn, record: dict[str, object]) -> str:
+    instruction = str(record.get("instruction") or "").strip()[:2_000]
+    if not instruction:
+        return ""
+    prepared.ai_request = replace(
+        prepared.ai_request,
+        message=(
+            f"{prepared.ai_request.message}\n\n"
+            "ACTIVE TURN INSTRUCTION (user steering; follow at the next safe "
+            f"checkpoint):\n{instruction}"
+        ),
+    )
+    prepared.ai_request.metadata["steering_applied_sequence"] = int(record.get("sequence") or 0)
+    prepared.ai_request.metadata["steering_applied"] = True
+    return instruction
+
+
 def _release_pre_provider_cancellation(prepared: PreparedWebTurn) -> None:
     with SessionLocal() as session:
         if prepared.route.provider == "swico_free":
@@ -5216,6 +5249,19 @@ def execute_web_turn(
                     generation_provider: Any,
                     generation_route: AIRoute,
                 ) -> AIProviderResponse:
+                    # If steering arrived before provider I/O, it is part of
+                    # the exact active request rather than a new billed turn.
+                    steering = _consume_turn_steering(prepared)
+                    if steering:
+                        _append_turn_steering(prepared, steering)
+                        prepared.ai_request.metadata.pop("provider_messages", None)
+                        prepared.ai_request.metadata.pop("serialized_provider_prompt", None)
+                        messages = _hard_budget_provider_messages(
+                            prepared.ai_request, generation_route,
+                        )
+                        prepared.provider_messages = messages
+                        prepared.ai_request.metadata["provider_messages"] = messages
+                        prepared.ai_request.metadata["serialized_provider_prompt"] = serialize_provider_messages(messages)
                     if visible_delta and hasattr(generation_provider, "stream_complete"):
                         nonlocal streamed_by_provider
                         streamed_by_provider = True
@@ -5697,6 +5743,19 @@ def execute_web_turn(
                 nonlocal guard_context, repository_validation_attempts
                 nonlocal finalize_stage
                 finalize_stage = "answer_guard_verification"
+                # A streamed provider cannot be edited in place. At this
+                # between-step checkpoint, consume steering into the same
+                # logical turn and force the bounded repair continuation to
+                # receive it. This is reported as applied only after it is
+                # consumed here; it is never mislabeled as provider-native
+                # stream mutation.
+                steering = _consume_turn_steering(prepared)
+                if steering:
+                    _append_turn_steering(prepared, steering)
+                    guard_context = replace(
+                        guard_context,
+                        task_contract=prepared.ai_request.message,
+                    )
                 if (
                     guard_context.repository_validation_required
                     and prepared.repository_validation is None
@@ -5840,11 +5899,24 @@ def execute_web_turn(
                         guard_context,
                         repository_validation=prepared.repository_validation,
                     )
-                return capture_initial_quality(guard.check(
+                quality = guard.check(
                     answer,
                     guard_context,
                     model_verifier=None,
-                ))
+                )
+                if steering and quality.passed and stream_policy.mode == "verified_buffered":
+                    quality = replace(
+                        quality,
+                        status="unverified",
+                        checks=quality.checks + (
+                            QualityCheck(
+                                "turn_steering",
+                                "failed",
+                                "steering_requested",
+                            ),
+                        ),
+                    )
+                return capture_initial_quality(quality)
 
             repair_prices: list[tuple[str, PriceResult, int, int]] = []
             repair_reserved_total = 0

@@ -30,6 +30,7 @@ import { createSandboxAdapter, verifySandbox } from './sandbox.js'
 import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
 import { cloudCancel, cloudEvents, cloudExec, cloudList, cloudStatus } from './cloud.js'
+import { createCloudSnapshot } from './cloud_snapshot.js'
 import { copyToClipboard } from './clipboard.js'
 import { parseTaskArguments, positionalAfter, taskText } from './arguments.js'
 import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from './output_schema.js'
@@ -246,7 +247,7 @@ async function ensureAgentScope(tokens: CliTokens, env: NodeJS.ProcessEnv, line:
 
 async function runAgent(tokens: CliTokens, task: string, env = process.env, lineOverride?: Interface, profile: PermissionProfile = 'approval-required', resume?: LocalSession, present: Presentation = console.log): Promise<CliTokens> {
   const line = lineOverride ?? createInterface({ input, output }), ownsLine = !lineOverride
-  let runId: string | undefined, currentTokens = tokens
+  let runId: string | undefined, currentTokens = tokens, mcp: McpManager | undefined
   const controller = new AbortController()
   try {
     const capability = await probeEndpoint(env)
@@ -267,8 +268,8 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     runId = run.run_id
     const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
     activeInterrupt = cancelOperation
-    const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [`Resumed session with bounded local context.`], summary: undefined as string | undefined, skill: undefined as string | undefined }
-    const mcp = new McpManager(config.effective, undefined, sandbox, true)
+    const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [...(resume?.observations ?? []), `Resumed session with bounded local context.`].slice(-64), summary: resume?.compaction?.summary, skill: undefined as string | undefined }
+    mcp = new McpManager(config.effective, undefined, sandbox, true)
     const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
     if (skill) { context.skill = (await showSkill(skill.name, info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions; present(`Using skill: ${skill.name}`) }
     const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
@@ -284,7 +285,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       context.summary = compacted.summary ?? context.summary
       const promptContext = buildAgentContext({ ...context, plan: plan.snapshot })
       const next = await planAgentStep(currentTokens, run.run_id, task, promptContext, env, controller.signal)
-        if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }, env); return currentTokens }
+      if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, observations: context.observations.slice(-64), compaction: context.summary ? { summary: context.summary, preserved_observations: context.observations.length, at: new Date().toISOString() } : undefined, actions, updated_at: new Date().toISOString() }, env); return currentTokens }
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
       const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash, reservation_id: next.reservation_id }
       present(`\nTool: ${action.action_type}`)
@@ -295,13 +296,19 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       actions.push({ action_id: action.action_id, payload_hash: next.payload_hash ?? '', status: result.status })
       plan.advance(result.status === 'succeeded' ? 'completed' : 'blocked')
       present(result.status === 'succeeded' ? JSON.stringify(result.result, null, 2) : String(result.result))
-      await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }, env)
-      if (result.status !== 'succeeded') return currentTokens
+      await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, observations: context.observations.slice(-64), compaction: context.summary ? { summary: context.summary, preserved_observations: context.observations.length, at: new Date().toISOString() } : undefined, actions, updated_at: new Date().toISOString() }, env)
+      // A deterministic command/test failure is an observation for the next
+      // bounded planner step, not an automatic side-effect retry. Unknown
+      // outcomes stop here so a lost acknowledgement can never be replayed.
+      if (result.status === 'unknown') return currentTokens
     }
-    await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; present(`\nAgent step limit reached.\n${plan.render()}`); return currentTokens
+    await cancelAgentRun(currentTokens, run.run_id, env).catch(() => undefined)
+    runId = undefined
+    present(`\nAgent step limit reached without a completed result. No further actions were executed.\n${plan.render()}`)
+    return currentTokens
   } catch (error) {
     controller.abort(); if (runId) await cancelAgentRun(currentTokens, runId, env).catch(() => undefined); throw error
-  } finally { if (ownsLine) line.close(); if (activeInterrupt) activeInterrupt = null }
+  } finally { await mcp?.close().catch(() => undefined); if (ownsLine) line.close(); if (activeInterrupt) activeInterrupt = null }
 }
 
 async function initInstructions(line: Interface, env = process.env, present: Presentation = console.log): Promise<void> {
@@ -373,7 +380,16 @@ async function worktreeCommand(args: string[], env = process.env, line?: Interfa
 
 async function cloudCommand(args: string[], tokens: CliTokens, env = process.env, line?: Interface): Promise<void> {
   const action = args[1] ?? 'status'
-  if (action === 'exec') { const task = args.slice(2).join(' '); if (!task) throw new Error('Usage: swico cloud exec TASK'); console.log(JSON.stringify(await cloudExec(tokens, task, env), null, 2)); return }
+  if (action === 'exec') {
+    const task = args.slice(2).join(' '); if (!task) throw new Error('Usage: swico cloud exec TASK')
+    // Non-interactive execution is task-only. Interactive callers must make
+    // an explicit consent decision before repository bytes leave the machine.
+    if (!line || !/^y(?:es)?$/i.test((await line.question('Upload a bounded, secret-filtered workspace snapshot to Swico Cloud? (y/N) ')).trim())) {
+      console.log(JSON.stringify(await cloudExec(tokens, task, env, 'task_only'), null, 2)); return
+    }
+    const snapshot = await createCloudSnapshot(env.SWICO_CLI_WORKSPACE ?? process.cwd())
+    console.log(JSON.stringify(await cloudExec(tokens, task, env, 'workspace_snapshot', snapshot), null, 2)); return
+  }
   if (action === 'list') { console.log(JSON.stringify(await cloudList(tokens, env), null, 2)); return }
   if (action === 'status' || action === 'resume') { const id = args[2]; if (!id) throw new Error('Usage: swico cloud status JOB'); console.log(JSON.stringify(await cloudStatus(tokens, id, env), null, 2)); return }
   if (action === 'logs' || action === 'events') { const id = args[2]; if (!id) throw new Error(`Usage: swico cloud ${action} JOB`); console.log(JSON.stringify(await cloudEvents(tokens, id, env), null, 2)); return }
@@ -533,7 +549,9 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
     onSteer: async (instruction, sequence) => {
       if (!activeRequestId) return 'rejected'
       const result = await steerChat(currentTokens, activeRequestId, instruction, sequence, env)
-      return result.status === 'deferred' ? 'deferred' : result.status === 'replayed' ? 'accepted' : 'rejected'
+      if (result.status === 'applied') return 'accepted'
+      if (result.status === 'queued' || (result.status === 'duplicate' && result.original_status === 'queued')) return 'deferred'
+      return 'rejected'
     },
   })
   startupDiagnostic('rich-ui:run', startupState())
@@ -675,8 +693,21 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     if (action === 'inspect' && target) console.log(JSON.stringify(await pluginApi.inspectPlugin(target, env), null, 2))
     else if (action === 'trust' && target) console.log(JSON.stringify(await pluginApi.trustPlugin(target, env), null, 2))
     else if (action === 'untrust' && target) { await pluginApi.untrustPlugin(target, env); console.log(`Untrusted plugin ${target}.`) }
+    else if (action === 'run' && target) {
+      if (!input.isTTY || !output.isTTY) throw new Error('Executable plugin activation requires an interactive terminal and explicit approval.')
+      const sandbox = createSandboxAdapter(metadata.root), verification = await verifySandbox(metadata.root)
+      if (!verification.verified) throw new Error(`Executable plugin unavailable: sandbox verification did not pass (${verification.diagnostic}).`)
+      const line = createInterface({ input, output })
+      try {
+        if (!/^y(?:es)?$/i.test((await line.question(`Run trusted plugin ${target} in the verified read-only sandbox? (y/N) `)).trim())) throw new Error('Plugin execution was not approved.')
+        const result = await pluginApi.runTrustedPlugin(target, argv.slice(3), sandbox, verification.verified, undefined, env)
+        if (result.stdout) process.stdout.write(result.stdout)
+        if (result.stderr) process.stderr.write(result.stderr)
+        if (result.code !== 0) throw new Error(`Plugin exited with status ${result.code ?? 'unknown'}.`)
+      } finally { line.close() }
+    }
     else if (action === 'list') console.log(JSON.stringify(await pluginApi.listPlugins(metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), null, 2))
-    else throw new Error('Plugins command must be list, inspect PATH, trust PATH, or untrust PATH.')
+    else throw new Error('Plugins command must be list, inspect PATH, trust PATH, untrust PATH, or run PATH [ARGS].')
     return 0
   }
   if (command === 'completion') { console.log(completion(argv[commandIndex + 1])); return 0 }

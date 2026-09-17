@@ -22,7 +22,7 @@ explicitly bounded.
 | Workflow area | Swico status | Current boundary |
 |---|---|---|
 | Terminal chat, streaming, history | IMPLEMENTED + VERIFIED | Shared authenticated Chat route plus installed rich/plain terminal paths; no new live-provider call in this check |
-| Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and local slash controls are implemented; ordered eight-prompt queued follow-ups are covered; true mid-turn steering remains partial and is never simulated |
+| Interactive editing and steering | PARTIAL | Multiline Unicode editing, paste, cancellation and ordered queued follow-ups are implemented; steering is owner/turn/sequence bound and consumed at a safe between-step checkpoint, but no provider-native stream mutation is claimed |
 | Repository instructions, planning, local edits | IMPLEMENTED + UNVERIFIED | Disposable coding-loop acceptance covers discovery, AGENTS.md, hash-bound approval, atomic edits, bounded test/repair, and Git result reporting; native sandbox proof remains host-specific |
 | Plans and approval loops | IMPLEMENTED + UNVERIFIED | Task-only plans and explicit approvals are tested; the deterministic disposable lifecycle is covered, but native hostile sandbox evidence is required per host |
 | Approvals and local permissions | IMPLEMENTED + UNVERIFIED | Read-only, approval-required, and workspace-write are persisted; workspace-write is usable only after hostile sandbox proof |
@@ -80,7 +80,7 @@ weakened sandbox policy in RC8.
 | Worktrees | IMPLEMENTED + VERIFIED | Owned detached worktrees preserve dirty primary tree |
 | Mutating subagents | IMPLEMENTED + UNVERIFIED | Review-first coordinator uses an owned detached worktree and clean-primary apply; no automatic merge |
 | Cloud control plane | IMPLEMENTED + UNVERIFIED | Durable owner-scoped jobs, idempotency, cancellation, and bounded lifecycle events; no API-local execution |
-| Cloud execution | IMPLEMENTED + UNVERIFIED | Opt-in E2B executor and capability-checked runner endpoint exist; native hostile acceptance and production attestation are not verified, so cloud remains disabled |
+| Cloud execution | IMPLEMENTED + UNVERIFIED | Durable API queue, explicit byte snapshot endpoint, separate controller, capability-checked runner endpoint, and opt-in E2B execution path exist; live E2B/native hostile acceptance, durable billing reconciliation, and production attestation are not verified, so cloud remains disabled |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
 | npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |

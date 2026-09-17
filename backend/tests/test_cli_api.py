@@ -372,10 +372,12 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     runner_headers = {"X-Swico-Runner-Id": "runner-1", "X-Swico-Runner-Token": "runner-secret"}
     claimed = client.post("/api/cli/v1/cloud/runner/jobs/claim", headers=runner_headers, json={})
     assert claimed.status_code == 200 and claimed.json()["job"]["id"] == job_id and claimed.json()["job"]["status"] == "dispatching"
-    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/heartbeat", headers={**runner_headers, "X-Swico-Runner-Id": "runner-2"}).status_code == 409
-    completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=runner_headers, json={"status": "completed", "result": {"changed_files": []}})
+    capability = claimed.json()["runner_capability"]
+    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/heartbeat", headers={**runner_headers, "X-Swico-Runner-Id": "runner-2", "X-Swico-Runner-Capability": capability}).status_code == 409
+    lease_headers = {**runner_headers, "X-Swico-Runner-Capability": capability}
+    completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "completed", "result": {"changed_files": []}})
     assert completed.status_code == 200 and completed.json()["status"] == "completed"
-    replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=runner_headers, json={"status": "failed"})
+    replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "failed"})
     assert replay.status_code == 409
 
 

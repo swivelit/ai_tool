@@ -90,7 +90,7 @@ be reused. Do not claim registry presence or reuse it after any source or
 approved-license change without a new clean build and acceptance. Rollback is
 schema-preserving: restore the previous retained artifact and leave the
 deployed database at the current repository head,
-`20260915_weekly_tester_credit`.
+`20260916_cli_cloud_jobs` (after `20260915_weekly_tester_credit`).
 
 For the operator: the RC8 live acceptance record and exact artifact procedure
 are in `docs/CLI_LIVE_ACCEPTANCE.md`. Use `swico usage` at the macOS shell and

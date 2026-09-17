@@ -72,6 +72,18 @@ class CloudJobRequest(BaseModel):
         return value.strip()
 
 
+class CloudSnapshotFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=512)
+    data_base64: str = Field(min_length=0, max_length=8 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CloudSnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    files: list[CloudSnapshotFile] = Field(max_length=5_000)
+
+
 class CloudJobClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str | None = Field(default=None, min_length=1, max_length=36)

@@ -90,7 +90,7 @@ def test_cloud_pilot_requires_verified_runner_without_blocking_public_chat() -> 
 
 
 def test_public_schema_check_requires_all_cli_tables_and_repository_head() -> None:
-    head = "20260915_weekly_tester_credit"
+    head = "20260916_cli_cloud_jobs"
     assert schema_readiness_errors(REQUIRED_CLI_TABLES, head, head) == []
     errors = schema_readiness_errors({"cli_session"}, "old-head", head)
     assert errors == [
