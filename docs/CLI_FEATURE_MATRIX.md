@@ -32,7 +32,7 @@ explicitly bounded.
 | Sessions, resume, worktrees | PARTIAL | Owner-scoped metadata and detached worktrees; no automatic merge |
 | Images and web search | IMPLEMENTED + UNVERIFIED | Server-controlled paid capabilities; live/device acceptance still pending |
 | Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
-| Sandboxed local execution | FAIL-CLOSED / DISABLED | Latest ordinary macOS desktop diagnostic ends in `unknown_failure`/`SIGABRT`; hostile enforcement is not accepted; Linux/Windows not proven here |
+| Sandboxed local execution | FAIL-CLOSED / DISABLED | Current macOS progressive diagnostic is denied by the host before policy execution; hostile enforcement is not accepted; Linux/Windows not proven here |
 | Cloud tasks | IMPLEMENTED + UNVERIFIED | Durable owner-scoped control-plane jobs/events exist; execution remains disabled without a verified isolated runner |
 
 The comparison follows the current official Codex CLI feature, reference, and
@@ -72,7 +72,7 @@ weakened sandbox policy in RC8.
 | Images | PARTIAL | CLI upload reuses temporary paid image path; live/device verification pending |
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
-| macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and hostile verification are present; latest ordinary desktop readiness control reports `unknown_failure`/`SIGABRT`, so native enforcement remains unverified |
+| macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and progressive profile harness are present; current Intel host denies sandbox application before hostile probes, so native enforcement remains unverified |
 | Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap plus hostile verification; no real Linux host was available in this audit |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
 | Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
@@ -83,7 +83,7 @@ weakened sandbox policy in RC8.
 | Cloud execution | IMPLEMENTED + UNVERIFIED | Durable API queue, explicit byte snapshot endpoint, separate controller, capability-checked runner endpoint, and opt-in E2B execution path exist; live E2B/native hostile acceptance, durable billing reconciliation, and production attestation are not verified, so cloud remains disabled |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |
+| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.4` from the canonical CI artifact with provenance; earlier RC evidence remains historical |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 | Queue and shell shorthand | IMPLEMENTED + UNVERIFIED | Bounded follow-up queue plus `!command` approval/sandbox path; native sandbox evidence remains host-specific |
 | File mentions and local copy/history | IMPLEMENTED + VERIFIED | Bounded confined `/mention`, Ctrl+R local prompt search, Ctrl+O and `/copy` clipboard path |
@@ -93,7 +93,7 @@ check. `swico release-readiness --json` reports `agent_sandbox_ready` as
 blocked until that check passes; it does not make cloud readiness a local
 agent blocker. On the current Intel macOS host the verification probes are
 correctly not run because the latest ordinary desktop readiness control is
-inconclusive (`unknown_failure`/`SIGABRT`). This is not evidence of native
+inconclusive because the host denied sandbox application before policy execution. This is not evidence of native
 enforcement and does not change the fail-closed agent decision.
 
 The public Chat release keeps `SWICO_CLI_AGENT_ENABLED=false` and

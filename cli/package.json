@@ -24,6 +24,7 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build",
     "release:check": "npm run build && node scripts/release-check.mjs",
+    "sandbox:diagnose:macos": "npm run build && node scripts/diagnose-macos-sandbox.mjs",
     "test:conpty-native": "node scripts/test-conpty-native.mjs"
   },
   "devDependencies": {

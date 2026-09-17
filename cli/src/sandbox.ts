@@ -80,6 +80,18 @@ function macProfile(root: string, policy: SandboxPolicy, network: NetworkPolicy,
   return `(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target self))\n(allow file-read* (subpath "/usr") (subpath "/usr/local") (subpath "/opt/homebrew") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath ${JSON.stringify(writable)}) ${files})\n(allow file-read-metadata ${files})\n(allow file-write* ${writes})\n(allow file-write-data ${writes})\n(allow sysctl-read)\n${network === 'allowed' ? '(allow network-outbound)' : ''}`
 }
 
+/**
+ * Return the exact generated macOS profiles for the native diagnostic harness.
+ * Keeping this behind the production profile generator prevents the harness
+ * from accidentally testing a hand-written approximation of agent policy.
+ */
+export function macSandboxProfiles(root: string, writable = join(tmpdir(), 'swico-sandbox')): { readOnly: string; workspaceWrite: string } {
+  return {
+    readOnly: macProfile(root, 'read-only', 'disabled', writable),
+    workspaceWrite: macProfile(root, 'workspace-write', 'disabled', writable),
+  }
+}
+
 function capabilities(available: boolean): Pick<SandboxStatus, 'filesystem_isolation' | 'network_isolation' | 'environment_isolation' | 'process_isolation' | 'supported_policies'> {
   return available
     ? { filesystem_isolation: 'unverified', network_isolation: 'unverified', environment_isolation: 'available', process_isolation: 'unverified', supported_policies: ['read-only', 'workspace-write'] }
