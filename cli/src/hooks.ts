@@ -4,17 +4,17 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import type { SandboxAdapter } from './sandbox.js'
 
-export type HookEvent = 'session_start' | 'session_end' | 'user_prompt' | 'pre_tool' | 'post_tool' | 'permission_request' | 'pre_compact' | 'post_compact' | 'subagent_start' | 'subagent_stop'
+export type HookEvent = 'session_start' | 'session_end' | 'user_prompt' | 'pre_tool' | 'post_tool' | 'permission_request' | 'pre_compact' | 'post_compact' | 'subagent_start' | 'subagent_stop' | 'stop' | 'interrupt'
 export type HookPayload = { event: HookEvent; run_id?: string; action_type?: string; summary?: string }
 export class HookBus {
   private listeners = new Map<HookEvent, Array<(payload: HookPayload) => void | Promise<void>>>()
   constructor(private readonly executable: ExecutableHook[] = [], private readonly sandbox?: SandboxAdapter, private readonly sandboxVerified = false, private readonly signal?: AbortSignal, private readonly cwd = process.cwd()) {}
   on(event: HookEvent, listener: (payload: HookPayload) => void | Promise<void>): void { this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]) }
-  async emit(payload: HookPayload): Promise<void> {
+  async emit(payload: HookPayload, options: { allowAfterAbort?: boolean } = {}): Promise<void> {
     for (const listener of this.listeners.get(payload.event) ?? []) await listener(payload)
     for (const hook of this.executable.filter(item => item.event === payload.event)) {
       if (!this.sandbox) throw new Error('Executable hook configuration has no sandbox boundary.')
-      const result = await runExecutableHook(hook, payload, this.sandbox, this.sandboxVerified, this.signal, this.cwd)
+      const result = await runExecutableHook(hook, payload, this.sandbox, this.sandboxVerified, options.allowAfterAbort ? undefined : this.signal, this.cwd)
       if (result.code !== 0 || result.signal) throw new Error(`Executable ${payload.event} hook failed safely.`)
     }
   }
@@ -48,7 +48,7 @@ export async function runExecutableHook(hook: ExecutableHook, payload: HookPaylo
     child.stdin.end(JSON.stringify({ event: payload.event, run_id: payload.run_id, action_type: payload.action_type, summary: payload.summary }))
   })
 }
-const HOOK_EVENTS = new Set<HookEvent>(['session_start', 'session_end', 'user_prompt', 'pre_tool', 'post_tool', 'permission_request', 'pre_compact', 'post_compact', 'subagent_start', 'subagent_stop'])
+const HOOK_EVENTS = new Set<HookEvent>(['session_start', 'session_end', 'user_prompt', 'pre_tool', 'post_tool', 'permission_request', 'pre_compact', 'post_compact', 'subagent_start', 'subagent_stop', 'stop', 'interrupt'])
 
 /** Load only explicit user-owned hook configuration; project files are never loaded here. */
 export async function loadExecutableHooks(env: NodeJS.ProcessEnv = process.env): Promise<ExecutableHook[]> {

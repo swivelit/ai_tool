@@ -178,6 +178,19 @@ test('trusted executable hooks are invoked by the real session lifecycle bus', a
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('stop and interrupt hooks have explicit lifecycle semantics', async () => {
+  const events = []
+  const bus = new HookBus([], { status: () => ({ implementation: 'test', available: true, reason: 'verified', policy: 'read-only', network: 'disabled', writable_roots: [] }) }, true)
+  bus.on('stop', payload => events.push([payload.event, payload.run_id]))
+  bus.on('interrupt', payload => events.push([payload.event, payload.run_id]))
+  await bus.emit({ event: 'stop', run_id: 'run-stop', summary: 'terminal response' })
+  const controller = new AbortController(); controller.abort()
+  const interrupting = new HookBus([], { status: () => ({ implementation: 'test', available: true, reason: 'verified', policy: 'read-only', network: 'disabled', writable_roots: [] }) }, true, controller.signal)
+  interrupting.on('interrupt', payload => events.push([payload.event, payload.run_id]))
+  await interrupting.emit({ event: 'interrupt', run_id: 'run-interrupt', summary: 'user cancellation' }, { allowAfterAbort: true })
+  assert.deepEqual(events, [['stop', 'run-stop'], ['interrupt', 'run-interrupt']])
+})
+
 test('CLI chat carries server-controlled search mode and temporary attachments through the real stream client', async () => {
   const originalFetch = globalThis.fetch; let payload; const events = []
   globalThis.fetch = async (_url, init = {}) => { payload = JSON.parse(String(init.body)); return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('event: thread\ndata: {"thread_id":"t1"}\n\nevent: delta\ndata: {"text":"ok"}\n\nevent: done\ndata: {}\n\n')); controller.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }

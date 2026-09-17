@@ -28,6 +28,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def enable_agent_pilot(monkeypatch: pytest.MonkeyPatch, *users) -> None:
+    """Explicitly admit only the synthetic users used by this test."""
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    emails = {
+        str(user.email).strip().casefold()
+        for user in users
+        if getattr(user, "email", None)
+    }
+    assert emails
+    monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", ",".join(sorted(emails)))
+
+
 def test_postgres_agent_step_reservation_serializes_concurrent_workers():
     """The run row lock serializes reservations without spanning model I/O."""
     user = create_test_user(f"cli-pg-{uuid4()}", f"cli-pg-{uuid4()}@example.test")
@@ -62,10 +75,9 @@ def test_postgres_agent_step_reservation_serializes_concurrent_workers():
 
 def test_postgres_production_route_lifecycle_binds_plan_action_result_once(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """The PostgreSQL job exercises the actual FastAPI route/service path."""
-    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
-    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
     monkeypatch.setenv("SWICO_CLI_MAX_AGENT_STEPS", "1")
     user = create_test_user(f"cli-pg-route-{uuid4()}", f"cli-pg-route-{uuid4()}@example.test")
+    enable_agent_pilot(monkeypatch, user)
     raw_access = "p" * 64
     with SessionLocal() as session:
         session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("q" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="postgres route"))
@@ -101,11 +113,10 @@ def test_postgres_production_route_lifecycle_binds_plan_action_result_once(clien
 
 def test_postgres_action_replay_conflict_ownership_and_terminal_result_are_exactly_once(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """Admission/result retries reconcile on PostgreSQL without new steps."""
-    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
-    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
     monkeypatch.setenv("SWICO_CLI_MAX_AGENT_STEPS", "1")
     owner = create_test_user(f"cli-pg-replay-{uuid4()}", f"cli-pg-replay-{uuid4()}@example.test")
     other = create_test_user(f"cli-pg-other-{uuid4()}", f"cli-pg-other-{uuid4()}@example.test")
+    enable_agent_pilot(monkeypatch, owner, other)
     raw_access = "t" * 64
     other_access = "u" * 64
     with SessionLocal() as session:
@@ -140,9 +151,8 @@ def test_postgres_action_replay_conflict_ownership_and_terminal_result_are_exact
 
 def test_postgres_cancellation_during_provider_io_rejects_late_result(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """Cancellation can win after reservation and before provider completion."""
-    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
-    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
     user = create_test_user(f"cli-pg-cancel-{uuid4()}", f"cli-pg-cancel-{uuid4()}@example.test")
+    enable_agent_pilot(monkeypatch, user)
     raw_access = "y" * 64
     with SessionLocal() as session:
         session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("z" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="postgres cancellation"))
@@ -176,9 +186,8 @@ def test_postgres_cancellation_during_provider_io_rejects_late_result(client: Te
 
 
 def test_postgres_concurrent_plan_requests_do_not_generate_two_reservations(client: TestClient, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
-    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
     user = create_test_user(f"cli-pg-concurrent-{uuid4()}", f"cli-pg-concurrent-{uuid4()}@example.test")
+    enable_agent_pilot(monkeypatch, user)
     raw_access = "r" * 64
     with SessionLocal() as session:
         session.add(CliSession(user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access), access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("s" * 64), refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1), selected_tier="lite", scopes_json='["chat","agent"]', device_description="postgres concurrent"))

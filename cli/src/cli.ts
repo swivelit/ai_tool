@@ -325,7 +325,11 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const run = resume?.run_id ? await getAgentRun(currentTokens, resume.run_id, env) : await createAgentRun(currentTokens, task, undefined, env)
     if (run.status !== 'running' && run.status !== 'waiting_approval') throw new Error(`Agent session is already ${run.status}; start a new task.`)
     runId = run.run_id; hookRunId = run.run_id
-    const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
+    const cancelOperation = () => {
+      if (hookBus && hookRunId) void hookBus.emit({ event: 'interrupt', run_id: hookRunId, summary: 'Local agent interrupted by the user.' }, { allowAfterAbort: true }).catch(() => undefined)
+      controller.abort()
+      if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined)
+    }
     activeInterrupt = cancelOperation
     const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [...(resume?.observations ?? []), `Resumed session with bounded local context.`].slice(-64), summary: resume?.compaction?.summary, skill: undefined as string | undefined }
     hookBus = new HookBus(config.effective.hooksEnabled ? await loadExecutableHooks(env) : [], sandbox, verification.verified, controller.signal, info.metadata.root)
@@ -347,7 +351,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       context.summary = compacted.summary ?? context.summary
       const promptContext = buildAgentContext({ ...context, plan: plan.snapshot })
       const next = await planAgentStep(currentTokens, run.run_id, task, promptContext, env, controller.signal)
-      if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, observations: context.observations.slice(-64), compaction: context.summary ? { summary: context.summary, preserved_observations: context.observations.length, at: new Date().toISOString() } : undefined, actions, updated_at: new Date().toISOString() }, env); return currentTokens }
+      if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await hookBus.emit({ event: 'stop', run_id: run.run_id, summary: 'Local agent produced its terminal response.' }); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, observations: context.observations.slice(-64), compaction: context.summary ? { summary: context.summary, preserved_observations: context.observations.length, at: new Date().toISOString() } : undefined, actions, updated_at: new Date().toISOString() }, env); return currentTokens }
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
       const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash, reservation_id: next.reservation_id }
       present(`\nTool: ${action.action_type}`)
