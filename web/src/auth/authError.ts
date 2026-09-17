@@ -51,3 +51,16 @@ export function authApiErrorMessage(error: unknown, sendingCode: boolean): strin
     ? 'We could not send the code. Please try again.'
     : 'We could not complete that request. Please try again.'
 }
+
+export function getAuthApiErrorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null
+
+  const body = error.body
+  if (!body || typeof body !== 'object') return null
+
+  const detail = (body as { detail?: unknown }).detail
+  if (!detail || typeof detail !== 'object') return null
+
+  const code = (detail as { code?: unknown }).code
+  return typeof code === 'string' ? code : null
+}

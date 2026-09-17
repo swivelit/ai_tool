@@ -1419,3 +1419,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .cli-command-block { padding: 14px 15px 53px }
   .cli-copy-button { top: auto; right: 10px; bottom: 10px }
 }
+
+.auth-resend {
+  margin-top: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+.auth-resend:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

@@ -1,6 +1,6 @@
 import { FirebaseError } from 'firebase/app'
 import { ApiError, ApiNetworkError } from '../api/client'
-import { authApiErrorMessage, friendlyAuthError } from './authError'
+import { authApiErrorMessage, friendlyAuthError, getAuthApiErrorCode } from './authError'
 
 let consoleError: ReturnType<typeof vi.spyOn>
 
@@ -77,4 +77,14 @@ it('uses the safe server reachability message for network failures', () => {
   expect(authApiErrorMessage(new ApiNetworkError(), true)).toBe(
     'We could not reach the server. Please try again.',
   )
+})
+it('extracts the OTP error code from an API error', () => {
+  const error = new ApiError(400, {
+    detail: {
+      code: 'otp_invalid_or_expired',
+      message: 'This code is invalid or expired. Request a new code.',
+    },
+  })
+
+  expect(getAuthApiErrorCode(error)).toBe('otp_invalid_or_expired')
 })

@@ -10,14 +10,16 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
   const [otp, setOtp] = useState(''); const [otpSent, setOtpSent] = useState(false)
   const [resendCooldown, setResendCooldown] = useState(0)
   const [status, setStatus] = useState(''); const [isError, setIsError] = useState(false)
-  const [busy, setBusy] = useState(false); const [showPassword, setShowPassword] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [canResend, setCanResend] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   useEffect(() => {
     if (resendCooldown <= 0) return undefined
     const timer = window.setInterval(() => setResendCooldown(value => Math.max(0, value - 1)), 1000)
     return () => window.clearInterval(timer)
   }, [resendCooldown])
   const title = mode === 'signup' ? 'Create your account' : mode === 'reset' ? 'Reset your password' : 'Welcome back'
-  const changeMode = (next: 'login' | 'signup' | 'reset') => { setMode(next); setOtpSent(false); setOtp(''); setResendCooldown(0); setStatus(''); setIsError(false); setPassword('') }
+  const changeMode = (next: 'login' | 'signup' | 'reset') => { setMode(next); setOtpSent(false); setOtp(''); setResendCooldown(0); setStatus(''); setIsError(false); setPassword(''); setCanResend(false) }
   const submit = async (event: FormEvent) => {
     event.preventDefault(); if (busy) return
     if (otpSent && otp.length !== 6) { setStatus('Enter the 6-digit verification code.'); setIsError(true); return }
@@ -31,7 +33,19 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
         const result = await auth.signUp(name, email, password, otpSent ? otp : undefined)
         if (result.status === 'otp_sent') { setOtpSent(true); setResendCooldown(result.cooldownSeconds); setStatus('We sent a 6-digit code to your email.') }
       } else await auth.signIn(email, password)
-    } catch (error) { setStatus(friendlyAuthError(error)); setIsError(true) }
+    } catch (error) {
+      setStatus(friendlyAuthError(error))
+      setIsError(true)
+
+      if (
+        mode === 'reset' &&
+        otpSent &&
+        error instanceof Error &&
+        error.name === 'otp_invalid_or_expired'
+      ) {
+        setCanResend(true)
+      }
+    }
     finally { setBusy(false) }
   }
   const resendCode = async () => {
@@ -55,7 +69,23 @@ export function LoginPage({ initialMode = 'login' }: { initialMode?: 'login' | '
       {needsPassword && <div className="auth-field"><label htmlFor="auth-password">{mode === 'reset' ? 'New password' : 'Password'}</label><span className="password-field"><input id="auth-password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} required value={password} onChange={event => setPassword(event.target.value)} /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} title={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></div>}
       {otpSent && <label>Verification code<input className="otp-input" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required autoFocus value={otp} onChange={event => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} /></label>}
       <button className="primary wide" disabled={busy}>{busy ? 'Please wait…' : mode === 'signup' ? (otpSent ? 'Verify and create account' : 'Continue') : mode === 'reset' ? (otpSent ? 'Change password' : 'Send verification code') : 'Sign in'}</button>
-      {otpSent && <button type="button" className="auth-resend" onClick={() => void resendCode()} disabled={busy || resendCooldown > 0} aria-label={resendCooldown > 0 ? `Resend code in ${resendCooldown} seconds` : 'Resend code'}>{resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : 'Resend code'}</button>}
+      {otpSent && (mode === 'signup' || (mode === 'reset' && canResend)) && (
+        <button
+          type="button"
+          className="auth-resend"
+          onClick={() => void resendCode()}
+          disabled={busy || resendCooldown > 0}
+          aria-label={
+            resendCooldown > 0
+              ? `Resend code in ${resendCooldown} seconds`
+              : 'Resend code'
+          }
+        >
+          {resendCooldown > 0
+            ? `Resend code in ${resendCooldown}s`
+            : 'Resend code'}
+        </button>
+      )}
       {status && <p role={isError ? 'alert' : 'status'} className={`auth-status ${isError ? 'error' : ''}`}>{status}</p>}
     </form>
     <div className="auth-links">{mode !== 'login' ? <button type="button" onClick={() => changeMode('login')}>Back to sign in</button> : <><span>New to Swico? <button type="button" onClick={() => changeMode('signup')}>Create account</button></span><button type="button" onClick={() => changeMode('reset')}>Forgot password?</button></>}</div>

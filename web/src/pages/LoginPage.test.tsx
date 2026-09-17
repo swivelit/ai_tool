@@ -52,20 +52,42 @@ it('shows a server-driven resend countdown and clears the code after signup rese
   }
 })
 
-it('keeps reset state and resend available after an invalid OTP', async () => {
+it('shows resend after an expired reset OTP', async () => {
   auth.resetPassword.mockResolvedValue({ status: 'otp_sent', cooldownSeconds: 0 })
   auth.resendPasswordReset.mockResolvedValue(0)
   render(<LoginPage initialMode="reset" />)
-  fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'reset@example.test' } })
+
+  fireEvent.change(screen.getByLabelText('Email address'), {
+    target: { value: 'reset@example.test' },
+  })
   fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }))
   await act(async () => undefined)
-  expect(screen.getByRole('button', { name: 'Resend code' })).toBeVisible()
-  fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'newpassword' } })
-  fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '123456' } })
-  auth.resetPassword.mockRejectedValueOnce(new Error('The code you entered is incorrect.'))
+
+  expect(screen.queryByRole('button', { name: 'Resend code' })).not.toBeInTheDocument()
+
+  fireEvent.change(screen.getByLabelText('New password'), {
+    target: { value: 'newpassword' },
+  })
+  fireEvent.change(screen.getByLabelText('Verification code'), {
+    target: { value: '123456' },
+  })
+
+  const error = new Error('This code is invalid or expired. Request a new code.')
+  error.name = 'otp_invalid_or_expired'
+  auth.resetPassword.mockRejectedValueOnce(error)
+
   fireEvent.click(screen.getByRole('button', { name: 'Change password' }))
   await act(async () => undefined)
+
   expect(screen.getByRole('button', { name: 'Resend code' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Resend code' }))
+  await act(async () => undefined)
+
+  expect(auth.resendPasswordReset).toHaveBeenCalledWith('reset@example.test')
+  expect(screen.getByLabelText('Verification code')).toHaveValue('')
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'A new verification code was sent.',
+  )
   expect(screen.getByLabelText('New password')).toHaveValue('newpassword')
 })
 
