@@ -215,8 +215,12 @@ read-only sandbox (`swico plugins trust PATH` followed by
 `swico plugins run PATH [ARGS]`); repository presence never grants trust.
 `swico completion bash|zsh|fish|powershell`
 prints static scripts without network access. Hook events exist as an
-in-process abstraction; executable hooks remain disabled because a reviewed
-sandboxed hook runner is not available yet.
+in-process lifecycle bus. Explicitly trusted user hook registries may invoke
+bounded executable hooks only inside a positively verified read-only sandbox;
+project configuration cannot enable them. Set `SWICO_CLI_HOOKS_FILE` to a
+user-owned JSON registry containing event, absolute command, bounded args,
+`trusted: true`, and its current content/configuration hash. Hooks fail closed
+on trust drift, timeout, nonzero exit, or missing sandbox proof.
 `--search`/`--no-search` and `/search auto|on|off` request server-controlled
 web-search behavior, and `--image PATH`/`/image PATH` uses the existing
 temporary, owner-scoped paid image upload policy; Free remains text-only.

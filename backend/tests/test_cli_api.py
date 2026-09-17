@@ -341,6 +341,15 @@ def test_cloud_control_plane_is_owner_scoped_idempotent_and_cancelable(client: T
     assert listed.status_code == 200 and [item["id"] for item in listed.json()["items"]] == [created.json()["id"]]
     foreign = client.get(f"/api/cli/v1/cloud/jobs/{created.json()['id']}", headers={"Authorization": f"Bearer {other_access}"})
     assert foreign.status_code == 404
+    # A workspace job is not claimable until its byte snapshot has been
+    # finalized; a manifest-free queued row must never reach a runner.
+    runner_headers = {"X-Swico-Runner-Id": "runner-before-snapshot", "X-Swico-Runner-Token": "test-only-runner-token"}
+    assert client.post("/api/cli/v1/cloud/runner/jobs/claim", headers=runner_headers, json={}).json()["job"] is None
+    # Disabling admission must not strand an owner from inspecting or draining
+    # an already-created job.
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "false")
+    drained = client.get(f"/api/cli/v1/cloud/jobs/{created.json()['id']}", headers=headers)
+    assert drained.status_code == 200 and drained.json()["status"] == "queued"
     cancelled = client.post(f"/api/cli/v1/cloud/jobs/{created.json()['id']}/cancel", headers=headers)
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
     events = client.get(f"/api/cli/v1/cloud/jobs/{created.json()['id']}/events", headers=headers)
@@ -366,7 +375,7 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
             selected_tier="lite", scopes_json='["chat", "agent"]', device_description="runner lease",
         )); session.commit()
     headers = {"Authorization": f"Bearer {raw_access}"}
-    created = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"task": "lease me"})
+    created = client.post("/api/cli/v1/cloud/jobs", headers=headers, json={"source": "task_only", "task": "lease me"})
     job_id = created.json()["id"]
     assert client.post("/api/cli/v1/cloud/runner/jobs/claim", headers={"X-Swico-Runner-Id": "runner-1", "X-Swico-Runner-Token": "wrong"}, json={}).status_code == 403
     runner_headers = {"X-Swico-Runner-Id": "runner-1", "X-Swico-Runner-Token": "runner-secret"}
@@ -378,7 +387,7 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "completed", "result": {"changed_files": []}})
     assert completed.status_code == 200 and completed.json()["status"] == "completed"
     replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "failed"})
-    assert replay.status_code == 409
+    assert replay.status_code == 200 and replay.json()["idempotent"] is True and replay.json()["status"] == "completed"
 
 
 def test_agent_action_result_is_owner_scoped_idempotent_and_recoverable(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -472,6 +481,7 @@ def test_cli_chat_stream_uses_shared_preparation_and_terminal_events(client: Tes
     assert captured["forced_swico_tier"] == "lite"
     assert captured["search_mode"] == "auto"
     assert captured["output_schema"]["required"] == ["answer"]
+    assert callable(prepared.ai_request.metadata.get("steering_consumer"))
 
 
 @pytest.mark.parametrize(

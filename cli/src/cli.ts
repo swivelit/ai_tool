@@ -13,7 +13,7 @@ import { LocalAgent } from './agent.js'
 import { TerminalOutput } from './terminal_output.js'
 import { Workspace } from './workspace.js'
 import { discoverRepository, loadRepositoryInstructions, type RepositoryMetadata } from './repository.js'
-import { buildAgentContext, compactObservations } from './context.js'
+import { attachMentionedContext, buildAgentContext, compactObservations } from './context.js'
 import { PlanTracker } from './plan.js'
 import { loadPermissionProfile, savePermissionProfile, type PermissionProfile } from './permissions.js'
 import { compactLocalSession, findLocalSession, forkLocalSession, listLocalSessions, removeLocalSession, saveLocalSession, sessionScope, updateLocalSession, type LocalSession } from './local_sessions.js'
@@ -23,12 +23,13 @@ import { credentialKey } from './config.js'
 import { configSummary, loadConfig, saveUserConfig, validateMcpDefinition, userConfigPath, type McpServerDefinition } from './configuration.js'
 import { McpManager } from './mcp.js'
 import { listSkills, selectSkill, showSkill } from './skills.js'
-import { hookStatus } from './hooks.js'
+import { HookBus, hookStatus, loadExecutableHooks } from './hooks.js'
 import { completion } from './completion.js'
 import { runMcpServer } from './mcp_server.js'
 import { createSandboxAdapter, verifySandbox } from './sandbox.js'
 import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
+import { MutatingWorkerCoordinator, type MutatingWorker } from './multi_agent.js'
 import { cloudCancel, cloudEvents, cloudExec, cloudList, cloudStatus } from './cloud.js'
 import { createCloudSnapshot } from './cloud_snapshot.js'
 import { copyToClipboard } from './clipboard.js'
@@ -92,7 +93,7 @@ function doctorAuthState(error: unknown): string {
   return 'request_error'
 }
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /sessions /rename /archive /delete /fork /compact /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /mention /queue /copy /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /sessions /rename /archive /delete /fork /compact /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /agents /ask /mention /queue /copy /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -184,6 +185,64 @@ async function runLocalCommand(line: Interface, command: string, env = process.e
   if (result.code !== 0 || result.timed_out || result.cancelled) throw new Error(`Local command failed (exit ${result.code ?? 'unknown'}${result.timed_out ? ', timed out' : ''}${result.cancelled ? ', cancelled' : ''}).`)
 }
 
+async function runMutatingWorker(
+  tokens: CliTokens,
+  task: string,
+  coordinator: MutatingWorkerCoordinator,
+  env = process.env,
+  line: Interface,
+  present: Presentation = console.log,
+): Promise<{ tokens: CliTokens; worker: MutatingWorker }> {
+  if (!task.trim()) throw new Error('Usage: /agents start TASK')
+  const capability = await probeEndpoint(env)
+  if (capability.state !== 'enabled' || capability.agent_enabled !== true) throw new Error('Mutating workers are unavailable because the server agent capability is disabled.')
+  const info = await repositoryInfo(env)
+  const primaryVerification = await verifySandbox(info.metadata.root)
+  if (!primaryVerification.verified) throw new Error(`Mutating workers unavailable: sandbox verification did not pass (${primaryVerification.diagnostic}).`)
+  if (!await askTrust(line, info.metadata.root)) throw new Error('Workspace trust was not granted; no worker was started.')
+  const currentTokens = await ensureAgentScope(tokens, env, line, present)
+  const worker = await coordinator.start(task.trim())
+  const workerSandbox = createSandboxAdapter(worker.worktree.path)
+  const workerVerification = await verifySandbox(worker.worktree.path)
+  if (!workerVerification.verified) {
+    await coordinator.discard(worker.id, async () => true).catch(() => undefined)
+    throw new Error(`Worker sandbox verification did not pass (${workerVerification.diagnostic}); no worker action was executed.`)
+  }
+  let serverRun: Awaited<ReturnType<typeof createAgentRun>>
+  try { serverRun = await createAgentRun(currentTokens, task.trim(), undefined, env) }
+  catch (error) { await coordinator.discard(worker.id, async () => true).catch(() => undefined); throw error }
+  const controller = new AbortController()
+  const cancel = () => { controller.abort(); void cancelAgentRun(currentTokens, serverRun.run_id, env).catch(() => undefined) }
+  activeInterrupt = cancel
+  try {
+    const workerAgent = new LocalAgent(
+      new Workspace(worker.worktree.path, workerSandbox, 'workspace-write', true),
+      () => ensureTokens(env).then(value => value.access_token),
+      { ...env, SWICO_CLI_JOURNAL_FILE: `${worker.worktree.path}/.swico/action-journal.jsonl` },
+      'workspace-write', controller.signal,
+    )
+    const completed = await coordinator.executeLoop(
+      worker.id,
+      workerAgent,
+      async (context, signal) => {
+        const next = await planAgentStep(currentTokens, serverRun.run_id, task.trim(), context, env, signal)
+        if (next.kind === 'assistant') return { kind: 'assistant' as const, text: next.text ?? '' }
+        return { ...next, protocol_version: (next as { protocol_version?: 1 }).protocol_version ?? 1 } as AgentAction
+      },
+      async description => /^y(?:es)?$/i.test((await line.question(`${description}\nApprove? (y/N) `)).trim()),
+      controller.signal,
+      serverRun.max_steps,
+      serverRun.run_id,
+    )
+    if (completed.status === 'completed') await completeAgentRun(currentTokens, serverRun.run_id, env)
+    else await cancelAgentRun(currentTokens, serverRun.run_id, env).catch(() => undefined)
+    present(`Worker ${completed.id}: ${completed.status}${completed.changed_files.length ? `\nChanged: ${completed.changed_files.join(', ')}` : ''}${completed.error ? `\n${completed.error}` : ''}`)
+    return { tokens: currentTokens, worker: completed }
+  } finally {
+    if (activeInterrupt === cancel) activeInterrupt = null
+  }
+}
+
 async function runPlan(tokens: CliTokens, task: string, env = process.env, line?: Interface): Promise<void> {
   const { metadata } = await repositoryInfo(env)
   const trusted = line ? await askTrust(line, metadata.root) : false
@@ -247,7 +306,7 @@ async function ensureAgentScope(tokens: CliTokens, env: NodeJS.ProcessEnv, line:
 
 async function runAgent(tokens: CliTokens, task: string, env = process.env, lineOverride?: Interface, profile: PermissionProfile = 'approval-required', resume?: LocalSession, present: Presentation = console.log): Promise<CliTokens> {
   const line = lineOverride ?? createInterface({ input, output }), ownsLine = !lineOverride
-  let runId: string | undefined, currentTokens = tokens, mcp: McpManager | undefined
+  let runId: string | undefined, hookRunId: string | undefined, currentTokens = tokens, mcp: McpManager | undefined, hookBus: HookBus | undefined
   const controller = new AbortController()
   try {
     const capability = await probeEndpoint(env)
@@ -265,15 +324,18 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const config = await loadConfig(env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)
     const run = resume?.run_id ? await getAgentRun(currentTokens, resume.run_id, env) : await createAgentRun(currentTokens, task, undefined, env)
     if (run.status !== 'running' && run.status !== 'waiting_approval') throw new Error(`Agent session is already ${run.status}; start a new task.`)
-    runId = run.run_id
+    runId = run.run_id; hookRunId = run.run_id
     const cancelOperation = () => { controller.abort(); if (runId) void cancelAgentRun(currentTokens, runId, env).catch(() => undefined) }
     activeInterrupt = cancelOperation
     const context = { task, instructions, repository: info.metadata, plan: plan.snapshot, observations: [...(resume?.observations ?? []), `Resumed session with bounded local context.`].slice(-64), summary: resume?.compaction?.summary, skill: undefined as string | undefined }
+    hookBus = new HookBus(config.effective.hooksEnabled ? await loadExecutableHooks(env) : [], sandbox, verification.verified, controller.signal, info.metadata.root)
+    await hookBus.emit({ event: 'session_start', run_id: run.run_id, summary: 'Local agent session started.' })
+    await hookBus.emit({ event: 'user_prompt', run_id: run.run_id, summary: task.slice(0, 512) })
     mcp = new McpManager(config.effective, undefined, sandbox, true)
     const skill = selectSkill(task, await listSkills(info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env), config.effective.autoSkills)
     if (skill) { context.skill = (await showSkill(skill.name, info.metadata, env.SWICO_CLI_WORKSPACE ?? process.cwd(), env)).instructions; present(`Using skill: ${skill.name}`) }
     const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
-    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy, verification.verified), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp)
+    const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy, verification.verified), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp, hookBus)
     const sessionId = resume?.id ?? run.run_id
     const scope = sessionScope(currentTokens.account.email, info.metadata.root)
     const actions = [...(resume?.actions ?? [])]
@@ -308,7 +370,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     return currentTokens
   } catch (error) {
     controller.abort(); if (runId) await cancelAgentRun(currentTokens, runId, env).catch(() => undefined); throw error
-  } finally { await mcp?.close().catch(() => undefined); if (ownsLine) line.close(); if (activeInterrupt) activeInterrupt = null }
+  } finally { await mcp?.close().catch(() => undefined); if (hookBus && hookRunId) await hookBus.emit({ event: 'session_end', run_id: hookRunId, summary: 'Local agent session ended.' }).catch(() => undefined); if (ownsLine) line.close(); if (activeInterrupt) activeInterrupt = null }
 }
 
 async function initInstructions(line: Interface, env = process.env, present: Presentation = console.log): Promise<void> {
@@ -477,8 +539,8 @@ async function resumeSession(line: Interface, tokens: CliTokens, id: string | un
     resumeEnv = { ...env, SWICO_CLI_WORKSPACE: selected.workspace_root }
   }
   present(`Session ${selected.id}\nWorkspace: ${selected.workspace_root}\nTier: ${selected.tier}\n${selected.plan.map(item => `${item.state}: ${item.description}`).join('\n')}`)
-  if (!selected.run_id || !selected.task) { present('This session has no resumable active run.'); return tokens }
-  if (!/^y(?:es)?$/i.test((await line.question('Continue the bounded agent run? (y/N) ')).trim())) return tokens
+  if (!selected.task) { present('This session has no resumable task.'); return tokens }
+  if (!/^y(?:es)?$/i.test((await line.question(`${selected.run_id ? 'Continue' : 'Start a new'} bounded agent run from this session? (y/N) `)).trim())) return tokens
   const profile = await loadPermissionProfile(env)
   return runAgent(tokens, selected.task, resumeEnv, line, profile, selected, present)
 }
@@ -489,6 +551,7 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
   startupDiagnostic('repository:ready', startupState())
   let currentTokens = tokens, thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile(), searchMode: 'auto' | 'on' | 'off' = 'auto', images: string[] = [], activeRequestId: string | undefined
   const persistedHistory = await loadPromptHistory(currentTokens.account.email, metadata.root, env)
+  const workerCoordinator = new MutatingWorkerCoordinator(metadata, env)
   let ui: RichTerminalUI
   const promptLine = { question: (text: string) => ui.prompt(text), close: () => undefined } as unknown as Interface
   ui = new RichTerminalUI({
@@ -502,7 +565,10 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
           currentTokens = await runAgent(currentTokens, message, env, promptLine, profile, undefined, text => ui.block(text))
           return { text: 'Agent turn finished.', threadId: thread ?? null }
         }
-        const request = mode === 'plan' ? `Provide a concise task-only plan for this request. Do not inspect or disclose repository content and do not claim files changed:\n\n${message}` : message
+        const mentioned = mode === 'chat'
+          ? await attachMentionedContext(message, new Workspace(metadata.root), async description => /^y(?:es)?$/i.test((await promptLine.question(`${description} (y/N) `)).trim()), text => ui.notice(text))
+          : message
+        const request = mode === 'plan' ? `Provide a concise task-only plan for this request. Do not inspect or disclose repository content and do not claim files changed:\n\n${mentioned}` : mentioned
         const answer = await runChat(currentTokens, request, thread, env, false, searchMode, images, undefined, true, events, requestId => { activeRequestId = requestId })
         images = []; thread = answer.threadId ?? thread
         return answer
@@ -520,6 +586,20 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
         if (queue[0] === 'clear') { context.clearQueue(); context.notice('Cleared queued follow-ups.'); return }
         if (queue[0] === 'remove') { context.removeQueued(Number(queue[1]) - 1); context.notice('Removed queued follow-up.'); return }
         if (queue[0] === 'move') { context.moveQueued(Number(queue[1]) - 1, Number(queue[2]) - 1); context.notice('Reordered queued follow-up.'); return }
+      }
+      if (command.name === 'agents') {
+        const match = (argument ?? 'list').match(/^(list|start|review|apply|discard)(?:\s+([\s\S]+))?$/)
+        if (!match || (match[1] === 'start' && !match[2]) || (match[1] !== 'start' && match[1] !== 'list' && !match[2])) {
+          context.notice('Usage: /agents, /agents list, /agents start TASK, /agents review ID, /agents apply ID, or /agents discard ID.'); return
+        }
+        if (match[1] === 'list') { const items = workerCoordinator.list(); context.block(items.length ? items.map(item => `${item.id}\t${item.status}\t${item.task}`).join('\n') : 'No mutating workers in this terminal.'); return }
+        const id = match[2]!
+        if (match[1] === 'start') { currentTokens = (await runMutatingWorker(currentTokens, id, workerCoordinator, env, promptLine, context.block)).tokens; return }
+        const worker = workerCoordinator.list().find(item => item.id === id)
+        if (!worker) { context.notice('Worker not found in this terminal.'); return }
+        if (match[1] === 'review') { context.block(worker.diff ? `Worker ${worker.id} diff (${worker.diff_hash ?? 'unhashed'}):\n${worker.diff}` : `Worker ${worker.id} has no reviewable diff (${worker.status}).`); return }
+        if (match[1] === 'apply') { const applied = await workerCoordinator.apply(id, async () => /^y(?:es)?$/i.test((await promptLine.question(`Apply worker ${id} to the clean primary workspace? (y/N) `)).trim())); context.notice(`Worker ${applied.id} applied to the primary workspace.`); return }
+        await workerCoordinator.discard(id, async () => /^y(?:es)?$/i.test((await promptLine.question(`Discard worker ${id} and remove its owned worktree? (y/N) `)).trim())); context.notice(`Worker ${id} discarded.`); return
       }
       if (command.name === 'mode') { if (argument) mode = argument as Mode; context.notice(`Mode: ${mode} (Chat, Plan, Agent)`); return }
       if (command.name === 'status') { context.block(await statusText(currentTokens, mode, profile, env)); return }

@@ -31,6 +31,14 @@ test('known interactive command arguments fail locally instead of falling throug
   assert.doesNotThrow(() => validateTopLevelArguments('login', ['login', '--tier', 'lite']))
 })
 
+test('mutating worker controls require explicit bounded subcommands', () => {
+  assert.deepEqual(parseInteractiveCommand('/agents'), { kind: 'command', name: 'agents' })
+  assert.deepEqual(parseInteractiveCommand('/agents start repair the failing test'), { kind: 'command', name: 'agents', argument: 'start repair the failing test' })
+  assert.deepEqual(parseInteractiveCommand('/agents review worker-1'), { kind: 'command', name: 'agents', argument: 'review worker-1' })
+  assert.throws(() => parseInteractiveCommand('/agents apply'), CommandUsageError)
+  assert.throws(() => parseInteractiveCommand('/agents run arbitrary command'), CommandUsageError)
+})
+
 test('usage rendering preserves integer micro-units and identifies estimates', () => {
   assert.equal(formatUsage({ tier_label:'Swico Lite', wallet:{ available_micros:4959800, reserved_micros:0, token_estimate:{ range_min_tokens:25000, range_max_tokens:180000 } } }), 'Swico Chat usage (Swico Lite)\nAvailable Chat credit: 4,959,800 micros\nReserved Chat credit: 0 micros\nAllowance/eligibility: not shown by the usage endpoint\nEstimated token range: 25,000–180,000 tokens (estimate, not exact provider-token balance)')
   const zero = formatUsage({ tier:'lite', wallet:{ available_micros:0, reserved_micros:0 } })

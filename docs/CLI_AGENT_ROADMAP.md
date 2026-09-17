@@ -25,7 +25,7 @@ TOML configuration (project files can only narrow behavior), an official MCP
 SDK client for stdio and Streamable HTTP with explicit approval for unknown or
 side-effecting tools, a read-only stdio `swico mcp-server`, description-first
 SKILL.md discovery, declarative plugin inspection, an in-process lifecycle
-hook bus with executable hooks disabled, static shell completion, CLI search
+  hook bus with sandbox-gated executable hooks, static shell completion, CLI search
 mode/temporary image attachment fields, and bounded read-only model-backed
 subagents. Each subagent is a separate short Chat round through the existing
 server billing path; only bounded local observations are sent and the root

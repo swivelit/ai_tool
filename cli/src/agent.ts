@@ -26,6 +26,10 @@ export class LocalAgent {
   }
   async execute(runId: string, action: AgentAction, approve: (description: string) => Promise<boolean>): Promise<AgentResult> {
     await this.hooks.emit({ event: 'pre_tool', run_id: runId, action_type: action.action_type })
+    const requestApproval = async (description: string) => {
+      await this.hooks.emit({ event: 'permission_request', run_id: runId, action_type: action.action_type, summary: description.slice(0, 512) })
+      return approve(description)
+    }
     const payloadHash = action.payload_hash ?? actionHash(action)
     const previous = await this.journal.latest(action.action_id, payloadHash)
     if (previous === 'succeeded' || previous === 'failed' || previous === 'unknown') return { status: previous, result: `This action was already recorded as ${previous}; it was not run again.` }
@@ -47,13 +51,13 @@ export class LocalAgent {
       else if (action.action_type === 'read_file_range') result = await this.workspace.readFileRange(String(action.payload.path ?? ''), Number(action.payload.start ?? 1), Number(action.payload.end ?? 1))
       else if (action.action_type === 'git_status') result = await this.workspace.gitStatus()
       else if (action.action_type === 'git_diff') result = await this.workspace.gitDiff(typeof action.payload.ref === 'string' ? action.payload.ref : undefined)
-      else if (action.action_type === 'apply_patch') result = await this.workspace.applyPatch(String(action.payload.path ?? ''), String(action.payload.expected_sha256 ?? ''), String(action.payload.patch ?? action.payload.content ?? ''), description => approve(description))
-      else if (action.action_type === 'create_file') result = await this.workspace.createFile(String(action.payload.path ?? ''), String(action.payload.content ?? ''), description => approve(description))
-      else if (action.action_type === 'delete_file') result = await this.workspace.deleteFile(String(action.payload.path ?? ''), description => approve(description))
-      else if (action.action_type === 'move_file') result = await this.workspace.moveFile(String(action.payload.from ?? ''), String(action.payload.to ?? ''), description => approve(description))
+      else if (action.action_type === 'apply_patch') result = await this.workspace.applyPatch(String(action.payload.path ?? ''), String(action.payload.expected_sha256 ?? ''), String(action.payload.patch ?? action.payload.content ?? ''), requestApproval)
+      else if (action.action_type === 'create_file') result = await this.workspace.createFile(String(action.payload.path ?? ''), String(action.payload.content ?? ''), requestApproval)
+      else if (action.action_type === 'delete_file') result = await this.workspace.deleteFile(String(action.payload.path ?? ''), requestApproval)
+      else if (action.action_type === 'move_file') result = await this.workspace.moveFile(String(action.payload.from ?? ''), String(action.payload.to ?? ''), requestApproval)
       else if (action.action_type === 'mcp_tool') {
         if (!this.mcp) throw new Error('MCP is not configured for this session.')
-        result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal, runId)
+        result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, requestApproval, this.signal, runId)
       } else if (action.action_type === 'spawn_subagent') {
         const tasks = boundedSubagentTasks(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [])
         result = await runSubagents({ access_token: await this.currentAccessToken() }, runId, action.action_id, tasks, typeof action.payload.context === 'string' ? action.payload.context : '', this.env, this.signal)
@@ -62,7 +66,7 @@ export class LocalAgent {
         result = answer.text
       } else {
         const network = action.payload.network === 'allowed' ? 'allowed' : 'disabled'
-        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), description => approve(description ?? `Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal, network)
+        result = await this.workspace.runCommand((action.payload.argv as string[]) ?? [], Number(action.payload.timeout_ms ?? 30_000), description => requestApproval(description ?? `Run ${(action.payload.argv as string[]).join(' ')} in ${this.workspace.root}?`), this.signal, network)
         if (result && typeof result === 'object' && 'timed_out' in result && result.timed_out === true) throw new Error('The approved command exceeded its time limit.')
         if (result && typeof result === 'object' && 'cancelled' in result && result.cancelled === true) throw new Error('The approved command was cancelled.')
       }

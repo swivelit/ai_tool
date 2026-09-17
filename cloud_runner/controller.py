@@ -62,13 +62,21 @@ class ControllerSettings:
 
 
 Transport = Callable[[str, str, dict[str, Any] | None, dict[str, str]], dict[str, Any]]
+MAX_CONTROL_RESPONSE = 80 * 1024 * 1024
 
 
 def _urllib_transport(method: str, url: str, body: dict[str, Any] | None, headers: dict[str, str]) -> dict[str, Any]:
     encoded = None if body is None else json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     request = Request(url, data=encoded, headers={"Accept": "application/json", "Content-Type": "application/json", **headers}, method=method)
-    with urlopen(request, timeout=45) as response:
-        raw = response.read(256 * 1024)
+    # Runner execution can outlive a normal control request, while an
+    # explicitly consented snapshot can approach the 50 MiB decoded bound.
+    # Read a bounded complete response and reject oversize JSON instead of
+    # silently accepting a truncated document.
+    timeout = 1_900 if "/v1/jobs/" in url and method == "POST" else 45
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read(MAX_CONTROL_RESPONSE + 1)
+    if len(raw) > MAX_CONTROL_RESPONSE:
+        raise RuntimeError("Cloud control response exceeds the supported bound.")
     parsed = json.loads(raw.decode("utf-8"))
     if not isinstance(parsed, dict):
         raise RuntimeError("Cloud control response was not an object.")
@@ -126,6 +134,14 @@ class CloudController:
                         cancellation_forwarded.set()
                 except BaseException as exc:  # surfaced after execution; never silently renew a lost lease
                     heartbeat_error.append(exc)
+                    # Once the controller loses lease authority, stop the
+                    # live sandbox immediately. The execution result is then
+                    # reconciled as a bounded failure; it is never retried
+                    # automatically because the side effect may have run.
+                    try:
+                        self._runner("POST", runner_url, f"/v1/jobs/{job_id}/cancel", capability)
+                    except Exception:
+                        pass
                     return
 
         thread = Thread(target=heartbeat, name=f"swico-cloud-heartbeat-{job_id}", daemon=True)

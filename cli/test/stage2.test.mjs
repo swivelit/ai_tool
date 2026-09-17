@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configSummary, loadConfig, validateMcpDefinition } from '../dist/configuration.js'
@@ -9,8 +9,7 @@ import { McpManager } from '../dist/mcp.js'
 import { completion } from '../dist/completion.js'
 import { listSkills, selectSkill } from '../dist/skills.js'
 import { inspectPlugin, trustPlugin, runTrustedPlugin } from '../dist/plugins.js'
-import { executableHookHash } from '../dist/hooks.js'
-import { runExecutableHook as runHook } from '../dist/hooks.js'
+import { HookBus, executableHookHash, runExecutableHook as runHook } from '../dist/hooks.js'
 import { probeEndpoint, streamChat } from '../dist/api.js'
 import { parseTaskArguments, taskText } from '../dist/arguments.js'
 import { loadOutputValidator, parseStructuredOutput, publishOutputAtomically } from '../dist/output_schema.js'
@@ -160,6 +159,22 @@ test('executable hooks require a current hash and verified sandbox', async () =>
     assert.equal(result.code, 0); assert.equal(result.stdout, 'hook-ok')
     await assert.rejects(() => runHook({ ...hook, approvedHash: '0'.repeat(64) }, { event: 'user_prompt' }, sandbox, true), /trust is invalid/)
     await assert.rejects(() => runHook(hook, { event: 'user_prompt' }, sandbox, false), /verified sandbox/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('trusted executable hooks are invoked by the real session lifecycle bus', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-hook-bus-'))
+  try {
+    const marker = join(root, 'session-started')
+    const sandbox = { status: () => ({ implementation: 'test', available: true, reason: 'verified', policy: 'read-only', network: 'disabled', writable_roots: [] }), wrap: argv => ({ command: argv[0], args: argv.slice(1) }) }
+    const hook = { event: 'session_start', command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok')`], trusted: true, approvedHash: '' }
+    hook.approvedHash = await executableHookHash(hook)
+    const seen = []
+    const bus = new HookBus([hook], sandbox, true)
+    bus.on('session_start', payload => seen.push(payload.event))
+    await bus.emit({ event: 'session_start', run_id: 'run-test', summary: 'bounded' })
+    assert.deepEqual(seen, ['session_start'])
+    assert.equal((await readFile(marker, 'utf8')), 'ok')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

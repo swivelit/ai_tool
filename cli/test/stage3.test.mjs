@@ -202,7 +202,7 @@ test('workspace-write is persisted and mutating workers stay reviewable in separ
   const root = await mkdtemp(join(tmpdir(), 'swico-worker-')), stateRoot = await mkdtemp(join(tmpdir(), 'swico-worker-state-'))
   try {
     await run('git', ['init', '-q', root]); await run('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', '-C', root, 'commit', '--allow-empty', '-m', 'init'])
-    const preferences = join(stateRoot, 'preferences.json'), env = { ...process.env, SWICO_CLI_PREFERENCES_FILE: preferences, SWICO_CLI_WORKTREE_ROOT: join(stateRoot, 'workers'), SWICO_CLI_WORKTREES_FILE: join(stateRoot, 'worktrees.json') }
+    const preferences = join(stateRoot, 'preferences.json'), env = { ...process.env, SWICO_CLI_PREFERENCES_FILE: preferences, SWICO_CLI_WORKTREE_ROOT: join(stateRoot, 'workers'), SWICO_CLI_WORKTREES_FILE: join(stateRoot, 'worktrees.json'), SWICO_CLI_WORKERS_FILE: join(stateRoot, 'workers.json') }
     await savePermissionProfile('workspace-write', env)
     assert.equal(await loadPermissionProfile(env), 'workspace-write')
     const metadata = { root, gitAvailable: true, head: (await run('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim(), branch: 'master', dirty: false, staged: [], unstaged: [], untracked: [] }
@@ -212,6 +212,8 @@ test('workspace-write is persisted and mutating workers stay reviewable in separ
     const completed = await coordinator.complete(worker.id)
     assert.equal(completed.status, 'completed'); assert.match(completed.diff, /changed\.txt/)
     assert.equal((await run('git', ['-C', root, 'status', '--porcelain'])).stdout.trim(), '')
+    const restored = new MutatingWorkerCoordinator(metadata, env, 1).list().find(item => item.id === worker.id)
+    assert.equal(restored?.status, 'completed'); assert.equal(restored?.diff_hash, completed.diff_hash)
     await coordinator.discard(worker.id, async () => true)
   } finally { await rm(root, { recursive: true, force: true }); await rm(stateRoot, { recursive: true, force: true }) }
 })
