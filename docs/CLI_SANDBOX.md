@@ -6,7 +6,7 @@ all desktop platforms are ready. Swico has no unsandboxed agent fallback.
 ## Evaluated runtimes
 
 * macOS Seatbelt (`sandbox-exec`) is a system primitive available on Intel
-  and Apple Silicon. The current 0.2.4 progressive diagnostic on this Intel
+  and Apple Silicon. The current 0.2.5 progressive diagnostic on this Intel
   development host reports `sandbox_apply: Operation not permitted` even for
   `(allow default)`, so no policy reached hostile verification. macOS remains
   fail-closed here.
@@ -30,9 +30,12 @@ remain candidates for a separately reviewed native adapter. No implementation
 in this checkout has been proven to enforce both filesystem and network
 isolation for a normal Windows x64 user, so Windows remains unavailable.
 
-The native diagnostic harness is available as
-`npm run sandbox:diagnose:macos`. It records each progressively constrained
-profile and exits nonzero unless every stage actually starts successfully.
+The native diagnostic is shipped in the CLI as
+`swico sandbox diagnose --progressive --json`; it uses the same production
+profile generator as agent execution, records each progressively constrained
+profile, and exits nonzero unless native readiness is genuinely established.
+The repository command `npm run sandbox:diagnose:macos` is only a thin wrapper
+around that installed runtime implementation.
 
 ## Proof required before enabling an agent
 

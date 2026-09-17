@@ -26,7 +26,7 @@ import { listSkills, selectSkill, showSkill } from './skills.js'
 import { HookBus, hookStatus, loadExecutableHooks } from './hooks.js'
 import { completion } from './completion.js'
 import { runMcpServer } from './mcp_server.js'
-import { createSandboxAdapter, verifySandbox } from './sandbox.js'
+import { createSandboxAdapter, diagnoseMacSandbox, verifySandbox } from './sandbox.js'
 import { formatReadiness, releaseReadiness } from './release_readiness.js'
 import { WorktreeManager } from './worktrees.js'
 import { MutatingWorkerCoordinator, type MutatingWorker } from './multi_agent.js'
@@ -95,7 +95,7 @@ function doctorAuthState(error: unknown): string {
 
 const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /sessions /rename /archive /delete /fork /compact /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /agents /ask /mention /queue /copy /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
-const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
+const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness or run a progressive native diagnostic\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
 function showStreamEvent(event: SSEEvent, jsonOutput = false, terminal?: TerminalOutput) {
   if (jsonOutput) { process.stdout.write(`${JSON.stringify(event)}\n`); return }
@@ -408,6 +408,17 @@ async function showStatus(tokens: CliTokens, mode: Mode, profile: PermissionProf
 async function sandboxCommand(args: string[], env = process.env): Promise<void> {
   const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), status = createSandboxAdapter(metadata.root).status(), action = args[1] ?? 'status'
   if (action === 'setup') { console.log(status.available ? `Sandbox runtime detected: ${status.implementation}. Run \`swico sandbox verify\` before agent use; readiness alone is not a security proof.` : `${status.reason} Install and configure a reviewed OS runtime, then rerun this command. No unsandboxed fallback is offered.`); return }
+  if (action === 'diagnose') {
+    const report = diagnoseMacSandbox()
+    if (args.includes('--json')) console.log(JSON.stringify(report, null, 2))
+    else {
+      console.log(`macOS sandbox diagnostic: ${report.native_ready ? 'native readiness passed' : 'NOT READY'} (${report.platform}/${report.architecture})`)
+      if (report.binary_probe) console.log(`${report.binary_probe.classification.toUpperCase()} ${report.binary_probe.stage}: ${report.binary_probe.stderr || 'sandbox-exec responded'}`)
+      for (const stage of report.stages) console.log(`${stage.classification.toUpperCase()} ${stage.stage}: exit ${stage.status ?? 'unknown'}${stage.signal ? ` signal ${stage.signal}` : ''}${stage.stderr ? ` — ${stage.stderr}` : ''}`)
+    }
+    if (!report.native_ready) throw new Error('macOS sandbox diagnostic did not establish native readiness; unsandboxed agent execution remains disabled.')
+    return
+  }
   if (action === 'verify') {
     const report = await verifySandbox(metadata.root)
     if (args.includes('--json')) console.log(JSON.stringify(report, null, 2)); else {
@@ -419,7 +430,7 @@ async function sandboxCommand(args: string[], env = process.env): Promise<void> 
     if (!report.verified && !(args.includes('--ci') && unavailableOnly)) throw new Error('Sandbox verification did not pass; unsandboxed agent execution remains disabled.')
     return
   }
-  if (action !== 'status' && action !== 'doctor') throw new Error('Sandbox command must be status, doctor, verify, or setup.')
+  if (action !== 'status' && action !== 'doctor') throw new Error('Sandbox command must be status, doctor, verify, diagnose, or setup.')
   console.log(JSON.stringify(status, null, 2))
 }
 

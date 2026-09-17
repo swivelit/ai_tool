@@ -2503,22 +2503,30 @@ def revoke_web_cli_session(
     return {"status": "revoked"}
 
 
-def _web_cloud_access(session: Session, auth: AuthUser):
+def _web_cloud_access(session: Session, auth: AuthUser, *, admission: bool = True):
+    """Authorize Cloud admission separately from owner-scoped draining.
+
+    Feature/readiness kill switches must stop new work without preventing an
+    authenticated owner from inspecting or cancelling an existing job.
+    """
     try:
         settings = cli_settings()
     except CliConfigurationError as exc:
         raise HTTPException(503, {"code": "cli_configuration_invalid", "message": str(exc)}) from exc
     user = get_owned_user(session, auth)
-    if not settings.enabled or not settings.agent_enabled or not settings.cloud_agent_enabled:
-        raise HTTPException(503, {"code": "cloud_execution_disabled", "message": "Swico Cloud is not enabled."})
-    if not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
-        raise HTTPException(503, {"code": "cloud_execution_unavailable", "message": "Swico Cloud runner is not ready."})
-    email = str(user.email or "").strip().casefold()
-    if settings.agent_allowed_emails and email not in settings.agent_allowed_emails:
-        raise HTTPException(403, {"code": "cli_agent_pilot_required", "message": "The local coding agent is limited to its current pilot group."})
-    selected_tier = selected_swico_tier(session, int(user.id))
-    if selected_tier not in {"lite", "standard", "pro"} or (selected_tier == "pro" and not pro_enabled()):
-        raise HTTPException(403, {"code": "cli_paid_tier_required", "message": "Swico Cloud requires an eligible paid tier."})
+    if admission:
+        if not settings.enabled or not settings.agent_enabled or not settings.cloud_agent_enabled:
+            raise HTTPException(503, {"code": "cloud_execution_disabled", "message": "Swico Cloud is not enabled."})
+        email = str(user.email or "").strip().casefold()
+        # Cloud is an agent capability: an empty pilot list must deny every
+        # admission even when public Chat intentionally has an empty list.
+        if not settings.agent_allowed_emails or email not in settings.agent_allowed_emails:
+            raise HTTPException(403, {"code": "cli_agent_pilot_required", "message": "The local coding agent is limited to its current pilot group."})
+        if not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
+            raise HTTPException(503, {"code": "cloud_execution_unavailable", "message": "Swico Cloud runner is not ready."})
+        selected_tier = selected_swico_tier(session, int(user.id))
+        if selected_tier not in {"lite", "standard", "pro"} or (selected_tier == "pro" and not pro_enabled()):
+            raise HTTPException(403, {"code": "cli_paid_tier_required", "message": "Swico Cloud requires an eligible paid tier."})
     return settings, user
 
 
@@ -2535,7 +2543,7 @@ def _web_cloud_view(job: CliCloudJob) -> dict[str, object]:
 
 @router.get("/cloud/jobs")
 def list_web_cloud_jobs(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
-    _settings, user = _web_cloud_access(session, auth)
+    _settings, user = _web_cloud_access(session, auth, admission=False)
     rows = session.exec(select(CliCloudJob).where(CliCloudJob.user_id == int(user.id)).order_by(CliCloudJob.created_at.desc()).limit(100)).all()
     return {"items": [_web_cloud_view(row) for row in rows]}
 
@@ -2557,7 +2565,7 @@ def create_web_cloud_job(payload: CloudJobRequest, session: Session = Depends(ge
 @router.get("/cloud/jobs/{job_id}")
 def get_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     if not job_id or len(job_id) > 128: raise HTTPException(404, "Cloud job not found")
-    _settings, user = _web_cloud_access(session, auth)
+    _settings, user = _web_cloud_access(session, auth, admission=False)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
     if job is None: raise HTTPException(404, "Cloud job not found")
     return _web_cloud_view(job)
@@ -2565,7 +2573,7 @@ def get_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth
 
 @router.post("/cloud/jobs/{job_id}/cancel")
 def cancel_web_cloud_job(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
-    _settings, user = _web_cloud_access(session, auth)
+    _settings, user = _web_cloud_access(session, auth, admission=False)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id)).with_for_update()).first()
     if job is None: raise HTTPException(404, "Cloud job not found")
     if job.status in {"completed", "failed", "cancelled", "expired"}: return _web_cloud_view(job)
@@ -2577,7 +2585,7 @@ def cancel_web_cloud_job(job_id: str, session: Session = Depends(get_session), a
 
 @router.get("/cloud/jobs/{job_id}/events")
 def events_web_cloud_job(job_id: str, after: int = Query(default=-1, ge=-1, le=1_000_000_000), session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
-    _settings, user = _web_cloud_access(session, auth)
+    _settings, user = _web_cloud_access(session, auth, admission=False)
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
     if job is None: raise HTTPException(404, "Cloud job not found")
     rows = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id, CliCloudJobEvent.sequence > after).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()

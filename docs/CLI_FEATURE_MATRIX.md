@@ -83,7 +83,7 @@ weakened sandbox policy in RC8.
 | Cloud execution | IMPLEMENTED + UNVERIFIED | Durable API queue, explicit byte snapshot endpoint, separate controller, capability-checked runner endpoint, and opt-in E2B execution path exist; live E2B/native hostile acceptance, durable billing reconciliation, and production attestation are not verified, so cloud remains disabled |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.4` from the canonical CI artifact with provenance; earlier RC evidence remains historical |
+| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.5` from the canonical CI artifact with provenance; earlier RC evidence remains historical |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 | Queue and shell shorthand | IMPLEMENTED + UNVERIFIED | Bounded follow-up queue plus `!command` approval/sandbox path; native sandbox evidence remains host-specific |
 | File mentions and local copy/history | IMPLEMENTED + VERIFIED | Bounded confined `/mention`, Ctrl+R local prompt search, Ctrl+O and `/copy` clipboard path |

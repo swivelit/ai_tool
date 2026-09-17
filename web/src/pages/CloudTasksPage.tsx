@@ -3,14 +3,144 @@ import { Link } from 'react-router-dom'
 import { cancelCloudJob, createCloudJob, getCloudJob, listCloudJobEvents, listCloudJobs, type CloudJob, type CloudJobEvent } from '../api/client'
 import { useAuth } from '../auth/useAuth'
 
+const ACTIVE_STATUSES = new Set(['queued', 'dispatching', 'starting', 'running', 'waiting_for_approval', 'cancelling'])
+function isAbort(error: unknown): boolean { return error instanceof DOMException && error.name === 'AbortError' }
+function resultValue(result: Record<string, unknown> | undefined, key: string): unknown { return result && Object.prototype.hasOwnProperty.call(result, key) ? result[key] : undefined }
+
 export function CloudTasksPage() {
-  const { user } = useAuth(); const [jobs, setJobs] = useState<CloudJob[]>([]); const [selected, setSelected] = useState<CloudJob | null>(null); const [events, setEvents] = useState<CloudJobEvent[]>([]); const [task, setTask] = useState(''); const [error, setError] = useState(''); const [loading, setLoading] = useState(true); const eventCursor = useRef(-1)
-  const load = useCallback(async () => { if (!user) return; try { setJobs((await listCloudJobs(user)).items) } catch (value) { setError(value instanceof Error ? value.message : 'Cloud tasks are unavailable.') } finally { setLoading(false) } }, [user])
-  useEffect(() => { void load() }, [load])
-  useEffect(() => { if (!user || !selected || !['queued', 'dispatching', 'starting', 'running', 'waiting_for_approval', 'cancelling'].includes(selected.status)) return; const timer = window.setInterval(() => { void getCloudJob(user, selected.id).then(value => { setSelected(value); void listCloudJobEvents(user, value.id, eventCursor.current).then(result => { if (result.items.length) { eventCursor.current = result.items.at(-1)?.sequence ?? eventCursor.current; setEvents(previous => [...previous, ...result.items]) } }).catch(() => undefined); void load() }).catch(() => undefined) }, 5_000); return () => window.clearInterval(timer) }, [user, selected, load])
+  const { user } = useAuth()
+  const [jobs, setJobs] = useState<CloudJob[]>([])
+  const [selected, setSelected] = useState<CloudJob | null>(null)
+  const [events, setEvents] = useState<CloudJobEvent[]>([])
+  const [task, setTask] = useState('')
+  const [consented, setConsented] = useState(false)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [starting, setStarting] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const eventCursor = useRef(-1)
+  const selectedId = selected?.id ?? null
+  const selectedIdRef = useRef<string | null>(null)
+  const listGeneration = useRef(0)
+  const selectionGeneration = useRef(0)
+  const selectionController = useRef<AbortController | null>(null)
+  const pendingCreate = useRef<{ requestId: string; task: string } | null>(null)
+
+  const loadJobs = useCallback(async (signal?: AbortSignal) => {
+    if (!user) return
+    const generation = ++listGeneration.current
+    try {
+      const result = await listCloudJobs(user, signal)
+      if (generation === listGeneration.current && !signal?.aborted) setJobs(result.items)
+    } catch (value) {
+      if (generation === listGeneration.current && !isAbort(value)) setError(value instanceof Error ? value.message : 'Cloud tasks are unavailable.')
+    } finally {
+      if (generation === listGeneration.current) setLoading(false)
+    }
+  }, [user])
+
+  useEffect(() => {
+    listGeneration.current += 1; selectionGeneration.current += 1
+    selectionController.current?.abort(); selectionController.current = null
+    selectedIdRef.current = null
+    eventCursor.current = -1
+    setJobs([]); setSelected(null); setEvents([]); setError(''); setLoading(true); setConsented(false)
+    if (!user) { setLoading(false); return }
+    const controller = new AbortController()
+    void loadJobs(controller.signal)
+    return () => { controller.abort(); selectionController.current?.abort(); selectionController.current = null; listGeneration.current += 1; selectionGeneration.current += 1 }
+  }, [user, loadJobs])
+
+  const appendEvents = useCallback((jobId: string, incoming: CloudJobEvent[]) => {
+    if (selectedIdRef.current !== jobId || !incoming.length) return
+    setEvents(previous => {
+      const seen = new Set(previous.map(item => `${jobId}:${item.sequence}`))
+      const fresh = incoming.filter(item => !seen.has(`${jobId}:${item.sequence}`))
+      return fresh.length ? [...previous, ...fresh].sort((a, b) => a.sequence - b.sequence) : previous
+    })
+    eventCursor.current = Math.max(eventCursor.current, ...incoming.map(item => item.sequence))
+  }, [])
+
+  useEffect(() => {
+    if (!user || !selectedId || !ACTIVE_STATUSES.has(selected?.status ?? '')) return
+    const controller = new AbortController()
+    const generation = ++selectionGeneration.current
+    const poll = async () => {
+      try {
+        const latest = await getCloudJob(user, selectedId, controller.signal)
+        if (controller.signal.aborted || generation !== selectionGeneration.current || selectedIdRef.current !== latest.id) return
+        setSelected(latest)
+        const result = await listCloudJobEvents(user, latest.id, eventCursor.current, controller.signal)
+        if (generation === selectionGeneration.current && result.job_id === selectedIdRef.current) appendEvents(result.job_id, result.items)
+        if (generation === selectionGeneration.current) void loadJobs(controller.signal)
+      } catch (value) {
+        if (!isAbort(value) && !controller.signal.aborted && generation === selectionGeneration.current) setError(value instanceof Error ? value.message : 'Cloud task refresh failed.')
+      }
+    }
+    const timer = window.setInterval(() => { void poll() }, 5_000)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [user, selectedId, selected?.status, appendEvents, loadJobs])
+
   if (!user) return <main className="login-page"><section className="auth-card"><Link to="/login?returnTo=%2Ftasks">Sign in to view tasks</Link></section></main>
-  const start = async () => { if (!task.trim()) return; setError(''); try { const job = await createCloudJob(user, task.trim()); setTask(''); setSelected(job); setEvents([]); await load() } catch (value) { setError(value instanceof Error ? value.message : 'Cloud tasks are unavailable.') } }
-  const select = async (job: CloudJob) => { setSelected(job); eventCursor.current = -1; try { const result = await listCloudJobEvents(user, job.id); eventCursor.current = result.items.at(-1)?.sequence ?? -1; setEvents(result.items) } catch { setEvents([]) } }
-  const cancel = async () => { if (!selected) return; try { const job = await cancelCloudJob(user, selected.id); setSelected(job); await load() } catch (value) { setError(value instanceof Error ? value.message : 'Cancellation failed.') } }
-  return <main className="login-page"><section className="auth-card" style={{ maxWidth: 860, width: 'calc(100% - 32px)' }}><header><Link to="/">← Back to Swico</Link><h1>Cloud tasks</h1><p>Cloud coding runs are controlled by Swico and remain unavailable until an isolated runner is verified.</p></header><div style={{ display: 'flex', gap: 8, margin: '18px 0' }}><input aria-label="Cloud task" value={task} onChange={event => setTask(event.target.value)} placeholder="Describe a task for an isolated runner" maxLength={8000} /><button type="button" onClick={() => void start()} disabled={!task.trim()}>Start task</button></div>{error && <p role="alert">{error}</p>}{loading ? <p>Loading tasks…</p> : jobs.length ? <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.8fr) minmax(280px, 1.2fr)', gap: 20 }}>{<div>{jobs.map(job => <button key={job.id} type="button" onClick={() => void select(job)} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 8 }}><strong>{job.status}</strong><br /><small>{job.task.slice(0, 120)}</small></button>)}</div>}{selected && <article><h2>{selected.status}</h2><p>{selected.task}</p><p>Created {new Date(selected.created_at).toLocaleString()}</p>{['queued', 'dispatching', 'starting', 'running', 'waiting_for_approval', 'cancelling'].includes(selected.status) && <button type="button" onClick={() => void cancel()}>Cancel task</button>}<h3>Timeline</h3>{events.length ? <ol>{events.map(event => <li key={event.sequence}>{event.event_type} · {new Date(event.created_at).toLocaleString()}</li>)}</ol> : <p>No events recorded.</p>}{selected.failure_code && <p role="alert">Task failed: {selected.failure_code}</p>}</article>}</div> : <p>No tasks yet. Starting a task requires the cloud pilot to be enabled for this account.</p>}</section></main>
+
+  const start = async () => {
+    const trimmed = task.trim()
+    if (!trimmed || !consented || starting) return
+    setStarting(true); setError('')
+    const existing = pendingCreate.current
+    const request = existing?.task === trimmed ? existing : { requestId: crypto.randomUUID(), task: trimmed }
+    pendingCreate.current = request
+    try {
+      const job = await createCloudJob(user, trimmed, request.requestId)
+      pendingCreate.current = null
+      selectedIdRef.current = job.id; eventCursor.current = -1; selectionGeneration.current += 1
+      setTask(''); setConsented(false); setSelected(job); setEvents([]); await loadJobs()
+    } catch (value) {
+      if (!isAbort(value)) setError(value instanceof Error ? value.message : 'Cloud tasks are unavailable.')
+    } finally { setStarting(false) }
+  }
+
+  const select = async (job: CloudJob) => {
+    const generation = ++selectionGeneration.current
+    selectionController.current?.abort()
+    selectedIdRef.current = job.id; eventCursor.current = -1
+    setSelected(job); setEvents([]); setError('')
+    const controller = new AbortController(); selectionController.current = controller
+    try {
+      const result = await listCloudJobEvents(user, job.id, -1, controller.signal)
+      if (generation !== selectionGeneration.current || selectedIdRef.current !== job.id || result.job_id !== job.id) return
+      setEvents(result.items); eventCursor.current = result.items.at(-1)?.sequence ?? -1
+    } catch (value) { if (!isAbort(value) && generation === selectionGeneration.current) setError(value instanceof Error ? value.message : 'Could not load task events.') }
+    finally { if (selectionController.current === controller) selectionController.current = null }
+  }
+
+  const cancel = async () => {
+    if (!selected || cancelling) return
+    const jobId = selected.id
+    setCancelling(true); setError('')
+    try {
+      const job = await cancelCloudJob(user, jobId)
+      if (selectedIdRef.current === jobId) setSelected(job)
+      await loadJobs()
+    } catch (value) { setError(value instanceof Error ? value.message : 'Cancellation failed.') } finally { setCancelling(false) }
+  }
+
+  const result = selected?.result ?? {}
+  const changedFiles = resultValue(result, 'changed_files')
+  const tests = resultValue(result, 'tests')
+  const patch = resultValue(result, 'patch')
+
+  return <main className="login-page"><section className="auth-card" style={{ maxWidth: 960, width: 'calc(100% - 32px)' }}>
+    <header><Link to="/">← Back to Swico</Link><h1>Cloud tasks</h1><p>Cloud coding runs require a separately verified isolated runner. Starting a task never merges or pushes repository changes.</p></header>
+    <div style={{ display: 'grid', gap: 8, margin: '18px 0' }}>
+      <label htmlFor="cloud-task">Task description</label><textarea id="cloud-task" value={task} onChange={event => { setTask(event.target.value); if (pendingCreate.current?.task !== event.target.value.trim()) pendingCreate.current = null }} placeholder="Describe a task for an isolated runner" maxLength={8000} rows={4} />
+      <label><input type="checkbox" checked={consented} onChange={event => setConsented(event.target.checked)} /> I understand this sends the task to an isolated Cloud runner for processing.</label>
+      <button type="button" onClick={() => void start()} disabled={!task.trim() || !consented || starting}>{starting ? 'Submitting…' : 'Start task'}</button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+    {loading ? <p>Loading tasks…</p> : jobs.length ? <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.8fr) minmax(320px, 1.2fr)', gap: 20 }}>
+      <div aria-label="Cloud task list">{jobs.map(job => <button key={job.id} type="button" onClick={() => void select(job)} aria-pressed={selectedId === job.id} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 8 }}><strong>{job.status}</strong><br /><small>{job.task.slice(0, 120)}</small></button>)}</div>
+      {selected && <article aria-live="polite"><h2>{selected.status}</h2><p>{selected.task}</p><p>Created {new Date(selected.created_at).toLocaleString()}</p>{ACTIVE_STATUSES.has(selected.status) && <button type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel task'}</button>}{['failed', 'cancelled', 'expired'].includes(selected.status) && <button type="button" onClick={() => { setTask(selected.task); setConsented(false); setError('') }}>Retry as a new task</button>}<h3>Timeline</h3>{events.length ? <ol>{events.map(event => <li key={`${selected.id}:${event.sequence}`}>{event.event_type} · {new Date(event.created_at).toLocaleString()}</li>)}</ol> : <p>No events recorded.</p>}{selected.failure_code && <p role="alert">Task failed: {selected.failure_code}</p>}{Array.isArray(changedFiles) && <><h3>Changed files</h3><ul>{changedFiles.map(file => <li key={String(file)}>{String(file)}</li>)}</ul></>}{typeof tests === 'string' && <><h3>Tests</h3><pre>{tests}</pre></>}{typeof patch === 'string' && <><h3>Review diff</h3><pre style={{ overflowX: 'auto' }}>{patch}</pre></>}</article>}
+    </div> : <p>No tasks yet. Starting a task requires the Cloud pilot to be enabled for this account.</p>}
+  </section></main>
 }

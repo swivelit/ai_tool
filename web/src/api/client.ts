@@ -247,11 +247,11 @@ export async function revokeCliSession(user: User, sessionId: string): Promise<{
 
 export type CloudJob = { id: string; source: string; tier: string; task: string; status: string; created_at: string; started_at?: string | null; finished_at?: string | null; cancel_requested_at?: string | null; expires_at: string; attempt: number; result?: Record<string, unknown>; failure_code?: string | null }
 export type CloudJobEvent = { sequence: number; event_type: string; payload: Record<string, unknown>; created_at: string }
-export async function listCloudJobs(user: User): Promise<{ items: CloudJob[] }> { return apiJson<{ items: CloudJob[] }>(user, '/api/web/cloud/jobs') }
-export async function createCloudJob(user: User, task: string): Promise<CloudJob> { return apiJson<CloudJob>(user, '/api/web/cloud/jobs', { method: 'POST', body: JSON.stringify({ task, source: 'task_only' }) }) }
-export async function getCloudJob(user: User, id: string): Promise<CloudJob> { return apiJson<CloudJob>(user, `/api/web/cloud/jobs/${encodeURIComponent(id)}`) }
+export async function listCloudJobs(user: User, signal?: AbortSignal): Promise<{ items: CloudJob[] }> { return apiJson<{ items: CloudJob[] }>(user, '/api/web/cloud/jobs', { signal }) }
+export async function createCloudJob(user: User, task: string, requestId: string = crypto.randomUUID()): Promise<CloudJob> { return apiJson<CloudJob>(user, '/api/web/cloud/jobs', { method: 'POST', body: JSON.stringify({ request_id: requestId, task, source: 'task_only' }) }) }
+export async function getCloudJob(user: User, id: string, signal?: AbortSignal): Promise<CloudJob> { return apiJson<CloudJob>(user, `/api/web/cloud/jobs/${encodeURIComponent(id)}`, { signal }) }
 export async function cancelCloudJob(user: User, id: string): Promise<CloudJob> { return apiJson<CloudJob>(user, `/api/web/cloud/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }) }
-export async function listCloudJobEvents(user: User, id: string, after = -1): Promise<{ job_id: string; items: CloudJobEvent[] }> { return apiJson<{ job_id: string; items: CloudJobEvent[] }>(user, `/api/web/cloud/jobs/${encodeURIComponent(id)}/events?after=${Math.max(-1, Math.min(1000000000, Math.trunc(after)))}`) }
+export async function listCloudJobEvents(user: User, id: string, after = -1, signal?: AbortSignal): Promise<{ job_id: string; items: CloudJobEvent[] }> { return apiJson<{ job_id: string; items: CloudJobEvent[] }>(user, `/api/web/cloud/jobs/${encodeURIComponent(id)}/events?after=${Math.max(-1, Math.min(1000000000, Math.trunc(after)))}`, { signal }) }
 
 export async function streamChat(
   user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; repository_id?: string; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string; regenerate_message_id?: string },

@@ -1,9 +1,9 @@
-import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer, request as httpRequest } from 'node:http'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { homedir, tmpdir } from 'node:os'
+import { arch, homedir, release, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 
 export type SandboxPolicy = 'read-only' | 'workspace-write'
@@ -89,6 +89,89 @@ export function macSandboxProfiles(root: string, writable = join(tmpdir(), 'swic
   return {
     readOnly: macProfile(root, 'read-only', 'disabled', writable),
     workspaceWrite: macProfile(root, 'workspace-write', 'disabled', writable),
+  }
+}
+
+export type MacSandboxDiagnosticClassification = 'passed' | 'profile_rejected' | 'host_denied' | 'sandbox_abort' | 'timeout' | 'failed'
+export type MacSandboxDiagnosticStage = {
+  stage: string
+  status: number | null
+  signal: NodeJS.Signals | null
+  classification: MacSandboxDiagnosticClassification
+  stderr: string
+}
+export type MacSandboxDiagnosticReport = {
+  platform: string
+  architecture: string
+  os_version: string
+  node: string
+  binary: string
+  binary_exists: boolean
+  binary_probe?: MacSandboxDiagnosticStage
+  stages: MacSandboxDiagnosticStage[]
+  native_ready: boolean
+}
+
+function diagnosticText(result: { error?: NodeJS.ErrnoException | null; stdout?: string | Buffer; stderr?: string | Buffer; status?: number | null; signal?: NodeJS.Signals | null }): string {
+  return [result.error?.message, result.stdout, result.stderr].filter(Boolean).join(' ')
+}
+
+function diagnosticStderr(result: { error?: NodeJS.ErrnoException | null; stdout?: string | Buffer; stderr?: string | Buffer }): string {
+  return String(result.stderr ?? result.error?.message ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 512)
+}
+
+function classifyMacDiagnostic(result: { error?: NodeJS.ErrnoException | null; stdout?: string | Buffer; stderr?: string | Buffer; status?: number | null; signal?: NodeJS.Signals | null }, expected: 'start' | 'apply'): MacSandboxDiagnosticClassification {
+  const text = diagnosticText(result)
+  if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM') return 'timeout'
+  if (result.signal === 'SIGABRT') return 'sandbox_abort'
+  if (/syntax|parse|expecting|invalid|malformed/i.test(text)) return 'profile_rejected'
+  if (/sandbox_apply|operation not permitted|not permitted|eacces/i.test(text)) return 'host_denied'
+  if (expected === 'start') return result.status === 0 ? 'passed' : 'failed'
+  // A deny-default/progressively narrowed profile is being tested for
+  // application, not for successful execution of /usr/bin/true. A normal
+  // policy denial is therefore evidence that the profile was accepted.
+  return result.status !== null && result.status !== undefined ? 'passed' : 'failed'
+}
+
+function macDiagnosticStage(stage: string, result: ReturnType<typeof spawnSync>, expected: 'start' | 'apply'): MacSandboxDiagnosticStage {
+  return { stage, status: result.status, signal: result.signal, classification: classifyMacDiagnostic(result, expected), stderr: diagnosticStderr(result) }
+}
+
+/**
+ * Run the progressive native macOS diagnostic used by the production sandbox.
+ * This is intentionally in shipped runtime code so an installed CLI can
+ * produce evidence without importing a repository-only script. It diagnoses
+ * host denial/profile rejection but never converts either into readiness.
+ */
+export function diagnoseMacSandbox(platform: NodeJS.Platform = process.platform): MacSandboxDiagnosticReport {
+  const binary = '/usr/bin/sandbox-exec'
+  const base = { platform, architecture: arch(), os_version: release(), node: process.version, binary, binary_exists: false, stages: [] as MacSandboxDiagnosticStage[], native_ready: false }
+  if (platform !== 'darwin') return base
+  if (!existsSync(binary)) return base
+
+  const binaryProbe = spawnSync(binary, ['-h'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 2_000 })
+  const binaryStage = macDiagnosticStage('sandbox-exec-binary', binaryProbe, 'apply')
+  const root = mkdtempSync(join(tmpdir(), 'swico-macos-sandbox-diagnostic-'))
+  const writable = join(root, 'runtime-tmp')
+  mkdirSync(writable, { recursive: true, mode: 0o700 })
+  try {
+    const generated = macSandboxProfiles(root, writable)
+    const deny = '(version 1) (deny default)'
+    const stages = [
+      ['allow-default', '(version 1) (allow default)', 'start'],
+      ['deny-default', deny, 'apply'],
+      ['minimal-execution', `${deny} (allow process-exec)`, 'apply'],
+      ['process-fork', `${deny} (allow process-exec) (allow process-fork)`, 'apply'],
+      ['signal-self', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self))`, 'apply'],
+      ['system-file-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library"))`, 'apply'],
+      ['sysctl-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library")) (allow sysctl-read)`, 'apply'],
+      ['generated-read-only', generated.readOnly, 'start'],
+      ['generated-workspace-write', generated.workspaceWrite, 'start'],
+    ].map(([stage, profile, expected]) => macDiagnosticStage(stage, spawnSync(binary, ['-p', profile, '/usr/bin/true'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 2_000 }), expected as 'start' | 'apply'))
+    const nativeStagesPass = stages.every(item => item.classification === 'passed') && stages.slice(-2).every(item => item.status === 0)
+    return { ...base, binary_exists: true, binary_probe: binaryStage, stages, native_ready: binaryStage.classification === 'passed' && nativeStagesPass }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 }
 

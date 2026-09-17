@@ -58,9 +58,10 @@ SWICO_CLI_WEB_ORIGIN=https://swico.in
 ```
 
 The agent allowlist is independent of public CLI access and weekly tester
-credits. An empty agent allowlist means no additional per-email restriction
-when the agent flag is enabled, but the pilot release gate requires a
-non-empty list so the first rollout is deliberately restricted.
+credits. Missing, empty, or whitespace-only `SWICO_CLI_AGENT_ALLOWED_EMAILS`
+denies every local-agent and Cloud pilot admission when the agent flag is
+enabled. Public Chat has the separate `SWICO_CLI_ALLOWED_EMAILS` setting,
+which may intentionally be empty for public paid rollout.
 
 ## Stage 3 security boundary in this checkout
 

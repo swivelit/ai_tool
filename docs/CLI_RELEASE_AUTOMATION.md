@@ -1,7 +1,7 @@
 # Swico CLI release automation
 
 The stable package is `@swiveltechnologies/swico` and the executable is
-`swico`. The current published stable version is `0.2.4`; this automation does
+`swico`. The current published stable version is `0.2.5`; this automation does
 not republish it.
 
 ## Normal patch releases

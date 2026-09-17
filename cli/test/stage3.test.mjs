@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
-import { createSandboxAdapter, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
+import { createSandboxAdapter, diagnoseMacSandbox, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
 import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
@@ -73,6 +73,14 @@ test('macOS diagnostic does not turn a valid-profile crash into sandbox_apply de
   })
   assert.equal(diagnostic.ready, false)
   assert.equal(diagnostic.diagnostic, 'unknown_failure')
+})
+
+test('installed runtime exposes a fail-closed macOS diagnostic on unsupported platforms', () => {
+  const diagnostic = diagnoseMacSandbox('linux')
+  assert.equal(diagnostic.platform, 'linux')
+  assert.equal(diagnostic.native_ready, false)
+  assert.equal(diagnostic.binary_exists, false)
+  assert.deepEqual(diagnostic.stages, [])
 })
 
 test('sandbox verify uses real hostile probes and never turns runtime detection into a proof', async () => {

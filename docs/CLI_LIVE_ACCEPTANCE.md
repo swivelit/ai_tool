@@ -2,7 +2,7 @@
 
 The RC8 acceptance below is historical evidence, not the current release
 procedure. The current published package is
-`@swiveltechnologies/swico@0.2.4`; use the exact canonical artifact and
+`@swiveltechnologies/swico@0.2.5`; use the exact canonical artifact and
 revision from the current green release workflow for any new acceptance.
 
 This checklist is for the exact canonical `@swiveltechnologies/swico` RC8
