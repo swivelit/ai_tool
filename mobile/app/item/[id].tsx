@@ -27,9 +27,52 @@ import { Item } from "@/lib/types";
 
 type ExportKind = "pdf" | "docx" | "excel" | "ppt";
 
+/**
+ * Parse backend datetime without applying an unwanted timezone shift.
+ *
+ * Backend values such as:
+ *   2026-09-18T14:30:00
+ *
+ * should be displayed as:
+ *   2:30 PM
+ *
+ * rather than being converted through UTC and shifted to another time.
+ */
 function parseItemDate(value?: string | null) {
   if (!value) return null;
-  const date = new Date(value);
+
+  const raw = String(value).trim();
+
+  if (!raw) return null;
+
+  // If the backend sends a datetime WITHOUT timezone information,
+  // construct it manually so JavaScript does not reinterpret it
+  // through UTC/local timezone conversion.
+  const localMatch = raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/
+  );
+
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second = "0", fraction = "0"] =
+      localMatch;
+
+    const date = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number((fraction + "000").slice(0, 3))
+    );
+
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  // For values that explicitly contain timezone information,
+  // preserve the actual instant.
+  const date = new Date(raw);
+
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -75,7 +118,12 @@ function formatRelativeWhen(value?: string | null) {
 
   const now = new Date();
 
-  const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfNow = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  );
+
   const startOfDate = new Date(
     date.getFullYear(),
     date.getMonth(),
@@ -90,6 +138,7 @@ function formatRelativeWhen(value?: string | null) {
   if (diffDays === 1) return "Scheduled for tomorrow";
   if (diffDays === -1) return "Occurred yesterday";
   if (diffDays > 1) return `In ${diffDays} days`;
+
   return `${Math.abs(diffDays)} days ago`;
 }
 
@@ -98,10 +147,12 @@ function getDayWindow(value?: string | null) {
   if (!date) return "Flexible";
 
   const hour = date.getHours();
+
   if (hour < 6) return "Early morning";
   if (hour < 12) return "Morning";
   if (hour < 17) return "Afternoon";
   if (hour < 21) return "Evening";
+
   return "Night";
 }
 
@@ -202,16 +253,28 @@ export default function ItemDetail() {
 
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
+
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
   const bottomPadding = Math.max(insets.bottom + 28, 28);
+
   const titleSize = isVerySmallPhone ? 24 : isSmallPhone ? 28 : 33;
   const titleLineHeight = titleSize + 6;
 
-  const status = useMemo(() => (item ? getStatus(item) : null), [item]);
+  const status = useMemo(
+    () => (item ? getStatus(item) : null),
+    [item]
+  );
 
-  const heroTitle = useMemo(() => getPrimaryTitle(item), [item]);
-  const summary = useMemo(() => getSummary(item), [item]);
+  const heroTitle = useMemo(
+    () => getPrimaryTitle(item),
+    [item]
+  );
+
+  const summary = useMemo(
+    () => getSummary(item),
+    [item]
+  );
 
   const detailPairs = useMemo(() => {
     if (!item) return [];
@@ -268,10 +331,15 @@ export default function ItemDetail() {
 
     try {
       setLoading(true);
+
       const data = await apiGet<Item>(`/items/${itemId}`);
+
       setItem(data);
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "Failed to load item.");
+      Alert.alert(
+        "Error",
+        error?.message || "Failed to load item."
+      );
     } finally {
       setLoading(false);
     }
@@ -297,34 +365,62 @@ export default function ItemDetail() {
         return;
       }
 
-      const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
-      const relativeDownloadUrl = String(res?.download_url || "").trim();
+      const res = await apiPost<any>(
+        `/items/${itemId}/generate-${kind}`
+      );
+
+      const relativeDownloadUrl = String(
+        res?.download_url || ""
+      ).trim();
+
       const url = relativeDownloadUrl.startsWith("http")
         ? relativeDownloadUrl
-        : `${API_BASE}${relativeDownloadUrl.startsWith("/") ? "" : "/"}${relativeDownloadUrl}`;
+        : `${API_BASE}${
+            relativeDownloadUrl.startsWith("/") ? "" : "/"
+          }${relativeDownloadUrl}`;
 
       if (!relativeDownloadUrl) {
-        throw new Error("The server did not return a download URL.");
+        throw new Error(
+          "The server did not return a download URL."
+        );
       }
 
-      const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+      const baseDir =
+        FileSystem.documentDirectory ||
+        FileSystem.cacheDirectory;
+
       if (!baseDir) {
-        throw new Error("No writable directory available on this device.");
+        throw new Error(
+          "No writable directory available on this device."
+        );
       }
 
       const filename =
         url.split("?")[0]?.split("/").pop() ||
-        `item_${itemId}.${kind === "ppt" ? "pptx" : "docx"}`;
+        `item_${itemId}.${
+          kind === "ppt" ? "pptx" : "docx"
+        }`;
+
       const localPath = `${baseDir}${filename}`;
-      const downloaded = await FileSystem.downloadAsync(url, localPath);
+
+      const downloaded = await FileSystem.downloadAsync(
+        url,
+        localPath
+      );
 
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(downloaded.uri);
       } else {
-        Alert.alert("Saved", `File saved at: ${downloaded.uri}`);
+        Alert.alert(
+          "Saved",
+          `File saved at: ${downloaded.uri}`
+        );
       }
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "Document generation failed.");
+      Alert.alert(
+        "Error",
+        error?.message || "Document generation failed."
+      );
     } finally {
       setExporting(null);
     }
@@ -344,34 +440,73 @@ export default function ItemDetail() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.topBar}>
-          <Pressable onPress={() => router.back()} style={styles.topIconBtn}>
-            <Ionicons name="chevron-back" size={18} color={Brand.cocoa} />
+          <Pressable
+            onPress={() => router.back()}
+            style={styles.topIconBtn}
+          >
+            <Ionicons
+              name="chevron-back"
+              size={18}
+              color={Brand.cocoa}
+            />
           </Pressable>
 
           <View style={styles.topCenter}>
-            <Text style={styles.topCaption}>Planner item</Text>
-            <Text style={styles.topTitle}>Detail view</Text>
+            <Text style={styles.topCaption}>
+              Planner item
+            </Text>
+
+            <Text style={styles.topTitle}>
+              Detail view
+            </Text>
           </View>
 
-          <Pressable onPress={load} style={styles.topIconBtn} disabled={loading}>
+          <Pressable
+            onPress={load}
+            style={styles.topIconBtn}
+            disabled={loading}
+          >
             {loading ? (
-              <ActivityIndicator size="small" color={Brand.cocoa} />
+              <ActivityIndicator
+                size="small"
+                color={Brand.cocoa}
+              />
             ) : (
-              <Ionicons name="refresh" size={18} color={Brand.cocoa} />
+              <Ionicons
+                name="refresh"
+                size={18}
+                color={Brand.cocoa}
+              />
             )}
           </Pressable>
         </View>
 
         {loading ? (
-          <GlassCard style={{ borderRadius: 30, marginTop: 14 }}>
+          <GlassCard
+            style={{
+              borderRadius: 30,
+              marginTop: 14,
+            }}
+          >
             <View style={styles.loadingWrap}>
-              <ActivityIndicator size="small" color={Brand.bronze} />
-              <Text style={styles.loadingText}>Loading item details...</Text>
+              <ActivityIndicator
+                size="small"
+                color={Brand.bronze}
+              />
+
+              <Text style={styles.loadingText}>
+                Loading item details...
+              </Text>
             </View>
           </GlassCard>
         ) : item ? (
           <>
-            <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
+            <GlassCard
+              style={{
+                borderRadius: 32,
+                marginTop: 14,
+              }}
+            >
               <View style={styles.heroHeaderRow}>
                 <View style={styles.dateChip}>
                   <Text style={styles.dateChipText}>
@@ -394,10 +529,24 @@ export default function ItemDetail() {
                       size={13}
                       color={status.text}
                     />
+
                     <View
-                      style={[styles.statusDot, { backgroundColor: status.dot }]}
+                      style={[
+                        styles.statusDot,
+                        {
+                          backgroundColor: status.dot,
+                        },
+                      ]}
                     />
-                    <Text style={[styles.statusText, { color: status.text }]}>
+
+                    <Text
+                      style={[
+                        styles.statusText,
+                        {
+                          color: status.text,
+                        },
+                      ]}
+                    >
                       {status.label}
                     </Text>
                   </View>
@@ -408,7 +557,10 @@ export default function ItemDetail() {
                 <Text
                   style={[
                     styles.title,
-                    { fontSize: titleSize, lineHeight: titleLineHeight },
+                    {
+                      fontSize: titleSize,
+                      lineHeight: titleLineHeight,
+                    },
                   ]}
                 >
                   {heroTitle}
@@ -420,13 +572,19 @@ export default function ItemDetail() {
 
                 <View style={styles.descriptorRow}>
                   {descriptorChips.map((chip) => (
-                    <View key={`${chip.icon}-${chip.label}`} style={styles.metaPill}>
+                    <View
+                      key={`${chip.icon}-${chip.label}`}
+                      style={styles.metaPill}
+                    >
                       <Ionicons
                         name={chip.icon}
                         size={14}
                         color={Brand.bronze}
                       />
-                      <Text style={styles.metaPillText}>{chip.label}</Text>
+
+                      <Text style={styles.metaPillText}>
+                        {chip.label}
+                      </Text>
                     </View>
                   ))}
                 </View>
@@ -446,7 +604,10 @@ export default function ItemDetail() {
                       size={14}
                       color={Brand.bronze}
                     />
-                    <Text style={styles.highlightBadgeText}>Overview</Text>
+
+                    <Text style={styles.highlightBadgeText}>
+                      Overview
+                    </Text>
                   </View>
 
                   <Text style={styles.highlightTitle}>
@@ -464,17 +625,27 @@ export default function ItemDetail() {
               </View>
             </GlassCard>
 
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <GlassCard
+              style={{
+                borderRadius: 28,
+                marginTop: 16,
+              }}
+            >
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>Timeline snapshot</Text>
+                  <Text style={styles.sectionTitle}>
+                    Timeline snapshot
+                  </Text>
+
                   <Text style={styles.sectionSubtitle}>
                     The most important scheduling context at a glance.
                   </Text>
                 </View>
 
                 <View style={styles.sectionBadge}>
-                  <Text style={styles.sectionBadgeText}>Live</Text>
+                  <Text style={styles.sectionBadgeText}>
+                    Live
+                  </Text>
                 </View>
               </View>
 
@@ -490,28 +661,49 @@ export default function ItemDetail() {
               </View>
             </GlassCard>
 
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <GlassCard
+              style={{
+                borderRadius: 28,
+                marginTop: 16,
+              }}
+            >
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>Summary</Text>
+                  <Text style={styles.sectionTitle}>
+                    Summary
+                  </Text>
+
                   <Text style={styles.sectionSubtitle}>
                     A clearer presentation of the assistant’s structured output.
                   </Text>
                 </View>
 
                 <View style={styles.sectionBadge}>
-                  <Text style={styles.sectionBadgeText}>Primary</Text>
+                  <Text style={styles.sectionBadgeText}>
+                    Primary
+                  </Text>
                 </View>
               </View>
 
-              <Text style={styles.bodyText}>{summary}</Text>
+              <Text style={styles.bodyText}>
+                {summary}
+              </Text>
             </GlassCard>
 
-            {item.raw_text && item.raw_text !== item.details ? (
-              <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            {item.raw_text &&
+            item.raw_text !== item.details ? (
+              <GlassCard
+                style={{
+                  borderRadius: 28,
+                  marginTop: 16,
+                }}
+              >
                 <View style={styles.sectionHeaderRow}>
                   <View>
-                    <Text style={styles.sectionTitle}>Original request</Text>
+                    <Text style={styles.sectionTitle}>
+                      Original request
+                    </Text>
+
                     <Text style={styles.sectionSubtitle}>
                       The exact text or voice-generated source that created this
                       item.
@@ -519,27 +711,41 @@ export default function ItemDetail() {
                   </View>
 
                   <View style={styles.sectionBadge}>
-                    <Text style={styles.sectionBadgeText}>Source</Text>
+                    <Text style={styles.sectionBadgeText}>
+                      Source
+                    </Text>
                   </View>
                 </View>
 
                 <View style={styles.originalInputCard}>
-                  <Text style={styles.originalInputText}>{item.raw_text}</Text>
+                  <Text style={styles.originalInputText}>
+                    {item.raw_text}
+                  </Text>
                 </View>
               </GlassCard>
             ) : null}
 
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <GlassCard
+              style={{
+                borderRadius: 28,
+                marginTop: 16,
+              }}
+            >
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>Item metadata</Text>
+                  <Text style={styles.sectionTitle}>
+                    Item metadata
+                  </Text>
+
                   <Text style={styles.sectionSubtitle}>
                     Helpful details about this item.
                   </Text>
                 </View>
 
                 <View style={styles.sectionBadge}>
-                  <Text style={styles.sectionBadgeText}>System</Text>
+                  <Text style={styles.sectionBadgeText}>
+                    System
+                  </Text>
                 </View>
               </View>
 
@@ -549,16 +755,19 @@ export default function ItemDetail() {
                   value={`#${item.id}`}
                   icon="pricetag-outline"
                 />
+
                 <SystemRow
                   label="Intent"
                   value={formatIntentLabel(item.intent)}
                   icon="flash-outline"
                 />
+
                 <SystemRow
                   label="Category"
                   value={formatIntentLabel(item.category)}
                   icon="albums-outline"
                 />
+
                 <SystemRow
                   label="Recommended export"
                   value={getRecommendedExport(item)}
@@ -567,17 +776,27 @@ export default function ItemDetail() {
               </View>
             </GlassCard>
 
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <GlassCard
+              style={{
+                borderRadius: 28,
+                marginTop: 16,
+              }}
+            >
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>Export options</Text>
+                  <Text style={styles.sectionTitle}>
+                    Export options
+                  </Text>
+
                   <Text style={styles.sectionSubtitle}>
                     Share or download this item your way.
                   </Text>
                 </View>
 
                 <View style={styles.sectionBadge}>
-                  <Text style={styles.sectionBadgeText}>Share</Text>
+                  <Text style={styles.sectionBadgeText}>
+                    Share
+                  </Text>
                 </View>
               </View>
 
@@ -594,6 +813,7 @@ export default function ItemDetail() {
                   <Text style={styles.exportHeroTitle}>
                     Recommended: {getRecommendedExport(item)}
                   </Text>
+
                   <Text style={styles.exportHeroText}>
                     Pick the format that best matches how this item will be used,
                     reviewed, or shared outside the app.
@@ -609,6 +829,7 @@ export default function ItemDetail() {
                   active={exporting === "pdf"}
                   onPress={() => gen("pdf")}
                 />
+
                 <ExportCard
                   label="Word"
                   helper="Word document"
@@ -616,6 +837,7 @@ export default function ItemDetail() {
                   active={exporting === "docx"}
                   onPress={() => gen("docx")}
                 />
+
                 <ExportCard
                   label="CSV"
                   helper="Spreadsheet format"
@@ -623,6 +845,7 @@ export default function ItemDetail() {
                   active={exporting === "excel"}
                   onPress={() => gen("excel")}
                 />
+
                 <ExportCard
                   label="PPT"
                   helper="Presentation format"
@@ -635,7 +858,9 @@ export default function ItemDetail() {
 
             <View style={styles.bottomActionsRow}>
               <Pressable
-                onPress={() => router.replace("/(tabs)/explore")}
+                onPress={() =>
+                  router.replace("/(tabs)/explore")
+                }
                 style={({ pressed }) => [
                   styles.bottomActionSecondary,
                   pressed && styles.pressed,
@@ -646,13 +871,18 @@ export default function ItemDetail() {
                   size={16}
                   color={Brand.cocoa}
                 />
-                <Text style={styles.bottomActionSecondaryText}>
+
+                <Text
+                  style={styles.bottomActionSecondaryText}
+                >
                   Planner
                 </Text>
               </Pressable>
 
               <Pressable
-                onPress={() => router.replace("/(chat)" as any)}
+                onPress={() =>
+                  router.replace("/(chat)" as any)
+                }
                 style={({ pressed }) => [
                   styles.bottomActionPrimary,
                   pressed && styles.pressed,
@@ -664,8 +894,15 @@ export default function ItemDetail() {
                   end={{ x: 1, y: 1 }}
                   style={styles.bottomActionPrimaryInner}
                 >
-                  <Ionicons name="sparkles" size={16} color={Brand.ink} />
-                  <Text style={styles.bottomActionPrimaryText}>
+                  <Ionicons
+                    name="sparkles"
+                    size={16}
+                    color={Brand.ink}
+                  />
+
+                  <Text
+                    style={styles.bottomActionPrimaryText}
+                  >
                     Home
                   </Text>
                 </LinearGradient>
@@ -673,7 +910,12 @@ export default function ItemDetail() {
             </View>
           </>
         ) : (
-          <GlassCard style={{ borderRadius: 30, marginTop: 14 }}>
+          <GlassCard
+            style={{
+              borderRadius: 30,
+              marginTop: 14,
+            }}
+          >
             <View style={styles.emptyWrap}>
               <View style={styles.emptyIconWrap}>
                 <Ionicons
@@ -682,20 +924,28 @@ export default function ItemDetail() {
                   color={Brand.bronze}
                 />
               </View>
-              <Text style={styles.emptyTitle}>Item not found</Text>
+
+              <Text style={styles.emptyTitle}>
+                Item not found
+              </Text>
+
               <Text style={styles.emptySubtitle}>
                 This schedule entry could not be loaded. Go back to the planner
                 and try again.
               </Text>
 
               <Pressable
-                onPress={() => router.replace("/(tabs)/explore")}
+                onPress={() =>
+                  router.replace("/(tabs)/explore")
+                }
                 style={({ pressed }) => [
                   styles.emptyActionBtn,
                   pressed && styles.pressed,
                 ]}
               >
-                <Text style={styles.emptyActionBtnText}>Back to planner</Text>
+                <Text style={styles.emptyActionBtnText}>
+                  Back to planner
+                </Text>
               </Pressable>
             </View>
           </GlassCard>
@@ -717,10 +967,21 @@ function InfoCard({
   return (
     <View style={styles.infoCard}>
       <View style={styles.infoIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons
+          name={icon}
+          size={15}
+          color={Brand.bronze}
+        />
       </View>
-      <Text style={styles.infoCardLabel}>{label}</Text>
-      <Text style={styles.infoCardValue} numberOfLines={3}>
+
+      <Text style={styles.infoCardLabel}>
+        {label}
+      </Text>
+
+      <Text
+        style={styles.infoCardValue}
+        numberOfLines={3}
+      >
         {value}
       </Text>
     </View>
@@ -739,12 +1000,21 @@ function SystemRow({
   return (
     <View style={styles.systemRow}>
       <View style={styles.systemRowIcon}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons
+          name={icon}
+          size={15}
+          color={Brand.bronze}
+        />
       </View>
 
       <View style={{ flex: 1 }}>
-        <Text style={styles.systemRowLabel}>{label}</Text>
-        <Text style={styles.systemRowValue}>{value}</Text>
+        <Text style={styles.systemRowLabel}>
+          {label}
+        </Text>
+
+        <Text style={styles.systemRowValue}>
+          {value}
+        </Text>
       </View>
     </View>
   );
@@ -766,23 +1036,39 @@ function ExportCard({
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.exportCard, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.exportCard,
+        pressed && styles.pressed,
+      ]}
     >
       <LinearGradient
-        colors={["rgba(255, 255, 255, 0.06)", "rgba(87, 222, 255, 0.05)"]}
+        colors={[
+          "rgba(255, 255, 255, 0.06)",
+          "rgba(87, 222, 255, 0.05)",
+        ]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.exportGradient}
       >
         <View style={styles.exportIconWrap}>
           {active ? (
-            <ActivityIndicator size="small" color={Brand.ink} />
+            <ActivityIndicator
+              size="small"
+              color={Brand.ink}
+            />
           ) : (
-            <Ionicons name={icon} size={18} color={Brand.bronze} />
+            <Ionicons
+              name={icon}
+              size={18}
+              color={Brand.bronze}
+            />
           )}
         </View>
 
-        <Text style={styles.exportLabel}>{label}</Text>
+        <Text style={styles.exportLabel}>
+          {label}
+        </Text>
+
         <Text style={styles.exportHelper}>
           {active ? "Preparing..." : helper}
         </Text>

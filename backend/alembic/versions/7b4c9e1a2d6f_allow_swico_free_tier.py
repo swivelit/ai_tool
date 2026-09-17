@@ -1,7 +1,7 @@
 """allow Swico Free in the existing web tier constraints
 
 Revision ID: 7b4c9e1a2d6f
-Revises: f2a7c9e4b1d6
+Revises: 7a065149f040
 """
 from typing import Sequence, Union
 
@@ -9,7 +9,7 @@ from alembic import op
 
 
 revision: str = "7b4c9e1a2d6f"
-down_revision: Union[str, Sequence[str], None] = "f2a7c9e4b1d6"
+down_revision: Union[str, Sequence[str], None] = "7a065149f040"
 branch_labels = None
 depends_on = None
 
