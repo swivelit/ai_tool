@@ -89,6 +89,24 @@ test('rich UI queues bounded follow-ups with Tab and runs them in order after th
   await running
 })
 
+test('rich UI offers bounded safe @-path completion and inserts the selected relative path', async () => {
+  const terminal = fakeTerminal(), messages = []
+  const ui = new RichTerminalUI({
+    input: terminal.input, output: terminal.output, version: '0.2.1', tierLabel: 'Swico Lite', directory: '/tmp/work', branch: null,
+    mentionSearch: async query => query === 'src' ? ['src/main.ts', 'src/'] : [],
+    onMessage: async message => { messages.push(message); return { text: 'ok', threadId: null } },
+    onCommand: async () => undefined,
+  })
+  const running = ui.run()
+  terminal.input.emit('data', '@src')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  terminal.input.emit('data', '\t\r')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  terminal.input.emit('data', '/exit\r')
+  await running
+  assert.deepEqual(messages, ['@src/main.ts'])
+})
+
 test('rich UI slash menu selection and malformed commands remain local', async () => {
   const terminal = fakeTerminal(), commands = [], notices = []
   const ui = new RichTerminalUI({

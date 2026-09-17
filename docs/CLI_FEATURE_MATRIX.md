@@ -80,7 +80,7 @@ weakened sandbox policy in RC8.
 | Worktrees | IMPLEMENTED + VERIFIED | Owned detached worktrees preserve dirty primary tree |
 | Mutating subagents | IMPLEMENTED + UNVERIFIED | Review-first coordinator uses an owned detached worktree and clean-primary apply; no automatic merge |
 | Cloud control plane | IMPLEMENTED + UNVERIFIED | Durable owner-scoped jobs, idempotency, cancellation, and bounded lifecycle events; no API-local execution |
-| Cloud execution | FAIL-CLOSED / DISABLED | Separate runner protocol/service exists, but native isolated executor and production handshake are not verified |
+| Cloud execution | IMPLEMENTED + UNVERIFIED | Opt-in E2B executor and capability-checked runner endpoint exist; native hostile acceptance and production attestation are not verified, so cloud remains disabled |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
 | npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.1` from the canonical seven-check CI artifact with provenance; RC8 remains historical evidence |

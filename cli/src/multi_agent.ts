@@ -35,7 +35,8 @@ export class MutatingWorkerCoordinator {
     try {
       const status = await git(['status', '--porcelain=v1'], worker.worktree.path), diff = await diffIncludingUntracked(worker.worktree.path, status)
       worker.changed_files = status.split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).slice(0, 200)
-      worker.diff = diff.slice(0, 2 * 1024 * 1024); worker.status = 'completed'; return worker
+      if (Buffer.byteLength(diff) > 2 * 1024 * 1024) throw new Error('Worker diff exceeds the reviewable artifact bound; it was not truncated.')
+      worker.diff = diff; worker.status = 'completed'; return worker
     } catch (error) { worker.status = 'failed'; worker.error = error instanceof Error ? error.message.slice(0, 240) : 'Worker inspection failed.'; return worker }
   }
   list(): MutatingWorker[] { return [...this.workers.values()] }

@@ -216,6 +216,7 @@ logger = logging.getLogger(__name__)
 _TERMINAL_PAYMENT_STATUSES = frozenset({"credited", "fulfilled", "partially_refunded", "refunded"})
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _pending_generation_cancellations: dict[str, int] = {}
+_generation_steering: dict[str, dict[str, object]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
@@ -236,6 +237,7 @@ def request_generation_cancellation(request_id: str, user_id: int) -> bool:
 def register_generation(request_id: str, user_id: int, cancellation: GenerationCancellation) -> None:
     with _active_generations_lock:
         _active_generations[str(request_id)] = (int(user_id), cancellation)
+        _generation_steering[str(request_id)] = {"last_sequence": 0, "keys": set()}
         if _pending_generation_cancellations.pop(str(request_id), None) == int(user_id):
             cancellation.cancel()
 
@@ -243,6 +245,31 @@ def register_generation(request_id: str, user_id: int, cancellation: GenerationC
 def unregister_generation(request_id: str) -> None:
     with _active_generations_lock:
         _active_generations.pop(str(request_id), None)
+        _generation_steering.pop(str(request_id), None)
+
+
+def request_generation_steering(request_id: str, user_id: int, instruction: str, sequence: int, idempotency_key: str) -> dict[str, object]:
+    """Record an authenticated steering request only while its turn is live.
+
+    This is deliberately a deferred acknowledgement until a provider-neutral
+    safe-checkpoint consumer exists. It cannot be mistaken for a new request
+    or for provider-native mid-stream mutation.
+    """
+    with _active_generations_lock:
+        active = _active_generations.get(str(request_id))
+        state = _generation_steering.get(str(request_id))
+        if active is None or active[0] != int(user_id) or state is None:
+            return {"status": "rejected", "reason": "turn_not_active"}
+        keys = state["keys"]
+        if not isinstance(keys, set):
+            return {"status": "rejected", "reason": "steering_state_invalid"}
+        if idempotency_key in keys:
+            return {"status": "replayed", "sequence": int(state["last_sequence"])}
+        if sequence <= int(state["last_sequence"]):
+            return {"status": "rejected", "reason": "stale_sequence"}
+        keys.add(idempotency_key)
+        state["last_sequence"] = sequence
+        return {"status": "deferred", "sequence": sequence, "reason": "provider_checkpoint_unavailable"}
 
 
 def _tickets() -> VoiceTicketStore:

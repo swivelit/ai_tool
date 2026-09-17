@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import os
 from urllib.parse import urlparse
 
+from .runner_attestation import verify_runner_attestation
+
 
 class CliConfigurationError(RuntimeError):
     pass
@@ -59,7 +61,13 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     cloud_agent_enabled = _bool("SWICO_CLI_CLOUD_AGENT_ENABLED", False, values)
     cloud_runner_url = values.get("SWICO_CLI_CLOUD_RUNNER_URL", "").strip().rstrip("/")
     cloud_runner_token = values.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "").strip()
-    cloud_runner_handshake = _bool("SWICO_CLI_CLOUD_RUNNER_HANDSHAKE", False, values)
+    # The legacy boolean is intentionally ignored.  Readiness requires fresh,
+    # signed runner evidence bound to the runner-control secret.
+    cloud_runner_attestation = values.get("SWICO_CLI_CLOUD_RUNNER_ATTESTATION", "").strip()
+    cloud_runner_handshake = verify_runner_attestation(
+        cloud_runner_attestation,
+        secret=cloud_runner_token,
+    )
     if cloud_runner_url:
         runner_parsed = urlparse(cloud_runner_url)
         if runner_parsed.scheme != "https" or runner_parsed.username or runner_parsed.password or runner_parsed.query or runner_parsed.fragment:

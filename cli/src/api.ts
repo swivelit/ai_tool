@@ -156,6 +156,10 @@ export async function cancelChat(tokens: CliTokens, requestId: string, env = pro
   await json(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' }, await accessTokenFor(env), env)
 }
 
+export async function steerChat(tokens: CliTokens, requestId: string, instruction: string, sequence: number, env = process.env): Promise<{ request_id: string; status: 'deferred' | 'replayed'; sequence?: number; reason?: string }> {
+  return json(`/chat/requests/${encodeURIComponent(requestId)}/steer`, { method: 'POST', body: JSON.stringify({ instruction, sequence, idempotency_key: `${requestId}:${sequence}` }) }, await accessTokenFor(env), env)
+}
+
 export async function uploadImage(tokens: CliTokens, filename: string, env = process.env): Promise<{ id: string; name: string; expires_at: string }> {
   const form = new FormData(); const bytes = await (await import('node:fs/promises')).readFile(filename)
   form.append('file', new Blob([bytes]), filename)

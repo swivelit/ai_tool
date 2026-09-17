@@ -1392,9 +1392,12 @@ report `ready=true` only after the selected executor has passed hostile
 verification; the current service intentionally reports false.
 
 The future runner needs `SWICO_RUNNER_ID`, `SWICO_RUNNER_SHARED_SECRET`, and a
-reviewed isolation backend. The backend needs matching
-`SWICO_CLI_CLOUD_RUNNER_URL`, `SWICO_CLI_CLOUD_RUNNER_TOKEN`, and an
-operator-verified `SWICO_CLI_CLOUD_RUNNER_HANDSHAKE=true`. Keep all shared
+reviewed isolation backend. The runner must provide fresh signed
+`SWICO_RUNNER_ISOLATION_ATTESTATION`; the legacy
+`SWICO_CLI_CLOUD_RUNNER_HANDSHAKE` boolean is ignored as readiness evidence.
+The backend needs matching
+`SWICO_CLI_CLOUD_RUNNER_URL`, `SWICO_CLI_CLOUD_RUNNER_TOKEN`, and the
+short-lived `SWICO_CLI_CLOUD_RUNNER_ATTESTATION`. Keep all shared
 credentials secret, keep the runner private, run the normal pre-deploy
 `cd backend && python -m alembic -c alembic.ini upgrade head`, confirm the
 current single head, then run `python scripts/swico_cli_release_check.py

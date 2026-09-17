@@ -50,7 +50,7 @@ from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, AgentSubagentRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
-    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest,
+    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest, SteeringRequest,
 )
 from .security import (
     digest, human_code, random_secret, valid_code_challenge,
@@ -950,6 +950,23 @@ def cancel_chat(request_id: str, authorization: str | None = Header(default=None
     from ..web_api.router import request_generation_cancellation
     active = request_generation_cancellation(request_id, int(user.id))
     return {"status": "cancelling" if active else "cancelling", "request_id": request_id}
+
+
+@router.post("/chat/requests/{request_id}/steer")
+def steer_chat(request_id: str, payload: SteeringRequest, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    """Attempt provider-independent between-step steering for one live turn.
+
+    Providers currently expose no safe mid-request mutation primitive. The
+    shared registry therefore acknowledges the request only as deferred input;
+    callers must present it as a successor turn and must not claim that the
+    active provider request was changed.
+    """
+    _row, user = _cli_session_from_header(authorization, session)
+    from ..web_api.router import request_generation_steering
+    result = request_generation_steering(request_id, int(user.id), payload.instruction, payload.sequence, payload.idempotency_key)
+    if result["status"] == "rejected":
+        raise HTTPException(409, {"code": "steering_rejected", "message": "This active turn cannot accept steering at its current checkpoint."})
+    return {"request_id": request_id[:128], **result}
 
 
 def _run_payload(run: CliAgentRun) -> dict[str, Any]:

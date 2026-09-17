@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { createInterface, type Interface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { clearTokens, credentialStorageStatus, loadTokens, saveTokens, CredentialStorageUnavailableError } from './credentials.js'
-import { cancelAgentRun, cancelChat, CliApiError, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, streamChat, uploadImage } from './api.js'
+import { cancelAgentRun, cancelChat, CliApiError, completeAgentRun, createAgentRun, createDevice, exchangeDevice, getAgentRun, json, planAgentStep, probeEndpoint, steerChat, streamChat, uploadImage } from './api.js'
 import { isAgentActionType, type AgentAction, type CliTokens } from './contracts.js'
 import { LocalAgent } from './agent.js'
 import { TerminalOutput } from './terminal_output.js'
@@ -16,7 +16,7 @@ import { discoverRepository, loadRepositoryInstructions, type RepositoryMetadata
 import { buildAgentContext, compactObservations } from './context.js'
 import { PlanTracker } from './plan.js'
 import { loadPermissionProfile, savePermissionProfile, type PermissionProfile } from './permissions.js'
-import { findLocalSession, listLocalSessions, saveLocalSession, type LocalSession } from './local_sessions.js'
+import { compactLocalSession, findLocalSession, forkLocalSession, listLocalSessions, removeLocalSession, saveLocalSession, sessionScope, updateLocalSession, type LocalSession } from './local_sessions.js'
 import type { SSEEvent } from './sse.js'
 import { ensureTokens } from './session.js'
 import { credentialKey } from './config.js'
@@ -37,6 +37,7 @@ import { CommandUsageError, parseInteractiveCommand, topLevelCommand, validateTo
 import { formatUsage } from './usage.js'
 import { RichTerminalUI, type RichTerminalCommandContext } from './terminal_ui.js'
 import { BUILD_IDENTITY } from './build_identity.js'
+import { appendPromptHistory, loadPromptHistory } from './prompt_history.js'
 
 const exec = promisify(execFile)
 const packageJson = createRequire(import.meta.url)('../package.json') as { name?: string; version?: string }
@@ -90,7 +91,7 @@ function doctorAuthState(error: unknown): string {
   return 'request_error'
 }
 
-const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
+const help = `Swico ${VERSION}\n\nUsage: swico [command]\n\nCommands:\n  login       Sign in with your existing Swico account (example: --tier lite; standard/pro are alternatives)\n  logout      Revoke this terminal session\n  whoami      Show the signed-in account and tier\n  usage [--json] Show read-only Chat credit usage\n  ask TEXT    Ask a question (including literal slash-prefixed text)\n  exec TASK   Run a non-interactive chat or plan\n  review      Review local Git changes (read-only)\n  resume [ID] Resume a local coding session\n  doctor      Check endpoint and stored session\n  release-readiness [--json]  Run local, non-charging release gates\n  --plain     Use the line-oriented interface\n  --diagnostic-startup  Emit bounded startup/terminal diagnostics on stderr\n\nInteractive commands: /help /new /clear /history /sessions /rename /archive /delete /fork /compact /resume /mode /model /tier /usage /status /plan /permissions /init /review /agent /ask /mention /queue /copy /diff /sandbox /worktree /cloud /exit\n\nBare swico opens the rich terminal UI on a capable TTY. Inside Swico, use /usage. From a macOS shell, use swico usage or swico usage --json.`
 
 const stage2Commands = '\n  config      Show or validate local configuration\n  mcp         Inspect configured MCP servers\n  skills      List or show local skills\n  plugins     Inspect local declarative plugins\n  completion  Generate shell completion\n  mcp-server  Run the read-only Swico MCP server\n  sandbox     Show OS sandbox readiness\n  worktree    List or clean Swico-owned Git worktrees\n  cloud       Request or inspect isolated cloud work (disabled unless a runner is configured)'
 
@@ -201,7 +202,7 @@ async function runPlan(tokens: CliTokens, task: string, env = process.env, line?
   console.log(`\nPlan state:\n${plan.render()}\nNo files were changed and no commands were executed.`)
 }
 
-async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false, searchMode: 'auto' | 'on' | 'off' = 'auto', attachmentIds: string[] = [], outputSchema?: Record<string, unknown>, suppressOutput = false, eventObserver?: (event: SSEEvent) => void): Promise<{ text: string; threadId: string | null }> {
+async function runChat(tokens: CliTokens, message: string, thread: string | undefined, env = process.env, jsonOutput = false, searchMode: 'auto' | 'on' | 'off' = 'auto', attachmentIds: string[] = [], outputSchema?: Record<string, unknown>, suppressOutput = false, eventObserver?: (event: SSEEvent) => void, requestObserver?: (requestId: string) => void): Promise<{ text: string; threadId: string | null }> {
   const controller = new AbortController(); let requestId: string | undefined
   activeInterrupt = () => { controller.abort(); if (requestId) void cancelChat(tokens, requestId, env).catch(() => undefined) }
   let renderedDelta = false
@@ -214,7 +215,7 @@ async function runChat(tokens: CliTokens, message: string, thread: string | unde
         const text = String((event.data as { text?: unknown }).text ?? '')
         if (text) { terminal.writeAnswer(text); renderedDelta = true }
       }
-    }, env, { signal: controller.signal, onRequestId: value => { requestId = value }, searchMode, attachmentIds, outputSchema })
+    }, env, { signal: controller.signal, onRequestId: value => { requestId = value; requestObserver?.(value) }, searchMode, attachmentIds, outputSchema })
     if (!suppressOutput && !jsonOutput) {
       if (!renderedDelta) terminal.writeAnswer(answer.text)
       terminal.finishAnswer()
@@ -273,8 +274,9 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
     const sandboxPolicy = profile === 'read-only' ? 'read-only' : config.effective.sandboxPolicy
     const agent = new LocalAgent(new Workspace(info.metadata.root, sandbox, sandboxPolicy, verification.verified), () => ensureTokens(env).then(value => value.access_token), env, profile, controller.signal, mcp)
     const sessionId = resume?.id ?? run.run_id
+    const scope = sessionScope(currentTokens.account.email, info.metadata.root)
     const actions = [...(resume?.actions ?? [])]
-    await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
+    await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }, env)
     for (let step = run.current_step; step < run.max_steps; step += 1) {
       if (controller.signal.aborted) throw new Error('Agent run cancelled.')
       const compacted = compactObservations(context.observations)
@@ -282,7 +284,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       context.summary = compacted.summary ?? context.summary
       const promptContext = buildAgentContext({ ...context, plan: plan.snapshot })
       const next = await planAgentStep(currentTokens, run.run_id, task, promptContext, env, controller.signal)
-      if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }); return currentTokens }
+        if (next.kind === 'assistant') { plan.advance(); present(`\n${next.text ?? ''}\n\n${plan.render()}`); await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }, env); return currentTokens }
       if (!next.action_id || !isAgentActionType(next.action_type) || !next.payload) throw new Error('The server returned an incomplete or unsupported structured action.')
       const action: AgentAction = { protocol_version: (next as { protocol_version?: 1 | 2 }).protocol_version ?? 1, action_id: next.action_id, action_type: next.action_type as AgentAction['action_type'], payload: next.payload, payload_hash: next.payload_hash, reservation_id: next.reservation_id }
       present(`\nTool: ${action.action_type}`)
@@ -293,7 +295,7 @@ async function runAgent(tokens: CliTokens, task: string, env = process.env, line
       actions.push({ action_id: action.action_id, payload_hash: next.payload_hash ?? '', status: result.status })
       plan.advance(result.status === 'succeeded' ? 'completed' : 'blocked')
       present(result.status === 'succeeded' ? JSON.stringify(result.result, null, 2) : String(result.result))
-      await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() })
+      await saveLocalSession({ id: sessionId, run_id: run.run_id, workspace_root: info.metadata.root, workspace_key: scope.workspace_key, account_key: scope.account_key, title: task.slice(0, 160), tier: currentTokens.tier, mode: 'agent', task, plan: plan.snapshot, actions, updated_at: new Date().toISOString() }, env)
       if (result.status !== 'succeeded') return currentTokens
     }
     await completeAgentRun(currentTokens, run.run_id, env); runId = undefined; present(`\nAgent step limit reached.\n${plan.render()}`); return currentTokens
@@ -401,6 +403,38 @@ async function showHistory(tokens: CliTokens, env = process.env): Promise<void> 
   console.log(await historyText(tokens, env))
 }
 
+async function localSessionControl(name: string, argument: string | undefined, tokens: CliTokens, env = process.env, line?: Interface, present: Presentation = console.log): Promise<void> {
+  const root = (await repositoryInfo(env)).metadata.root
+  const scope = sessionScope(tokens.account.email, root)
+  if (name === 'sessions') {
+    const items = await listLocalSessions(scope, env)
+    present(items.length ? items.map(item => `${item.id}  ${item.title ?? item.task ?? 'Untitled'}  ${item.updated_at}`).join('\n') : 'No local coding sessions are saved.')
+    return
+  }
+  const parts = argument?.trim().split(/\s+/) ?? [], id = parts.shift()
+  if (!id) throw new Error(`Usage: /${name} SESSION_ID${name === 'rename' ? ' TITLE' : ''}`)
+  if (name === 'rename') {
+    const title = parts.join(' ').trim().slice(0, 160)
+    if (!title) throw new Error('A non-empty session title is required.')
+    const updated = await updateLocalSession(id, scope, { title }, env)
+    present(`Renamed session ${updated.id}.`); return
+  }
+  if (name === 'archive') { await updateLocalSession(id, scope, { archived: true }, env); present(`Archived session ${id}.`); return }
+  if (name === 'delete') {
+    if (!line || !/^y(?:es)?$/i.test((await line.question(`Delete local session ${id}? This cannot be undone. (y/N) `)).trim())) throw new Error('Session deletion was not approved.')
+    await removeLocalSession(id, scope, env); present(`Deleted session ${id}.`); return
+  }
+  if (name === 'fork') {
+    const fork = await forkLocalSession(id, scope, env)
+    present(`Forked session ${id} as ${fork.id}. Pending approvals, reservations, and executable actions were not copied.`); return
+  }
+  if (name === 'compact') {
+    const compacted = await compactLocalSession(id, scope, env)
+    present(`Compacted session ${compacted.id}.\n${compacted.compaction?.summary ?? ''}`); return
+  }
+  throw new Error('Unknown local session control.')
+}
+
 async function historyText(tokens: CliTokens, env = process.env): Promise<string> {
   const current = await ensureTokens(env)
   const body = await json<{ items?: Array<{ id: string; title?: string; updated_at?: string }> }>('/threads', {}, current.access_token, env)
@@ -409,7 +443,9 @@ async function historyText(tokens: CliTokens, env = process.env): Promise<string
 }
 
 async function resumeSession(line: Interface, tokens: CliTokens, id: string | undefined, env = process.env, present: Presentation = console.log): Promise<CliTokens> {
-  let sessions = id ? [await findLocalSession(id)].filter((item): item is LocalSession => Boolean(item)) : await listLocalSessions()
+  const current = (await repositoryInfo(env)).metadata.root
+  const scope = sessionScope(tokens.account.email, current)
+  let sessions = id ? [await findLocalSession(id, scope, env)].filter((item): item is LocalSession => Boolean(item)) : await listLocalSessions(scope, env)
   if (!sessions.length) { present('No local coding sessions are saved.'); return tokens }
   if (!id && sessions.length > 1 && line) {
     present(sessions.map(item => `${item.id}  ${item.task ?? 'coding task'}  ${item.updated_at}`).join('\n'))
@@ -418,7 +454,7 @@ async function resumeSession(line: Interface, tokens: CliTokens, id: string | un
     sessions = sessions.filter(item => item.id === requested)
     if (!sessions.length) throw new Error('That local session was not found.')
   }
-  const selected = sessions[0], current = (await repositoryInfo(env)).metadata.root
+  const selected = sessions[0]
   let resumeEnv = env
   if (selected.workspace_root !== current) {
     if (!/^y(?:es)?$/i.test((await line.question(`This session belongs to ${selected.workspace_root}, not ${current}. Resume there? (y/N) `)).trim())) throw new Error('Resume cancelled for a different repository.')
@@ -427,7 +463,7 @@ async function resumeSession(line: Interface, tokens: CliTokens, id: string | un
   present(`Session ${selected.id}\nWorkspace: ${selected.workspace_root}\nTier: ${selected.tier}\n${selected.plan.map(item => `${item.state}: ${item.description}`).join('\n')}`)
   if (!selected.run_id || !selected.task) { present('This session has no resumable active run.'); return tokens }
   if (!/^y(?:es)?$/i.test((await line.question('Continue the bounded agent run? (y/N) ')).trim())) return tokens
-  const profile = await loadPermissionProfile()
+  const profile = await loadPermissionProfile(env)
   return runAgent(tokens, selected.task, resumeEnv, line, profile, selected, present)
 }
 
@@ -435,11 +471,14 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
   startupDiagnostic('repository:discover', startupState())
   const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd())
   startupDiagnostic('repository:ready', startupState())
-  let currentTokens = tokens, thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile(), searchMode: 'auto' | 'on' | 'off' = 'auto', images: string[] = []
+  let currentTokens = tokens, thread: string | undefined, mode: Mode = 'auto', profile = await loadPermissionProfile(), searchMode: 'auto' | 'on' | 'off' = 'auto', images: string[] = [], activeRequestId: string | undefined
+  const persistedHistory = await loadPromptHistory(currentTokens.account.email, metadata.root, env)
   let ui: RichTerminalUI
   const promptLine = { question: (text: string) => ui.prompt(text), close: () => undefined } as unknown as Interface
   ui = new RichTerminalUI({
     input, output, version: VERSION, tierLabel: currentTokens.tier_label, modeLabel: () => mode === 'agent' ? 'Agent' : mode === 'plan' ? 'Plan' : 'Chat', permissionLabel: () => profile, sandboxLabel: () => createSandboxAdapter(metadata.root).status().available ? 'verification required' : 'unavailable', directory: metadata.root, branch: metadata.branch,
+    initialHistory: persistedHistory,
+    onPrompt: prompt => appendPromptHistory(currentTokens.account.email, metadata.root, prompt, env),
     onMessage: async (message, events) => {
       ui.setCancel(() => activeInterrupt?.())
       try {
@@ -448,10 +487,10 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
           return { text: 'Agent turn finished.', threadId: thread ?? null }
         }
         const request = mode === 'plan' ? `Provide a concise task-only plan for this request. Do not inspect or disclose repository content and do not claim files changed:\n\n${message}` : message
-        const answer = await runChat(currentTokens, request, thread, env, false, searchMode, images, undefined, true, events)
+        const answer = await runChat(currentTokens, request, thread, env, false, searchMode, images, undefined, true, events, requestId => { activeRequestId = requestId })
         images = []; thread = answer.threadId ?? thread
         return answer
-      } finally { ui.setCancel(undefined) }
+      } finally { activeRequestId = undefined; ui.setCancel(undefined) }
     },
     onCommand: async (command, context: RichTerminalCommandContext) => {
       const argument = command.argument
@@ -459,11 +498,19 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
       if (command.name === 'new') { thread = undefined; context.clearConversation(); context.notice('Started a new Chat thread.'); return }
       if (command.name === 'clear') { context.clearConversation(); context.notice('Cleared the local transcript view.'); return }
       if (command.name === 'copy') { await context.copyLatest(); return }
+      if (command.name === 'queue') {
+        const queue = argument?.split(/\s+/) ?? []
+        if (!queue.length) { context.block(context.queueStatus()); return }
+        if (queue[0] === 'clear') { context.clearQueue(); context.notice('Cleared queued follow-ups.'); return }
+        if (queue[0] === 'remove') { context.removeQueued(Number(queue[1]) - 1); context.notice('Removed queued follow-up.'); return }
+        if (queue[0] === 'move') { context.moveQueued(Number(queue[1]) - 1, Number(queue[2]) - 1); context.notice('Reordered queued follow-up.'); return }
+      }
       if (command.name === 'mode') { if (argument) mode = argument as Mode; context.notice(`Mode: ${mode} (Chat, Plan, Agent)`); return }
       if (command.name === 'status') { context.block(await statusText(currentTokens, mode, profile, env)); return }
       if (command.name === 'whoami') { const selected = await ensureTokens(env); currentTokens = selected; context.block(JSON.stringify(await json('/me', {}, selected.access_token, env), null, 2)); return }
       if (command.name === 'usage') { context.block(await usageText(env)); return }
       if (command.name === 'history') { context.block(await historyText(currentTokens, env)); return }
+      if (['sessions', 'rename', 'archive', 'delete', 'fork', 'compact'].includes(command.name)) { await localSessionControl(command.name, argument, currentTokens, env, promptLine, context.block); return }
       if (command.name === 'model' || command.name === 'tier') {
         if (!argument) context.notice(`${currentTokens.tier_label} (server-selected; website tier is independent)`)
         else context.notice(`Tier choice ${argument} requires a new explicit browser-approved login: swico login --tier ${argument}`)
@@ -482,6 +529,12 @@ async function richInteractive(tokens: CliTokens, env = process.env): Promise<vo
     },
     onCopy: text => copyToClipboard(text),
     onLocalCommand: command => runLocalCommand(promptLine, command, env, profile, text => ui.block(text)),
+    mentionSearch: query => metadata.root ? new Workspace(metadata.root).findPaths(query, 8) : Promise.resolve([]),
+    onSteer: async (instruction, sequence) => {
+      if (!activeRequestId) return 'rejected'
+      const result = await steerChat(currentTokens, activeRequestId, instruction, sequence, env)
+      return result.status === 'deferred' ? 'deferred' : result.status === 'replayed' ? 'accepted' : 'rejected'
+    },
   })
   startupDiagnostic('rich-ui:run', startupState())
   try { await ui.run() } finally { startupDiagnostic('rich-ui:restored', startupState()) }
@@ -502,6 +555,7 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
           if (parsed.name === 'new') { thread = undefined; console.log('Started a new chat.'); continue }
           if (parsed.name === 'clear') { console.clear(); console.log('Cleared the local transcript view.'); continue }
           if (parsed.name === 'copy') { console.log('Copy is available in the rich terminal UI.'); continue }
+          if (parsed.name === 'queue') { console.log('Follow-up queue controls are available in the rich terminal UI.'); continue }
           if (parsed.name === 'mention') { const { workspace } = await repositoryInfo(env); console.log((await workspace.findPaths(argument ?? '')).join('\n') || 'No matching workspace paths.'); continue }
           if (parsed.name === 'mode') { if (!argument) console.log(`Mode: ${mode} (chat, agent, plan; auto routes repository tasks)`); else { mode = argument as Mode; console.log(`Mode: ${mode}`) }; continue }
           if (parsed.name === 'status') { await showStatus(tokens, mode, profile, env); continue }
@@ -518,6 +572,7 @@ async function plainInteractive(tokens: CliTokens, env = process.env) {
           if (parsed.name === 'init') { await initInstructions(line, env); continue }
           if (parsed.name === 'review') { await showReview(tokens, env, line); continue }
           if (parsed.name === 'history') { await showHistory(tokens, env); continue }
+          if (['sessions', 'rename', 'archive', 'delete', 'fork', 'compact'].includes(parsed.name)) { await localSessionControl(parsed.name, argument, tokens, env, line); continue }
           if (parsed.name === 'resume') { tokens = await resumeSession(line, tokens, argument, env); continue }
           if (parsed.name === 'whoami') { const current = await ensureTokens(env); console.log(JSON.stringify(await json('/me', {}, current.access_token, env), null, 2)); continue }
           if (parsed.name === 'model') { console.log(`${tokens.tier_label} (server-selected)`); continue }

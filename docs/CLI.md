@@ -131,11 +131,15 @@ receive only basic runtime variables rather than host credentials.
 
 `/status` shows the repository, branch, dirty state, mode, permission profile,
 agent scope, applicable instruction files, and bounded-context state.
-`/permissions` selects `read-only` or `approval-required`; the former blocks
-commands and mutations. `/plan` shows a concise plan, `/init` creates a
-starter `AGENTS.md` only after approval, `/review` reviews the current Git
-diff without editing, and `/resume` shows then continues safe local
-coding-session metadata when its server run is still resumable.
+`/permissions` selects `read-only`, `approval-required`, or `workspace-write`;
+workspace-write is accepted only after hostile sandbox verification and
+read-only blocks commands and mutations. `/sessions`, `/rename`, `/archive`,
+`/delete`, `/fork`, and `/compact` manage account/workspace-scoped local
+coding metadata without copying executable approvals or reservations. `/plan`
+shows a concise plan, `/init` creates a starter `AGENTS.md` only after
+approval, `/review` reviews the current Git diff without editing, and
+`/resume` shows then continues safe local coding-session metadata when its
+server run is still resumable.
 `swico exec "task" --mode chat|plan|agent` is available for scripts; agent
 execution fails closed when approval is needed. `--json`, `--output`, and
 `--output-schema` are supported for non-interactive Chat/plan workflows.
@@ -228,7 +232,7 @@ evidence, billing, and limits.
 
 Cloud commands are explicit (`swico cloud exec|list|status|logs|events|resume|cancel`).
 They use the owner-scoped durable control plane when a separately isolated
-runner is configured and handshaken. The default remains disabled and the API
+runner is configured and has fresh authenticated isolation evidence. The default remains disabled and the API
 never executes repository code; queued jobs are not evidence that cloud
 execution is ready.
 

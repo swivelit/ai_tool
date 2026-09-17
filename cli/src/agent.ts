@@ -53,7 +53,7 @@ export class LocalAgent {
       else if (action.action_type === 'move_file') result = await this.workspace.moveFile(String(action.payload.from ?? ''), String(action.payload.to ?? ''), description => approve(description))
       else if (action.action_type === 'mcp_tool') {
         if (!this.mcp) throw new Error('MCP is not configured for this session.')
-        result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal)
+        result = await this.mcp.call(String(action.payload.server_name ?? ''), String(action.payload.tool_name ?? ''), (action.payload.arguments ?? {}) as Record<string, unknown>, approve, this.signal, runId)
       } else if (action.action_type === 'spawn_subagent') {
         const tasks = boundedSubagentTasks(Array.isArray(action.payload.tasks) ? action.payload.tasks.map(item => ({ id: String((item as Record<string, unknown>).id ?? ''), task: String((item as Record<string, unknown>).task ?? '') })) : [])
         result = await runSubagents({ access_token: await this.currentAccessToken() }, runId, action.action_id, tasks, typeof action.payload.context === 'string' ? action.payload.context : '', this.env, this.signal)

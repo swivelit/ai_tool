@@ -17,6 +17,7 @@ from app.web_api.chat_service import CompletedWebMessage, CompletedWebTurn
 from app.database import SessionLocal
 from app.models import CliAgentRun, CliAgentStep, CliCloudJob, CliCloudJobEvent, CliDeviceGrant, CliPendingAction, CliSession, User, WalletAccount
 from app.cli_api.security import digest
+from app.cli_api.runner_attestation import make_test_attestation
 from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
 
@@ -314,7 +315,7 @@ def test_cloud_control_plane_is_owner_scoped_idempotent_and_cancelable(client: T
     monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
     monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_URL", "https://runner.example.test")
     monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_TOKEN", "test-only-runner-token")
-    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_HANDSHAKE", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_ATTESTATION", make_test_attestation(secret="test-only-runner-token"))
     owner = create_test_user("cloud-control-owner", "cloud-control-owner@example.com")
     other = create_test_user("cloud-control-other", "cloud-control-other@example.com")
     raw_access, other_access = "q" * 64, "w" * 64
@@ -353,7 +354,7 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     for name, value in {
         "SWICO_CLI_ENABLED": "true", "SWICO_CLI_AGENT_ENABLED": "true", "SWICO_CLI_CLOUD_AGENT_ENABLED": "true",
         "SWICO_CLI_CLOUD_RUNNER_URL": "https://runner.example.test", "SWICO_CLI_CLOUD_RUNNER_TOKEN": "runner-secret",
-        "SWICO_CLI_CLOUD_RUNNER_HANDSHAKE": "true",
+        "SWICO_CLI_CLOUD_RUNNER_ATTESTATION": make_test_attestation(secret="runner-secret"),
     }.items(): monkeypatch.setenv(name, value)
     user = create_test_user("cloud-runner-owner", "cloud-runner-owner@example.com")
     raw_access = "z" * 64

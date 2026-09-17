@@ -70,12 +70,15 @@ export class McpManager {
     for (const definition of this.definitions()) { try { result.push({ name: definition.name, transport: definition.transport, status: definition.trusted ? 'ready' : 'unconfigured', toolCount: definition.trusted ? (await this.discover(definition.name)).length : 0 }) } catch (error) { result.push({ name: definition.name, transport: definition.transport, status: 'failed', toolCount: 0, error: error instanceof Error ? error.message.slice(0, 160) : 'MCP connection failed.' }) } }
     return result
   }
-  async call(name: string, toolName: string, args: Record<string, unknown>, approve: (description: string) => Promise<boolean>, signal?: AbortSignal): Promise<unknown> {
+  async call(name: string, toolName: string, args: Record<string, unknown>, approve: (description: string) => Promise<boolean>, signal?: AbortSignal, runId = 'interactive'): Promise<unknown> {
     if (Buffer.byteLength(JSON.stringify(args)) > MAX_ARGS) throw new Error('MCP arguments exceed the supported bound.')
     const { client, tools } = await this.connect(this.definition(name)), tool = tools.find(item => item.name === toolName)
     if (!tool) throw new Error(`MCP tool '${toolName}' is not available on '${name}'.`)
     if ((!this.allowReadOnlyTools || tool.capability !== 'read') && !await approve(`MCP ${name}:${toolName} (${tool.capability}) with arguments ${redacted(args)}?`)) throw new Error('MCP tool call was not approved.')
-    const actionId = `mcp:${name}:${toolName}`, payloadHash = createHash('sha256').update(JSON.stringify(args)).digest('hex')
+    // Scope the journal key to one logical run: retries within a run are
+    // replay-safe, while a legitimate identical call in a later run remains
+    // possible. The server still owns the outer action identity.
+    const actionId = `mcp:${runId}:${name}:${toolName}`, payloadHash = createHash('sha256').update(JSON.stringify(args)).digest('hex')
     const previous = await this.journal.latest(actionId, payloadHash); if (previous === 'succeeded') return 'This MCP call was already completed; its result was not run again.'
     await this.journal.record({ action_id: actionId, action_type: 'mcp_tool', payload_hash: payloadHash, status: 'executing' })
     try {

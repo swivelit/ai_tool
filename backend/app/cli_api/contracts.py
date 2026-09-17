@@ -91,6 +91,20 @@ class CloudJobResultRequest(BaseModel):
         return value
 
 
+class SteeringRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instruction: str = Field(min_length=1, max_length=2_000)
+    sequence: int = Field(ge=1, le=10_000)
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+
+    @field_validator("instruction")
+    @classmethod
+    def validate_instruction(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("instruction must contain non-whitespace text")
+        return value.strip()
+
+
 class AgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID

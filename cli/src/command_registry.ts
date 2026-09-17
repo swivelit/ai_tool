@@ -92,7 +92,14 @@ export const INTERACTIVE_COMMANDS = [
   { name: 'new', description: 'Start a new Chat thread' },
   { name: 'clear', description: 'Clear the local transcript view' },
   { name: 'copy', description: 'Copy the latest completed response' },
+  { name: 'queue', description: 'Inspect or edit queued follow-up turns' },
   { name: 'history', description: 'List your Chat history' },
+  { name: 'sessions', description: 'List local coding sessions' },
+  { name: 'rename', description: 'Rename a local coding session' },
+  { name: 'archive', description: 'Archive a local coding session' },
+  { name: 'delete', description: 'Delete a local coding session' },
+  { name: 'fork', description: 'Fork a local coding session' },
+  { name: 'compact', description: 'Compact local coding session metadata' },
   { name: 'resume', description: 'Resume a local coding run' },
   { name: 'mode', description: 'Choose auto, chat, agent, or plan' },
   { name: 'model', description: 'Show the server-selected public tier' },
@@ -112,7 +119,7 @@ export const INTERACTIVE_COMMANDS = [
 const NO_ARGUMENT_COMMANDS = new Set([
   'exit', 'help', 'new', 'clear', 'mode', 'status', 'sandbox', 'worktree', 'cloud', 'config',
   'mcp', 'skills', 'plan', 'permissions', 'init', 'review', 'history', 'whoami',
-  'usage', 'diff', 'copy',
+  'usage', 'diff', 'copy', 'queue',
 ])
 
 function commandError(name: string, detail: string): never {
@@ -130,7 +137,7 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
     ...NO_ARGUMENT_COMMANDS, ...INTERACTIVE_COMMANDS.map(item => item.name), 'mode', 'search', 'image', 'resume', 'permissions', 'agent', 'ask',
   ])
   if (!known.has(name)) throw new CommandUsageError(`Unknown interactive command "/${name}". Use /ask TEXT for an intentional slash-prefixed Chat message.`)
-  if (NO_ARGUMENT_COMMANDS.has(name) && name !== 'mode' && name !== 'sandbox' && name !== 'worktree' && name !== 'cloud' && name !== 'mcp' && name !== 'permissions' && argument) commandError(name, `/${name} does not accept arguments.`)
+  if (NO_ARGUMENT_COMMANDS.has(name) && name !== 'mode' && name !== 'sandbox' && name !== 'worktree' && name !== 'cloud' && name !== 'mcp' && name !== 'permissions' && name !== 'queue' && argument) commandError(name, `/${name} does not accept arguments.`)
   if (name === 'mode' && argument && !['chat', 'agent', 'plan'].includes(argument)) commandError(name, 'Mode must be chat, agent, or plan.')
   if ((name === 'model' || name === 'tier') && argument && !['lite', 'standard', 'pro'].includes(argument)) commandError(name, 'Tier must be lite, standard, or pro.')
   if (name === 'search' && argument && !['auto', 'on', 'off'].includes(argument)) commandError(name, 'Search must be auto, on, or off.')
@@ -143,6 +150,8 @@ export function parseInteractiveCommand(input: string): InteractiveCommand {
   if (name === 'sandbox' && argument && argument !== 'status') commandError(name, 'Usage: /sandbox or /sandbox status')
   if (name === 'worktree' && argument && argument !== 'list') commandError(name, 'Usage: /worktree or /worktree list')
   if (name === 'cloud' && argument) commandError(name, 'Usage: /cloud')
+  if (name === 'queue' && argument && !/^(?:clear|remove\s+\d+|move\s+\d+\s+\d+)$/.test(argument)) commandError(name, 'Usage: /queue, /queue clear, /queue remove N, or /queue move N M')
   if (name === 'mention' && !argument) commandError(name, 'Usage: /mention QUERY')
+  if (['rename', 'archive', 'delete', 'fork', 'compact'].includes(name) && !argument) commandError(name, `Usage: /${name} SESSION_ID${name === 'rename' ? ' TITLE' : ''}`)
   return argument === undefined ? { kind: 'command', name } : { kind: 'command', name, argument }
 }

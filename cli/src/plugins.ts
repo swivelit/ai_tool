@@ -16,6 +16,26 @@ const forbidden = new Set(['main', 'entry', 'scripts', 'dependencies', 'install'
 const trustFile = (env: NodeJS.ProcessEnv = process.env) => env.SWICO_CLI_PLUGIN_TRUST_FILE ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'swico', 'plugin-trust.json')
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex')
 
+async function executableBundleHash(root: string): Promise<string> {
+  const files: Array<{ path: string; content: Buffer }> = []
+  let bytes = 0
+  const visit = async (directory: string): Promise<void> => {
+    for (const item of await readdir(directory, { withFileTypes: true })) {
+      if (item.isSymbolicLink()) throw new Error('Plugin bundles cannot contain symbolic links.')
+      const path = join(directory, item.name)
+      if (item.isDirectory()) { await visit(path); continue }
+      if (!item.isFile()) throw new Error('Plugin bundles may contain only regular files.')
+      const content = await readFile(path); bytes += content.byteLength
+      if (files.length >= 512 || bytes > 16 * 1024 * 1024) throw new Error('Plugin executable bundle is outside the supported bound.')
+      files.push({ path: relative(root, path).replaceAll('\\', '/'), content })
+    }
+  }
+  await visit(root)
+  const digest = createHash('sha256')
+  for (const item of files.sort((a, b) => a.path.localeCompare(b.path))) digest.update(item.path).update('\0').update(item.content).update('\0')
+  return digest.digest('hex')
+}
+
 function safeRelative(value: string): boolean {
   const normalized = value.replaceAll('\\', '/')
   return normalized.length > 0 && !normalized.startsWith('/') && !normalized.split('/').includes('..')
@@ -58,7 +78,9 @@ export async function inspectPlugin(path: string, env: NodeJS.ProcessEnv = proce
     const entry = resolve(root, plugin.entrypoint), rel = relative(root, entry)
     if (!safeRelative(rel) || !rel || rel.startsWith('..')) throw new Error('Plugin entrypoint escapes the plugin root.')
     const entryInfo = await lstat(entry); if (!entryInfo.isFile() || entryInfo.isSymbolicLink()) throw new Error('Plugin entrypoint must be a regular local file.')
-    plugin.entrypoint_hash = hash(await readFile(entry))
+    // Bind trust to the complete local bundle, including loaded scripts and
+    // dependencies, rather than only to the top-level entrypoint.
+    plugin.entrypoint_hash = await executableBundleHash(root)
   }
   plugin.trusted = await pluginTrusted(plugin, env)
   return plugin

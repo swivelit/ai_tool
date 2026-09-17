@@ -221,8 +221,7 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
     : selectedAmountPaise !== null ? `Pay ${packageRupees(selectedAmountPaise)} for ${bucket === 'chat' ? 'Chat' : 'Voice'} credits`
     : 'Choose an amount'
   return <div className="modal-backdrop billing-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
-    <section ref={dialogRef} className="billing-modal billing-modal-redesign" role="dialog" aria-modal="true" aria-labelledby="billing-title">
-      <style>{`
+    <style>{`
         .billing-modal-redesign {
           --billing-primary: #5b2ee8;
           --billing-primary-dark: #4220b8;
@@ -268,6 +267,12 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
           line-height: 1.1;
           letter-spacing: -.02em;
         }
+        .billing-heading-line {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
         .billing-title-copy p {
           margin: 5px 0 0;
           color: var(--billing-muted);
@@ -277,7 +282,6 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
           display: inline-flex;
           align-items: center;
           gap: 5px;
-          margin-left: 8px;
           padding: 4px 8px;
           border-radius: 999px;
           background: #fff6dd;
@@ -686,12 +690,16 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
           .billing-plan-card.selected { padding: 15px; }
         }
       `}</style>
+    <section ref={dialogRef} className="billing-modal billing-modal-redesign" role="dialog" aria-modal="true" aria-labelledby="billing-title">
 
       <div className="billing-redesign-header">
         <div className="billing-title-row">
           <span className="billing-title-icon" aria-hidden="true"><ShieldCheck size={24} /></span>
           <div className="billing-title-copy">
-            <h2 id="billing-title">Billing {testMode && <span className="billing-test-mode">Test Mode</span>}</h2>
+            <div className="billing-heading-line">
+              <h2 id="billing-title">Billing</h2>
+              {testMode && <span className="billing-test-mode" role="status" aria-label="Test Mode">Test Mode</span>}
+            </div>
             <p>Manage your credits and payments</p>
           </div>
         </div>
@@ -745,7 +753,7 @@ export function BillingModal({ user, config, initialBucket = 'chat', initialRefe
           <button type="button" aria-pressed={bucket === 'voice'} className={bucket === 'voice' ? 'active' : ''} onClick={() => { setBucket('voice'); setCustomEstimate(null) }}><Mic size={16} /> Voice credits</button>
         </div>
 
-        <div className="billing-plan-grid">
+        <div className="billing-plan-grid packages">
           {PRESETS.map(amount => {
             const item = config.packages.find(candidate => candidate.gross_amount_paise === amount)
             const key = `preset-${amount}` as SelectionKey

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.cli_api.config import validate_cli_configuration
+from app.cli_api.runner_attestation import make_test_attestation
 from scripts.swico_cli_release_check import (
     REQUIRED_CLI_TABLES,
     rollout_configuration_errors,
@@ -82,7 +83,8 @@ def test_cloud_pilot_requires_verified_runner_without_blocking_public_chat() -> 
         SWICO_CLI_AGENT_ENABLED="true", SWICO_CLI_CLOUD_AGENT_ENABLED="true",
         SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com",
         SWICO_CLI_CLOUD_RUNNER_URL="https://runner.example.test",
-        SWICO_CLI_CLOUD_RUNNER_TOKEN="synthetic", SWICO_CLI_CLOUD_RUNNER_HANDSHAKE="true",
+        SWICO_CLI_CLOUD_RUNNER_TOKEN="synthetic",
+        SWICO_CLI_CLOUD_RUNNER_ATTESTATION=make_test_attestation(secret="synthetic"),
     )
     assert rollout_configuration_errors(ready, cloud_pilot=True, environ={}) == []
 

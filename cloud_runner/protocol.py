@@ -7,12 +7,35 @@ one job and must provide a verified OS isolation backend before it can run it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 import hashlib
 import hmac
 import json
 import os
 import time
 from typing import Any
+
+
+def _decode_attestation(value: str, secret: str, now: int | None = None) -> bool:
+    """Verify runner-local evidence without treating a boolean as proof."""
+    if not value or len(value) > 16_384 or not secret:
+        return False
+    try:
+        encoded, signature = value.split(".", 1)
+        body = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        supplied = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).digest()
+        data = json.loads(body)
+        current = int(time.time()) if now is None else now
+        return bool(
+            hmac.compare_digest(supplied, expected)
+            and str(data.get("runner_id", ""))
+            and str(data.get("isolation", "")) in {"e2b", "bubblewrap", "sandbox-exec"}
+            and int(data["verified_at"]) <= current < int(data["expires_at"])
+            and int(data["expires_at"]) - int(data["verified_at"]) <= 900
+        )
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeError):
+        return False
 
 
 class CapabilityError(ValueError):
@@ -69,11 +92,14 @@ def runner_readiness(environ: dict[str, str] | None = None) -> dict[str, Any]:
     values = environ if environ is not None else os.environ
     backend = values.get("SWICO_RUNNER_ISOLATION_BACKEND", "").strip().lower()
     shared_secret = bool(values.get("SWICO_RUNNER_SHARED_SECRET", "").strip())
-    # bwrap is checked by the service process before advertising readiness.
+    attestation = values.get("SWICO_RUNNER_ISOLATION_ATTESTATION", "").strip()
+    evidence_verified = _decode_attestation(attestation, values.get("SWICO_RUNNER_SHARED_SECRET", ""))
+    # The attestation is produced only after the selected runner's native
+    # hostile verification. A legacy readiness boolean is deliberately ignored.
     return {
         "configured_backend": backend or None,
         "runner_auth_configured": shared_secret,
-        "isolation_verified": False,
-        "ready": False,
-        "reason": "native hostile verification has not been completed",
+        "isolation_verified": evidence_verified,
+        "ready": bool(shared_secret and backend and evidence_verified),
+        "reason": "verified isolation evidence is current" if evidence_verified else "native hostile verification evidence is missing or expired",
     }

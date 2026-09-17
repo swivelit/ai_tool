@@ -13,6 +13,10 @@ export type RichTerminalCommandContext = {
   clearConversation: () => void
   setThread: (threadId: string | null) => void
   copyLatest: () => Promise<void>
+  queueStatus: () => string
+  clearQueue: () => void
+  removeQueued: (index: number) => void
+  moveQueued: (from: number, to: number) => void
 }
 
 export type RichTerminalOptions = {
@@ -29,6 +33,10 @@ export type RichTerminalOptions = {
   onCommand: (command: Extract<InteractiveCommand, { kind: 'command' }>, context: RichTerminalCommandContext) => Promise<boolean | void>
   onCopy?: (text: string) => Promise<void>
   onLocalCommand?: (command: string) => Promise<void>
+  onSteer?: (instruction: string, sequence: number) => Promise<'accepted' | 'deferred' | 'rejected'>
+  mentionSearch?: (query: string) => Promise<string[]>
+  initialHistory?: string[]
+  onPrompt?: (text: string) => void | Promise<void>
 }
 
 const CSI = '\u001b['
@@ -116,6 +124,9 @@ export class RichTerminalUI {
   private readonly messages: Message[] = []
   private readonly history: string[] = []
   private readonly queued: string[] = []
+  private mentionMatches: string[] = []
+  private mentionIndex = 0
+  private mentionGeneration = 0
   private readonly decoder = new StringDecoder('utf8')
   private draft = ''
   private cursor = 0
@@ -138,12 +149,13 @@ export class RichTerminalUI {
   private activeTurn: ActiveTurn | undefined
   private lastCompletedAssistant = ''
   private historySearchQuery: string | undefined
+  private steeringSequence = 0
   private readonly onInput = (chunk: Buffer | string) => this.consume(typeof chunk === 'string' ? chunk : this.decoder.write(chunk))
   private readonly onInputEnd = () => { this.consume(this.decoder.end()); this.rejectPrompt(new Error('Terminal input closed.')); this.exit() }
   private readonly onResize = () => { this.needsFullClear = true; this.render() }
   private readonly onSignal = () => this.exit()
 
-  constructor(private readonly options: RichTerminalOptions) {}
+  constructor(private readonly options: RichTerminalOptions) { this.history.push(...(options.initialHistory ?? []).filter(item => item.trim()).slice(-200)) }
 
   setCancel(callback: (() => void) | undefined): void { this.cancelCurrent = callback }
 
@@ -203,7 +215,7 @@ export class RichTerminalUI {
 
       const sequences: Array<[string, () => void]> = [
         ['\u001b[13;2u', () => this.insert('\n')], ['\u001b[27;2;13~', () => this.insert('\n')],
-        ['\u001b[A', () => this.filteredCommands().length ? this.menuMove(-1) : this.historyMove(-1)], ['\u001b[B', () => this.filteredCommands().length ? this.menuMove(1) : this.historyMove(1)],
+        ['\u001b[A', () => this.filteredMentions().length ? this.mentionMove(-1) : this.filteredCommands().length ? this.menuMove(-1) : this.historyMove(-1)], ['\u001b[B', () => this.filteredMentions().length ? this.mentionMove(1) : this.filteredCommands().length ? this.menuMove(1) : this.historyMove(1)],
         ['\u001b[C', () => { this.cursor = moveGrapheme(this.draft, this.cursor, 1); this.render() }], ['\u001b[D', () => { this.cursor = moveGrapheme(this.draft, this.cursor, -1); this.render() }],
         ['\u001b[5~', () => { this.scrollOffset += 5; this.render() }], ['\u001b[6~', () => { this.scrollOffset = Math.max(0, this.scrollOffset - 5); this.render() }],
       ]
@@ -222,7 +234,7 @@ export class RichTerminalUI {
       this.inputBuffer = this.inputBuffer.slice(size)
       if (char === '\u0003') { if (this.busy && this.cancelCurrent) { this.activeTurn && (this.activeTurn.cancelled = true); this.cancelCurrent(); this.notice('Cancellation requested.'); this.cancelCurrent = undefined } else if (this.draft) { this.draft = ''; this.cursor = 0; this.render() } else this.exit(); continue }
       if (char === '\u0004') { if (!this.draft && !this.busy) this.exit(); else this.deleteForward(); continue }
-      if (char === '\u0009') { if (this.busy && this.draft.trim()) this.queueDraft(); else this.selectMenu(); continue }
+      if (char === '\u0009') { if (this.busy && this.draft.trim()) this.queueDraft(); else if (!this.selectMention()) this.selectMenu(); continue }
       if (char === '\u000f') { void this.copyLatest(); continue }
       if (char === '\u0012') { this.searchHistory(); continue }
       if (char === '\n') { if (this.ignoreNextLf) this.ignoreNextLf = false; else this.insert('\n'); continue }
@@ -244,19 +256,19 @@ export class RichTerminalUI {
   private insert(value: string): void {
     if (!value) return
     this.draft = this.draft.slice(0, this.cursor) + value + this.draft.slice(this.cursor)
-    this.cursor += value.length; this.historyIndex = -1; this.historySearchQuery = undefined; this.scrollOffset = 0; this.menuDismissed = false; this.render()
+    this.cursor += value.length; this.historyIndex = -1; this.historySearchQuery = undefined; this.scrollOffset = 0; this.menuDismissed = false; this.refreshMentions(); this.render()
   }
 
   private deleteBackward(): void {
     if (!this.cursor) return
     const start = moveGrapheme(this.draft, this.cursor, -1)
-    this.draft = this.draft.slice(0, start) + this.draft.slice(this.cursor); this.cursor = start; this.render()
+    this.draft = this.draft.slice(0, start) + this.draft.slice(this.cursor); this.cursor = start; this.refreshMentions(); this.render()
   }
 
   private deleteForward(): void {
     if (this.cursor >= this.draft.length) return
     const end = moveGrapheme(this.draft, this.cursor, 1)
-    this.draft = this.draft.slice(0, this.cursor) + this.draft.slice(end); this.render()
+    this.draft = this.draft.slice(0, this.cursor) + this.draft.slice(end); this.refreshMentions(); this.render()
   }
 
   private historyMove(direction: -1 | 1): void {
@@ -283,8 +295,10 @@ export class RichTerminalUI {
   }
 
   private commandContext(): RichTerminalCommandContext {
-    return { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId), copyLatest: () => this.copyLatest() }
+    return { notice: text => this.notice(text), block: text => this.block(text), prompt: text => this.prompt(text), clearConversation: () => this.clearConversation(), setThread: threadId => this.setThread(threadId), copyLatest: () => this.copyLatest(), queueStatus: () => this.queueStatus(), clearQueue: () => { this.queued.splice(0); this.render() }, removeQueued: index => { if (index >= 0 && index < this.queued.length) { this.queued.splice(index, 1); this.render() } else throw new Error('Queued item number is out of range.') }, moveQueued: (from, to) => { if (from < 0 || from >= this.queued.length || to < 0 || to >= this.queued.length) throw new Error('Queued item number is out of range.'); const [item] = this.queued.splice(from, 1); this.queued.splice(to, 0, item); this.render() } }
   }
+
+  private queueStatus(): string { return this.queued.length ? this.queued.map((item, index) => `${index + 1}. ${item.slice(0, 240)}`).join('\n') : 'The follow-up queue is empty.' }
 
   private filteredCommands(): readonly (typeof INTERACTIVE_COMMANDS[number])[] {
     if (this.menuDismissed || !this.draft.startsWith('/') || /\s/.test(this.draft)) return []
@@ -300,6 +314,35 @@ export class RichTerminalUI {
     this.cursor = this.draft.length; this.menuIndex = 0; this.menuDismissed = true; this.render()
   }
 
+  private mentionQuery(): { start: number; query: string } | undefined {
+    const before = this.draft.slice(0, this.cursor), match = before.match(/(?:^|\s)@([^\s@]*)$/)
+    return match ? { start: before.length - match[1].length - 1, query: match[1] } : undefined
+  }
+
+  private filteredMentions(): string[] { return this.mentionQuery() ? this.mentionMatches : [] }
+
+  private refreshMentions(): void {
+    const query = this.mentionQuery(), generation = ++this.mentionGeneration
+    if (!query || !this.options.mentionSearch) { this.mentionMatches = []; this.mentionIndex = 0; return }
+    void this.options.mentionSearch(query.query).then(items => {
+      if (generation !== this.mentionGeneration) return
+      this.mentionMatches = items.slice(0, 8); this.mentionIndex = 0; this.render()
+    }).catch(() => { if (generation === this.mentionGeneration) this.mentionMatches = [] })
+  }
+
+  private selectMention(): boolean {
+    const items = this.filteredMentions(); if (!items.length) return false
+    const query = this.mentionQuery(); if (!query) return false
+    const selected = items[Math.max(0, Math.min(items.length - 1, this.mentionIndex))]
+    this.draft = `${this.draft.slice(0, query.start)}@${selected} ${this.draft.slice(this.cursor)}`
+    this.cursor = query.start + selected.length + 2; this.mentionMatches = []; this.mentionIndex = 0; this.render(); return true
+  }
+
+  private mentionMove(direction: -1 | 1): void {
+    const items = this.filteredMentions(); if (!items.length) return
+    this.mentionIndex = (this.mentionIndex + direction + items.length) % items.length; this.render()
+  }
+
   private menuMove(direction: -1 | 1): void {
     const items = this.filteredCommands()
     if (!items.length) return
@@ -309,10 +352,18 @@ export class RichTerminalUI {
 
   private async submit(): Promise<void> {
     if (this.promptWaiter) { const waiter = this.promptWaiter; this.promptWaiter = undefined; waiter.resolve(this.draft); this.draft = ''; this.cursor = 0; this.render(); return }
-    if (this.busy) { if (this.draft.trim()) this.queueDraft(); else this.notice('A Chat request is still running. Type a follow-up and press Tab to queue it.'); return }
+    if (this.busy) {
+      if (!this.draft.trim()) { this.notice('A Chat request is still running. Type an instruction and press Enter to steer, or Tab to queue a follow-up.'); return }
+      const instruction = this.draft.trim(); this.draft = ''; this.cursor = 0; this.history.push(instruction); void this.options.onPrompt?.(instruction)
+      if (!this.options.onSteer) { this.notice('Steering is unavailable; press Tab to queue a successor turn.'); return }
+      try { const result = await this.options.onSteer(instruction, ++this.steeringSequence); this.notice(result === 'accepted' ? 'Steered the active turn at a safe checkpoint.' : result === 'deferred' ? 'Steering deferred to the next safe checkpoint; it was not sent as a new turn.' : 'The active turn rejected steering; press Tab to queue it.') }
+      catch (error) { this.notice(error instanceof Error ? error.message : 'Steering failed; press Tab to queue it.') }
+      return
+    }
     const value = this.draft
     if (!value.trim()) return
     this.history.push(value); this.historyIndex = -1; this.draft = ''; this.cursor = 0; this.scrollOffset = 0
+    void this.options.onPrompt?.(value)
     if (value.trimStart().startsWith('!')) {
       try { if (!this.options.onLocalCommand) throw new Error('Local command execution is unavailable in this terminal.'); await this.options.onLocalCommand(value.trimStart().slice(1).trim()) } catch (error) { this.notice(error instanceof Error ? error.message : 'Local command failed.') }
       return
@@ -334,6 +385,7 @@ export class RichTerminalUI {
     if (this.queued.length >= 8) { this.notice('Follow-up queue is full (8 prompts).'); return }
     this.queued.push(value)
     this.history.push(value)
+    void this.options.onPrompt?.(value)
     this.historyIndex = -1
     this.draft = ''
     this.cursor = 0
@@ -448,7 +500,8 @@ export class RichTerminalUI {
       wrapped.forEach((line, index) => transcript.push(index === 0 ? `${styledLabel} ${padCells(line, contentWidth)}` : `${' '.repeat(labelWidth)}${padCells(line, contentWidth)}`))
     }
 
-    const menu = this.filteredCommands().slice(0, 6).map((item, index) => padCells(`${index === this.menuIndex ? '›' : ' '} /${item.name} ${item.description}`, layoutWidth))
+    const mentionMenu = this.filteredMentions().slice(0, 8).map((item, index) => padCells(`${index === this.mentionIndex ? '›' : ' '} @${item}`, layoutWidth))
+    const menu = (mentionMenu.length ? mentionMenu : this.filteredCommands().slice(0, 6).map((item, index) => padCells(`${index === this.menuIndex ? '›' : ' '} /${item.name} ${item.description}`, layoutWidth)))
     const composerWidth = Math.max(1, layoutWidth - 2), composerLines: string[] = []
     if (this.draft) {
       for (const [lineIndex, line] of this.draft.split('\n').entries()) {
