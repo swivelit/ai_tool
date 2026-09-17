@@ -32,6 +32,9 @@ class SnapshotFileInput(BaseModel):
 class ExecuteRequest(BaseModel):
     task: str = Field(min_length=1, max_length=8_000)
     files: list[SnapshotFileInput] = Field(default_factory=list, max_length=5_000)
+    # Actions are produced by the trusted controller, never by repository
+    # content. The isolated agent rejects an empty plan explicitly.
+    actions: list[dict[str, object]] = Field(default_factory=list, max_length=32)
 
 
 @app.get("/health")
@@ -93,7 +96,7 @@ def execute(job_id: str, payload: ExecuteRequest, capability: str | None = Heade
         with _active_executors_lock:
             _active_executors[job_id] = executor
         try:
-            return executor.execute(job_id=job_id, task=payload.task, files=files)
+            return executor.execute(job_id=job_id, task=payload.task, files=files, actions=payload.actions)
         finally:
             with _active_executors_lock:
                 _active_executors.pop(job_id, None)

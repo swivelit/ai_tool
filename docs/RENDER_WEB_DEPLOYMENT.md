@@ -355,7 +355,7 @@ or public-site variables. The current GA worker and API both keep
 `WEB_KNOWLEDGE_WORKER_ENABLED=true`; do not change only one side.
 
 Production was last audited at `20260915_weekly_tester_credit`; this checkout
-adds the pending `20260916_cli_cloud_jobs` descendant for the cloud control
+adds the pending `20260917_cli_cloud_artifacts` descendant for the cloud control
 plane. Apply it only through the normal pre-deploy migration owner before any
 cloud-pilot check; public Chat does not require cloud readiness.
 No migration is
@@ -769,7 +769,7 @@ The billing amounts above are integer paise: `1500` is ₹15 and `29900` is ₹2
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. The current single
-production baseline head was `20260915_weekly_tester_credit`; the current checkout adds `20260916_cli_cloud_jobs`. Historical revision `b4e8c1d6a2f9` adds the
+production baseline head was `20260915_weekly_tester_credit`; the current checkout adds `20260916_cli_cloud_jobs` and the bounded `20260917_cli_cloud_artifacts` descendant. Historical revision `b4e8c1d6a2f9` adds the
 content-free Phase 1 TRIAG-RAG telemetry tables; the Phase 4 head adds
 temporary repository index metadata
 and includes the earlier additive message revision, per-user memory,
@@ -1181,7 +1181,7 @@ It does not modify wallet or payment balances. Recordings, transcripts, and
 generated audio are not stored in the database or Key Value service.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm the repository-derived head `20260916_cli_cloud_jobs` for this checkout.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm the repository-derived head `20260917_cli_cloud_artifacts` for this checkout.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
 5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. Revision `e2b7c4d9a1f3` permits downgrade only before any Voice payment, usage, ledger entry, or non-zero Voice wallet exists; it refuses a lossy downgrade after Voice financial activity. In production, preserve additive tables and fix forward.
@@ -1325,8 +1325,8 @@ local and cloud agents remain disabled.
    ```
 
    Confirm `alembic current` and `alembic heads` both report the single head
-   `20260916_cli_cloud_jobs` (which descends from
-   `20260915_weekly_tester_credit`).
+   `20260917_cli_cloud_artifacts` (which descends from
+   `20260916_cli_cloud_jobs`).
 4. From the backend directory, run the read-only gates. They do not call a
    provider or mutate the database:
 

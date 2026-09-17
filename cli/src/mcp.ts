@@ -7,6 +7,7 @@ import type { McpServerDefinition, SwicoConfig } from './configuration.js'
 import { validateMcpDefinition } from './configuration.js'
 import { ActionJournal } from './journal.js'
 import { createSandboxAdapter, type SandboxAdapter } from './sandbox.js'
+import { mcpAuthorizationHeader } from './mcp_oauth.js'
 
 export type McpCapability = 'read' | 'write' | 'network' | 'unknown'
 export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; capability: McpCapability }
@@ -52,6 +53,8 @@ export class McpManager {
       const url = new URL(definition.url as string)
       const headers: Record<string, string> = {}
       for (const [key, value] of Object.entries(definition.headers ?? {})) { const name = value.slice(2, -1); if (process.env[name]) headers[key] = process.env[name] as string }
+      const oauth = await mcpAuthorizationHeader(definition.url as string)
+      if (oauth) headers.Authorization = oauth
       const fetchNoRedirect: typeof fetch = (input, init) => fetch(input, { ...init, redirect: 'error', headers: { ...(init?.headers ?? {}), ...headers } })
       transport = new StreamableHTTPClientTransport(url, { fetch: fetchNoRedirect, requestInit: { redirect: 'error' }, reconnectionOptions: { maxReconnectionDelay: 0, initialReconnectionDelay: 0, reconnectionDelayGrowFactor: 1, maxRetries: 0 } })
     }

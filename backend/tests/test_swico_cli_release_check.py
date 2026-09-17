@@ -93,8 +93,27 @@ def test_cloud_pilot_requires_verified_runner_without_blocking_public_chat() -> 
         SWICO_CLI_CLOUD_RUNNER_URL="https://runner.example.test",
         SWICO_CLI_CLOUD_RUNNER_TOKEN="synthetic",
         SWICO_CLI_CLOUD_RUNNER_ATTESTATION=make_test_attestation(secret="synthetic"),
+        SWICO_CLI_CLOUD_RUNNER_ID="test-runner",
+        SWICO_CLI_CLOUD_RUNNER_AUDIENCE="swico-backend",
+        SWICO_CLI_CLOUD_RUNNER_EXECUTOR="e2b",
+        SWICO_CLI_CLOUD_TEMPLATE="test-template",
+        SWICO_CLI_CLOUD_RUNNER_REVISION="test-revision",
+        SWICO_CLI_CLOUD_POLICY_SHA256="test-policy",
+        SWICO_CLI_CLOUD_NETWORK_POLICY="disabled",
     )
     assert rollout_configuration_errors(ready, cloud_pilot=True, environ={}) == []
+
+
+def test_cloud_pilot_requires_bound_runner_identity_expectations() -> None:
+    settings = _settings(
+        SWICO_CLI_AGENT_ENABLED="true", SWICO_CLI_CLOUD_AGENT_ENABLED="true",
+        SWICO_CLI_AGENT_ALLOWED_EMAILS="pilot@example.com",
+        SWICO_CLI_CLOUD_RUNNER_URL="https://runner.example.test",
+        SWICO_CLI_CLOUD_RUNNER_TOKEN="synthetic",
+        SWICO_CLI_CLOUD_RUNNER_ATTESTATION=make_test_attestation(secret="synthetic"),
+    )
+    assert not settings.cloud_runner_identity_configured
+    assert "cloud runner identity expectations must be configured for cloud pilot" in rollout_configuration_errors(settings, cloud_pilot=True, environ={})
 
 
 def test_public_schema_check_requires_all_cli_tables_and_repository_head() -> None:

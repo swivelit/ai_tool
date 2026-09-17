@@ -44,7 +44,10 @@ class CliSettings:
     cloud_agent_enabled: bool = False
     cloud_runner_url: str = ""
     cloud_runner_configured: bool = False
+    cloud_runner_identity_configured: bool = False
     cloud_runner_handshake: bool = False
+    cloud_runner_transport: str = "https"
+    cloud_runner_private_host: str = ""
 
 
 TIER_AGENT_STEP_CEILINGS = {"lite": 12, "standard": 20, "pro": 32, "free": 0}
@@ -60,6 +63,8 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     agent_enabled = _bool("SWICO_CLI_AGENT_ENABLED", False, values)
     cloud_agent_enabled = _bool("SWICO_CLI_CLOUD_AGENT_ENABLED", False, values)
     cloud_runner_url = values.get("SWICO_CLI_CLOUD_RUNNER_URL", "").strip().rstrip("/")
+    cloud_runner_transport = values.get("SWICO_CLI_CLOUD_RUNNER_TRANSPORT", "https").strip().lower() or "https"
+    cloud_runner_private_host = values.get("SWICO_CLI_CLOUD_RUNNER_PRIVATE_HOST", "").strip().lower()
     cloud_runner_token = values.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "").strip()
     # The legacy boolean is intentionally ignored.  Readiness requires fresh,
     # signed runner evidence bound to the runner-control secret.
@@ -67,11 +72,34 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
     cloud_runner_handshake = verify_runner_attestation(
         cloud_runner_attestation,
         secret=cloud_runner_token,
+        expected={
+            "runner_id": values.get("SWICO_CLI_CLOUD_RUNNER_ID", "").strip(),
+            "audience": values.get("SWICO_CLI_CLOUD_RUNNER_AUDIENCE", "").strip(),
+            "executor": values.get("SWICO_CLI_CLOUD_RUNNER_EXECUTOR", "").strip(),
+            "template_id_or_digest": values.get("SWICO_CLI_CLOUD_TEMPLATE", "").strip(),
+            "runner_revision": values.get("SWICO_CLI_CLOUD_RUNNER_REVISION", "").strip(),
+            "policy_sha256": values.get("SWICO_CLI_CLOUD_POLICY_SHA256", "").strip(),
+            "network_policy": values.get("SWICO_CLI_CLOUD_NETWORK_POLICY", "").strip(),
+        },
     )
+    cloud_identity = {
+        "runner_id": values.get("SWICO_CLI_CLOUD_RUNNER_ID", "").strip(),
+        "audience": values.get("SWICO_CLI_CLOUD_RUNNER_AUDIENCE", "").strip(),
+        "executor": values.get("SWICO_CLI_CLOUD_RUNNER_EXECUTOR", "").strip(),
+        "template_id_or_digest": values.get("SWICO_CLI_CLOUD_TEMPLATE", "").strip(),
+        "runner_revision": values.get("SWICO_CLI_CLOUD_RUNNER_REVISION", "").strip(),
+        "policy_sha256": values.get("SWICO_CLI_CLOUD_POLICY_SHA256", "").strip(),
+        "network_policy": values.get("SWICO_CLI_CLOUD_NETWORK_POLICY", "").strip(),
+    }
     if cloud_runner_url:
         runner_parsed = urlparse(cloud_runner_url)
-        if runner_parsed.scheme != "https" or runner_parsed.username or runner_parsed.password or runner_parsed.query or runner_parsed.fragment:
-            raise CliConfigurationError("SWICO_CLI_CLOUD_RUNNER_URL must be an HTTPS URL without credentials or query parameters.")
+        private_http = cloud_runner_transport == "render_private_http" and runner_parsed.scheme == "http" and bool(cloud_runner_private_host) and runner_parsed.hostname == cloud_runner_private_host
+        if (runner_parsed.scheme != "https" and not private_http) or runner_parsed.username or runner_parsed.password or runner_parsed.query or runner_parsed.fragment:
+            raise CliConfigurationError("SWICO_CLI_CLOUD_RUNNER_URL must be HTTPS, or the exact configured Render-private HTTP host, without credentials or query parameters.")
+    if cloud_runner_transport not in {"https", "render_private_http"}:
+        raise CliConfigurationError("SWICO_CLI_CLOUD_RUNNER_TRANSPORT must be https or render_private_http.")
+    if cloud_runner_transport == "render_private_http" and cloud_runner_url and not cloud_runner_private_host:
+        raise CliConfigurationError("SWICO_CLI_CLOUD_RUNNER_PRIVATE_HOST is required for Render-private HTTP transport.")
     origin = values.get("SWICO_CLI_WEB_ORIGIN", "https://swico.in").strip().rstrip("/")
     parsed = urlparse(origin)
     if parsed.scheme != "https" or parsed.hostname not in {"swico.in", "www.swico.in"} or parsed.username or parsed.password:
@@ -103,7 +131,10 @@ def cli_settings(environ: dict[str, str] | None = None) -> CliSettings:
         cloud_agent_enabled=cloud_agent_enabled,
         cloud_runner_url=cloud_runner_url,
         cloud_runner_configured=bool(cloud_runner_url and cloud_runner_token),
+        cloud_runner_identity_configured=all(cloud_identity.values()),
         cloud_runner_handshake=cloud_runner_handshake,
+        cloud_runner_transport=cloud_runner_transport,
+        cloud_runner_private_host=cloud_runner_private_host,
     )
 
 

@@ -39,9 +39,11 @@ uvicorn cloud_runner.app:app --host 127.0.0.1 --port 8790
 
 The opt-in `e2b_executor.py` uses the pinned E2B Python SDK 2.6.1. It creates
 one secure sandbox per job with internet disabled, writes only controller-
-validated snapshot bytes, runs a preinstalled `SWICO_RUNNER_AGENT_COMMAND`,
-and kills the sandbox in a `finally` path. It is not production-ready merely
-because the SDK is installed: native hostile acceptance, controller
-capability exchange, snapshot upload, billing reconciliation, and fresh signed
-runner evidence are still required before enabling Cloud. No user refresh
-token or global provider key is passed to the job.
+validated snapshot bytes, and invokes the source-controlled
+`cloud_runner.swico_cloud_agent` action protocol. There is no operator-supplied
+agent command. The trusted controller must provide a bounded structured plan;
+an empty plan fails explicitly and is never reported as a successful coding
+task. Native hostile acceptance, controller capability exchange, snapshot
+upload, billing reconciliation, and fresh signed runner evidence are still
+required before enabling Cloud. No user refresh token or global provider key
+is passed to the job.

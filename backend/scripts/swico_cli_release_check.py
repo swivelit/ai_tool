@@ -26,7 +26,7 @@ REQUIRED_CLI_TABLES = frozenset({
     "cli_agent_step",
     "cli_pending_action",
 })
-CLOUD_REQUIRED_TABLES = frozenset({"cli_cloud_job", "cli_cloud_job_event"})
+CLOUD_REQUIRED_TABLES = frozenset({"cli_cloud_job", "cli_cloud_job_event", "cli_cloud_artifact"})
 PUBLIC_CLI_WEB_ORIGIN = "https://swico.in"
 
 
@@ -68,6 +68,8 @@ def rollout_configuration_errors(
             errors.append("SWICO_CLI_CLOUD_AGENT_ENABLED must be true for cloud pilot")
         if not settings.cloud_runner_configured:
             errors.append("cloud runner URL and credential must be configured for cloud pilot")
+        if not settings.cloud_runner_identity_configured:
+            errors.append("cloud runner identity expectations must be configured for cloud pilot")
         if not settings.cloud_runner_handshake:
             errors.append("cloud runner handshake must be verified for cloud pilot")
         if not settings.agent_allowed_emails:
@@ -137,6 +139,7 @@ def main() -> int:
             "cloud_agent_enabled": settings.cloud_agent_enabled,
             "cloud_runner": "configured" if settings.cloud_runner_configured else "not configured; API never executes repository code",
             "cloud_runner_configured": settings.cloud_runner_configured,
+            "cloud_runner_identity_configured": settings.cloud_runner_identity_configured,
             "cloud_runner_handshake": settings.cloud_runner_handshake,
             "web_origin": settings.web_origin,
             "allowlist_configured": bool(settings.allowed_emails),

@@ -50,6 +50,17 @@ def _default_agent_pilot_allowlist(monkeypatch: pytest.MonkeyPatch):
         "cli-budget-8@example.com",
     }
     monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", ",".join(sorted(pilot_test_emails)))
+    # Cloud tests use the synthetic attestation's matching deployment identity;
+    # production never receives these test-only values from this fixture.
+    for name, value in {
+        "SWICO_CLI_CLOUD_RUNNER_ID": "test-runner",
+        "SWICO_CLI_CLOUD_RUNNER_AUDIENCE": "swico-backend",
+        "SWICO_CLI_CLOUD_RUNNER_EXECUTOR": "e2b",
+        "SWICO_CLI_CLOUD_TEMPLATE": "test-template",
+        "SWICO_CLI_CLOUD_RUNNER_REVISION": "test-revision",
+        "SWICO_CLI_CLOUD_POLICY_SHA256": "test-policy",
+        "SWICO_CLI_CLOUD_NETWORK_POLICY": "disabled",
+    }.items(): monkeypatch.setenv(name, value)
 
 
 def test_cli_health_reports_public_rollout_without_device_or_provider_request(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -439,7 +450,7 @@ def test_cloud_control_plane_is_owner_scoped_idempotent_and_cancelable(client: T
     assert foreign.status_code == 404
     # A workspace job is not claimable until its byte snapshot has been
     # finalized; a manifest-free queued row must never reach a runner.
-    runner_headers = {"X-Swico-Runner-Id": "runner-before-snapshot", "X-Swico-Runner-Token": "test-only-runner-token"}
+    runner_headers = {"X-Swico-Runner-Id": "test-runner", "X-Swico-Runner-Token": "test-only-runner-token"}
     assert client.post("/api/cli/v1/cloud/runner/jobs/claim", headers=runner_headers, json={}).json()["job"] is None
     # Disabling admission must not strand an owner from inspecting or draining
     # an already-created job.
@@ -459,8 +470,9 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     for name, value in {
         "SWICO_CLI_ENABLED": "true", "SWICO_CLI_AGENT_ENABLED": "true", "SWICO_CLI_CLOUD_AGENT_ENABLED": "true",
         "SWICO_CLI_CLOUD_RUNNER_URL": "https://runner.example.test", "SWICO_CLI_CLOUD_RUNNER_TOKEN": "runner-secret",
-        "SWICO_CLI_CLOUD_RUNNER_ATTESTATION": make_test_attestation(secret="runner-secret"),
+        "SWICO_CLI_CLOUD_RUNNER_ATTESTATION": make_test_attestation(secret="runner-secret", runner_id="runner-1"),
     }.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_ID", "runner-1")
     user = create_test_user("cloud-runner-owner", "cloud-runner-owner@example.com")
     raw_access = "z" * 64
     with SessionLocal() as session:
@@ -478,8 +490,17 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     claimed = client.post("/api/cli/v1/cloud/runner/jobs/claim", headers=runner_headers, json={})
     assert claimed.status_code == 200 and claimed.json()["job"]["id"] == job_id and claimed.json()["job"]["status"] == "dispatching"
     capability = claimed.json()["runner_capability"]
-    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/heartbeat", headers={**runner_headers, "X-Swico-Runner-Id": "runner-2", "X-Swico-Runner-Capability": capability}).status_code == 409
+    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/heartbeat", headers={**runner_headers, "X-Swico-Runner-Id": "runner-2", "X-Swico-Runner-Capability": capability}).status_code == 403
     lease_headers = {**runner_headers, "X-Swico-Runner-Capability": capability}
+    artifact_bytes = b"diff --git a/main.py b/main.py\n"
+    artifact_payload = {"kind": "patch", "content_type": "text/x-diff", "sha256": hashlib.sha256(artifact_bytes).hexdigest(), "content_base64": base64.b64encode(artifact_bytes).decode()}
+    artifact = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/artifacts", headers=lease_headers, json=artifact_payload)
+    assert artifact.status_code == 200 and artifact.json()["size_bytes"] == len(artifact_bytes)
+    duplicate_artifact = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/artifacts", headers=lease_headers, json=artifact_payload)
+    assert duplicate_artifact.status_code == 200 and duplicate_artifact.json()["idempotent"] is True
+    assert client.get(f"/api/cli/v1/cloud/jobs/{job_id}/artifacts", headers=headers).json()["items"][0]["sha256"] == artifact_payload["sha256"]
+    bad_artifact = {**artifact_payload, "sha256": "0" * 64}
+    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/artifacts", headers=lease_headers, json=bad_artifact).status_code == 422
     completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "completed", "result": {"changed_files": []}})
     assert completed.status_code == 200 and completed.json()["status"] == "completed"
     replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "failed"})

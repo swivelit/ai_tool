@@ -103,6 +103,14 @@ class CloudJobResultRequest(BaseModel):
         return value
 
 
+class CloudArtifactRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["summary", "patch", "test-report", "bounded-log", "metadata"]
+    content_type: str = Field(default="application/octet-stream", min_length=1, max_length=128)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_base64: str = Field(min_length=0, max_length=3 * 1024 * 1024)
+
+
 class SteeringRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     instruction: str = Field(min_length=1, max_length=2_000)

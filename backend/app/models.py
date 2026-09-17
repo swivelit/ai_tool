@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -684,6 +684,27 @@ class CliCloudJobEvent(SQLModel, table=True):
     sequence: int = Field()
     event_type: str = Field(max_length=32)
     payload_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class CliCloudArtifact(SQLModel, table=True):
+    """Small owner-scoped review artifacts; raw repository paths are never stored."""
+
+    __tablename__ = "cli_cloud_artifact"
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt", "kind", name="uq_cli_cloud_artifact_attempt_kind"),
+        Index("ix_cli_cloud_artifact_job_created", "job_id", "created_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    job_id: str = Field(foreign_key="cli_cloud_job.id", ondelete="CASCADE", index=True)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    attempt: int = Field(ge=0)
+    kind: str = Field(max_length=32)
+    content_type: str = Field(default="application/octet-stream", max_length=128)
+    sha256: str = Field(max_length=64)
+    size_bytes: int = Field(ge=0)
+    payload: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 

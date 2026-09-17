@@ -27,6 +27,12 @@ snapshotted jobs and never interprets a manifest or host path as a repository;
 it must not run repository code in the API worker. This is deployable
 integration, not live acceptance evidence.
 
+Structured review artifacts are stored in the owner-scoped
+`cli_cloud_artifact` table before sandbox cleanup. The initial pilot bounds a
+patch at 2 MiB, each other report/log at 512 KiB, and all artifacts for one
+job at 8 MiB. Artifacts are immutable per job attempt and can be listed or
+downloaded only by the owning authenticated CLI/web user.
+
 Readiness is separate from public Chat:
 
 ```sh

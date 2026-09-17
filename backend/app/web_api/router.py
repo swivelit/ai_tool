@@ -117,7 +117,7 @@ from ..models import (
     GlobalQACache, PaymentOrder, ProcessedWebhook, ReferralAttribution, ReferralCode,
     ReferralReward, SubscriptionPreference, UsageCharge, WebChatMessage,
     WebChatThread, WalletLedger, WebConversationSummary, WebMemoryFact,
-    CliCloudJob, CliCloudJobEvent, CliSession,
+    CliCloudArtifact, CliCloudJob, CliCloudJobEvent, CliSession,
     WebMessageFeedback, WebUsagePreferences, WebCodeRepository,
     WebKnowledgeDocument,
 )
@@ -2522,7 +2522,7 @@ def _web_cloud_access(session: Session, auth: AuthUser, *, admission: bool = Tru
         # admission even when public Chat intentionally has an empty list.
         if not settings.agent_allowed_emails or email not in settings.agent_allowed_emails:
             raise HTTPException(403, {"code": "cli_agent_pilot_required", "message": "The local coding agent is limited to its current pilot group."})
-        if not settings.cloud_runner_configured or not settings.cloud_runner_handshake:
+        if not settings.cloud_runner_configured or not settings.cloud_runner_identity_configured or not settings.cloud_runner_handshake:
             raise HTTPException(503, {"code": "cloud_execution_unavailable", "message": "Swico Cloud runner is not ready."})
         selected_tier = selected_swico_tier(session, int(user.id))
         if selected_tier not in {"lite", "standard", "pro"} or (selected_tier == "pro" and not pro_enabled()):
@@ -2590,6 +2590,23 @@ def events_web_cloud_job(job_id: str, after: int = Query(default=-1, ge=-1, le=1
     if job is None: raise HTTPException(404, "Cloud job not found")
     rows = session.exec(select(CliCloudJobEvent).where(CliCloudJobEvent.job_id == job.id, CliCloudJobEvent.sequence > after).order_by(CliCloudJobEvent.sequence.asc()).limit(200)).all()
     return {"job_id": job.id, "items": [{"sequence": row.sequence, "event_type": row.event_type, "payload": json.loads(row.payload_json or "{}"), "created_at": row.created_at.isoformat()} for row in rows]}
+
+
+@router.get("/cloud/jobs/{job_id}/artifacts")
+def list_web_cloud_artifacts(job_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    _settings, user = _web_cloud_access(session, auth, admission=False)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None: raise HTTPException(404, "Cloud job not found")
+    rows = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.job_id == job.id).order_by(CliCloudArtifact.created_at.asc())).all()
+    return {"items": [{"id": row.id, "job_id": row.job_id, "kind": row.kind, "content_type": row.content_type, "sha256": row.sha256, "size_bytes": row.size_bytes, "created_at": row.created_at.isoformat()} for row in rows]}
+
+
+@router.get("/cloud/jobs/{job_id}/artifacts/{artifact_id}")
+def get_web_cloud_artifact(job_id: str, artifact_id: str, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+    _settings, user = _web_cloud_access(session, auth, admission=False)
+    row = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.id == artifact_id, CliCloudArtifact.job_id == job_id, CliCloudArtifact.user_id == int(user.id))).first()
+    if row is None: raise HTTPException(404, "Cloud artifact not found")
+    return Response(content=row.payload, media_type=row.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{row.kind}-{row.id}.bin"', "X-Swico-Artifact-SHA256": row.sha256})
 
 
 @router.get("/settings/profile")

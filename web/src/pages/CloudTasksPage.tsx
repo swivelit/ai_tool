@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { cancelCloudJob, createCloudJob, getCloudJob, listCloudJobEvents, listCloudJobs, type CloudJob, type CloudJobEvent } from '../api/client'
+import { cancelCloudJob, createCloudJob, downloadCloudArtifact, getCloudJob, listCloudArtifacts, listCloudJobEvents, listCloudJobs, type CloudArtifact, type CloudJob, type CloudJobEvent } from '../api/client'
 import { useAuth } from '../auth/useAuth'
 
 const ACTIVE_STATUSES = new Set(['queued', 'dispatching', 'starting', 'running', 'waiting_for_approval', 'cancelling'])
@@ -12,12 +12,14 @@ export function CloudTasksPage() {
   const [jobs, setJobs] = useState<CloudJob[]>([])
   const [selected, setSelected] = useState<CloudJob | null>(null)
   const [events, setEvents] = useState<CloudJobEvent[]>([])
+  const [artifacts, setArtifacts] = useState<CloudArtifact[]>([])
   const [task, setTask] = useState('')
   const [consented, setConsented] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [downloading, setDownloading] = useState<string | null>(null)
   const eventCursor = useRef(-1)
   const selectedId = selected?.id ?? null
   const selectedIdRef = useRef<string | null>(null)
@@ -44,7 +46,7 @@ export function CloudTasksPage() {
     selectionController.current?.abort(); selectionController.current = null
     selectedIdRef.current = null
     eventCursor.current = -1
-    setJobs([]); setSelected(null); setEvents([]); setError(''); setLoading(true); setConsented(false)
+    setJobs([]); setSelected(null); setEvents([]); setArtifacts([]); setError(''); setLoading(true); setConsented(false)
     if (!user) { setLoading(false); return }
     const controller = new AbortController()
     void loadJobs(controller.signal)
@@ -94,7 +96,7 @@ export function CloudTasksPage() {
       const job = await createCloudJob(user, trimmed, request.requestId)
       pendingCreate.current = null
       selectedIdRef.current = job.id; eventCursor.current = -1; selectionGeneration.current += 1
-      setTask(''); setConsented(false); setSelected(job); setEvents([]); await loadJobs()
+      setTask(''); setConsented(false); setSelected(job); setEvents([]); setArtifacts([]); await loadJobs()
     } catch (value) {
       if (!isAbort(value)) setError(value instanceof Error ? value.message : 'Cloud tasks are unavailable.')
     } finally { setStarting(false) }
@@ -104,12 +106,14 @@ export function CloudTasksPage() {
     const generation = ++selectionGeneration.current
     selectionController.current?.abort()
     selectedIdRef.current = job.id; eventCursor.current = -1
-    setSelected(job); setEvents([]); setError('')
+    setSelected(job); setEvents([]); setArtifacts([]); setError('')
     const controller = new AbortController(); selectionController.current = controller
     try {
       const result = await listCloudJobEvents(user, job.id, -1, controller.signal)
       if (generation !== selectionGeneration.current || selectedIdRef.current !== job.id || result.job_id !== job.id) return
       setEvents(result.items); eventCursor.current = result.items.at(-1)?.sequence ?? -1
+      const stored = await listCloudArtifacts(user, job.id, controller.signal)
+      if (generation === selectionGeneration.current && selectedIdRef.current === job.id) setArtifacts(stored.items)
     } catch (value) { if (!isAbort(value) && generation === selectionGeneration.current) setError(value instanceof Error ? value.message : 'Could not load task events.') }
     finally { if (selectionController.current === controller) selectionController.current = null }
   }
@@ -123,6 +127,16 @@ export function CloudTasksPage() {
       if (selectedIdRef.current === jobId) setSelected(job)
       await loadJobs()
     } catch (value) { setError(value instanceof Error ? value.message : 'Cancellation failed.') } finally { setCancelling(false) }
+  }
+
+  const download = async (artifact: CloudArtifact) => {
+    if (downloading) return
+    setDownloading(artifact.id); setError('')
+    try {
+      const blob = await downloadCloudArtifact(user, artifact.job_id, artifact.id)
+      const url = URL.createObjectURL(blob); const anchor = document.createElement('a')
+      anchor.href = url; anchor.download = `swico-${artifact.kind}-${artifact.id}.bin`; anchor.click(); URL.revokeObjectURL(url)
+    } catch (value) { setError(value instanceof Error ? value.message : 'Artifact download failed.') } finally { setDownloading(null) }
   }
 
   const result = selected?.result ?? {}
@@ -140,7 +154,7 @@ export function CloudTasksPage() {
     {error && <p role="alert">{error}</p>}
     {loading ? <p>Loading tasks…</p> : jobs.length ? <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.8fr) minmax(320px, 1.2fr)', gap: 20 }}>
       <div aria-label="Cloud task list">{jobs.map(job => <button key={job.id} type="button" onClick={() => void select(job)} aria-pressed={selectedId === job.id} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 8 }}><strong>{job.status}</strong><br /><small>{job.task.slice(0, 120)}</small></button>)}</div>
-      {selected && <article aria-live="polite"><h2>{selected.status}</h2><p>{selected.task}</p><p>Created {new Date(selected.created_at).toLocaleString()}</p>{ACTIVE_STATUSES.has(selected.status) && <button type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel task'}</button>}{['failed', 'cancelled', 'expired'].includes(selected.status) && <button type="button" onClick={() => { setTask(selected.task); setConsented(false); setError('') }}>Retry as a new task</button>}<h3>Timeline</h3>{events.length ? <ol>{events.map(event => <li key={`${selected.id}:${event.sequence}`}>{event.event_type} · {new Date(event.created_at).toLocaleString()}</li>)}</ol> : <p>No events recorded.</p>}{selected.failure_code && <p role="alert">Task failed: {selected.failure_code}</p>}{Array.isArray(changedFiles) && <><h3>Changed files</h3><ul>{changedFiles.map(file => <li key={String(file)}>{String(file)}</li>)}</ul></>}{typeof tests === 'string' && <><h3>Tests</h3><pre>{tests}</pre></>}{typeof patch === 'string' && <><h3>Review diff</h3><pre style={{ overflowX: 'auto' }}>{patch}</pre></>}</article>}
+      {selected && <article aria-live="polite"><h2>{selected.status}</h2><p>{selected.task}</p><p>Created {new Date(selected.created_at).toLocaleString()}</p>{ACTIVE_STATUSES.has(selected.status) && <button type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Cancel task'}</button>}{['failed', 'cancelled', 'expired'].includes(selected.status) && <button type="button" onClick={() => { setTask(selected.task); setConsented(false); setError('') }}>Retry as a new task</button>}<h3>Timeline</h3>{events.length ? <ol>{events.map(event => <li key={`${selected.id}:${event.sequence}`}>{event.event_type} · {new Date(event.created_at).toLocaleString()}</li>)}</ol> : <p>No events recorded.</p>}{selected.failure_code && <p role="alert">Task failed: {selected.failure_code}</p>}{Array.isArray(changedFiles) && <><h3>Changed files</h3><ul>{changedFiles.map(file => <li key={String(file)}>{String(file)}</li>)}</ul></>}{typeof tests === 'string' && <><h3>Tests</h3><pre>{tests}</pre></>}{typeof patch === 'string' && <><h3>Review diff</h3><pre style={{ overflowX: 'auto' }}>{patch}</pre></>}{artifacts.length > 0 && <><h3>Review artifacts</h3><ul>{artifacts.map(item => <li key={item.id}>{item.kind} · {item.size_bytes} bytes · {item.sha256.slice(0, 12)}… <button type="button" onClick={() => void download(item)} disabled={downloading !== null} aria-label={`Download ${item.kind} artifact`}>{downloading === item.id ? 'Downloading…' : 'Download'}</button></li>)}</ul></>}</article>}
     </div> : <p>No tasks yet. Starting a task requires the Cloud pilot to be enabled for this account.</p>}
   </section></main>
 }

@@ -6,13 +6,14 @@ import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../dist/configuration.js'
-import { createSandboxAdapter, diagnoseMacSandbox, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
+import { classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
 import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
 import { Workspace } from '../dist/workspace.js'
 import { releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
+import { loginMcpOAuth } from '../dist/mcp_oauth.js'
 
 const run = promisify(execFile)
 
@@ -28,6 +29,10 @@ test('project configuration cannot elevate sandbox or approval policy', async ()
     assert.equal(loaded.effective.sandboxPolicy, 'read-only')
     assert.equal(loaded.effective.approvalPolicy, 'always')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('MCP OAuth rejects private non-loopback destinations before discovery', async () => {
+  await assert.rejects(() => loginMcpOAuth('https://169.254.169.254/mcp', 'swico-test'), /private or link-local/)
 })
 
 test('project search configuration can narrow but never elevate network or billing behavior', async () => {
@@ -73,6 +78,22 @@ test('macOS diagnostic does not turn a valid-profile crash into sandbox_apply de
   })
   assert.equal(diagnostic.ready, false)
   assert.equal(diagnostic.diagnostic, 'unknown_failure')
+})
+
+test('macOS progressive diagnostic classifies deny-default child denial as policy evidence', () => {
+  const result = { status: 71, signal: null, stderr: "sandbox-exec: execvp() of '/usr/bin/true' failed: Operation not permitted", stdout: '' }
+  assert.equal(classifyMacDiagnosticResult(result, 'policy_deny'), 'policy_denied_expected')
+  assert.notEqual(classifyMacDiagnosticResult(result, 'policy_deny'), 'host_sandbox_apply_denied')
+})
+
+test('macOS progressive diagnostic separates host sandbox application denial', () => {
+  const result = { status: 71, signal: null, stderr: 'sandbox_apply: Operation not permitted', stdout: '' }
+  assert.equal(classifyMacDiagnosticResult(result, 'profile_apply'), 'host_sandbox_apply_denied')
+})
+
+test('macOS progressive diagnostic reports runtime abort separately from host denial', () => {
+  const result = { status: null, signal: 'SIGABRT', stderr: '', stdout: '' }
+  assert.equal(classifyMacDiagnosticResult(result, 'profile_apply'), 'sandbox_abort')
 })
 
 test('installed runtime exposes a fail-closed macOS diagnostic on unsupported platforms', () => {
@@ -223,6 +244,22 @@ test('workspace-write is persisted and mutating workers stay reviewable in separ
     const restored = new MutatingWorkerCoordinator(metadata, env, 1).list().find(item => item.id === worker.id)
     assert.equal(restored?.status, 'completed'); assert.equal(restored?.diff_hash, completed.diff_hash)
     await coordinator.discard(worker.id, async () => true)
+  } finally { await rm(root, { recursive: true, force: true }); await rm(stateRoot, { recursive: true, force: true }) }
+})
+
+test('separate CLI processes serialize worker admission through the durable lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-worker-race-')), stateRoot = await mkdtemp(join(tmpdir(), 'swico-worker-race-state-'))
+  try {
+    await run('git', ['init', '-q', root]); await run('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', '-C', root, 'commit', '--allow-empty', '-m', 'init'])
+    const env = { ...process.env, SWICO_CLI_WORKERS_FILE: join(stateRoot, 'workers.json'), SWICO_CLI_WORKTREE_ROOT: join(stateRoot, 'worktrees') }
+    const modulePath = join(process.cwd(), 'dist/multi_agent.js')
+    const code = `import { execFileSync } from 'node:child_process'; import { MutatingWorkerCoordinator } from ${JSON.stringify(modulePath)}; const root=process.env.TEST_ROOT; const childEnv={...process.env,SWICO_CLI_WORKERS_FILE:${JSON.stringify(join(stateRoot, 'workers.json'))},SWICO_CLI_WORKTREES_FILE:${JSON.stringify(join(stateRoot, 'worktrees.json'))},SWICO_CLI_WORKTREE_ROOT:${JSON.stringify(join(stateRoot, 'worktrees'))}}; const head=execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim(); const metadata={root,gitAvailable:true,head,branch:'master',dirty:false,staged:[],unstaged:[],untracked:[]}; try { await new MutatingWorkerCoordinator(metadata,childEnv,1).start('concurrent fixture'); console.log('admitted'); } catch (error) { console.error(error.message); process.exitCode=2 }`
+    const launch = () => new Promise(resolve => { const child = spawn(process.execPath, ['--input-type=module', '-e', code], { cwd: root, env: { ...env, TEST_ROOT: root }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; child.stdout.on('data', value => { out += value }); child.stderr.on('data', value => { err += value }); child.on('close', status => resolve({ status, out, err })) })
+    const results = await Promise.all([launch(), launch()])
+    assert.equal(results.filter(item => item.status === 0).length, 1, JSON.stringify(results))
+    assert.equal(results.filter(item => item.status === 2).length, 1)
+    const saved = JSON.parse(await readFile(join(stateRoot, 'workers.json'), 'utf8'))
+    assert.equal(saved.filter(item => item.worktree?.repository_identity === root && item.status === 'active').length, 1)
   } finally { await rm(root, { recursive: true, force: true }); await rm(stateRoot, { recursive: true, force: true }) }
 })
 

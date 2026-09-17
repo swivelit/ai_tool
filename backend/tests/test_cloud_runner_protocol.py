@@ -33,6 +33,8 @@ def test_runner_default_readiness_is_fail_closed(monkeypatch: pytest.MonkeyPatch
 def test_runner_attestation_is_expiring_signed_evidence():
     evidence = make_test_attestation(secret="secret", now=100)
     assert verify_runner_attestation(evidence, secret="secret", now=200)
+    assert not verify_runner_attestation(evidence, secret="secret", now=200, expected={"runner_id": "different-runner"})
+    assert not verify_runner_attestation(evidence, secret="secret", now=200, expected={"template_id_or_digest": "different-template"})
     assert not verify_runner_attestation(evidence, secret="wrong", now=200)
     assert not verify_runner_attestation(evidence, secret="secret", now=701)
 
@@ -49,9 +51,8 @@ def test_snapshot_manifest_is_bounded_hashed_and_secret_aware():
 def test_e2b_executor_configuration_and_snapshot_bytes_are_bounded():
     settings = E2BSettings.from_environment({
         "E2B_API_KEY": "synthetic", "SWICO_E2B_TEMPLATE": "swico-runner",
-        "SWICO_RUNNER_AGENT_COMMAND": "swico-runner --safe",
     })
-    assert settings.runner_command == ("swico-runner", "--safe")
+    assert not hasattr(settings, "runner_command")
     item = SnapshotFile("src/main.py", b"ok", __import__("hashlib").sha256(b"ok").hexdigest())
     item.validate()
     with pytest.raises(E2BExecutionError):
@@ -59,8 +60,7 @@ def test_e2b_executor_configuration_and_snapshot_bytes_are_bounded():
     SnapshotFile("empty.txt", b"", __import__("hashlib").sha256(b"").hexdigest()).validate()
     with pytest.raises(E2BExecutionError):
         SnapshotFile(".swico-task.json", b"ok", item.sha256).validate()
-    with pytest.raises(E2BConfigurationError):
-        E2BSettings.from_environment({"E2B_API_KEY": "only-key"})
+    with pytest.raises(E2BConfigurationError): E2BSettings.from_environment({"E2B_API_KEY": "only-key"})
 
 
 def test_controller_executes_only_task_jobs_and_reports_terminal_result():
@@ -72,7 +72,7 @@ def test_controller_executes_only_task_jobs_and_reports_terminal_result():
             return {"job": {"id": "job-1", "source": "task_only", "task": "run the bounded task"}, "runner_url": "https://runner.example.test", "runner_capability": "capability"}
         if url.endswith("/v1/jobs/job-1/execute"):
             assert headers["X-Swico-Runner-Capability"] == "capability"
-            assert body == {"task": "run the bounded task", "files": []}
+            assert body == {"task": "run the bounded task", "files": [], "actions": []}
             return {"status": "completed", "exit_code": 0, "stdout": "ok", "stderr": ""}
         if url.endswith("/cloud/runner/jobs/job-1/result"):
             return {"status": "completed"}

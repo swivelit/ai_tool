@@ -149,6 +149,39 @@ jobs:
         run: npm run release:check
         working-directory: cli
 
+  # This is deliberately separate from the cross-platform CLI job. The
+  # latter proves safe fail-closed behavior when a host lacks a sandbox;
+  # this job only passes when bubblewrap is installed and hostile probes
+  # genuinely establish the Linux boundary.
+  cli-native-isolation-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install bubblewrap native runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+      - name: Build CLI
+        run: npm run build
+        working-directory: cli
+      - name: Require real hostile Linux verification
+        run: |
+          set -euo pipefail
+          node dist/cli.js sandbox verify --json > "$RUNNER_TEMP/swico-linux-sandbox.json"
+          node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-linux-sandbox.json", "utf8")); if (report.verified !== true || report.probes.some(p => p.observed === "not_run")) { console.error(JSON.stringify(report, null, 2)); process.exit(1); }'
+        working-directory: cli
+
   cli-release-artifact:
     needs: [backend, backend-postgres-cli-lifecycle, web, cli]
     runs-on: ubuntu-latest

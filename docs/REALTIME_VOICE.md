@@ -363,7 +363,7 @@ Before the live smoke, `GET /api/version` must report the deployed repository
 the previously deployed head `20260915_weekly_tester_credit` for both Alembic current and head, with
 `ok: true`.
 Use the internal diagnostics endpoint/panel to verify
-matching frontend/backend releases, the repository's current Alembic head `20260916_cli_cloud_jobs` (or the deployed prior head before that migration is applied), all three
+matching frontend/backend releases, the repository's current Alembic head `20260917_cli_cloud_artifacts` (or the deployed prior head before that migration is applied), all three
 Voice features, billing exemption, Valkey and Sarvam configuration, and Origin.
 In DevTools filter `voice/sessions` or **All**, not only `ws`, so prerequisite
 HTTP 201/402/409/503 remains visible. Ignore extension `background.js`, service

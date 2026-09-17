@@ -26,6 +26,7 @@ export const RELEASE_PACKAGE_ENTRIES = Object.freeze([
   'package/dist/journal.js',
   'package/dist/local_sessions.js',
   'package/dist/mcp.js',
+  'package/dist/mcp_oauth.js',
   'package/dist/mcp_server.js',
   'package/dist/multi_agent.js',
   'package/dist/output_schema.js',

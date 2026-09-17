@@ -92,12 +92,15 @@ export function macSandboxProfiles(root: string, writable = join(tmpdir(), 'swic
   }
 }
 
-export type MacSandboxDiagnosticClassification = 'passed' | 'profile_rejected' | 'host_denied' | 'sandbox_abort' | 'timeout' | 'failed'
+export type MacSandboxDiagnosticClassification = 'passed' | 'profile_rejected' | 'host_sandbox_apply_denied' | 'policy_denied_expected' | 'runtime_permission_missing' | 'sandbox_abort' | 'timeout' | 'unknown'
+export type MacSandboxDiagnosticExpectation = 'start' | 'profile_apply' | 'policy_deny'
 export type MacSandboxDiagnosticStage = {
   stage: string
   status: number | null
   signal: NodeJS.Signals | null
   classification: MacSandboxDiagnosticClassification
+  expected: MacSandboxDiagnosticExpectation
+  observed: 'started' | 'profile_applied' | 'policy_denied' | 'not_started' | 'unknown'
   stderr: string
 }
 export type MacSandboxDiagnosticReport = {
@@ -120,21 +123,31 @@ function diagnosticStderr(result: { error?: NodeJS.ErrnoException | null; stdout
   return String(result.stderr ?? result.error?.message ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 512)
 }
 
-function classifyMacDiagnostic(result: { error?: NodeJS.ErrnoException | null; stdout?: string | Buffer; stderr?: string | Buffer; status?: number | null; signal?: NodeJS.Signals | null }, expected: 'start' | 'apply'): MacSandboxDiagnosticClassification {
+export function classifyMacDiagnosticResult(result: { error?: NodeJS.ErrnoException | null; stdout?: string | Buffer; stderr?: string | Buffer; status?: number | null; signal?: NodeJS.Signals | null }, expected: MacSandboxDiagnosticExpectation): MacSandboxDiagnosticClassification {
   const text = diagnosticText(result)
   if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM') return 'timeout'
   if (result.signal === 'SIGABRT') return 'sandbox_abort'
   if (/syntax|parse|expecting|invalid|malformed/i.test(text)) return 'profile_rejected'
-  if (/sandbox_apply|operation not permitted|not permitted|eacces/i.test(text)) return 'host_denied'
-  if (expected === 'start') return result.status === 0 ? 'passed' : 'failed'
-  // A deny-default/progressively narrowed profile is being tested for
-  // application, not for successful execution of /usr/bin/true. A normal
-  // policy denial is therefore evidence that the profile was accepted.
-  return result.status !== null && result.status !== undefined ? 'passed' : 'failed'
+  // Seatbelt reports both host-level application denial and an intentional
+  // child denial with "Operation not permitted". Only the former means that
+  // the profile was not applied. The deny-default control deliberately does
+  // not grant process-exec, so execvp(2)'s denial is positive evidence that
+  // the policy ran.
+  if (/sandbox_apply|failed to apply|apply[^\n]*operation not permitted/i.test(text)) return 'host_sandbox_apply_denied'
+  if (expected === 'policy_deny' && /execvp\(\).*operation not permitted|operation not permitted.*execvp|child.*(?:denied|not permitted)/i.test(text)) return 'policy_denied_expected'
+  if (expected === 'policy_deny' && result.status !== null && result.status !== undefined) return 'policy_denied_expected'
+  if (expected === 'start') return result.status === 0 ? 'passed' : 'runtime_permission_missing'
+  if (expected === 'profile_apply') return result.status !== null && result.status !== undefined ? 'passed' : 'unknown'
+  return 'unknown'
 }
 
-function macDiagnosticStage(stage: string, result: ReturnType<typeof spawnSync>, expected: 'start' | 'apply'): MacSandboxDiagnosticStage {
-  return { stage, status: result.status, signal: result.signal, classification: classifyMacDiagnostic(result, expected), stderr: diagnosticStderr(result) }
+function macDiagnosticStage(stage: string, result: ReturnType<typeof spawnSync>, expected: MacSandboxDiagnosticExpectation): MacSandboxDiagnosticStage {
+  const classification = classifyMacDiagnosticResult(result, expected)
+  const observed = classification === 'passed' && expected === 'start' ? 'started'
+    : classification === 'passed' && expected === 'profile_apply' ? 'profile_applied'
+      : classification === 'policy_denied_expected' ? 'policy_denied'
+        : classification === 'host_sandbox_apply_denied' || classification === 'profile_rejected' || classification === 'sandbox_abort' || classification === 'timeout' || classification === 'runtime_permission_missing' ? 'not_started' : 'unknown'
+  return { stage, status: result.status, signal: result.signal, classification, expected, observed, stderr: diagnosticStderr(result) }
 }
 
 /**
@@ -150,7 +163,7 @@ export function diagnoseMacSandbox(platform: NodeJS.Platform = process.platform)
   if (!existsSync(binary)) return base
 
   const binaryProbe = spawnSync(binary, ['-h'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 2_000 })
-  const binaryStage = macDiagnosticStage('sandbox-exec-binary', binaryProbe, 'apply')
+  const binaryStage = macDiagnosticStage('sandbox-exec-binary', binaryProbe, 'profile_apply')
   const root = mkdtempSync(join(tmpdir(), 'swico-macos-sandbox-diagnostic-'))
   const writable = join(root, 'runtime-tmp')
   mkdirSync(writable, { recursive: true, mode: 0o700 })
@@ -159,16 +172,16 @@ export function diagnoseMacSandbox(platform: NodeJS.Platform = process.platform)
     const deny = '(version 1) (deny default)'
     const stages = [
       ['allow-default', '(version 1) (allow default)', 'start'],
-      ['deny-default', deny, 'apply'],
-      ['minimal-execution', `${deny} (allow process-exec)`, 'apply'],
-      ['process-fork', `${deny} (allow process-exec) (allow process-fork)`, 'apply'],
-      ['signal-self', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self))`, 'apply'],
-      ['system-file-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library"))`, 'apply'],
-      ['sysctl-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library")) (allow sysctl-read)`, 'apply'],
+      ['deny-default', deny, 'policy_deny'],
+      ['minimal-execution', `${deny} (allow process-exec)`, 'profile_apply'],
+      ['process-fork', `${deny} (allow process-exec) (allow process-fork)`, 'profile_apply'],
+      ['signal-self', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self))`, 'profile_apply'],
+      ['system-file-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library"))`, 'profile_apply'],
+      ['sysctl-read', `${deny} (allow process-exec) (allow process-fork) (allow signal (target self)) (allow file-read* (subpath "/usr") (subpath "/System") (subpath "/Library")) (allow sysctl-read)`, 'profile_apply'],
       ['generated-read-only', generated.readOnly, 'start'],
       ['generated-workspace-write', generated.workspaceWrite, 'start'],
-    ].map(([stage, profile, expected]) => macDiagnosticStage(stage, spawnSync(binary, ['-p', profile, '/usr/bin/true'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 2_000 }), expected as 'start' | 'apply'))
-    const nativeStagesPass = stages.every(item => item.classification === 'passed') && stages.slice(-2).every(item => item.status === 0)
+    ].map(([stage, profile, expected]) => macDiagnosticStage(stage, spawnSync(binary, ['-p', profile, '/usr/bin/true'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 2_000 }), expected as MacSandboxDiagnosticExpectation))
+    const nativeStagesPass = stages.every(item => item.classification === 'passed' || item.classification === 'policy_denied_expected') && stages.slice(-2).every(item => item.classification === 'passed' && item.status === 0)
     return { ...base, binary_exists: true, binary_probe: binaryStage, stages, native_ready: binaryStage.classification === 'passed' && nativeStagesPass }
   } finally {
     rmSync(root, { recursive: true, force: true })

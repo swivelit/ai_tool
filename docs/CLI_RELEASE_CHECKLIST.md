@@ -1,6 +1,6 @@
 # Paid Chat CLI release closure and stable promotion
 
-Current stable release: `@swiveltechnologies/swico@0.2.5` is published from
+Current stable release: `@swiveltechnologies/swico@0.2.6` is published from
 the canonical CI artifact with provenance. This checklist separates paid Chat,
 package distribution, local agent execution, and full feature parity; it is not
 npm publication approval or a parity claim.
@@ -30,8 +30,8 @@ release manifest. The retained tarball is
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
 | Paid Chat CLI technical RC | Production Lite completion, wallet-debit smoke, website revoke/rejection, explicit reauthorization, and RC8 request-correlated billing acceptance are recorded. RC8 controlled installed recovery, refresh, streaming, and retained-session checks passed; all seven CI checks passed. | ACCEPTED technical RC | Historical RC8 gate complete. |
-| Historical stable `0.2.0` promotion candidate | Superseded by the published `0.2.5` release; the intervening `0.2.1` release is historical. | HISTORICAL | Do not reuse this candidate or its artifact. |
-| Current public npm distribution | `@swiveltechnologies/swico@0.2.5` is published immutably with provenance. | PUBLISHED | Use the protected workflow for future versions. |
+| Historical stable `0.2.0` promotion candidate | Superseded by the published `0.2.6` release; the intervening releases are historical. | HISTORICAL | Do not reuse this candidate or its artifact. |
+| Current public npm distribution | `@swiveltechnologies/swico@0.2.6` is published immutably with provenance. | PUBLISHED | Use the protected workflow for future versions. |
 | Local coding agent | Agent flags remain disabled. Latest macOS sandbox diagnostic remains `unknown_failure`/`SIGABRT`; native hostile enforcement is not accepted. A green ConPTY helper is terminal acceptance only, never sandbox proof. | BLOCKED / UNVERIFIED | Run the separate native hostile sandbox and disposable coding-workflow milestone; do not infer it from green Chat CI. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
@@ -59,7 +59,7 @@ rebuild:
 - manifest Node: `v22.23.2`
 
 The superseded historical stable candidate was `0.2.0`. Do not use it for a
-current install or record it as the current release. The published `0.2.5`
+current install or record it as the current release. The published `0.2.6`
 manifest and tarball from the canonical workflow are authoritative for the
 current package identity and artifact details.
 
@@ -90,26 +90,26 @@ be reused. Do not claim registry presence or reuse it after any source or
 approved-license change without a new clean build and acceptance. Rollback is
 schema-preserving: restore the previous retained artifact and leave the
 deployed database at the current repository head,
-`20260916_cli_cloud_jobs` (after `20260915_weekly_tester_credit`).
+`20260917_cli_cloud_artifacts` (after `20260916_cli_cloud_jobs`).
 
 For the operator: the RC8 live acceptance record and exact artifact procedure
 are in `docs/CLI_LIVE_ACCEPTANCE.md`. Use `swico usage` at the macOS shell and
 `/usage` inside an interactive Swico session. Current stable acceptance must
-use the published `0.2.5` canonical CI artifact and its generated manifest,
+use the published `0.2.6` canonical CI artifact and its generated manifest,
 not the historical RC8 tarball.
 Render is not involved in this CLI-only change. The installed UI scope is
 recorded in `docs/CLI_TUI_ACCEPTANCE.md`.
 
-For a current `0.2.5` desktop acceptance prefix, use the explicit absolute
+For a current `0.2.6` desktop acceptance prefix, use the explicit absolute
 path in every new Terminal tab; compare the downloaded hash to the generated
 manifest and do not replace the older global installation:
 
 ```sh
-mkdir -p "$HOME/.local/share/swico-0.2.5"
-shasum -a 256 ./swiveltechnologies-swico-0.2.5.tgz
-npm install --global --prefix "$HOME/.local/share/swico-0.2.5" ./swiveltechnologies-swico-0.2.5.tgz
-"$HOME/.local/share/swico-0.2.5/bin/swico" --version --json
-"$HOME/.local/share/swico-0.2.5/bin/swico" usage --json
+mkdir -p "$HOME/.local/share/swico-0.2.6"
+shasum -a 256 ./swiveltechnologies-swico-0.2.6.tgz
+npm install --global --prefix "$HOME/.local/share/swico-0.2.6" ./swiveltechnologies-swico-0.2.6.tgz
+"$HOME/.local/share/swico-0.2.6/bin/swico" --version --json
+"$HOME/.local/share/swico-0.2.6/bin/swico" usage --json
 ```
 
 `swico usage` is a macOS shell command. `/usage`, `/exit`, `you>` and the

@@ -22,6 +22,7 @@ import { ensureTokens } from './session.js'
 import { credentialKey } from './config.js'
 import { configSummary, loadConfig, saveUserConfig, validateMcpDefinition, userConfigPath, type McpServerDefinition } from './configuration.js'
 import { McpManager } from './mcp.js'
+import { loginMcpOAuth, logoutMcpOAuth, mcpOAuthStatus } from './mcp_oauth.js'
 import { listSkills, selectSkill, showSkill } from './skills.js'
 import { HookBus, hookStatus, loadExecutableHooks } from './hooks.js'
 import { completion } from './completion.js'
@@ -479,6 +480,11 @@ async function mcpCommand(args: string[], env = process.env): Promise<void> {
   if (action === 'list') { for (const item of loaded.effective.mcp) console.log(`${item.name}\t${item.transport}\t${item.source}${item.trusted ? '' : '\t(untrusted project config)'}`); return }
   if (action === 'get') { const item = loaded.effective.mcp.find(value => value.name === name); if (!item) throw new Error('MCP server not found.'); console.log(JSON.stringify({ ...item, headers: Object.keys(item.headers ?? {}).reduce((result, key) => ({ ...result, [key]: '[environment reference]' }), {} as Record<string, string>) }, null, 2)); return }
   if (!name) throw new Error('MCP server name is required.')
+  const definition = loaded.effective.mcp.find(value => value.name === name)
+  if (!definition) throw new Error('MCP server not found.')
+  if (action === 'status') { if (definition.transport !== 'http') { console.log(`${name}: stdio (OAuth not applicable)`); return } console.log(JSON.stringify(await mcpOAuthStatus(definition.url as string, env), null, 2)); return }
+  if (action === 'login') { if (definition.transport !== 'http') throw new Error('MCP OAuth is available only for HTTPS MCP servers.'); const clientId = args[3] ?? env.SWICO_CLI_MCP_CLIENT_ID ?? ''; await loginMcpOAuth(definition.url as string, clientId, env.SWICO_CLI_MCP_SCOPES ?? 'mcp', env); console.log(`MCP OAuth credentials saved for ${name}.`); return }
+  if (action === 'logout') { if (definition.transport !== 'http') throw new Error('MCP OAuth is available only for HTTPS MCP servers.'); await logoutMcpOAuth(definition.url as string, env); console.log(`MCP OAuth credentials removed for ${name}.`); return }
   if (action === 'remove') { const user = loaded.user; if (!user) return; user.mcp = user.mcp.filter(item => item.name !== name); await saveUserConfig(user, env); console.log(`Removed MCP server ${name}.`); return }
   if (action === 'add') { const command = args[3]; if (!command) throw new Error('Usage: swico mcp add NAME COMMAND [ARGS...]'); const server: McpServerDefinition = { name, transport: 'stdio', command, args: args.slice(4), source: 'user', trusted: true }; validateMcpDefinition(server, true); const user = loaded.user ?? { source: 'user' as const, path: '', searchMode: 'auto' as const, defaultMode: 'auto' as const, autoSkills: true, hooksEnabled: false, sandboxPolicy: 'workspace-write' as const, approvalPolicy: 'always' as const, mcp: [] }; user.mcp = [...user.mcp.filter(item => item.name !== name), server]; await saveUserConfig(user, env); console.log(`Added MCP server ${name}.`); return }
   if (action === 'test') {

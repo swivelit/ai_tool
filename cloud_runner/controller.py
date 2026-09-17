@@ -26,9 +26,9 @@ class ControllerConfigurationError(RuntimeError):
     pass
 
 
-def _safe_url(value: str, *, allow_http_localhost: bool = False) -> str:
+def _safe_url(value: str, *, allow_http_localhost: bool = False, allow_http_private_host: str = "") -> str:
     parsed = urlparse(value.strip().rstrip("/"))
-    allowed_http = allow_http_localhost and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+    allowed_http = (allow_http_localhost and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}) or (allow_http_private_host and parsed.scheme == "http" and parsed.hostname == allow_http_private_host)
     if parsed.scheme != "https" and not allowed_http:
         raise ControllerConfigurationError("Cloud controller URLs must use HTTPS.")
     if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.netloc:
@@ -43,6 +43,8 @@ class ControllerSettings:
     runner_token: str
     poll_seconds: float = 5.0
     heartbeat_seconds: float = 20.0
+    runner_transport: str = "https"
+    runner_private_host: str = ""
 
     @classmethod
     def from_environment(cls, environ: dict[str, str] | None = None) -> "ControllerSettings":
@@ -52,12 +54,18 @@ class ControllerSettings:
         token = values.get("SWICO_RUNNER_CONTROL_TOKEN", values.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "")).strip()
         if not backend_url or not runner_id or not token:
             raise ControllerConfigurationError("SWICO_RUNNER_CONTROL_URL, SWICO_RUNNER_ID, and runner token are required.")
+        transport = values.get("SWICO_CLI_CLOUD_RUNNER_TRANSPORT", "https").strip().lower() or "https"
+        private_host = values.get("SWICO_CLI_CLOUD_RUNNER_PRIVATE_HOST", "").strip().lower()
+        if transport not in {"https", "render_private_http"}:
+            raise ControllerConfigurationError("SWICO_CLI_CLOUD_RUNNER_TRANSPORT is invalid.")
         return cls(
             backend_url=_safe_url(backend_url, allow_http_localhost=True),
             runner_id=runner_id[:128],
             runner_token=token,
             poll_seconds=max(1.0, min(60.0, float(values.get("SWICO_RUNNER_POLL_SECONDS", "5")))),
             heartbeat_seconds=max(5.0, min(60.0, float(values.get("SWICO_RUNNER_HEARTBEAT_SECONDS", "20")))),
+            runner_transport=transport,
+            runner_private_host=private_host,
         )
 
 
@@ -110,7 +118,7 @@ class CloudController:
         capability = str(claimed.get("runner_capability") or "")
         if not job_id or not capability or not runner_url:
             raise RuntimeError("The control plane returned an incomplete runner lease.")
-        _safe_url(runner_url)
+        _safe_url(runner_url, allow_http_private_host=self.settings.runner_private_host if self.settings.runner_transport == "render_private_http" else "")
         source = str(job.get("source") or "")
         snapshot = claimed.get("snapshot")
         files = snapshot.get("files") if isinstance(snapshot, dict) else None
@@ -147,10 +155,27 @@ class CloudController:
         thread = Thread(target=heartbeat, name=f"swico-cloud-heartbeat-{job_id}", daemon=True)
         thread.start()
         try:
-            execution = self._runner("POST", runner_url, f"/v1/jobs/{job_id}/execute", capability, {"task": str(job.get("task") or ""), "files": files if isinstance(files, list) else []})
+            execution = self._runner("POST", runner_url, f"/v1/jobs/{job_id}/execute", capability, {"task": str(job.get("task") or ""), "files": files if isinstance(files, list) else [], "actions": job.get("actions") if isinstance(job.get("actions"), list) else []})
             status = "cancelled" if cancellation_forwarded.is_set() else ("completed" if execution.get("status") == "completed" else "failed")
             failure = None if status == "completed" else ("cancelled" if status == "cancelled" else str(execution.get("failure_code") or "runner_execution_failed")[:64])
-            result = {"status": status, "failure_code": failure, "result": {"job_id": job_id, "exit_code": execution.get("exit_code"), "stdout": str(execution.get("stdout") or "")[-64 * 1024:], "stderr": str(execution.get("stderr") or "")[-64 * 1024:]}}
+            structured = execution.get("result") if isinstance(execution.get("result"), dict) else {}
+            # Large review payloads travel through the bounded artifact route
+            # before the terminal metadata is submitted. The terminal record
+            # contains references/summary only, never an oversized patch.
+            artifact_refs: list[dict[str, Any]] = []
+            for artifact in structured.get("artifacts", []) if isinstance(structured.get("artifacts"), list) else []:
+                if not isinstance(artifact, dict) or not all(isinstance(artifact.get(key), str) for key in ("kind", "sha256", "content_base64")): continue
+                try:
+                    stored = self._control("POST", f"/cloud/runner/jobs/{job_id}/artifacts", {"kind": artifact["kind"], "content_type": str(artifact.get("content_type") or "application/octet-stream"), "sha256": artifact["sha256"], "content_base64": artifact["content_base64"]}, capability)
+                    artifact_refs.append({key: stored.get(key) for key in ("id", "kind", "sha256", "size_bytes") if stored.get(key) is not None})
+                except Exception:
+                    # A result without durable review bytes is not a successful
+                    # coding completion. Preserve a bounded failure instead of
+                    # claiming that stdout is the review artifact.
+                    status, failure = "failed", "artifact_persistence_failed"
+            structured = {key: value for key, value in structured.items() if key != "artifacts"}
+            if artifact_refs: structured["artifacts"] = artifact_refs
+            result = {"status": status, "failure_code": failure, "result": {"job_id": job_id, "exit_code": execution.get("exit_code"), "stdout": str(execution.get("stdout") or "")[-8 * 1024:], "stderr": str(execution.get("stderr") or "")[-8 * 1024:], **structured}}
             if heartbeat_error:
                 result = {"status": "failed", "failure_code": "lease_renewal_failed", "result": {"job_id": job_id}}
             self._control("POST", f"/cloud/runner/jobs/{job_id}/result", result, capability)

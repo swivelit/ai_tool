@@ -7,7 +7,7 @@ import { CloudTasksPage } from './CloudTasksPage'
 const { mocks, mockUser } = vi.hoisted(() => ({
   mocks: {
     listCloudJobs: vi.fn(), createCloudJob: vi.fn(), getCloudJob: vi.fn(),
-    listCloudJobEvents: vi.fn(), cancelCloudJob: vi.fn(),
+    listCloudJobEvents: vi.fn(), listCloudArtifacts: vi.fn(), downloadCloudArtifact: vi.fn(), cancelCloudJob: vi.fn(),
   },
   mockUser: { uid: 'cloud-test-user', getIdToken: vi.fn(async () => 'test-token') },
 }))
@@ -25,6 +25,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.listCloudJobs.mockResolvedValue({ items: [job('one'), job('two')] })
   mocks.listCloudJobEvents.mockResolvedValue({ job_id: 'one', items: [{ sequence: 0, event_type: 'one-event', payload: {}, created_at: '2026-09-17T00:00:00Z' }] })
+  mocks.listCloudArtifacts.mockResolvedValue({ items: [] })
 })
 
 it('ignores stale event responses after switching the selected job', async () => {

@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlmodel import Session, select
 
 from ..auth import AuthUser, firebase_cli_session_is_active, get_current_user, get_owned_user, is_internal_test_email
@@ -24,7 +24,7 @@ from ..billing.service import enforce_rate_limit, get_wallet_summary, release_sw
 from ..billing.tester_credit import is_configured_tester_email, tester_credit_window_summary
 from ..database import SessionLocal, get_session
 from ..models import (
-    CliAgentRun, CliAgentStep, CliCloudJob, CliCloudJobEvent, CliDeviceGrant, CliPendingAction, CliSession,
+    CliAgentRun, CliAgentStep, CliCloudArtifact, CliCloudJob, CliCloudJobEvent, CliDeviceGrant, CliPendingAction, CliSession,
     User, WebChatThread,
 )
 from ..time_utils import ensure_utc, utc_now
@@ -50,7 +50,7 @@ from .config import CliConfigurationError, agent_step_ceiling, cli_settings
 from .contracts import (
     AgentAction, AgentResultRequest, AgentRunRequest, CliChatRequest,
     AgentPlanRequest, AgentSubagentRequest, CliTierRequest, DeviceApprovalRequest, DeviceAuthorizationRequest,
-    DeviceTokenRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest, CloudSnapshotRequest, SteeringRequest,
+    DeviceTokenRequest, CloudArtifactRequest, CloudJobClaimRequest, CloudJobRequest, CloudJobResultRequest, CloudSnapshotRequest, SteeringRequest,
 )
 from .security import (
     digest, human_code, random_secret, valid_code_challenge,
@@ -76,7 +76,7 @@ def _cloud_access(authorization: str | None, session: Session, *, admission: boo
     settings = _require_agent_enabled() if admission else _require_enabled()
     if admission and not settings.cloud_agent_enabled:
         raise HTTPException(503, {"code": "cloud_execution_disabled", "message": "Swico Cloud is not enabled."})
-    if admission and (not settings.cloud_runner_configured or not settings.cloud_runner_handshake):
+    if admission and (not settings.cloud_runner_configured or not settings.cloud_runner_identity_configured or not settings.cloud_runner_handshake):
         runner = configured_isolated_runner()
         raise HTTPException(
             503,
@@ -318,6 +318,9 @@ def _runner_access(runner_token: str | None, runner_id: str | None, *, admission
     expected = os.environ.get("SWICO_CLI_CLOUD_RUNNER_TOKEN", "").strip()
     if not expected or not runner_token or not compare_digest(runner_token, expected) or not runner_id or len(runner_id) > 128:
         raise HTTPException(403, {"code": "invalid_runner_authentication", "message": "Runner authentication was rejected."})
+    expected_runner_id = os.environ.get("SWICO_CLI_CLOUD_RUNNER_ID", "").strip()
+    if settings.cloud_runner_identity_configured and (not expected_runner_id or runner_id != expected_runner_id):
+        raise HTTPException(403, {"code": "invalid_runner_identity", "message": "Runner identity was rejected."})
     return settings, runner_id
 
 
@@ -376,6 +379,49 @@ def complete_cloud_job(job_id: str, payload: CloudJobResultRequest, runner_token
     _append_cloud_event(session, job, payload.status, {"has_result": bool(payload.result)})
     session.commit()
     return _cloud_job_view(job)
+
+
+def _cloud_artifact_view(item: CliCloudArtifact) -> dict[str, object]:
+    return {"id": item.id, "job_id": item.job_id, "attempt": item.attempt, "kind": item.kind, "content_type": item.content_type, "sha256": item.sha256, "size_bytes": item.size_bytes, "created_at": item.created_at.isoformat()}
+
+
+@router.post("/cloud/runner/jobs/{job_id}/artifacts")
+def store_cloud_artifact(job_id: str, payload: CloudArtifactRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), runner_capability: str | None = Header(default=None, alias="X-Swico-Runner-Capability"), session: Session = Depends(get_session)):
+    """Persist one bounded result artifact before the runner is destroyed."""
+    _settings, runner_id = _runner_access(runner_token, runner_id, admission=False)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
+    if job is None or not verify_runner_capability(runner_capability or "", job_id=job_id, runner_id=runner_id, attempt=job.attempt, action="execute"):
+        raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
+    try: data = base64.b64decode(payload.content_base64, validate=True)
+    except (ValueError, TypeError): raise HTTPException(422, {"code": "cloud_artifact_encoding_invalid", "message": "Artifact bytes are invalid."})
+    limit = 2 * 1024 * 1024 if payload.kind == "patch" else 512 * 1024
+    if len(data) > limit: raise HTTPException(413, {"code": "cloud_artifact_too_large", "message": "Artifact exceeds its bounded size."})
+    if hashlib.sha256(data).hexdigest() != payload.sha256: raise HTTPException(422, {"code": "cloud_artifact_hash_mismatch", "message": "Artifact hash did not match its bytes."})
+    existing = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.job_id == job.id, CliCloudArtifact.attempt == job.attempt, CliCloudArtifact.kind == payload.kind).with_for_update()).first()
+    if existing:
+        if existing.sha256 != payload.sha256: raise HTTPException(409, {"code": "cloud_artifact_conflict", "message": "This artifact kind was already recorded with different bytes."})
+        return _cloud_artifact_view(existing) | {"idempotent": True}
+    total = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.job_id == job.id)).all()
+    if sum(item.size_bytes for item in total) + len(data) > 8 * 1024 * 1024: raise HTTPException(413, {"code": "cloud_artifact_budget_exceeded", "message": "Cloud result artifacts exceed the per-job bound."})
+    item = CliCloudArtifact(job_id=job.id, user_id=int(job.user_id), attempt=job.attempt, kind=payload.kind, content_type=payload.content_type, sha256=payload.sha256, size_bytes=len(data), payload=data)
+    session.add(item); session.commit(); session.refresh(item)
+    return _cloud_artifact_view(item)
+
+
+@router.get("/cloud/jobs/{job_id}/artifacts")
+def list_cloud_artifacts(job_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    _settings, _cli_session, user = _cloud_access(authorization, session, admission=False)
+    job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.user_id == int(user.id))).first()
+    if job is None: raise HTTPException(404, "Cloud job not found")
+    return {"items": [_cloud_artifact_view(item) for item in session.exec(select(CliCloudArtifact).where(CliCloudArtifact.job_id == job.id).order_by(CliCloudArtifact.created_at.asc())).all()]}
+
+
+@router.get("/cloud/jobs/{job_id}/artifacts/{artifact_id}")
+def get_cloud_artifact(job_id: str, artifact_id: str, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    _settings, _cli_session, user = _cloud_access(authorization, session, admission=False)
+    item = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.id == artifact_id, CliCloudArtifact.job_id == job_id, CliCloudArtifact.user_id == int(user.id))).first()
+    if item is None: raise HTTPException(404, "Cloud artifact not found")
+    return Response(content=item.payload, media_type=item.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{item.kind}-{item.id}.bin"', "X-Swico-Artifact-SHA256": item.sha256})
 
 
 def _grant_error(code: str, description: str, status: int = 400):

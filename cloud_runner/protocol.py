@@ -29,7 +29,16 @@ def _decode_attestation(value: str, secret: str, now: int | None = None) -> bool
         current = int(time.time()) if now is None else now
         return bool(
             hmac.compare_digest(supplied, expected)
+            and str(data.get("protocol_version", "")) == "1"
             and str(data.get("runner_id", ""))
+            and str(data.get("audience", ""))
+            and str(data.get("executor", "")) == "e2b"
+            and str(data.get("template_id_or_digest", ""))
+            and str(data.get("runner_revision", ""))
+            and str(data.get("policy_sha256", ""))
+            and str(data.get("network_policy", ""))
+            and bool(data.get("hostile_verified"))
+            and str(data.get("key_epoch", ""))
             and str(data.get("isolation", "")) in {"e2b", "bubblewrap", "sandbox-exec"}
             and int(data["verified_at"]) <= current < int(data["expires_at"])
             and int(data["expires_at"]) - int(data["verified_at"]) <= 900

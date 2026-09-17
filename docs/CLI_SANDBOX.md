@@ -6,10 +6,11 @@ all desktop platforms are ready. Swico has no unsandboxed agent fallback.
 ## Evaluated runtimes
 
 * macOS Seatbelt (`sandbox-exec`) is a system primitive available on Intel
-  and Apple Silicon. The current 0.2.5 progressive diagnostic on this Intel
-  development host reports `sandbox_apply: Operation not permitted` even for
-  `(allow default)`, so no policy reached hostile verification. macOS remains
-  fail-closed here.
+  and Apple Silicon. The current 0.2.6 progressive diagnostic on this Intel
+  development host reports a policy-level denial for the deny-default control
+  and `SIGABRT` for later runtime profiles. The shipped diagnostic now keeps
+  those outcomes distinct; generated profiles still do not reach hostile
+  verification, so macOS remains fail-closed here.
 * [Bubblewrap](https://github.com/containers/bubblewrap) is an actively used
   Linux user/mount/PID/network namespace tool. It requires a usable unprivileged
   user namespace and is therefore Linux-only; Swico uses it only when the
@@ -42,6 +43,13 @@ around that installed runtime implementation.
 `swico sandbox status` reports runtime detection and a diagnostic such as
 `binary_missing`, `profile_rejected`, `sandbox_apply_denied`, or
 `namespace_unavailable`. It is not a security proof.
+
+`swico sandbox diagnose --progressive --json` reports `policy_denied_expected`
+for an intentionally denied child under a deny-default control,
+`host_sandbox_apply_denied` when the enclosing host refuses to apply a policy,
+`sandbox_abort` for a child abort, and `runtime_permission_missing` when the
+profile starts but lacks a required runtime grant. Only a complete hostile
+probe run can establish native readiness.
 
 `swico sandbox verify --json` executes real child processes under the adapter
 and creates only disposable fake files and a local loopback test server. It
