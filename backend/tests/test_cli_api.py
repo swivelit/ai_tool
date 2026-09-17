@@ -30,6 +30,28 @@ def _challenge(value: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(value.encode()).digest()).rstrip(b"=").decode()
 
 
+@pytest.fixture(autouse=True)
+def _default_agent_pilot_allowlist(monkeypatch: pytest.MonkeyPatch):
+    """Keep legacy agent route fixtures explicit after the fail-closed fix."""
+    # These are synthetic identities used by the pre-existing agent route
+    # tests. Each test still opts into the pilot explicitly; the production
+    # predicate remains exact-membership-only.
+    pilot_test_emails = {
+        "agent-owner@example.com", "cli-action-expiry@example.com",
+        "cli-assistant-budget@example.com", "cli-delivery-failure@example.com",
+        "cli-replay-budget@example.com", "cloud-control-owner@example.com",
+        "cloud-owner@example.com", "cloud-runner-owner@example.com",
+        "mcp-protocol@example.com", "planner-cancel@example.com",
+        "planner@example.com", "repository-actions@example.com",
+        "schema-validation@example.com", "subagent@example.com",
+        "test-agent-pilot@example.com", "pilot@example.com",
+        "agent-other@example.com", "cloud-control-other@example.com",
+        "cli-budget-1@example.com", "cli-budget-2@example.com",
+        "cli-budget-8@example.com",
+    }
+    monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", ",".join(sorted(pilot_test_emails)))
+
+
 def test_cli_health_reports_public_rollout_without_device_or_provider_request(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SWICO_CLI_ENABLED", "false")
     monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
@@ -71,6 +93,80 @@ def test_agent_pilot_restriction_preserves_chat_for_nonpilot_user(client: TestCl
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "cli_agent_pilot_required"
     assert client.get("/api/cli/v1/me", headers={"Authorization": f"Bearer {raw_access}"}).status_code == 200
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_URL", "https://runner.example.test")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_RUNNER_TOKEN", "synthetic-runner-token")
+    monkeypatch.setenv(
+        "SWICO_CLI_CLOUD_RUNNER_ATTESTATION",
+        make_test_attestation(secret="synthetic-runner-token"),
+    )
+    cloud_denied = client.post(
+        "/api/cli/v1/cloud/jobs", headers={"Authorization": f"Bearer {raw_access}"},
+        json={"request_id": str(uuid4()), "source": "task_only", "task": "inspect"},
+    )
+    assert cloud_denied.status_code == 403
+    assert cloud_denied.json()["detail"]["code"] == "cli_agent_pilot_required"
+
+
+@pytest.mark.parametrize("agent_allowlist", [None, "", "   ,  "])
+def test_enabled_agent_with_empty_pilot_allowlist_fails_closed_without_taking_down_chat(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, agent_allowlist: str | None,
+):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    if agent_allowlist is None:
+        monkeypatch.delenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", raising=False)
+    else:
+        monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", agent_allowlist)
+    user = create_test_user("cli-empty-agent-pilot", "empty-agent-pilot@example.com")
+    raw_access = "e" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("f" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat", "agent"]', device_description="empty pilot",
+        ))
+        session.commit()
+
+    denied = client.post(
+        "/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}",},
+        json={"request_id": str(uuid4()), "task": "inspect"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "cli_agent_pilot_required"
+    assert client.get("/api/cli/v1/me", headers={"Authorization": f"Bearer {raw_access}"}).status_code == 200
+
+
+def test_agent_pilot_allowlist_is_casefolded_and_cloud_admission_uses_same_gate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SWICO_CLI_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_CLOUD_AGENT_ENABLED", "true")
+    monkeypatch.setenv("SWICO_CLI_AGENT_ALLOWED_EMAILS", "  PILOT@EXAMPLE.COM  ")
+    user = create_test_user("cli-agent-casefold", "pilot@example.com")
+    raw_access = "g" * 64
+    with SessionLocal() as session:
+        session.add(CliSession(
+            user_id=int(user.id), client_id="swico-cli", access_token_digest=digest(raw_access),
+            access_expires_at=utc_now() + timedelta(minutes=10), refresh_token_digest=digest("h" * 64),
+            refresh_expires_at=utc_now() + timedelta(days=1), max_expires_at=utc_now() + timedelta(days=1),
+            selected_tier="lite", scopes_json='["chat", "agent"]', device_description="casefold pilot",
+        ))
+        session.commit()
+
+    agent = client.post(
+        "/api/cli/v1/agent/runs", headers={"Authorization": f"Bearer {raw_access}"},
+        json={"request_id": str(uuid4()), "task": "inspect"},
+    )
+    assert agent.status_code == 201, agent.text
+    cloud = client.post(
+        "/api/cli/v1/cloud/jobs", headers={"Authorization": f"Bearer {raw_access}"},
+        json={"request_id": str(uuid4()), "source": "task_only", "task": "inspect"},
+    )
+    assert cloud.status_code == 503
+    assert cloud.json()["detail"]["code"] == "cloud_execution_unavailable"
 
 
 def _start(client: TestClient, *, scopes: list[str] | None = None):

@@ -59,6 +59,14 @@ def test_agent_pilot_requires_explicit_restricted_agent_configuration() -> None:
     assert "SWICO_CLI_AGENT_ENABLED must be true for agent pilot" in disabled
 
 
+def test_empty_agent_pilot_is_rejected_by_the_release_gate() -> None:
+    settings = _settings(SWICO_CLI_AGENT_ENABLED="true")
+    assert not settings.agent_allowed_emails
+    assert rollout_configuration_errors(settings, agent_pilot=True, environ={}) == [
+        "SWICO_CLI_AGENT_ALLOWED_EMAILS must be non-empty for agent pilot"
+    ]
+
+
 def test_agent_pilot_rejects_development_auth_bypass_without_exposing_values() -> None:
     settings = _settings(
         SWICO_CLI_AGENT_ENABLED="true",

@@ -537,9 +537,15 @@ def _email_allowed(settings, auth: AuthUser, user: User) -> bool:
 
 
 def _agent_email_allowed(settings, user: User) -> bool:
-    """Apply only the optional agent-pilot restriction to server-owned identity."""
+    """Require explicit pilot membership for every agent admission.
+
+    The public CLI allowlist intentionally supports an empty value for public
+    Chat. Agent rollout is different: an enabled agent with no explicit pilot
+    list is a configuration error and must fail closed, including Cloud
+    admission.
+    """
     email = str(user.email or "").strip().casefold()
-    return bool(email and (not settings.agent_allowed_emails or email in settings.agent_allowed_emails))
+    return bool(settings.agent_allowed_emails and email and email in settings.agent_allowed_emails)
 
 
 def _require_agent_pilot(settings, user: User) -> None:
