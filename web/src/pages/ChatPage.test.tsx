@@ -8,6 +8,19 @@ import { ChatPage } from './ChatPage'
 const user = { uid:'firebase-owner', getIdToken: vi.fn().mockResolvedValue('token') }
 let currentUser = user
 const signOutMock = vi.fn()
+
+const chatPageProps = {
+  theme: 'light' as const,
+  setTheme: vi.fn(),
+  colorStyle: 'swico' as const,
+  setColorStyle: vi.fn(),
+  customColors: {
+    primary: '#6366f1',
+    secondary: '#8b5cf6',
+    accent: '#ec4899',
+  },
+  setCustomColors: vi.fn(),
+}
 vi.mock('../auth/useAuth', () => ({
   useAuth: () => ({ user:currentUser, signOut:signOutMock }),
 }))
@@ -111,7 +124,7 @@ const repositorySnapshot = (id: string, displayName = 'swico.zip') => ({
 
 it('renders the authenticated empty chat as a compact personalized home', async () => {
   mockApi()
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   expect(await screen.findByRole('heading', { name:'Hey, Hari. How can I help you?' })).toBeInTheDocument()
   expect(screen.getByTestId('composer')).toBeInTheDocument()
   expect(screen.queryByText('Help me plan a focused week')).not.toBeInTheDocument()
@@ -128,7 +141,7 @@ it('uses a safe fallback when the bootstrap name is not usable', async () => {
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   expect(await screen.findByRole('heading', { name:'How can I help you?' })).toBeInTheDocument()
   expect(screen.queryByText(/^Hey,/u)).not.toBeInTheDocument()
 })
@@ -145,7 +158,7 @@ it('shows a recoverable bootstrap error instead of an endless loading state', as
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not load your Swico workspace.')
   await userEvent.click(screen.getByRole('button', { name:'Retry' }))
   expect(await screen.findByRole('heading', { name:'Hey, Hari. How can I help you?' })).toBeInTheDocument()
@@ -153,7 +166,7 @@ it('shows a recoverable bootstrap error instead of an endless loading state', as
 
 it('keeps the compact composer for a new chat and after the first message', async () => {
   mockApi()
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const textarea = await screen.findByRole('textbox', { name:'Message Swico' })
   fireEvent.change(textarea, { target:{ value:'Keep this draft' } })
   expect(textarea).toHaveValue('Keep this draft')
@@ -171,7 +184,7 @@ it('does not bind a delayed first-thread event after New chat', async () => {
       await first.promise
     })
     .mockResolvedValueOnce(undefined)
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'old request')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
@@ -204,7 +217,7 @@ it('keeps newer history and search responses ahead of older requests', async () 
     if (path.startsWith('/api/web/search?')) return (++searchCalls === 1 ? searchOld.promise : searchNew.promise) as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'History A' }))
   await userEvent.click(await screen.findByRole('button', { name:'History B' }))
   await act(async () => { historyB.resolve({ items:[{ id:'b-answer', thread_id:'history-b', role:'assistant', content:'Newer history', status:'complete' }] }) })
@@ -228,7 +241,7 @@ it('restores a failed PDF prompt without deleting its server upload', async () =
   const pdf = { ...uploaded, id:'pdf-upload', name:'report.pdf', media_type:'application/pdf' }
   vi.mocked(uploadDocument).mockResolvedValue(pdf)
   vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(503, {}))
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Summarize this PDF')
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'report.pdf', { type:'application/pdf' }))
@@ -256,7 +269,7 @@ it('clears the pending PDF chip after success while retaining server context for
     }] } as never
     return {} as never
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Read this PDF')
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'successful.pdf', { type:'application/pdf' }))
@@ -293,7 +306,7 @@ it('accounts for active PDF context, exposes removal, and allows a replacement u
     }] } as never
     return {} as never
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   const input = container.querySelector('input[type="file"]') as HTMLInputElement
   for (const file of files) {
@@ -336,7 +349,7 @@ it('keeps an explicitly removed attachment detached when an older history respon
     onEvent({ event:'thread', data:{ thread_id:thread.id } })
     onEvent({ event:'done', data:{ message_id:`detached-answer-${submitted.length}`, request_id:`detached-request-${submitted.length}` } })
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Detached' }))
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Read this')
@@ -376,7 +389,7 @@ it('transfers new-chat removal intent when the first SSE event assigns a server 
     if (path.includes(`/threads/${thread.id}/messages`)) return history.promise as never
     return {} as never
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Read this')
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'new-chat.pdf', { type:'application/pdf' }))
@@ -401,7 +414,7 @@ it('keeps an explicitly selected expired PDF recoverable instead of silently sen
   mockApi()
   const expired = { ...uploaded, id:'expired-pdf', name:'expired.pdf', media_type:'application/pdf', expires_at:new Date(Date.now() - 1_000).toISOString() }
   vi.mocked(uploadDocument).mockResolvedValue(expired)
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Explain this')
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'expired.pdf', { type:'application/pdf' }))
@@ -416,7 +429,7 @@ it('keeps a pending upload visible while history refreshes', async () => {
   mockApi()
   const pending = deferred<typeof uploaded>()
   vi.mocked(uploadDocument).mockReturnValue(pending.promise)
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'pending.pdf', { type:'application/pdf' }))
   await screen.findByText('Uploading… 0%')
@@ -437,7 +450,7 @@ it('does not attach a deferred upload from chat A after navigating to chat B', a
     if (path.includes('/thread-b-upload/messages')) return { items:[] } as never
     return {} as never
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['pdf'], 'abandoned.pdf', { type:'application/pdf' }))
   await screen.findByText('Uploading… 0%')
@@ -486,7 +499,7 @@ it('continues without an optimistic control bubble and consumes the parent butto
     emit = onEvent
     await new Promise<void>(resolve => { finish = resolve })
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByText('Long answer'))
   await userEvent.click(await screen.findByRole('button', { name:'Continue response' }))
 
@@ -536,7 +549,7 @@ it('keeps the authoritative SSE thread for follow-ups, supports selection, and c
       onEvent({ event:'thread', data:{ thread_id:'thread-from-sse' } })
     }
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
 
   await userEvent.type(composer, 'first message')
@@ -608,7 +621,7 @@ it('keeps a verified-buffered assistant visible and refreshes the persisted prom
       message_id:'persisted-assistant', thread_id:'new-thread',
     } })
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.type(await screen.findByRole('textbox', {
     name:'Message Swico',
   }), 'Long architecture request')
@@ -652,7 +665,7 @@ it('regenerates a completed answer with the existing backend contract', async ()
     return {} as never
   })
   vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Regeneration' }))
   await userEvent.click(await screen.findByRole('button', { name:'Regenerate answer' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
@@ -688,7 +701,7 @@ it('isolates late stream events from a different selected thread', async () => {
     emit = onEvent
     await new Promise<void>(resolve => { finish = resolve })
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Thread A' }))
   expect(await screen.findByText('History A')).toBeInTheDocument()
   await userEvent.type(screen.getByRole('textbox', { name:'Message Swico' }), 'stream in A')
@@ -709,7 +722,7 @@ it('isolates late stream events from a different selected thread', async () => {
 it('does not start a second request while a stream is active', async () => {
   mockApi()
   vi.mocked(streamChat).mockImplementation(() => new Promise(() => undefined))
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'first request')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
@@ -720,7 +733,7 @@ it('does not start a second request while a stream is active', async () => {
 })
 
 it('opens the accessible composer mode selector with all public names and closes on Escape', async () => {
-  mockApi(); render(<ChatPage />)
+  mockApi(); render(<ChatPage {...chatPageProps} />)
   const trigger = await screen.findByRole('button', { name:'Swico Lite' })
   await userEvent.click(trigger)
   expect(screen.getByRole('listbox', { name:'Swico modes' })).toBeInTheDocument()
@@ -757,7 +770,7 @@ it('turns a 50000-character paste into a virtual attachment without sending it i
   })
   const virtual = { ...uploaded, id:'virtual-50000', name:'Pasted text — analyze.txt', size_bytes:50_000 }
   vi.mocked(uploadVirtualText).mockResolvedValue(virtual)
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const paste = 'x'.repeat(50_000)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   fireEvent.change(composer, { target:{ value:paste } })
@@ -790,7 +803,7 @@ it('uses a bounded trailing Question line as the virtual-text retrieval query', 
     ...uploaded, id:'virtual-question', name:'Pasted text — questions.txt',
     size_bytes:50_000,
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const question = 'What exact value follows FINAL ACCEPTANCE MARKER?'
   const paste = `${'x'.repeat(49_000)}\nQuestion: ${question}\nTAIL-EXAMPLE`
   fireEvent.change(await screen.findByRole('textbox', {
@@ -814,7 +827,7 @@ it('saves a selected mode and refreshes the tier-sensitive token estimate', asyn
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Swico Lite' }))
   await userEvent.click(screen.getByRole('option', { name:/Balanced quality and speed/ }))
   await waitFor(() => expect(screen.getByRole('button', { name:'Swico' })).toBeInTheDocument())
@@ -830,7 +843,7 @@ it('restores the previous mode and reports a safe error when saving fails', asyn
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Swico Lite' }))
   await userEvent.click(screen.getByRole('option', { name:/Balanced quality and speed/ }))
   expect(await screen.findByRole('alert')).toHaveTextContent('previous mode is still active')
@@ -840,7 +853,7 @@ it('restores the previous mode and reports a safe error when saving fails', asyn
 
 it('opens billing when the API reports insufficient credit', async () => {
   mockApi(); vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(402, {}))
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(await screen.findByRole('dialog', { name:'Billing' })).toBeInTheDocument()
@@ -880,7 +893,7 @@ it('applies the released wallet and delays Retry for service capacity', async ()
       retryAt,
     )
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'Keep my prompt visible')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
@@ -903,7 +916,7 @@ it('queues an early stop until the streaming request is accepted', async () => {
       return new Promise(() => undefined)
     },
   )
-  render(<ChatPage />); const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  render(<ChatPage {...chatPageProps} />); const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'long answer'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(screen.getByRole('button', { name:'Swico Lite' })).toBeDisabled()
   const stop = await screen.findByRole('button', { name:'Stop generation' })
@@ -922,7 +935,7 @@ it('exposes readiness and cancels exactly once after acceptance', async () => {
       await new Promise(() => undefined)
     },
   )
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'accepted long answer')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
@@ -937,7 +950,7 @@ it('exposes readiness and cancels exactly once after acceptance', async () => {
 
 it('shows usage-limit reset metadata without opening add-credit checkout', async () => {
   mockApi(); vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(402, { error:{ code:'usage_limit_reached', reset_at:'2026-08-01T00:00:00Z' } }))
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(await screen.findByRole('alert')).toHaveTextContent(/monthly AI usage limit has been reached.*resets/i)
@@ -946,7 +959,7 @@ it('shows usage-limit reset metadata without opening add-credit checkout', async
 
 it('refreshes the wallet estimate when the tab regains focus without polling', async () => {
   mockApi()
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   window.dispatchEvent(new Event('focus'))
   await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1] === '/api/web/billing/wallet')).toBe(true))
@@ -954,7 +967,7 @@ it('refreshes the wallet estimate when the tab regains focus without polling', a
 
 it('selects and uploads a supported document, then sends its attachment id without text', async () => {
   mockApi(); vi.mocked(uploadDocument).mockResolvedValue(uploaded)
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   const input = container.querySelector('input[type="file"]') as HTMLInputElement
   await userEvent.upload(input, new File(['hello'], 'notes.txt', { type:'text/plain' }))
@@ -982,7 +995,7 @@ it('keeps an explicitly selected expired image recoverable until removed', async
     expires_at:new Date(Date.now() - 1_000).toISOString(),
     preview_url:'blob:expired-image',
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['image'], 'expired.png', { type:'image/png' }))
   await waitFor(() => expect(uploadDocument).toHaveBeenCalledOnce())
@@ -1002,7 +1015,7 @@ it('revokes an active image preview when the pending attachment is removed', asy
   const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:removed-image')
   vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, new File(['image'], 'removed.png', { type:'image/png' }))
   await screen.findByText('Uploading… 0%')
@@ -1011,7 +1024,7 @@ it('revokes an active image preview when the pending attachment is removed', asy
 })
 
 it('rejects unsupported documents before upload', async () => {
-  mockApi(); render(<ChatPage />)
+  mockApi(); render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
   await userEvent.upload(fileInput, new File(['bad'], 'script.exe', { type:'application/octet-stream' }), { applyAccept:false })
@@ -1040,7 +1053,7 @@ it('rejects a dropped upload during first-thread assignment without leaving the 
     }] } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(textbox, 'First request')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
@@ -1060,7 +1073,7 @@ it('rejects a dropped upload during first-thread assignment without leaving the 
 
 it('accepts a file dropped over the main chat area and prevents send while pending', async () => {
   mockApi(); vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
   const dropTarget = screen.getByTestId('conversation')
   const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
@@ -1076,7 +1089,7 @@ it('accepts a file dropped over the main chat area and prevents send while pendi
 
 it('uploads exactly once when a file is dropped over the composer', async () => {
   mockApi(); vi.mocked(uploadDocument).mockResolvedValue(uploaded)
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
   const composer = screen.getByTestId('composer')
@@ -1087,7 +1100,7 @@ it('uploads exactly once when a file is dropped over the composer', async () => 
 })
 
 it('shows no file drop state for text or link drags and clears nested drag depth', async () => {
-  mockApi(); render(<ChatPage />)
+  mockApi(); render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   const main = screen.getByTestId('conversation').closest('.chat-main')!
   const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
@@ -1116,7 +1129,7 @@ it('keeps the ordinary upload control and drop path disabled for Swico Free', as
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await screen.findByRole('textbox', { name:'Message Swico' })
   expect(screen.queryByRole('button', { name:'Add to prompt' })).not.toBeInTheDocument()
   fireEvent.drop(screen.getByTestId('conversation'), {
@@ -1137,7 +1150,7 @@ it('keeps repository upload hidden when bootstrap capability is disabled', async
     }
     return {} as never
   })
-  render(<ChatPage />)
+  render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', {
     name:'Add to prompt',
   }))
@@ -1162,7 +1175,7 @@ it('uploads, sends, replaces, and explicitly deletes a temporary repository with
     },
   )
   const storage = vi.spyOn(Storage.prototype, 'setItem')
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const uploadArchive = async (name: string) => {
     await userEvent.click(await screen.findByRole('button', {
       name:'Add to prompt',
@@ -1235,7 +1248,7 @@ it('shows safe repository upload failure and expiry without leaking server detai
       ...repositorySnapshot(id, 'expired.zip'),
       expires_at:new Date(Date.now() - 1_000).toISOString(),
     }))
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   const choose = async (name: string) => {
     await userEvent.click(await screen.findByRole('button', {
       name:'Add to prompt',
@@ -1282,7 +1295,7 @@ it('rebinds a fresh-chat repository before activating its SSE thread', async () 
       message_id:`answer-${payload.request_id}`, truncated:false,
     } })
   })
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
   await userEvent.click(screen.getByRole('menuitem', {
     name:/Upload code repository/,
@@ -1330,7 +1343,7 @@ it('clears an expired repository with a visible re-upload notice', async () => {
   vi.mocked(streamChat).mockRejectedValue(new ApiError(404, {
     error:{ code:'repository_expired', message:'private server detail' },
   }))
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
   await userEvent.click(screen.getByRole('menuitem', {
     name:/Upload code repository/,
@@ -1368,7 +1381,7 @@ it('keeps a live repository attached across a transient cache error', async () =
   vi.mocked(streamChat).mockRejectedValue(new ApiError(503, {
     error:{ code:'repository_cache_unavailable' },
   }))
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Add to prompt' }))
   await userEvent.click(screen.getByRole('menuitem', {
     name:/Upload code repository/,
@@ -1402,7 +1415,7 @@ it('clears repository state on logout and Firebase account change', async () => 
   vi.mocked(uploadRepository).mockImplementation(
     async (_user, _file, id) => repositorySnapshot(id),
   )
-  const view = render(<ChatPage />)
+  const view = render(<ChatPage {...chatPageProps} />)
   const upload = async () => {
     await userEvent.click(await screen.findByRole('button', {
       name:'Add to prompt',
@@ -1428,7 +1441,7 @@ it('clears repository state on logout and Firebase account change', async () => 
     uid:'different-firebase-owner',
     getIdToken:vi.fn().mockResolvedValue('other-token'),
   }
-  view.rerender(<ChatPage />)
+  view.rerender(<ChatPage {...chatPageProps} />)
   await waitFor(() => expect(
     screen.queryByText('Repository ready'),
   ).not.toBeInTheDocument())
@@ -1468,7 +1481,7 @@ it('keeps the selected repository for edit, regenerate, and continue in one thre
   vi.mocked(uploadRepository).mockImplementation(
     async (_user, _file, id) => repositorySnapshot(id),
   )
-  const { container } = render(<ChatPage />)
+  const { container } = render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', {
     name:'Repository work',
   }))
@@ -1558,7 +1571,7 @@ it('sends an edited transcript as dictation without automatic synthesis, then re
     } })
   })
 
-  const view = render(<ChatPage />)
+  const view = render(<ChatPage {...chatPageProps} />)
   await userEvent.click(await screen.findByRole('button', { name:'Start voice dictation' }))
   await userEvent.click(await screen.findByRole('button', { name:'Stop recording' }))
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
@@ -1582,3 +1595,4 @@ it('sends an edited transcript as dictation without automatic synthesis, then re
   expect(synthesizeAudio).not.toHaveBeenCalled()
   view.unmount()
 })
+

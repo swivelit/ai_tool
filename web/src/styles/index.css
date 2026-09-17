@@ -1052,18 +1052,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .auth-links button { padding: 2px; border: 0; background: transparent; color: var(--text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer }
 .app-loading { display: flex; min-height: 100dvh; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: var(--muted); background: var(--bg); font-size: 13px }
 
-.legal-page { width: min(760px, calc(100% - 40px)); min-height: 100dvh; margin: 0 auto; padding: 48px 0 80px; overflow-y: auto }
-.legal-page > a { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); text-decoration: none; font-size: 12px }
+.legal-page { width: min(760px, calc(100% - 40px)); height: 100dvh; margin: 0 auto; padding: 48px 0 80px; overflow-y: auto }
+.legal-page > a { display: inline-flex; align-items: center; gap: 6px; color: var(--style-primary); text-decoration: none; font-size: 12px }
 .legal-heading { margin: 70px 0 35px }
-.legal-heading > span { color: var(--muted); font-size: 12px }
-.legal-heading h1 { margin: 8px 0; font-size: clamp(38px, 7vw, 58px); letter-spacing: -.055em }
+.legal-heading > span { color: var(--style-primary); font-size: 12px }
+.legal-heading h1 { margin: 8px 0; color: var(--style-primary); font-size: clamp(38px, 7vw, 58px); letter-spacing: -.055em }
 .legal-heading p { color: var(--muted) }
 .legal-warning { padding: 18px; border: 1px solid #d7b657; border-radius: 12px; background: #fff9e8; color: #55430a }
 :root[data-theme='dark'] .legal-warning { background: #3a321c; color: #ffe9a7 }
 .legal-warning p { margin-bottom: 0; font-size: 13px; line-height: 1.6 }
 .legal-sections { margin-top: 30px }
 .legal-sections section { display: grid; grid-template-columns: 42px 1fr; gap: 12px; padding: 22px 0; border-bottom: 1px solid var(--line) }
-.legal-sections section > span { color: var(--subtle); font-size: 11px }
+.legal-sections section > span { color: var(--style-primary); font-size: 11px }
 .legal-sections h2 { margin: 0; font-size: 17px }
 .legal-sections p { color: var(--muted); font-size: 13px }
 .drawer-scrim { display: none }
@@ -1375,13 +1375,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .cli-guide-brand small { color: var(--muted); font-size: 11px }
 .cli-guide-header nav { display: flex; align-items: center; gap: 16px; font-size: 13px }
 .cli-guide-header nav a { color: var(--muted); text-decoration: none }
-.cli-guide-header nav a:hover { color: var(--text) }
-.cli-guide-sign-in { padding: 8px 13px; border-radius: 8px; background: var(--accent); color: var(--accent-text) !important }
+.cli-guide-header nav a:hover { color: var(--style-primary) }
+.cli-guide-sign-in { padding: 8px 13px; border-radius: 8px; background: var(--style-primary); color: var(--accent-text) !important }
 .cli-guide-layout { display: grid; grid-template-columns: 180px minmax(0, 760px); gap: 72px; width: min(1012px, calc(100% - 40px)); margin: 0 auto; padding: 56px 0 100px }
 .cli-guide-contents { position: sticky; top: 28px; align-self: start; display: grid; gap: 9px; padding-top: 5px; font-size: 12px }
 .cli-guide-contents span { margin-bottom: 4px; color: var(--subtle); font-size: 11px; text-transform: uppercase; letter-spacing: .08em }
 .cli-guide-contents a { color: var(--muted); text-decoration: none }
-.cli-guide-contents a:hover { color: var(--text) }
+.cli-guide-contents a:hover { color: var(--style-primary) }
 .cli-guide-content { min-width: 0 }
 .cli-guide-hero { padding-bottom: 58px }
 .cli-guide-kicker { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px }
@@ -1397,7 +1397,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .cli-guide-section ul { margin: 13px 0 0; padding-left: 20px }
 .cli-guide-section code { padding: 2px 5px; border-radius: 5px; background: var(--surface); color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace }
 .cli-guide-muted { color: var(--subtle) !important; font-size: 12px !important }
-.cli-guide-callout { margin-top: 17px !important; padding: 13px 15px; border-left: 3px solid var(--accent); background: var(--surface); font-size: 13px !important }
+.cli-guide-callout { margin-top: 17px !important; padding: 13px 15px; border-left: 3px solid var(--style-primary); background: var(--surface); font-size: 13px !important }
 .cli-command-block { position: relative; display: flex; min-width: 0; align-items: flex-start; margin: 14px 0; padding: 15px 104px 15px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--surface) }
 .cli-command-block pre { min-width: 0; max-width: 100%; margin: 0; overflow-x: auto; color: var(--text); font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere }
 .cli-command-block code { padding: 0; background: transparent; font: inherit }
@@ -1419,3 +1419,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .cli-command-block { padding: 14px 15px 53px }
   .cli-copy-button { top: auto; right: 10px; bottom: 10px }
 }
+
+
+
+
+
