@@ -1,6 +1,6 @@
 {
   "name": "@swiveltechnologies/swico",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Swico terminal client for authenticated Chat",
   "license": "MIT",
   "type": "module",
