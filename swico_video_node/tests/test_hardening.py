@@ -277,13 +277,19 @@ def test_setup_engine_wrong_dirty_or_interrupted_checkout(local,monkeypatch):
 
 
 def test_shell_explicit_python_with_spaces_and_no_brew(tmp_path):
-    # Shell selection/routing only; no fake inference/platform readiness.
+    # Argument routing only. Full prerequisite/control flow is tested separately
+    # with temporary host fixtures in test_first_run.py, not skipped by the CLI.
+    from pathlib import Path
+    source=Path("swico_video_node/scripts")
+    scripts=tmp_path/"repo space/swico_video_node/scripts";scripts.mkdir(parents=True)
+    (scripts/"setup_macos.sh").write_text((source/"setup_macos.sh").read_text())
+    (scripts/"prerequisites_macos.sh").write_text('video_prerequisites() { video_python="$1"; }\n')
     executable=tmp_path/"native python fixture"
     executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n');executable.chmod(0o700)
-    result=subprocess.run(["/bin/bash","swico_video_node/scripts/setup_macos.sh","--python",str(executable)],capture_output=True,text=True)
+    result=subprocess.run(["/bin/bash",str(scripts/"setup_macos.sh"),"--python",str(executable)],capture_output=True,text=True)
     assert result.returncode==0 and result.stdout=="-m\nswico_video_node.bootstrap\n"
-    bad=subprocess.run(["/bin/bash","swico_video_node/scripts/setup_macos.sh","--python","relative"],capture_output=True,text=True)
-    assert bad.returncode==1 and "MacPorts" in bad.stderr
+    bad=subprocess.run(["/bin/bash",str(scripts/"setup_macos.sh"),"--python","relative"],capture_output=True,text=True)
+    assert bad.returncode==2 and "absolute" in bad.stderr and "MacPorts" in bad.stderr
 
 
 def test_unavailable_wheels_fail_without_install_or_source_fallback(local,monkeypatch):

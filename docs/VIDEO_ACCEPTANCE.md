@@ -11,11 +11,22 @@ From the repository root, with the existing test environment:
 ```bash
 backend/.venv/bin/python -m pytest swico_video_node/tests -q
 bash -n swico_video_node/scripts/setup_macos.sh
+bash -n swico_video_node/scripts/prerequisites_macos.sh
 backend/.venv/bin/python scripts/check-tracked-secrets.py
 backend/.venv/bin/python scripts/check-web-product-language.py
 backend/.venv/bin/python scripts/check-legal-publication.py
 git diff --check
 ```
+
+Before Python exists, on the operator Mac use
+`bash swico_video_node/scripts/setup_macos.sh --check`. Exit 1 with missing
+prerequisites is expected, not video failure. No worker import, venv creation,
+installer, sudo, credential change or API request occurs. Follow the guarded
+Tahoe installer block in VIDEO_MAC_SETUP.md; opening its webpage installs nothing.
+`test_first_run.py` executes the actual shell orchestration with fixture OS/tool
+facts and the exact documented installer block with inert command substitutes.
+It checks hash-before-privilege ordering and interruption/failure stops, not a
+real package installation. A real bad checksum is also tested without installing.
 
 From `backend/`:
 
@@ -36,9 +47,13 @@ From `cli/`: `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`,
 `npm run build`, `npm run release:check -- --keep-artifact`.
 The launcher tests run public `.cmd` shim semantics on Windows and a shebang
 launcher on POSIX; wrong-version/help/path confinement are required on BOTH.
-Only POSIX execute-bit/symlink semantics are platform-specific. Native Windows CI
-must still run; a Darwin fixture is not a Windows pass. Linux agent acceptance
-remains Linux-only. Canonical CI dependencies/provenance/version are unchanged.
+Only POSIX execute-bit/symlink semantics are platform-specific. The operator-supplied
+parent-commit main CI run `35346729754` passed all seven jobs, including Windows
+CLI/native ConPTY and canonical artifact. That is historical hosted evidence,
+not a new CI execution in this first-run pass. Separate Agent Native Isolation
+run `35346729719` passed hostile isolation but failed installed coding-agent
+acceptance; it remains unchanged/out of scope, not a video-worker failure.
+Canonical CI dependencies/provenance/version are unchanged (current CLI 0.2.9).
 
 From `web/`: `npm ci`, `npm run typecheck`, `npm run lint`,
 `npm run test -- --run`, `npx playwright test e2e/videos.spec.ts --project=chromium`,
@@ -49,6 +64,8 @@ configuration. Browser fixtures do not charge, send email or run inference.
 
 | Check | What it proves | What it does not prove |
 |---|---|---|
+| shell prerequisites=present | Selected native Python/tool files and CLT found | pip/venv health, codec execution, authentication or inference |
+| port version | MacPorts executable runs after installation | Python, FFmpeg, model permissions or worker readiness |
 | init digest | Local protected credential exists | Render has matching digest |
 | doctor API authenticated | Exact credential accepted by HTTPS health | Models, publication, output quality |
 | schema_ready / control_initialized | Tables / singleton independently | Active native worker |

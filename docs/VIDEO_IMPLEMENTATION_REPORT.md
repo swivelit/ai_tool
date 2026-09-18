@@ -1,6 +1,98 @@
 # Website video corrective implementation evidence — 2026-09-18
 
-## Current corrective pass (not native/provider acceptance)
+## Current first-run correction (not native/provider acceptance)
+
+Starting HEAD: `d5e35f8c2cd5f4951cc4830848541f076687e47f`, automated CLI
+release **0.2.9**, parent `4e755ff50ffeed4864e7cfa2194bb5fa0a6056a0`.
+Both CLI manifests remain 0.2.9. Read the first-run prompt and operator review
+completely; no applicable AGENTS.md was found. The supplied prompt/review remain
+unmodified user files. No backend, web, CLI, workflow, runtime calibration or
+migration change is needed for this scoped fix.
+
+Root cause: the operator opened MacPorts' website but never downloaded/installed
+its package. `/opt/local/bin/port` therefore does not exist. PATH and selfupdate
+cannot install it. This is independent of model rights, token pairing and DB state.
+
+Implemented a dependency-free Bash 3.2 prerequisite helper and `setup_macos.sh
+--check`. It independently reports host/CLT/MacPorts/Python/FFmpeg/ffprobe, handles
+native alternative tools and paths with spaces, preserves reviewed tool config,
+and stops bootstrap when prerequisites fail. Check-only reads no credential,
+imports no worker, and makes no state/host/network change. Ordinary setup keeps
+its existing venv/wheel/engine/codec safeguards and never invokes sudo.
+
+The runbook now downloads the exact Tahoe v26 package over HTTPS, verifies the
+official release-asset SHA-256 BEFORE explicit operator sudo, installs it and
+requires `port version`. Installer control flow is fixture-tested. The full
+sequence covers tool setup, preserving init, independent pairing, genuine rights,
+both imports/reviews, real benchmarks with second-terminal playback, metadata,
+foreground then LaunchAgent acceptance, isolated providers and unchanged rollback.
+Nothing runs a privileged installer automatically.
+
+### Evidence from this first-run pass only
+
+Developer host: Darwin 26.6.2/x86_64, existing backend test Python 3.14.7. This is
+NOT the operator's Tahoe 26.7/Python 3.12 worker. Shell tests use fixture host facts;
+actual process-control tests use disposable local children.
+
+- `backend/.venv/bin/python -m pytest swico_video_node/tests -q`:
+  **108 passed in 9.88s**, including 33 new first-run tests. No skips.
+  An initial enclosing-sandbox run had 106 pass/1 failure because `ps` was denied
+  in an existing process cleanup test; it was rerun with authorization, not skipped.
+  One additional relative-state test was added before the final run.
+- Focused final rerun: `backend/.venv/bin/python -m pytest
+  swico_video_node/tests/test_first_run.py -q`: **33 passed in 2.44s**.
+- `bash swico_video_node/scripts/setup_macos.sh --check`: expected exit **1** on
+  this developer host; native Intel/CLT and existing FFmpeg/ffprobe detected,
+  MacPorts and Python 3.12 missing. No bootstrap/host install/API call followed.
+- Both shell entrypoints pass `bash -n`; all **29** runbook Bash blocks pass
+  syntax parsing under both `/bin/bash` and `/bin/zsh` (no installation performed).
+  `scripts/check-tracked-secrets.py` passes, as does the same scanner over tracked
+  plus untracked files. `scripts/check-web-product-language.py`,
+  `scripts/check-legal-publication.py` and `git diff --check` pass. The publication
+  check validates existing Chat-policy metadata, NOT approval of the video draft.
+  All **5** unchanged workflow YAML files parse; actionlint is not installed.
+- `cd backend; .venv/bin/python -m alembic -c alembic.ini heads`:
+  **20260918_website_video (head)**, source-only check, no database connection.
+- Official MacPorts install/port definitions/release-asset metadata rechecked.
+  Asset `529636707`, 2.12.6 Tahoe v26 SHA-256
+  `ddd90723ba470a688296bb520335e1c7c08835d82df4141e6807b411bc8b78e8`.
+  Metadata verification is NOT downloading/installing that package.
+- Full backend/CLI/web suites, new hosted CI, native Python 3.12 imports,
+  synthetic codec execution, model inference, template QA, provider TEST and SMTP
+  delivery were **NOT RUN in this pass**. Prior counts below are historical only.
+
+Supplied hosted main CI **35346729754** passed all seven jobs for the correction
+parent, including native Windows/ConPTY. Separate Agent Native Isolation
+**35346729719** failed installed Linux coding-agent acceptance after hostile
+isolation passed. No workflow was disabled/changed; no new hosted result is claimed.
+
+No migration added/edited/executed; source head remains
+`20260918_website_video` (production head from supplied evidence, not queried).
+No deploy, commit, push, publish, template upload, credential rotation, provider
+charge/refund, customer email, model download or host installation performed.
+Pricing, 600-second retention, owner/tester allowances, chat credits, subscriptions,
+Android and Windows Swico Free remain unchanged.
+
+Render now: no changes if both video flags already false. Pair only the real
+worker digest after preserving init; save/deploy only an actual authorized value
+change. No new service or migration. Real rights/publication approval, native
+full-clip calibration, foreground/managed rendering, provider/SMTP and cache
+acceptance remain release prerequisites. Configurations and hashes cannot supply
+them. Retain authenticated drain/settlement for rollback; never downgrade/stamp.
+
+Changed paths: `swico_video_node/scripts/{setup_macos,prerequisites_macos}.sh`,
+`swico_video_node/tests/{test_first_run,test_hardening}.py`,
+`docs/{VIDEO_MAC_SETUP,VIDEO_ACCEPTANCE,VIDEO_RELEASE_CHECKLIST,VIDEO_IMPLEMENTATION_REPORT}.md`.
+
+Suggested commit: `fix(video): clarify first-run Mac installation and prerequisite checks`
+
+---
+
+## Historical corrective parent (4e755ff5, not this first-run pass)
+
+The 0.2.8 version, test counts, changed paths and then-pending hosted Windows run
+below describe that earlier implementation. Current checkout is 0.2.9 and the
+subsequent supplied main CI run passed as recorded above.
 
 Starting HEAD: `04cca915041da9968aaff60a2d897c44703d713c`,
 `feat(video): add paid template face swaps with an Intel Mac worker`.

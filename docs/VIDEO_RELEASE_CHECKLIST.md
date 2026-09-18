@@ -4,6 +4,26 @@ Implementation is not permission to deploy. No templates, weights, role labels,
 commercial grants or measured clip timings are supplied by this repository.
 Do not turn on paid checkout based on mocks or a schema check alone.
 
+## First-run operator checkpoints
+
+- [ ] On the actual Intel Mac, run the dependency-free
+  `bash swico_video_node/scripts/setup_macos.sh --check` before bootstrap.
+  Missing prerequisites must stop normal setup, without sudo or state changes.
+- [ ] If using MacPorts, complete the guarded, checksum-verified **installation**
+  in [VIDEO_MAC_SETUP.md](VIDEO_MAC_SETUP.md#2-actually-install-macports-operator-video-mac-only).
+  Require `/opt/local/bin/port version` before selfupdate or package commands.
+  An already supported native alternative is valid; MacPorts is not mandatory.
+- [ ] Verify Python 3.12, pip, FFmpeg AND ffprobe, then ordinary bootstrap.
+  Synthetic codec/import success is not native model inference or calibration.
+- [ ] Init preserves the token; independently require doctor API authentication.
+  Configured digest alone is not pairing. Overall readiness may remain false
+  until assets/calibration and first worker heartbeat; do not create a startup loop.
+
+These checkpoints do not authorize template publication, feature enablement,
+provider calls or legal approval. Keep both video flags false during provisioning;
+unchanged Render values do not need another save/deploy. Current CLI is 0.2.9;
+no new migration is needed beyond already-deployed `20260918_website_video`.
+
 ## Automated local evidence
 
 Run from the repository root (the backend virtual environment is separate from
