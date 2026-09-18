@@ -73,7 +73,7 @@ weakened sandbox policy in RC8.
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
 | macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and progressive profile harness are present; current Intel host denies sandbox application before hostile probes, so native enforcement remains unverified |
-| Linux sandbox | IMPLEMENTED + UNVERIFIED | bubblewrap plus a strict dedicated hostile-verification workflow; this checkout has not rerun that native job after the readiness-mount fix |
+| Linux sandbox | IMPLEMENTED + NATIVE VERIFIED | The strict dedicated workflow passed all required bubblewrap hostile probes; installed coding-agent acceptance remains a separate pilot gate |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
 | Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
 | Secret environment isolation | IMPLEMENTED + UNVERIFIED | Cleared/minimal child environment plus fake-secret probe; cross-platform proof pending |

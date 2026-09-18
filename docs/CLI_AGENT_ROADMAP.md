@@ -45,8 +45,12 @@ Full-auto or dangerous modes are not planned until a real platform-enforced
 sandbox exists on the target platform.
 
 The production public Chat rollout remains `SWICO_CLI_AGENT_ENABLED=false`.
-After native hostile sandbox proof and the disposable coding-loop acceptance,
-an agent pilot may use:
+The dedicated Linux hostile-isolation workflow now provides native bubblewrap
+evidence. The remaining promotion gate is the installed-artifact harness in
+`cli/scripts/accept-installed-agent.mjs`; it must be run on the same Linux
+platform against the canonical tarball and must produce current evidence for
+the bounded coding loop and exactly-once settlement. Only after both gates
+pass may an agent pilot use:
 
 ```dotenv
 SWICO_CLI_ENABLED=true

@@ -38,6 +38,26 @@ profile, and exits nonzero unless native readiness is genuinely established.
 The repository command `npm run sandbox:diagnose:macos` is only a thin wrapper
 around that installed runtime implementation.
 
+After a strict Linux native job has passed, run the installed-artifact harness
+against the canonical tarball from a disposable Linux checkout:
+
+```text
+cd cli
+npm run acceptance:installed-agent -- \
+  --artifact /absolute/path/swiveltechnologies-swico-<version>.tgz \
+  --evidence /absolute/path/swico-installed-agent-evidence.json
+```
+
+The harness launches the installed `swico` command through a PTY, uses only a
+local planner fixture, requires the real bubblewrap verification, performs a
+bounded edit/test/repair cycle, and checks exactly-once action/result/run
+settlement. It is not a provider or billing acceptance. Pointing
+`SWICO_CLI_AGENT_E2E_EVIDENCE` at the resulting evidence file makes
+`swico release-readiness --json` report `agent_e2e_ready=ready` and
+`agent_pilot_ready=ready` only when the current package/runtime and sandbox
+also match the evidence. Missing, stale, or mismatched evidence remains
+unverified.
+
 ## Proof required before enabling an agent
 
 `swico sandbox status` reports runtime detection and a diagnostic such as

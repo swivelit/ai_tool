@@ -13,7 +13,7 @@ import { WorktreeManager } from '../dist/worktrees.js'
 import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
 import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
 import { Workspace } from '../dist/workspace.js'
-import { releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
+import { readInstalledAgentEvidence, releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
@@ -285,6 +285,25 @@ test('release readiness reports sandbox proof as a required local-agent gate wit
     assert.ok(report.agent_blockers.some(item => /sandbox/i.test(item)))
     assert.ok(report.required_blockers.every(item => !/sandbox/i.test(item)))
     assert.equal(report.checks.agent_sandbox_ready, report.sandbox.verified ? 'ready' : 'blocked')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('installed-agent evidence is strict, current-package bound, and cannot by itself bypass sandbox proof', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'swico-stage3-agent-evidence-'))
+  const evidence = join(root, 'evidence.json')
+  try {
+    const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+    const valid = {
+      schema_version: 1, status: 'passed', package: packageJson.name, version: packageJson.version,
+      artifact_sha256: 'a'.repeat(64), platform: process.platform, architecture: process.arch,
+      installed_launcher: true, sandbox_verified: true, hostile_probes_passed: true,
+      scenario: 'installed-agent-coding-loop', action_count: 6, result_count: 6, settlement_count: 1,
+      final_diff_sha256: 'b'.repeat(64), completed_at: new Date().toISOString(),
+    }
+    await writeFile(evidence, JSON.stringify(valid))
+    assert.equal((await readInstalledAgentEvidence({ SWICO_CLI_AGENT_E2E_EVIDENCE: evidence })).state, 'ready')
+    await writeFile(evidence, JSON.stringify({ ...valid, version: '0.0.0' }))
+    assert.equal((await readInstalledAgentEvidence({ SWICO_CLI_AGENT_E2E_EVIDENCE: evidence })).state, 'unverified')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

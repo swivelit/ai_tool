@@ -436,7 +436,7 @@ async function sandboxCommand(args: string[], env = process.env): Promise<void> 
 }
 
 async function releaseReadinessCommand(args: string[], env = process.env): Promise<number> {
-  const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), report = await releaseReadiness(metadata.root)
+  const metadata = await discoverRepository(env.SWICO_CLI_WORKSPACE ?? process.cwd()), report = await releaseReadiness(metadata.root, env)
   if (args.includes('--json')) console.log(JSON.stringify(report, null, 2)); else console.log(formatReadiness(report))
   return report.required_blockers.length ? 2 : 0
 }

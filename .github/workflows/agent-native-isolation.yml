@@ -92,10 +92,26 @@ jobs:
           cat "$RUNNER_TEMP/swico-linux-sandbox.json"
           node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-linux-sandbox.json", "utf8")); if (process.argv[1] !== "0" || report.verified !== true || report.probes.some(p => p.observed === "not_run" || p.passed !== true)) { console.error(JSON.stringify(report, null, 2)); process.exit(1); }' "$verify_status"
         working-directory: cli
+      - name: Pack the clean installed-artifact candidate
+        run: |
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --json \
+            | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk); process.stdin.on("end", () => { const item = JSON.parse(text)[0]; if (!item?.filename) process.exit(1); process.stdout.write(`${process.env.RUNNER_TEMP}/${item.filename}`); })'
+        working-directory: cli
+        id: pack
+      - name: Run installed Linux coding-agent acceptance
+        run: |
+          artifact="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'swiveltechnologies-swico-*.tgz' -print -quit)"
+          test -n "$artifact"
+          npm run acceptance:installed-agent -- \
+            --artifact "$artifact" \
+            --evidence "$RUNNER_TEMP/swico-installed-agent-evidence.json"
+        working-directory: cli
       - name: Upload hostile verification report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: swico-linux-sandbox-report
-          path: ${{ runner.temp }}/swico-linux-sandbox.json
+          path: |
+            ${{ runner.temp }}/swico-linux-sandbox.json
+            ${{ runner.temp }}/swico-installed-agent-evidence.json
           if-no-files-found: warn
