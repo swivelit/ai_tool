@@ -2606,7 +2606,7 @@ def get_web_cloud_artifact(job_id: str, artifact_id: str, session: Session = Dep
     _settings, user = _web_cloud_access(session, auth, admission=False)
     row = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.id == artifact_id, CliCloudArtifact.job_id == job_id, CliCloudArtifact.user_id == int(user.id))).first()
     if row is None: raise HTTPException(404, "Cloud artifact not found")
-    return Response(content=row.payload, media_type=row.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{row.kind}-{row.id}.bin"', "X-Swico-Artifact-SHA256": row.sha256})
+    return Response(content=row.payload, media_type=row.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{row.kind}-{row.id}.bin"', "X-Content-Type-Options": "nosniff", "X-Swico-Artifact-SHA256": row.sha256})
 
 
 @router.get("/settings/profile")

@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { loadConfig } from '../dist/configuration.js'
 import { classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
@@ -13,7 +14,9 @@ import { loadPermissionProfile, savePermissionProfile } from '../dist/permission
 import { Workspace } from '../dist/workspace.js'
 import { releaseReadiness, validPackageLicense } from '../dist/release_readiness.js'
 import { spawn } from 'node:child_process'
-import { loginMcpOAuth } from '../dist/mcp_oauth.js'
+import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
+import { loginMcpOAuth, logoutMcpOAuth, mcpAuthorizationHeader, mcpOAuthStatus } from '../dist/mcp_oauth.js'
 
 const run = promisify(execFile)
 
@@ -33,6 +36,71 @@ test('project configuration cannot elevate sandbox or approval policy', async ()
 
 test('MCP OAuth rejects private non-loopback destinations before discovery', async () => {
   await assert.rejects(() => loginMcpOAuth('https://169.254.169.254/mcp', 'swico-test'), /private or link-local/)
+})
+
+test('MCP OAuth completes a local authorization-code lifecycle with refresh, binding, and revocation', async () => {
+  const server = createServer()
+  let refreshes = 0
+  let expectedChallenge = ''
+  server.on('request', async (request, response) => {
+    if (request.url === '/.well-known/oauth-authorization-server') {
+      const origin = `http://127.0.0.1:${(server.address()).port}`
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, revocation_endpoint: `${origin}/revoke`, code_challenge_methods_supported: ['S256'], scopes_supported: ['mcp'] }))
+      return
+    }
+    if (request.url === '/mcp') {
+      const authorized = request.headers.authorization === `Bearer refreshed-token`
+      response.statusCode = authorized ? 200 : 401
+      response.end(JSON.stringify({ ok: authorized }))
+      return
+    }
+    if (request.url === '/token' && request.method === 'POST') {
+      let body = ''; for await (const chunk of request) body += chunk
+      const values = new URLSearchParams(body)
+      if (values.get('grant_type') === 'authorization_code') {
+        const expected = createHash('sha256').update(values.get('code_verifier') ?? '').digest('base64url')
+        assert.equal(expected, expectedChallenge)
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ access_token: 'initial-token', refresh_token: 'refresh-token', token_type: 'Bearer', expires_in: 300, scope: 'mcp' }))
+      } else if (values.get('grant_type') === 'refresh_token') {
+        refreshes += 1; response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ access_token: 'refreshed-token', refresh_token: 'refresh-token-rotated', token_type: 'Bearer', expires_in: 300, scope: 'mcp' }))
+      } else { response.statusCode = 400; response.end('bad grant') }
+      return
+    }
+    if (request.url === '/revoke' && request.method === 'POST') { response.statusCode = 200; response.end('{}'); return }
+    response.statusCode = 404; response.end('not found')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const origin = `http://127.0.0.1:${server.address().port}`, store = join(await mkdtemp(join(tmpdir(), 'swico-mcp-oauth-')), 'token')
+  const env = { ...process.env, SWICO_CLI_MCP_TOKEN_FILE: store }
+  let authUrl = ''
+  try {
+    const login = loginMcpOAuth(origin, 'swico-test-client', 'mcp', env, line => { authUrl = line.split('\n').at(-1)?.trim() ?? '' })
+    for (let attempt = 0; attempt < 100 && !authUrl; attempt += 1) await new Promise(resolve => setImmediate(resolve))
+    assert.ok(authUrl)
+    const authorization = new URL(authUrl)
+    assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256')
+    expectedChallenge = authorization.searchParams.get('code_challenge') ?? ''
+    assert.ok(expectedChallenge)
+    // The fake authorization endpoint returns the callback code; the real
+    // token exchange must still prove the generated PKCE verifier.
+    const callback = new URL(authorization.searchParams.get('redirect_uri'))
+    callback.searchParams.set('state', authorization.searchParams.get('state'))
+    callback.searchParams.set('code', 'test-code')
+    await fetch(callback)
+    await login
+    assert.deepEqual(await mcpOAuthStatus(origin, env), { configured: true, expires_at: (await mcpOAuthStatus(origin, env)).expires_at, issuer: origin })
+    const tokenPath = `${store}.${createHash('sha256').update(origin).digest('hex').slice(0, 32)}`
+    const saved = JSON.parse(await readFile(tokenPath, 'utf8')); saved.expires_at = 0; await writeFile(tokenPath, JSON.stringify(saved))
+    assert.equal(await mcpAuthorizationHeader(origin, env), 'Bearer refreshed-token')
+    assert.equal(refreshes, 1)
+    const request = await fetch(`${origin}/mcp`, { headers: { authorization: await mcpAuthorizationHeader(origin, env) } })
+    assert.equal(request.status, 200)
+    assert.equal(await mcpAuthorizationHeader('http://127.0.0.1:1', env), undefined)
+    await logoutMcpOAuth(origin, env)
+    assert.deepEqual(await mcpOAuthStatus(origin, env), { configured: false })
+  } finally { await new Promise(resolve => server.close(resolve)); }
 })
 
 test('project search configuration can narrow but never elevate network or billing behavior', async () => {
@@ -253,7 +321,8 @@ test('separate CLI processes serialize worker admission through the durable lock
     await run('git', ['init', '-q', root]); await run('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', '-C', root, 'commit', '--allow-empty', '-m', 'init'])
     const env = { ...process.env, SWICO_CLI_WORKERS_FILE: join(stateRoot, 'workers.json'), SWICO_CLI_WORKTREE_ROOT: join(stateRoot, 'worktrees') }
     const modulePath = join(process.cwd(), 'dist/multi_agent.js')
-    const code = `import { execFileSync } from 'node:child_process'; import { MutatingWorkerCoordinator } from ${JSON.stringify(modulePath)}; const root=process.env.TEST_ROOT; const childEnv={...process.env,SWICO_CLI_WORKERS_FILE:${JSON.stringify(join(stateRoot, 'workers.json'))},SWICO_CLI_WORKTREES_FILE:${JSON.stringify(join(stateRoot, 'worktrees.json'))},SWICO_CLI_WORKTREE_ROOT:${JSON.stringify(join(stateRoot, 'worktrees'))}}; const head=execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim(); const metadata={root,gitAvailable:true,head,branch:'master',dirty:false,staged:[],unstaged:[],untracked:[]}; try { await new MutatingWorkerCoordinator(metadata,childEnv,1).start('concurrent fixture'); console.log('admitted'); } catch (error) { console.error(error.message); process.exitCode=2 }`
+    const moduleUrl = pathToFileURL(modulePath).href
+    const code = `import { execFileSync } from 'node:child_process'; import { MutatingWorkerCoordinator } from ${JSON.stringify(moduleUrl)}; const root=process.env.TEST_ROOT; const childEnv={...process.env,SWICO_CLI_WORKERS_FILE:${JSON.stringify(join(stateRoot, 'workers.json'))},SWICO_CLI_WORKTREES_FILE:${JSON.stringify(join(stateRoot, 'worktrees.json'))},SWICO_CLI_WORKTREE_ROOT:${JSON.stringify(join(stateRoot, 'worktrees'))}}; const head=execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8'}).trim(); const metadata={root,gitAvailable:true,head,branch:'master',dirty:false,staged:[],unstaged:[],untracked:[]}; try { await new MutatingWorkerCoordinator(metadata,childEnv,1).start('concurrent fixture'); console.log('admitted'); } catch (error) { console.error(error.message); process.exitCode=2 }`
     const launch = () => new Promise(resolve => { const child = spawn(process.execPath, ['--input-type=module', '-e', code], { cwd: root, env: { ...env, TEST_ROOT: root }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; child.stdout.on('data', value => { out += value }); child.stderr.on('data', value => { err += value }); child.on('close', status => resolve({ status, out, err })) })
     const results = await Promise.all([launch(), launch()])
     assert.equal(results.filter(item => item.status === 0).length, 1, JSON.stringify(results))

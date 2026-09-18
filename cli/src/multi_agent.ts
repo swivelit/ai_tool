@@ -111,7 +111,18 @@ export class MutatingWorkerCoordinator {
         try {
           const created = (await import('node:fs/promises')).stat(this.lockPath)
           const stat = await created
-          if (Date.now() - stat.mtimeMs > 120_000) { await rm(this.lockPath, { recursive: true, force: true }); continue }
+          if (Date.now() - stat.mtimeMs > 120_000) {
+            let ownerPid: number | undefined
+            try { ownerPid = Number(JSON.parse(readFileSync(ownerFile, 'utf8')).pid) } catch { /* crashed before owner metadata was durable */ }
+            let ownerAlive = false
+            if (ownerPid !== undefined && Number.isInteger(ownerPid) && ownerPid > 0) {
+              try { process.kill(ownerPid, 0); ownerAlive = true } catch (probeError) { ownerAlive = (probeError as NodeJS.ErrnoException).code === 'EPERM' }
+            }
+            // Age alone is not sufficient: a long-running Git operation may
+            // legitimately hold the lock. Reclaim only an old lock whose
+            // recorded owner is absent or no longer alive.
+            if (!ownerAlive) { await rm(this.lockPath, { recursive: true, force: true }); continue }
+          }
         } catch { /* another process may be replacing the lock */ }
         if (Date.now() >= deadline) throw new Error('Timed out waiting for the Swico worker state lock.')
         await delay(50)

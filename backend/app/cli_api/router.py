@@ -389,6 +389,9 @@ def _cloud_artifact_view(item: CliCloudArtifact) -> dict[str, object]:
 def store_cloud_artifact(job_id: str, payload: CloudArtifactRequest, runner_token: str | None = Header(default=None, alias="X-Swico-Runner-Token"), runner_id: str | None = Header(default=None, alias="X-Swico-Runner-Id"), runner_capability: str | None = Header(default=None, alias="X-Swico-Runner-Capability"), session: Session = Depends(get_session)):
     """Persist one bounded result artifact before the runner is destroyed."""
     _settings, runner_id = _runner_access(runner_token, runner_id, admission=False)
+    content_type = payload.content_type.strip().lower()
+    if content_type in {"text/html", "application/xhtml+xml", "image/svg+xml"} or any(ord(char) < 0x20 for char in content_type):
+        raise HTTPException(422, {"code": "cloud_artifact_content_type_blocked", "message": "This artifact content type cannot be served as a downloadable review artifact."})
     job = session.exec(select(CliCloudJob).where(CliCloudJob.id == job_id, CliCloudJob.runner_id == runner_id).with_for_update()).first()
     if job is None or not verify_runner_capability(runner_capability or "", job_id=job_id, runner_id=runner_id, attempt=job.attempt, action="execute"):
         raise HTTPException(409, {"code": "cloud_job_lease_invalid", "message": "The cloud job lease is no longer active."})
@@ -403,7 +406,7 @@ def store_cloud_artifact(job_id: str, payload: CloudArtifactRequest, runner_toke
         return _cloud_artifact_view(existing) | {"idempotent": True}
     total = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.job_id == job.id)).all()
     if sum(item.size_bytes for item in total) + len(data) > 8 * 1024 * 1024: raise HTTPException(413, {"code": "cloud_artifact_budget_exceeded", "message": "Cloud result artifacts exceed the per-job bound."})
-    item = CliCloudArtifact(job_id=job.id, user_id=int(job.user_id), attempt=job.attempt, kind=payload.kind, content_type=payload.content_type, sha256=payload.sha256, size_bytes=len(data), payload=data)
+    item = CliCloudArtifact(job_id=job.id, user_id=int(job.user_id), attempt=job.attempt, kind=payload.kind, content_type=content_type, sha256=payload.sha256, size_bytes=len(data), payload=data)
     session.add(item); session.commit(); session.refresh(item)
     return _cloud_artifact_view(item)
 
@@ -421,7 +424,7 @@ def get_cloud_artifact(job_id: str, artifact_id: str, authorization: str | None 
     _settings, _cli_session, user = _cloud_access(authorization, session, admission=False)
     item = session.exec(select(CliCloudArtifact).where(CliCloudArtifact.id == artifact_id, CliCloudArtifact.job_id == job_id, CliCloudArtifact.user_id == int(user.id))).first()
     if item is None: raise HTTPException(404, "Cloud artifact not found")
-    return Response(content=item.payload, media_type=item.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{item.kind}-{item.id}.bin"', "X-Swico-Artifact-SHA256": item.sha256})
+    return Response(content=item.payload, media_type=item.content_type, headers={"Content-Disposition": f'attachment; filename="swico-{item.kind}-{item.id}.bin"', "X-Content-Type-Options": "nosniff", "X-Swico-Artifact-SHA256": item.sha256})
 
 
 def _grant_error(code: str, description: str, status: int = 400):

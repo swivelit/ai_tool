@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 import sys
+import base64
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -13,6 +16,7 @@ from cloud_runner.snapshot import SnapshotError, create_snapshot_manifest
 from cloud_runner.e2b_executor import E2BConfigurationError, E2BSettings, E2BExecutionError, SnapshotFile
 from cloud_runner.controller import CloudController, ControllerConfigurationError, ControllerSettings
 from app.cli_api.runner_attestation import make_test_attestation, verify_runner_attestation
+from app.cli_api.config import CliConfigurationError, cli_settings
 
 
 def test_runner_capability_is_job_runner_and_time_bound(monkeypatch: pytest.MonkeyPatch):
@@ -37,6 +41,32 @@ def test_runner_attestation_is_expiring_signed_evidence():
     assert not verify_runner_attestation(evidence, secret="secret", now=200, expected={"template_id_or_digest": "different-template"})
     assert not verify_runner_attestation(evidence, secret="wrong", now=200)
     assert not verify_runner_attestation(evidence, secret="secret", now=701)
+
+
+def test_render_private_http_transport_is_explicit_and_host_pinned():
+    common = {
+        "SWICO_CLI_ENABLED": "true",
+        "SWICO_CLI_AGENT_ENABLED": "true",
+        "SWICO_CLI_AGENT_ALLOWED_EMAILS": "pilot@example.test",
+        "SWICO_CLI_CLOUD_AGENT_ENABLED": "true",
+        "SWICO_CLI_CLOUD_RUNNER_TOKEN": "secret",
+        "SWICO_CLI_CLOUD_RUNNER_ID": "runner-1",
+        "SWICO_CLI_CLOUD_RUNNER_AUDIENCE": "swico-backend",
+        "SWICO_CLI_CLOUD_RUNNER_EXECUTOR": "e2b",
+        "SWICO_CLI_CLOUD_TEMPLATE": "template-1",
+        "SWICO_CLI_CLOUD_RUNNER_REVISION": "revision-1",
+        "SWICO_CLI_CLOUD_POLICY_SHA256": "policy-1",
+        "SWICO_CLI_CLOUD_NETWORK_POLICY": "disabled",
+    }
+    evidence = make_test_attestation(secret="secret", runner_id="runner-1", template_id_or_digest="template-1", runner_revision="revision-1", policy_sha256="policy-1")
+    common["SWICO_CLI_CLOUD_RUNNER_ATTESTATION"] = evidence
+    https = cli_settings({**common, "SWICO_CLI_CLOUD_RUNNER_URL": "https://runner.example.test"})
+    assert https.cloud_runner_configured and https.cloud_runner_handshake
+    private = cli_settings({**common, "SWICO_CLI_CLOUD_RUNNER_URL": "http://runner.internal:10000", "SWICO_CLI_CLOUD_RUNNER_TRANSPORT": "render_private_http", "SWICO_CLI_CLOUD_RUNNER_PRIVATE_HOST": "runner.internal"})
+    assert private.cloud_runner_transport == "render_private_http"
+    with pytest.raises(CliConfigurationError): cli_settings({**common, "SWICO_CLI_CLOUD_RUNNER_URL": "http://runner.example.test"})
+    with pytest.raises(CliConfigurationError): cli_settings({**common, "SWICO_CLI_CLOUD_RUNNER_URL": "https://user:password@runner.example.test"})
+    with pytest.raises(CliConfigurationError): cli_settings({**common, "SWICO_CLI_CLOUD_RUNNER_URL": "http://other.internal:10000", "SWICO_CLI_CLOUD_RUNNER_TRANSPORT": "render_private_http", "SWICO_CLI_CLOUD_RUNNER_PRIVATE_HOST": "runner.internal"})
 
 
 def test_snapshot_manifest_is_bounded_hashed_and_secret_aware():
@@ -85,6 +115,34 @@ def test_controller_executes_only_task_jobs_and_reports_terminal_result():
         "https://runner.example.test/v1/jobs/job-1/execute",
         "https://api.example.test/api/cli/v1/cloud/runner/jobs/job-1/result",
     ]
+
+
+def test_controller_uploads_structured_artifacts_before_terminal_result():
+    patch = b"diff --git a/main.py b/main.py\n"
+    terminal: dict | None = None
+    calls: list[str] = []
+
+    def transport(method: str, url: str, body: dict | None, headers: dict[str, str]) -> dict:
+        calls.append(url)
+        if url.endswith("/cloud/runner/jobs/claim"):
+            return {"job": {"id": "job-artifact", "source": "task_only", "task": "repair", "actions": [{"type": "read", "path": "main.py"}]}, "runner_url": "https://runner.example.test", "runner_capability": "capability"}
+        if url.endswith("/v1/jobs/job-artifact/execute"):
+            return {"status": "completed", "exit_code": 0, "result": {"protocol": "swico-cloud-result-v1", "summary": "repaired", "artifacts": [{"kind": "patch", "content_type": "text/x-diff", "content_base64": base64.b64encode(patch).decode(), "sha256": hashlib.sha256(patch).hexdigest()}]}}
+        if url.endswith("/cloud/runner/jobs/job-artifact/artifacts"):
+            assert body is not None and "content_base64" in body
+            return {"id": "artifact-1", "kind": "patch", "sha256": body["sha256"], "size_bytes": len(patch)}
+        if url.endswith("/cloud/runner/jobs/job-artifact/result"):
+            nonlocal terminal
+            terminal = body
+            return {"status": "completed"}
+        raise AssertionError(url)
+
+    result = CloudController(ControllerSettings("https://api.example.test", "runner-1", "secret"), transport).run_once()
+    assert result is not None and result["status"] == "completed"
+    assert terminal is not None
+    assert terminal["result"]["artifacts"] == [{"id": "artifact-1", "kind": "patch", "sha256": hashlib.sha256(patch).hexdigest(), "size_bytes": len(patch)}]
+    assert "content_base64" not in json.dumps(terminal)
+    assert calls.index("https://api.example.test/api/cli/v1/cloud/runner/jobs/job-artifact/artifacts") < calls.index("https://api.example.test/api/cli/v1/cloud/runner/jobs/job-artifact/result")
 
 
 def test_controller_rejects_non_https_configuration_and_snapshot_job_without_bytes():

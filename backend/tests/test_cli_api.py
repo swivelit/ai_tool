@@ -501,6 +501,8 @@ def test_cloud_runner_lease_is_authenticated_single_owner_and_replay_safe(client
     assert client.get(f"/api/cli/v1/cloud/jobs/{job_id}/artifacts", headers=headers).json()["items"][0]["sha256"] == artifact_payload["sha256"]
     bad_artifact = {**artifact_payload, "sha256": "0" * 64}
     assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/artifacts", headers=lease_headers, json=bad_artifact).status_code == 422
+    html_artifact = {**artifact_payload, "content_type": "text/html"}
+    assert client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/artifacts", headers=lease_headers, json=html_artifact).status_code == 422
     completed = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "completed", "result": {"changed_files": []}})
     assert completed.status_code == 200 and completed.json()["status"] == "completed"
     replay = client.post(f"/api/cli/v1/cloud/runner/jobs/{job_id}/result", headers=lease_headers, json={"status": "failed"})

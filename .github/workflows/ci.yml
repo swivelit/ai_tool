@@ -177,9 +177,12 @@ jobs:
         working-directory: cli
       - name: Require real hostile Linux verification
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          node dist/cli.js sandbox status
           node dist/cli.js sandbox verify --json > "$RUNNER_TEMP/swico-linux-sandbox.json"
-          node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-linux-sandbox.json", "utf8")); if (report.verified !== true || report.probes.some(p => p.observed === "not_run")) { console.error(JSON.stringify(report, null, 2)); process.exit(1); }'
+          verify_status=$?
+          cat "$RUNNER_TEMP/swico-linux-sandbox.json"
+          node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-linux-sandbox.json", "utf8")); if (process.argv[1] !== "0" || report.verified !== true || report.probes.some(p => p.observed === "not_run")) { console.error(JSON.stringify(report, null, 2)); process.exit(1); }' "$verify_status"
         working-directory: cli
 
   cli-release-artifact:
