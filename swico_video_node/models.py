@@ -63,7 +63,7 @@ def audit(*, require_files=True):
         dirty = subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"], text=True)
         if commit != ENGINE_COMMIT or dirty:
             raise ValueError("Engine checkout modified; re-review required")
-    implementation = {name: hash_file(Path(__file__).parent / name) for name in ("engine.py", "models.py", "templates.py", "runtime.py", "calibration.py", "requirements-intel.lock")}
+    implementation = {name: hash_file(Path(__file__).parent / name) for name in ("engine.py", "media.py", "template_errors.py", "models.py", "templates.py", "runtime.py", "calibration.py", "requirements-intel.lock")}
     return {"profile_hash": digest(canonical({"manifest": manifest, "implementation": implementation})), "asset_count": len(assets), "rights_evidence_verified": True,
             "legal_conclusion": "Operator/counsel responsibility; document integrity is not a licence grant"}
 

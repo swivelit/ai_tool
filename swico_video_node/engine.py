@@ -5,11 +5,11 @@ import os
 import subprocess
 import sys
 import time
-from fractions import Fraction
 from pathlib import Path
 from .models import audit
 from .storage import atomic, hash_file, read, root, template_dir
 from .runtime import capture, tool, tool_identity, native_host, identity_file, minimal_environment
+from .media import probe
 
 
 def runtime_identity():
@@ -36,23 +36,6 @@ def runtime_identity():
             "cpu": capture(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]).strip(),
             "settings": {"providers": ["cpu"], "threads": 4, "enhance_blend": 20,
                          "encode": "libx264/crf18/medium/yuv420p/audio-copy", "roles": "original-frame-independent"}}
-
-
-def probe(path: Path):
-    data = json.loads(capture([tool("ffprobe"), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]))
-    video = next(s for s in data["streams"] if s["codec_type"] == "video")
-    duration = float(video.get("duration", data["format"]["duration"]))
-    fps = Fraction(video["avg_frame_rate"])
-    if not 1 <= duration <= 30 or not 1 <= fps <= 60 or max(video["width"], video["height"]) > 1920 or min(video["width"], video["height"]) < 64:
-        raise ValueError("Template must be 1–30 seconds, 1–60fps, 64–1920px")
-    if Fraction(video["r_frame_rate"]) != fps or video["width"] % 2 or video["height"] % 2:
-        raise ValueError("Initial profile requires constant frame rate and even dimensions; prepare a reviewed CFR master locally")
-    # Reject unexpected per-frame PTS, rather than silently changing VFR timing.
-    frames = capture([tool("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)], limit=512*1024)
-    points = [float(f["best_effort_timestamp_time"]) for f in json.loads(frames)["frames"]]
-    if len(points) > 1800 or any(abs((b-a) - 1/float(fps)) > .002 for a,b in zip(points, points[1:])):
-        raise ValueError("Unsupported timing: frame PTS are not constant")
-    return {"width": video["width"], "height": video["height"], "fps": str(fps), "frames": len(points), "duration_seconds": duration}
 
 
 class Engine:

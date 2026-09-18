@@ -14,6 +14,9 @@ def main():
     p=commands.add_parser("models");sub=p.add_subparsers(dest="operation",required=True)
     sub.add_parser("audit");p=sub.add_parser("install");p.add_argument("--profile",choices=["quality-cpu"],required=True)
     p=commands.add_parser("templates");sub=p.add_subparsers(dest="operation",required=True)
+    for action in ("inspect", "normalize"):
+        p=sub.add_parser(action);p.add_argument("--file",required=True)
+        if action=="normalize": p.add_argument("--output",required=True)
     for action in ("import","prepare","review"):
         p=sub.add_parser(action);p.add_argument("--id",choices=["couple-01","couple-02"],required=True)
         if action=="import":
@@ -49,7 +52,11 @@ def main():
             result=tools() if args.operation=="status" else configure_tools(args.ffmpeg,args.ffprobe)
         elif args.command=="templates":
             from . import templates
-            if args.operation=="publish":
+            if args.operation=="inspect":
+                from .media import inspect_media
+                result=inspect_media(args.file)  # Read-only: not even a worker lock write.
+            elif args.operation=="normalize": result=templates.normalize(args.file,args.output)
+            elif args.operation=="publish":
                 from .worker import Api
                 result=templates.publish(Api())
             else:
@@ -72,9 +79,14 @@ def main():
             child_process(Path(args.directory))
         elif args.command=="service": result=service(args.operation)
         if result is not None: print(json.dumps(result,indent=2))
-        return 1 if isinstance(result,dict) and result.get("ready") is False else 0
+        return 1 if isinstance(result,dict) and (result.get("ready") is False or result.get("accepted") is False) else 0
     except Exception as exc:
         from .runtime import safe_error
+        if args.command=="templates":
+            from .template_errors import TemplateError
+            error=exc if isinstance(exc,TemplateError) else TemplateError("template_operation_failed")
+            print(json.dumps({"ready":False,"error":safe_error(error,"templates"),"action":error.action}),file=sys.stderr)
+            return 1
         print(json.dumps({"ready":False,"error":safe_error(exc,args.command),
                           "action":"Use doctor --check-api and models audit; inspect private diagnostic logs"}),file=sys.stderr)
         return 1

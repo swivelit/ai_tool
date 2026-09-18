@@ -69,6 +69,14 @@ termination. These are NOT native face inference or likeness acceptance.
 
 ## Required operator evidence before enabling
 
+- [ ] Both local masters pass `templates inspect`; unequal header rates alone
+  are not a rejection when bounded PTS cadence proves CFR. Genuine VFR remains
+  rejected. Explicit optional normalize produces a new file without overwrite;
+  inspect/play that output before importing. No automatic trim/resize/retiming.
+- [ ] Import copied/hash-bound media only, without partial template state, rights
+  approval or inference claims. Complete real rights → model install/audit →
+  prepare/frame review → benchmark → metadata publication → foreground →
+  LaunchAgent acceptance before authorizing complimentary and then paid acceptance.
 - [ ] All model/engine assets have independently checked source, exact digest and
   genuine commercial-permission/licence evidence; full dependency chain reviewed.
 - [ ] Both real templates and audio have commercial modification/distribution rights.

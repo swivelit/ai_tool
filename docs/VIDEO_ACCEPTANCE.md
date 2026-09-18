@@ -6,6 +6,41 @@ are independent. None is manufactured by a configured flag or hash.
 
 ## Reproducible local software checks (no provider/customer calls)
 
+### Template cadence and local preprocessing correction
+
+`templates inspect --file FILE` is read-only and needs no models or API pairing.
+`templates normalize --file SOURCE --output NEW.mp4` is explicit local preprocessing,
+not an automatic part of import. The commands use the same production PTS validator
+as render output validation. See section 6 of VIDEO_MAC_SETUP.md for the bounded
+quantization/phase-drift algorithm, safe rejection codes and operator checkpoints.
+Real VFR, duplicate/reversed timestamps, ambiguous rates and unsafe bounds fail.
+
+Unit fixtures: `backend/.venv/bin/python -m pytest swico_video_node/tests/test_template_media.py -q`.
+They cover the reported 30fps/33–34ms case, fractional 30000/1001, full-clip drift,
+limits, path/stderr redaction, atomic import, normalization cleanup/no-replace
+races and audio bounds. They do NOT execute model inference or codecs.
+
+Optional explicit **real native codec** test (requires existing validated Intel
+tools; fails rather than skipping if absent):
+
+```bash
+backend/.venv/bin/python -m pytest swico_video_node/tests/acceptance_media.py -q
+```
+
+It generates only test patterns/sine audio in private temporary directories and
+executes actual inspect/normalize/import subprocess commands, production probing,
+full decode and AAC packet/timestamp identity comparisons. No copyrighted sample,
+model session, rights approval, upload, provider or SMTP call is involved.
+This is NOT operator-Mac/Python 3.12 model inference or final template quality QA.
+Media-validation code is bound into the existing profile hash; changed code
+requires fresh real review/calibration, never invented replacement hashes.
+
+The explicit normalization clock is the inverse canonical FPS with passthrough
+frame mode. No `fps` filter or output `-r` is used: those can duplicate/drop
+frames or conflict with passthrough. Packet-count/duration checks still run after
+encoding. References: [FFmpeg frame mode and encoder time base](https://www.ffmpeg.org/ffmpeg.html),
+[local protocol allowlisting](https://www.ffmpeg.org/ffmpeg-protocols.html).
+
 From the repository root, with the existing test environment:
 
 ```bash

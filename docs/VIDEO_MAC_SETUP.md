@@ -5,6 +5,13 @@ No new service, cache, cron, GPU, public Mac port or tunnel. Do not enable paid 
 until [VIDEO_ACCEPTANCE.md](VIDEO_ACCEPTANCE.md) is complete. The migration is
 ALREADY deployed at `20260918_website_video`; do not downgrade, stamp or reset.
 
+**Current operator checkpoint:** Tahoe 26.7/native Intel, MacPorts 2.12.6,
+Python 3.12.14, FFmpeg/ffprobe 9.0.1, `.venv-video`, locked dependencies and
+`tools status` now succeed according to the operator. Do not reinstall those or
+rotate credentials to diagnose a clip. Continue with pairing (section 5) and
+local inspection/import (section 6). Sections 1–4 remain for a genuinely new Mac.
+The current inspected checkout is `c429bab4`, CLI **0.2.9**.
+
 ## Render NOW (operator only; no deployment was performed)
 
 The supplied production logs already show BOTH flags false. **No Render deploy
@@ -44,7 +51,7 @@ No raw token in Render, website variables, command arguments, plist or emails.
 ## 1. Existing checkout and a dependency-free check (Mac Terminal)
 
 The video Mac is `admin@Admins-MacBook-Pro`, macOS Tahoe **26.7 / x86_64**.
-It is NOT the developer test machine. Current inspected main is `d5e35f8c`, CLI
+It is NOT the developer test machine. Current inspected main is `c429bab4`, CLI
 **0.2.9**; the old report's 0.2.8 is historical. Do not re-clone/reset or downgrade.
 
 ```bash
@@ -65,14 +72,14 @@ After obtaining the new check, run without Python/venv activation:
 bash swico_video_node/scripts/setup_macos.sh --check
 ```
 
-**Expected on the current unprovisioned Mac:** `platform=native_intel`,
+**Expected on a still-unprovisioned Mac:** `platform=native_intel`,
 `macos_major=26`, `macports=missing_or_incomplete`, missing Python/codecs,
 `prerequisites=blocked`, exit 1. This is actionable, not an application crash.
 It examines prerequisites independently, reads no token, imports no worker, and
 does not use sudo/downloads/API calls, create a venv or modify shell configuration.
 Pip/venv usability and synthetic codec execution are later bootstrap checks.
 
-**The immediate root cause:** opening an installation webpage only opens the
+**The earlier first-run root cause:** opening an installation webpage only opens the
 browser; it does NOT download or install MacPorts. Exporting PATH does NOT install
 a program. `port selfupdate` is NOT a first-install command. Do not run `port`
 until `/opt/local/bin/port version` succeeds.
@@ -281,7 +288,122 @@ Do not require a running worker to advance to local preparation. On a fresh DB,
 `schema_ready=true` with `control_initialized=false` can precede first metadata
 publication/heartbeat; no migration stamp/reset is needed to create the singleton.
 
-## 6. Genuine rights and complete model inventory
+## 6. Inspect, explicitly normalize only if needed, then import locally
+
+Media inspection/import does NOT need model weights or a successful API pairing.
+A 401 `credential_mismatch` is a separate Render digest-pairing issue. Keep the
+existing token; the operator pairs its actual digest in Render, not a new token.
+Both video flags remain false.
+
+For the first source, in Mac Terminal at the existing repo root:
+
+```bash
+cd /Users/admin/Documents/swico_server/ai_tool
+video_source_clip="$(/usr/bin/osascript -e 'POSIX path of (choose file with prompt "Select the licensed couple-01 master" of type {"public.movie"})')"
+```
+
+Cancel stops selection; do not continue with an empty path. Then:
+
+```bash
+.venv-video/bin/python -m swico_video_node templates inspect --file "$video_source_clip"
+```
+
+**Checkpoint:** JSON `accepted=true`, `classification=stable_cfr`, canonical FPS,
+frame count, duration and bounded timestamp summary. No source path, faces or raw
+ffmpeg stderr is printed; no source/state modification, lock creation or upload.
+On rejection the command exits 1 and returns `reason` plus a safe next action.
+
+The reported 496×368 / 301-frame / ~10.034s clip may have `nominal_fps=30` and
+`average_fps=150500/5017`. Unequal headers are NOT in themselves VFR. Every decoded
+PTS must fit the nominal rational grid. Tolerance is
+`min(stream time_base, 1 millisecond) + 1 microsecond`; it applies to EACH adjacent
+interval, each phase error from the first frame AND the full phase-error range.
+Thus 33/34ms rounding fits 30fps; sustained drift, cadence changes, duplicate or
+reversed PTS do not. `30000/1001` is retained exactly, not rounded to 30.
+Coarser/ambiguous timing is refused, not granted a whole-frame tolerance. Total
+duration must match decoded count / canonical FPS within twice that tolerance;
+the video must start within one tolerance of zero (no silently discarded offset).
+Finite rates 1–60, duration 1–30s, even dimensions 64–1920, 2–1800 decoded frames,
+one video/at most one audio and 200MiB remain bounded.
+
+**If accepted, direct import is valid; conversion is optional.** Only if you want
+an explicit canonical MP4 master for interoperability, choose a NEW filename:
+
+```bash
+video_normalized_clip="${video_source_clip%.*}-swico-cfr.mp4"
+.venv-video/bin/python -m swico_video_node templates normalize \
+  --file "$video_source_clip" --output "$video_normalized_clip"
+```
+
+**Checkpoint:** exit 0, `normalized=true`. This reads a private bounded snapshot,
+uses reviewed absolute native tools, produces H.264 CRF18/slow/yuv420p/faststart,
+removes source metadata/chapters and copies at most one compatible AAC/MP3/ALAC
+audio stream unchanged. It uses file-only protocols and never a shell or API.
+It corrects only the already-proven timestamp quantization onto the rational
+grid—no arbitrary VFR guessing, frame duplication/drop, scaling or audio retiming.
+Same-production-probe and full decode must pass, with unchanged frame count,
+dimensions/rate and bounded duration/audio offsets, before atomic no-overwrite
+publication. Existing outputs (including symlinks) are never replaced. Failures
+remove owned temporary work, not the original or another process's output.
+Unsupported audio or genuine VFR requires separately reviewed preparation, not
+this command. A forced OS kill may leave a hidden `.swico-normalize-*` scratch
+directory beside the requested output; inspect/remove only that owned residue.
+
+Only after normalization success:
+
+```bash
+.venv-video/bin/python -m swico_video_node templates inspect --file "$video_normalized_clip"
+```
+
+Require accepted stable CFR and the same count/geometry. Play the whole output
+locally (`open "$video_normalized_clip"`) and check A/V sync. Conversion supplies
+NO copyright/audio rights. To use it, explicitly set
+`video_source_clip="$video_normalized_clip"`; otherwise retain the accepted original.
+
+```bash
+.venv-video/bin/python -m swico_video_node templates import \
+  --id couple-01 --file "$video_source_clip" --title "Couple scene 1"
+```
+
+**Checkpoint:** `imported=true`, rights/template/calibration all false. The exact
+copied master is probed and hashed; master + manifest publish together under the
+existing worker lock. Rejection leaves no permanent template directory, master or
+manifest. An existing complete OR partial template directory is never adopted or
+overwritten. A hard crash can leave a hidden `.import-*` staging directory in
+private templates storage, never an approved/published template; inspect/archive
+that owned residue explicitly. Import performs no conversion or network upload.
+
+Repeat selection/inspection (and optional normalization) for `couple-02`, then:
+
+```bash
+video_source_clip="$(/usr/bin/osascript -e 'POSIX path of (choose file with prompt "Select the reviewed couple-02 original or normalized master" of type {"public.movie"})')"
+```
+
+On successful selection, inspect it and require `accepted=true` before importing:
+
+```bash
+.venv-video/bin/python -m swico_video_node templates inspect --file "$video_source_clip"
+```
+
+Then:
+
+```bash
+.venv-video/bin/python -m swico_video_node templates import \
+  --id couple-02 --file "$video_source_clip" --title "Couple scene 2"
+```
+
+Do not reuse the first path accidentally. On `template_existing`, inspect the
+private existing files instead of deleting/replacing them. On odd dimensions,
+resolution/duration/rate/timing errors, stop at the named reason; this command
+does not auto-crop, stretch or trim. `template_probe_failed` calls for `tools status`
+and local source inspection, not credential rotation or nonexistent diagnostic logs.
+
+### Genuine rights, then model install/audit
+
+Fill each imported `templates/couple-0N/manifest.json` rights record with genuine
+VIDEO and AUDIO evidence before prepare/review. Successful import is NOT inference,
+template approval, commercial authorization or calibration. Then complete the
+model evidence gate below; no restricted weight download occurs before it passes.
 
 ```bash
 .venv-video/bin/python -m swico_video_node models audit
@@ -327,35 +449,8 @@ Restricted assets/documents stay local and out of Git.
 
 ## 7. Both real templates and human track review
 
-On the Mac, in the repo root, choose the first **actually licensed** original clip
-using the native file picker. Cancel exits without importing. This is a local
-copy, not a metadata publication or rights approval:
-
-```bash
-(
-  set -eu
-  video_source_clip="$(/usr/bin/osascript -e 'POSIX path of (choose file with prompt "Select the licensed couple-01 master" of type {"public.movie"})')"
-  [ -f "$video_source_clip" ]
-  .venv-video/bin/python -m swico_video_node templates import --id couple-01 --file "$video_source_clip" --title "Couple scene 1"
-)
-```
-**Checkpoint:** exit 0, `templates/couple-01/master.mp4` and `manifest.json` exist
-under the PRIVATE video state directory, not Git. If already imported, inspect
-that existing template instead of overwriting or deleting it. Then choose the second:
-
-```bash
-(
-  set -eu
-  video_source_clip="$(/usr/bin/osascript -e 'POSIX path of (choose file with prompt "Select the licensed couple-02 master" of type {"public.movie"})')"
-  [ -f "$video_source_clip" ]
-  .venv-video/bin/python -m swico_video_node templates import --id couple-02 --file "$video_source_clip" --title "Couple scene 2"
-)
-```
-**Checkpoint:** the equivalent `couple-02` files exist and import exits 0. A rejected
-duration/format/codec is not permission to bypass validation; prepare a compliant
-licensed master locally. Do not source shell commands from filenames.
-
-Once both imports and rights records below are complete, prepare each separately:
+After section 6: both imports, genuine model/template/audio rights and model audit
+must pass. Do not import either template again. Prepare each separately:
 ```bash
 .venv-video/bin/python -m swico_video_node templates prepare --id couple-01
 ```

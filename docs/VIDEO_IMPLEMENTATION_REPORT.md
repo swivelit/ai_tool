@@ -1,6 +1,118 @@
 # Website video corrective implementation evidence — 2026-09-18
 
-## Current first-run correction (not native/provider acceptance)
+## Current stable-CFR / template diagnostics correction
+
+Starting clean HEAD: `c429bab41b3471282a4cad637558630dda1210cf`.
+CLI remains **@swiveltechnologies/swico 0.2.9** in both manifests. No applicable
+AGENTS.md found. Inspected the worker, tool resolver, state/locking, rights/profile
+hashing, tests, CI and operational documentation before editing. The operator's
+now-successful Tahoe/MacPorts/Python3.12 setup is supplied evidence, not a developer
+installation. Its HTTP 401 is a Render digest-pairing issue, not a protocol bug.
+No credential or authentication code changed.
+
+### Root cause and implementation
+
+Reproduced with controlled ffprobe metadata: 496×368, 301 frames, duration 10.034,
+nominal 30/1, average 150500/5017. Old probe raised its generic CFR ValueError
+after ONE ffprobe call: it never read timestamps. The CLI then hid the explanatory
+message behind ValueError/signals=[], with a misleading generic log instruction.
+No copyrighted operator source was copied into the repository or used for testing.
+
+- Shared media validator behind `engine.probe()` uses exact rational decoded PTS,
+  preferring integer PTS × time_base. Retains nominal FPS only when all timestamps
+  support it. Tolerance = min(time_base, 1ms) + 1us, checked for every adjacent
+  interval, cumulative phase error and phase-error range. Ordinary 33/34ms cadence
+  and 30000/1001 pass; equal headers cannot excuse VFR/drift/duplicates/reversal.
+  Nonfinite/invalid rates, existing geometry/duration/frame bounds, nonzero video
+  offsets beyond tolerance and incomplete/inconsistent frame counts fail closed.
+  Small variation indistinguishable from time-base quantization is explicitly
+  bounded, not claimed to be physically distinguishable from sub-resolution VFR.
+- Local `templates inspect --file` is read-only (no lock/state write/API), emits
+  bounded numeric/cadence data and allowlisted reasons/actions without private paths.
+- Explicit `templates normalize --file --output` snapshots locally, validates
+  cadence before encoding, uses reviewed absolute tools/file-only protocols and
+  passthrough with inverse-FPS encoder time base. No fps filter/-r or implicit
+  import conversion; CRF18/slow/H264/yuv420p/faststart, stripped source metadata,
+  one compatible audio stream copied. It verifies production probe, same frame
+  count/rate/geometry, bounded durations/audio offsets and full decode before an
+  atomic no-replace hard-link publication. Failure/interrupt removes its private
+  incomplete staging, never source or a concurrent output. Codec interruption
+  kills the subprocess before temporary-directory cleanup.
+- Import validates the exact bounded private copy, then publishes master/manifest
+  together under the existing worker lock. Existing partial or complete template
+  directories are refused. No rights/approval/calibration is inherited or asserted.
+  Hard-kill residue is hidden staging, not a published template; documentation
+  specifies explicit owned-residue inspection rather than deleting unrelated files.
+- Added safe TemplateError codes and actual operator actions; no fictitious logs.
+  New media/error modules join the existing implementation hash. Real earlier
+  template approval/calibration, if present, must be renewed after code changes;
+  all original model permission/download gates remain intact.
+
+### Actual tests in this pass
+
+Developer environment: Darwin/x86_64, Python **3.14.7**, existing native FFmpeg
+**7.1.1**. NOT the operator's Python3.12.14/MacPorts FFmpeg9.0.1 environment.
+
+| Exact command (repository root unless specified) | Actual result |
+|---|---|
+| `backend/.venv/bin/python -m pytest swico_video_node/tests/test_template_media.py -q` | **63 passed**, 1.11s; mocked ffprobe/codec contracts and real CLI help |
+| `backend/.venv/bin/python -m pytest swico_video_node/tests -q` | **171 passed**, 10.96s; no skips; includes existing real POSIX process-control tests |
+| `backend/.venv/bin/python -m pytest swico_video_node/tests/acceptance_media.py -q` | **4 passed**, 39.80s; real validated native codec subprocesses, synthetic pattern/sine inputs only |
+| `backend/.venv/bin/python -m compileall -q swico_video_node` | PASS |
+| `backend/.venv/bin/python scripts/check-tracked-secrets.py` and same scanner including untracked files | PASS |
+| `backend/.venv/bin/python scripts/check-web-product-language.py` | PASS |
+| `backend/.venv/bin/python scripts/check-legal-publication.py` | PASS for existing publication metadata, NOT video approval |
+| `git diff --check` | PASS |
+| 35 Mac runbook shell blocks parsed with Bash and Zsh | PASS; not executed |
+| `cd backend; .venv/bin/python -m alembic -c alembic.ini heads` | `20260918_website_video (head)`; source-only, no DB connection |
+
+The first enclosed-suite run hit the host restriction on `ps` in the unchanged
+descendant-cleanup test (160 passed/1 host failure). Authorized reruns passed;
+no skip or assertion was weakened. Initial real codec tests exposed conflicting
+`-r`/passthrough options and a filter-induced last-frame-duration loss; the encoder
+path was corrected, not the validation limits. Final real tests run actual public
+inspect/normalize/import commands for 301-frame millisecond 30fps, 30000/1001 and
+silent video. AAC packet hashes/PTS/durations compare IDENTICALLY before/after.
+An additional real synthetic variable-cadence source is rejected by all three
+public commands with `template_vfr_unsupported`; no output/import remains.
+
+NOT RUN: operator-source clip, face/model inference, both real-template QA,
+operator-Mac FFmpeg9.0.1 acceptance, provider capture/refund, SMTP, deployed-cache
+acceptance, new hosted CI or full backend/web/CLI suites. No backend/web/CLI or
+workflow files changed. Synthetic codec success is not rights or model acceptance.
+
+### Paths and production impact
+
+- `swico_video_node/{media,template_errors}.py` (new)
+- `swico_video_node/{engine,templates,__main__,runtime,models}.py`
+- `swico_video_node/tests/{test_template_media,acceptance_media}.py` (new)
+- `docs/{VIDEO_MAC_SETUP,VIDEO_ACCEPTANCE,VIDEO_RELEASE_CHECKLIST,VIDEO_IMPLEMENTATION_REPORT}.md`
+
+No migration added, edited or executed: deployed/source head remains
+`20260918_website_video`. No commit, push, deploy, API call, template publication,
+model download, email, charge/refund, credential rotation or feature enablement.
+No price/retention/allowance, chat/voice/subscription/weekly credit, Android,
+Windows Free or ordinary CLI change.
+
+Render: keep both video flags false; operator pairs ONLY the existing Mac init
+digest in `SWICO_VIDEO_WORKER_TOKEN_SHA256`, applying that actual environment
+change normally. No new service or backend code deployment is required for local
+media commands. Do not rerun init to replace a token or weaken a 401.
+
+Required release evidence remains genuine model/template/audio rights, exact-content
+legal approval, actual full-clip review/calibration, foreground and managed-service
+acceptance, complimentary flow, authorized provider TEST/SMTP and cache/expiry
+checks. The runbook now orders inspect → optional normalize → inspect → import →
+genuine rights/model install/audit → prepare/review → benchmark → metadata →
+foreground/LaunchAgent → authorized complimentary/paid acceptance. No automatic
+publication/enablement. Retain disabled-admission drain/settlement and financial
+history on rollback; never stamp/downgrade the database.
+
+Suggested commit: `fix(video): accept stable CFR templates and improve import diagnostics`
+
+---
+
+## Historical first-run correction (c429bab4, not this pass)
 
 Starting HEAD: `d5e35f8c2cd5f4951cc4830848541f076687e47f`, automated CLI
 release **0.2.9**, parent `4e755ff50ffeed4864e7cfa2194bb5fa0a6056a0`.

@@ -1,26 +1,105 @@
 from __future__ import annotations
 import json
+import os
 import shutil
+import tempfile
 import time
+from fractions import Fraction
 from pathlib import Path
 from .storage import TEMPLATES, atomic, canonical, digest, hash_file, read, root, template_dir
 from .models import audit, evidence
+from .template_errors import TemplateError
 
 
 def import_template(identifier, file, title):
     from .engine import probe
-    source = Path(file).expanduser().resolve(strict=True)
-    if source.stat().st_size > 200*1024*1024:
-        raise ValueError("Template master exceeds 200 MiB")
-    media = probe(source)
+    from .media import local_source, copy_master
+    source = local_source(file)
     directory = template_dir(identifier)
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if (directory / "master.mp4").exists():
-        raise ValueError("Template already exists; archive it explicitly before replacing/re-reviewing")
-    shutil.copyfile(source, directory / "master.mp4")
-    (directory / "master.mp4").chmod(0o600)
-    atomic(directory / "manifest.json", {"id":identifier,"title":title[:80],"template_sha256":hash_file(directory/"master.mp4"),
+    if directory.exists(): raise TemplateError("template_existing")
+    directory.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # CLI holds the existing worker lock. Publish both files by one same-volume
+    # rename only after probing the exact COPY (not a possibly changing source).
+    # A crash leaves, at worst, a hidden private staging dir, never an import.
+    staged = Path(tempfile.mkdtemp(prefix=".import-", dir=directory.parent))
+    try:
+        master = staged / "master.mp4"
+        copy_master(source, master)
+        media = probe(master)
+        atomic(staged / "manifest.json", {"id":identifier,"title":title[:80],"template_sha256":hash_file(master),
                                           "media":media,"rights":{},"approval":None,"benchmark":None})
+        if directory.exists(): raise TemplateError("template_existing")
+        os.rename(staged, directory)
+    except Exception as exc:
+        if isinstance(exc, TemplateError): raise
+        raise TemplateError("template_import_failed") from None
+    finally:
+        if staged.exists(): shutil.rmtree(staged)
+    return {"imported": True, "id": identifier, "media": media, "rights_approved": False,
+            "template_approved": False, "calibrated": False}
+
+
+def normalize(file, output):
+    """Explicit local preprocessing only. Never infer cadence or licence rights."""
+    from .engine import probe
+    from .media import local_source, copy_master, MAX_BYTES, LOCAL_INPUT
+    from .runtime import capture, tool
+    source = local_source(file)
+    try:
+        requested = Path(output).expanduser()
+        # Resolve parent only: never follow/replace an existing output symlink.
+        destination = requested.parent.resolve(strict=True) / requested.name
+        if destination.suffix.lower() != ".mp4" or not destination.parent.is_dir():
+            raise TemplateError("template_output_invalid")
+    except OSError:
+        raise TemplateError("template_output_invalid") from None
+    if os.path.lexists(destination): raise TemplateError("template_output_existing")
+    try:
+        with tempfile.TemporaryDirectory(prefix=".swico-normalize-", dir=destination.parent) as scratch:
+            snapshot = Path(scratch)/"source.media"
+            result = Path(scratch)/"normalized.mp4"
+            copy_master(source, snapshot)
+            before = probe(snapshot)  # No VFR, malformed input or unknown-rate guess.
+            if before["audio"] and before["audio"]["codec"] not in {"aac", "mp3", "alac"}:
+                raise TemplateError("template_audio_unsupported")
+            fps = Fraction(before["fps"])
+            clock = f"{fps.denominator}/{fps.numerator}"
+            capture([tool("ffmpeg"), "-nostdin", "-v", "error", "-n", "-xerror", "-copyts",
+                *LOCAL_INPUT, "-i", str(snapshot), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+                # Proven quantized PTS round onto the explicit encoder clock.
+                # No fps filter/-r/-setpts: those can drop/duplicate frames or
+                # erase the final packet duration. Preserve source/audio PTS.
+                "-fps_mode:v", "passthrough",
+                "-enc_time_base:v", clock, "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+                "-threads", "4", "-pix_fmt", "yuv420p", "-c:a", "copy", "-map_metadata", "-1",
+                "-map_chapters", "-1", "-movflags", "+faststart", "-avoid_negative_ts", "disabled",
+                "-fs", str(MAX_BYTES), "-f", "mp4", str(result)], timeout=600)
+            after = probe(result)  # Same production validator as import/render.
+            if any(after[key] != before[key] for key in ("width", "height", "frames", "fps")):
+                raise TemplateError("template_normalize_failed")
+            tolerance = max(before["timing"]["tolerance_seconds"], after["timing"]["tolerance_seconds"])*2
+            if abs(after["duration_seconds"]-before["duration_seconds"]) > tolerance:
+                raise TemplateError("template_normalize_failed")
+            if bool(after["audio"]) != bool(before["audio"]): raise TemplateError("template_normalize_failed")
+            if before["audio"]:
+                if after["audio"]["codec"] != before["audio"]["codec"] or any(
+                    abs(after["audio"][key]-before["audio"][key]) > tolerance
+                    for key in ("start_seconds", "duration_seconds")):
+                    raise TemplateError("template_normalize_failed")
+            # Decode the whole product before publishing a permanent master.
+            capture([tool("ffmpeg"), "-nostdin", "-v", "error", "-xerror", *LOCAL_INPUT,
+                     "-i", str(result), "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-"], timeout=120)
+            result.chmod(0o600)
+            with result.open("rb") as stream: os.fsync(stream.fileno())
+            # Atomic no-replace publication, even if another process created OUTPUT.
+            os.link(result, destination)
+    except FileExistsError:
+        raise TemplateError("template_output_existing") from None
+    except Exception as exc:
+        if isinstance(exc, TemplateError): raise
+        raise TemplateError("template_normalize_failed") from None
+    return {"normalized": True, "media": after, "audio_mode": "copy" if after["audio"] else "none",
+            "rights_approved": False, "template_approved": False, "calibrated": False}
 
 
 def prepare(identifier):

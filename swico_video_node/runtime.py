@@ -29,12 +29,15 @@ class RuntimeFailure(ValueError):
 
 
 def safe_error(exc, stage="runtime"):
+    from .template_errors import TemplateError
     # External stderr/exception messages may contain image paths, prompts, tokens
     # or URLs. Persist only allowlisted diagnostic facts, never raw payloads.
     text = str(exc).lower()
     codes = [code for code in ("no such file", "permission denied", "unknown encoder",
              "invalid data", "unsupported", "opset", "onnx", "libx264", "timeout", "numpy", "cv2", "scipy", "facefusion") if code in text]
     result={"stage": stage, "error_class": type(exc).__name__, "signals": codes[:8]}
+    if isinstance(exc, TemplateError):
+        result["reason"] = exc.code
     if isinstance(exc,ModuleNotFoundError) and exc.name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,100}",exc.name):
         result["missing_module"]=exc.name
     return result
@@ -59,6 +62,12 @@ def capture(argv, *, timeout=30, env=None, limit=32768):
     except subprocess.TimeoutExpired:
         process.kill(); process.wait()
         raise RuntimeFailure("runtime timeout") from None
+    except BaseException:
+        # An operator interrupt must not leave a codec writing into staging
+        # while its caller removes the incomplete normalization directory.
+        if process.poll() is None: process.kill()
+        process.wait(timeout=5)
+        raise
     finally:
         for thread in threads: thread.join(timeout=2)
     stdout, stderr = (b.decode("utf-8", "replace") for b in buffers)
