@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadConfig } from '../dist/configuration.js'
-import { classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
+import { classifyLinuxNamespaceFailure, classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, linuxNamespaceDiagnostics, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
 import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
@@ -130,11 +130,26 @@ test('sandbox capability detection fails closed when an OS runtime is unavailabl
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('Linux namespace diagnostics are bounded and never treated as native proof', () => {
+  const diagnostics = linuxNamespaceDiagnostics()
+  assert.deepEqual(Object.keys(diagnostics), ['unprivileged_userns_clone', 'max_user_namespaces', 'apparmor_restrict_unprivileged_userns'])
+  assert.ok(Object.values(diagnostics).every(value => value.length <= 64))
+})
+
+test('Linux AppArmor loopback namespace failure has an actionable classification', () => {
+  assert.equal(classifyLinuxNamespaceFailure('bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted', {
+    unprivileged_userns_clone: '1', max_user_namespaces: '28633', apparmor_restrict_unprivileged_userns: '1',
+  }), 'ubuntu_apparmor_userns_restricted')
+  assert.equal(classifyLinuxNamespaceFailure('bwrap: Creating new namespace failed: Operation not permitted', {
+    unprivileged_userns_clone: '0', max_user_namespaces: '28633', apparmor_restrict_unprivileged_userns: 'unavailable',
+  }), 'linux_userns_restricted')
+})
+
 test('sandbox readiness exposes why a platform is unavailable instead of claiming enforcement', async () => {
   const root = await mkdtemp(join(tmpdir(), 'swico-stage3-diagnostic-'))
   try {
     const status = createSandboxAdapter(root).status()
-    assert.ok(['ready', 'binary_missing', 'profile_rejected', 'sandbox_apply_denied', 'namespace_unavailable', 'unsupported_platform', 'runtime_startup_failure', 'unknown_failure'].includes(status.diagnostic))
+    assert.ok(['ready', 'binary_missing', 'profile_rejected', 'sandbox_apply_denied', 'namespace_unavailable', 'ubuntu_apparmor_userns_restricted', 'linux_userns_restricted', 'unsupported_platform', 'runtime_startup_failure', 'unknown_failure'].includes(status.diagnostic))
     if (!status.available) assert.notEqual(status.diagnostic, 'ready')
   } finally { await rm(root, { recursive: true, force: true }) }
 })

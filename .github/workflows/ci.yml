@@ -169,6 +169,43 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
+      - name: Prepare ephemeral Ubuntu namespace runtime
+        shell: bash
+        run: |
+          set -u
+          read_sysctl() {
+            local name="$1"
+            local value
+            value="$(sudo sysctl -n "$name" 2>/dev/null || true)"
+            if [ -n "$value" ]; then
+              printf '%s=%s\n' "$name" "$value"
+            else
+              printf '%s=unavailable\n' "$name"
+            fi
+          }
+          echo 'Linux namespace settings before preparation:'
+          read_sysctl kernel.unprivileged_userns_clone
+          read_sysctl user.max_user_namespaces
+          read_sysctl kernel.apparmor_restrict_unprivileged_userns
+          echo 'Applying only the ephemeral hosted-runner settings needed for this strict acceptance job:'
+          if sudo sysctl -w kernel.unprivileged_userns_clone=1; then
+            echo 'kernel.unprivileged_userns_clone=1 applied'
+          else
+            echo 'kernel.unprivileged_userns_clone could not be changed; native verification will remain strict'
+          fi
+          if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            if sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+              echo 'kernel.apparmor_restrict_unprivileged_userns=0 applied'
+            else
+              echo 'kernel.apparmor_restrict_unprivileged_userns could not be changed; native verification will remain strict'
+            fi
+          else
+            echo 'kernel.apparmor_restrict_unprivileged_userns is not present on this runner'
+          fi
+          echo 'Linux namespace settings after preparation:'
+          read_sysctl kernel.unprivileged_userns_clone
+          read_sysctl user.max_user_namespaces
+          read_sysctl kernel.apparmor_restrict_unprivileged_userns
       - name: Install CLI dependencies
         run: npm ci
         working-directory: cli
@@ -179,8 +216,10 @@ jobs:
         run: |
           set -uo pipefail
           node dist/cli.js sandbox status
+          set +e
           node dist/cli.js sandbox verify --json > "$RUNNER_TEMP/swico-linux-sandbox.json"
           verify_status=$?
+          set -e
           cat "$RUNNER_TEMP/swico-linux-sandbox.json"
           node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-linux-sandbox.json", "utf8")); if (process.argv[1] !== "0" || report.verified !== true || report.probes.some(p => p.observed === "not_run")) { console.error(JSON.stringify(report, null, 2)); process.exit(1); }' "$verify_status"
         working-directory: cli

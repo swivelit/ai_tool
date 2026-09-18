@@ -41,8 +41,13 @@ around that installed runtime implementation.
 ## Proof required before enabling an agent
 
 `swico sandbox status` reports runtime detection and a diagnostic such as
-`binary_missing`, `profile_rejected`, `sandbox_apply_denied`, or
-`namespace_unavailable`. It is not a security proof.
+`binary_missing`, `profile_rejected`, `sandbox_apply_denied`,
+`ubuntu_apparmor_userns_restricted`, `linux_userns_restricted`, or
+`namespace_unavailable`. It is not a security proof. On Linux it also reports
+bounded values for `kernel.unprivileged_userns_clone`,
+`user.max_user_namespaces`, and (when present)
+`kernel.apparmor_restrict_unprivileged_userns`; these values explain a host
+failure but never establish isolation by themselves.
 
 `swico sandbox diagnose --progressive --json` reports `policy_denied_expected`
 for an intentionally denied child under a deny-default control,
@@ -59,8 +64,12 @@ symlink escape. A platform is verified only if every required allow/deny
 expectation passes. The report records the runtime platform, architecture,
 Node version, and timestamp but never stores secrets.
 
-The release gate reports an unverified or blocked agent sandbox separately
-from optional cloud readiness. It does not enable production flags or make a
-provider request. Linux operators must verify user namespaces and run the
-hostile probes on each supported architecture; Windows and this development
-macOS host currently fail closed.
+The dedicated Linux CI acceptance job prepares only its ephemeral GitHub host
+by recording these settings and, when the host permits it, enabling
+unprivileged user namespaces and clearing Ubuntu's user-namespace AppArmor
+restriction for that disposable job. This is not a Swico runtime change and
+is not a recommended user-machine workaround. A strict native job still fails
+unless `verified=true` and every hostile probe ran. Linux operators must
+configure host policy administratively and run the hostile probes on each
+supported architecture; Windows and this development macOS host currently
+fail closed.

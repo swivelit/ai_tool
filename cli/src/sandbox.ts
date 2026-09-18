@@ -8,7 +8,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 
 export type SandboxPolicy = 'read-only' | 'workspace-write'
 export type NetworkPolicy = 'disabled' | 'allowed'
-export type SandboxDiagnostic = 'ready' | 'binary_missing' | 'profile_rejected' | 'sandbox_apply_denied' | 'namespace_unavailable' | 'unsupported_platform' | 'runtime_startup_failure' | 'unknown_failure'
+export type SandboxDiagnostic = 'ready' | 'binary_missing' | 'profile_rejected' | 'sandbox_apply_denied' | 'namespace_unavailable' | 'ubuntu_apparmor_userns_restricted' | 'linux_userns_restricted' | 'unsupported_platform' | 'runtime_startup_failure' | 'unknown_failure'
 export type IsolationCapability = 'proven' | 'available' | 'unverified' | 'unavailable'
 export type SandboxStatus = {
   implementation: 'macos-sandbox-exec' | 'linux-bubblewrap' | 'unavailable'
@@ -64,12 +64,40 @@ export function macRuntimeDiagnostic(run: typeof execFileSync = execFileSync): {
   const explicitDenial = /sandbox_apply|operation not permitted|not permitted|eacces/i.test(validDetail)
   return { ready: false, diagnostic: explicitDenial ? 'sandbox_apply_denied' : 'unknown_failure', reason: `sandbox-exec could not apply its valid readiness profile: ${raw}; parser control: ${malformedRaw}` }
 }
+export type LinuxNamespaceDiagnostics = {
+  unprivileged_userns_clone: string
+  max_user_namespaces: string
+  apparmor_restrict_unprivileged_userns: string
+}
+
+function readSysctl(name: string): string {
+  try {
+    return execFileSync('sysctl', ['-n', name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1_000 }).trim().slice(0, 64) || 'empty'
+  } catch { return 'unavailable' }
+}
+
+export function linuxNamespaceDiagnostics(): LinuxNamespaceDiagnostics {
+  return {
+    unprivileged_userns_clone: readSysctl('kernel.unprivileged_userns_clone'),
+    max_user_namespaces: readSysctl('user.max_user_namespaces'),
+    apparmor_restrict_unprivileged_userns: readSysctl('kernel.apparmor_restrict_unprivileged_userns'),
+  }
+}
+
+export function classifyLinuxNamespaceFailure(detail: string, host: LinuxNamespaceDiagnostics): SandboxDiagnostic {
+  if (host.apparmor_restrict_unprivileged_userns === '1' && /apparmor|user.?ns|RTM_NEWADDR|loopback|operation not permitted/i.test(detail)) return 'ubuntu_apparmor_userns_restricted'
+  if (host.unprivileged_userns_clone === '0' || host.max_user_namespaces === '0') return 'linux_userns_restricted'
+  return 'namespace_unavailable'
+}
+
 function bubblewrapDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
   if (!commandExists('true') && !commandExists('/usr/bin/true')) return { ready: false, diagnostic: 'runtime_startup_failure', reason: 'bubblewrap is installed but the known-startable readiness executable is missing.' }
   try { execFileSync('bwrap', ['--die-with-parent', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--ro-bind', '/usr', '/usr', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-home', '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--setenv', 'HOME', '/tmp/swico-home', '--unshare-net', '--', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create least-privilege mount, user, PID, and network namespaces.' } }
   catch (error) {
-    const detail = errorOutput(error), startupFailure = /enoent|no such file|cannot execute|exec format/i.test(detail)
-    return { ready: false, diagnostic: startupFailure ? 'runtime_startup_failure' : 'namespace_unavailable', reason: startupFailure ? `bubblewrap readiness could not start the known executable${detail ? `: ${detail}` : '.'}` : `bubblewrap readiness could not create its required user/mount namespaces${detail ? `: ${detail}` : '.'}` }
+    const detail = errorOutput(error), startupFailure = /enoent|no such file|cannot execute|exec format/i.test(detail), host = linuxNamespaceDiagnostics()
+    const diagnostic = startupFailure ? 'runtime_startup_failure' : classifyLinuxNamespaceFailure(detail, host)
+    const settings = `kernel.unprivileged_userns_clone=${host.unprivileged_userns_clone}, user.max_user_namespaces=${host.max_user_namespaces}, kernel.apparmor_restrict_unprivileged_userns=${host.apparmor_restrict_unprivileged_userns}`
+    return { ready: false, diagnostic, reason: startupFailure ? `bubblewrap readiness could not start the known executable${detail ? `: ${detail}` : '.'} (${settings})` : `bubblewrap readiness could not create its required user/mount/network namespaces${detail ? `: ${detail}` : '.'} (${settings})` }
   }
 }
 function macProfile(root: string, policy: SandboxPolicy, network: NetworkPolicy, writable: string): string {
