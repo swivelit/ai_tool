@@ -1,6 +1,6 @@
 # Paid Chat CLI release closure and stable promotion
 
-Current stable release: `@swiveltechnologies/swico@0.2.6` is published from
+Current stable release: `@swiveltechnologies/swico@0.2.8` is published from
 the canonical CI artifact with provenance. This checklist separates paid Chat,
 package distribution, local agent execution, and full feature parity; it is not
 npm publication approval or a parity claim.
@@ -30,9 +30,9 @@ release manifest. The retained tarball is
 | Gate | Evidence and source identity | State | Owner next action |
 |---|---|---|---|
 | Paid Chat CLI technical RC | Production Lite completion, wallet-debit smoke, website revoke/rejection, explicit reauthorization, and RC8 request-correlated billing acceptance are recorded. RC8 controlled installed recovery, refresh, streaming, and retained-session checks passed; all seven CI checks passed. | ACCEPTED technical RC | Historical RC8 gate complete. |
-| Historical stable `0.2.0` promotion candidate | Superseded by the published `0.2.6` release; the intervening releases are historical. | HISTORICAL | Do not reuse this candidate or its artifact. |
-| Current public npm distribution | `@swiveltechnologies/swico@0.2.6` is published immutably with provenance. | PUBLISHED | Use the protected workflow for future versions. |
-| Local coding agent | Linux bubblewrap hostile verification is accepted in the separate native workflow. The installed-artifact coding-loop harness and local pilot evidence are still pending; macOS remains `SIGABRT`/fail-closed and Windows mutation remains unsupported. | BLOCKED / UNVERIFIED | Run `npm run acceptance:installed-agent` on the canonical Linux artifact; do not infer pilot readiness from generic Chat CI or native sandbox evidence alone. |
+| Historical stable `0.2.0` promotion candidate | Superseded by the published `0.2.8` release; the intervening releases are historical. | HISTORICAL | Do not reuse this candidate or its artifact. |
+| Current public npm distribution | `@swiveltechnologies/swico@0.2.8` is published immutably with provenance. | PUBLISHED | Use the protected workflow for future versions. |
+| Local coding agent | Linux bubblewrap hostile verification is accepted in the separate native workflow. The installed-artifact coding-loop, cancellation, and unknown-outcome harness is implemented but requires a real Linux run; macOS remains `SIGABRT`/fail-closed and Windows mutation remains unsupported. | BLOCKED / UNVERIFIED | Run `npm run acceptance:installed-agent` on the canonical Linux artifact; do not infer pilot readiness from generic Chat CI or native sandbox evidence alone. |
 | Full feature parity | Cloud execution, executable plugins, mutating parallel agents, broad platform support, and other Codex-like workflows remain bounded or unavailable. | INCOMPLETE | Separate future product work; not part of this hotfix. |
 
 Package identity audit: the authoritative scope and executable are defined in
@@ -59,7 +59,7 @@ rebuild:
 - manifest Node: `v22.23.2`
 
 The superseded historical stable candidate was `0.2.0`. Do not use it for a
-current install or record it as the current release. The published `0.2.6`
+current install or record it as the current release. The published `0.2.8`
 manifest and tarball from the canonical workflow are authoritative for the
 current package identity and artifact details.
 
@@ -95,21 +95,21 @@ deployed database at the current repository head,
 For the operator: the RC8 live acceptance record and exact artifact procedure
 are in `docs/CLI_LIVE_ACCEPTANCE.md`. Use `swico usage` at the macOS shell and
 `/usage` inside an interactive Swico session. Current stable acceptance must
-use the published `0.2.6` canonical CI artifact and its generated manifest,
+use the published `0.2.8` canonical CI artifact and its generated manifest,
 not the historical RC8 tarball.
 Render is not involved in this CLI-only change. The installed UI scope is
 recorded in `docs/CLI_TUI_ACCEPTANCE.md`.
 
-For a current `0.2.6` desktop acceptance prefix, use the explicit absolute
+For a current `0.2.8` desktop acceptance prefix, use the explicit absolute
 path in every new Terminal tab; compare the downloaded hash to the generated
 manifest and do not replace the older global installation:
 
 ```sh
-mkdir -p "$HOME/.local/share/swico-0.2.6"
-shasum -a 256 ./swiveltechnologies-swico-0.2.6.tgz
-npm install --global --prefix "$HOME/.local/share/swico-0.2.6" ./swiveltechnologies-swico-0.2.6.tgz
-"$HOME/.local/share/swico-0.2.6/bin/swico" --version --json
-"$HOME/.local/share/swico-0.2.6/bin/swico" usage --json
+mkdir -p "$HOME/.local/share/swico-0.2.8"
+shasum -a 256 ./swiveltechnologies-swico-0.2.8.tgz
+npm install --global --prefix "$HOME/.local/share/swico-0.2.8" ./swiveltechnologies-swico-0.2.8.tgz
+"$HOME/.local/share/swico-0.2.8/bin/swico" --version --json
+"$HOME/.local/share/swico-0.2.8/bin/swico" usage --json
 ```
 
 `swico usage` is a macOS shell command. `/usage`, `/exit`, `you>` and the

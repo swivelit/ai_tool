@@ -51,7 +51,7 @@ Future maintainers should use the reviewed, CI-gated procedure in
 [CLI release automation](CLI_RELEASE_AUTOMATION.md). It prepares a version
 before CI builds the canonical artifact and publishes only through the
 protected npm Trusted Publishing workflow; it does not republish the current
-`0.2.6` package.
+`0.2.8` package.
 
 Customers do not need Python, this repository, TypeScript, or provider keys.
 The production API is built into the client; browser approval remains on the
@@ -264,7 +264,7 @@ separate policy and are not enabled by default.
 
 ## Publisher commands
 
-The stable `0.2.6` package is already public and immutable; do not republish
+The stable `0.2.8` package is already public and immutable; do not republish
 it. For future versions, use the protected
 [CLI release automation](CLI_RELEASE_AUTOMATION.md) workflow after reviewing
 the exact canonical CI artifact. The command below is retained only as
@@ -298,7 +298,7 @@ or an explicitly approved `next` tag, never `latest`:
 npm install -g @swiveltechnologies/swico@beta
 ```
 
-The stable workflow is the published `0.2.6` build in this checkout. For
+The stable workflow is the published `0.2.8` build in this checkout. For
 future versions, publish only the exact tarball and SHA-256 recorded by that
 run's release manifest with `--tag latest`:
 
@@ -319,7 +319,7 @@ For a reviewed local tarball, including transfer to a tester without the
 repository, install the exact filename emitted by `npm pack --json`:
 
 ```bash
-npm install -g ./swiveltechnologies-swico-0.2.6.tgz
+npm install -g ./swiveltechnologies-swico-0.2.8.tgz
 ```
 
 This is not a public-registry install and does not make the package available

@@ -32,7 +32,7 @@ explicitly bounded.
 | Sessions, resume, worktrees | PARTIAL | Owner-scoped metadata and detached worktrees; no automatic merge |
 | Images and web search | IMPLEMENTED + UNVERIFIED | Server-controlled paid capabilities; live/device acceptance still pending |
 | Model-backed subagents | IMPLEMENTED + UNVERIFIED | Read-only, bounded, depth-one workers through shared Chat billing |
-| Sandboxed local execution | FAIL-CLOSED / DISABLED | Current macOS progressive diagnostic is denied by the host before policy execution; hostile enforcement is not accepted; Linux/Windows not proven here |
+| Sandboxed local execution | PLATFORM-SPECIFIC / FAIL-CLOSED | Linux hostile native verification is accepted in the dedicated workflow; installed-agent acceptance remains a separate gate; macOS and Windows remain fail-closed |
 | Cloud tasks | IMPLEMENTED + UNVERIFIED | Durable owner-scoped control-plane jobs/events exist; execution remains disabled without a verified isolated runner |
 
 The comparison follows the current official Codex CLI feature, reference, and
@@ -73,17 +73,17 @@ weakened sandbox policy in RC8.
 | Web search | IMPLEMENTED + UNVERIFIED | Server-controlled evidence path; no live provider calls in this audit |
 | Read-only subagents | IMPLEMENTED + UNVERIFIED | Up to 4 depth-one server Chat rounds, shared billing; bounded run reservation/rechecks; no live provider test |
 | macOS sandbox | FAIL-CLOSED / DISABLED | Runtime diagnostic and progressive profile harness are present; current Intel host denies sandbox application before hostile probes, so native enforcement remains unverified |
-| Linux sandbox | IMPLEMENTED + NATIVE VERIFIED | The strict dedicated workflow passed all required bubblewrap hostile probes; installed coding-agent acceptance remains a separate pilot gate |
+| Linux sandbox | IMPLEMENTED + NATIVE VERIFIED | The strict dedicated workflow passed every required bubblewrap hostile probe; installed coding-agent acceptance remains a separate pilot gate |
 | Windows sandbox | FAIL-CLOSED / DISABLED | No reviewed native runtime bundled |
-| Network isolation | IMPLEMENTED + UNVERIFIED | OS adapter policy plus real loopback probe; hostile runtime proof pending |
-| Secret environment isolation | IMPLEMENTED + UNVERIFIED | Cleared/minimal child environment plus fake-secret probe; cross-platform proof pending |
+| Network isolation | IMPLEMENTED + NATIVE VERIFIED (Linux) | The dedicated Linux workflow proves a reachable host control is denied inside the network-disabled namespace; other platforms remain separate evidence |
+| Secret environment isolation | IMPLEMENTED + NATIVE VERIFIED (Linux) | Linux hostile verification proves cleared/minimal child environment; other platforms remain separate evidence |
 | Worktrees | IMPLEMENTED + VERIFIED | Owned detached worktrees preserve dirty primary tree |
 | Mutating subagents | IMPLEMENTED + UNVERIFIED | Review-first coordinator uses an owned detached worktree and clean-primary apply; no automatic merge |
 | Cloud control plane | IMPLEMENTED + UNVERIFIED | Durable owner-scoped jobs, idempotency, cancellation, and bounded lifecycle events; no API-local execution |
 | Cloud execution | IMPLEMENTED + UNVERIFIED | Durable API queue, explicit byte snapshot endpoint, separate controller, capability-checked runner endpoint, and opt-in E2B execution path exist; live E2B/native hostile acceptance, durable billing reconciliation, and production attestation are not verified, so cloud remains disabled |
 | Shell completion | IMPLEMENTED + VERIFIED | All four shells use one command definition |
 | Doctor/readiness | IMPLEMENTED + VERIFIED (offline) | Chat, local-agent sandbox, local-agent end-to-end, and optional cloud states are reported separately; live/auth readiness remains unverified |
-| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.6` from the canonical CI artifact with provenance; earlier release evidence remains historical |
+| npm package | IMPLEMENTED + VERIFIED | Published `@swiveltechnologies/swico@0.2.8` from the canonical CI artifact with provenance; local dirty-checkout artifacts are not canonical release evidence |
 | License | IMPLEMENTED + VERIFIED (package scope) | CLI-only MIT text, scope note, and dependency notice index are packaged; this does not relicense the monorepo or authorize publication |
 | Queue and shell shorthand | IMPLEMENTED + UNVERIFIED | Bounded follow-up queue plus `!command` approval/sandbox path; native sandbox evidence remains host-specific |
 | File mentions and local copy/history | IMPLEMENTED + VERIFIED | Bounded confined `/mention`, Ctrl+R local prompt search, Ctrl+O and `/copy` clipboard path |

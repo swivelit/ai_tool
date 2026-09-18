@@ -296,12 +296,15 @@ test('installed-agent evidence is strict, current-package bound, and cannot by i
     const valid = {
       schema_version: 1, status: 'passed', package: packageJson.name, version: packageJson.version,
       artifact_sha256: 'a'.repeat(64), platform: process.platform, architecture: process.arch,
-      installed_launcher: true, sandbox_verified: true, hostile_probes_passed: true,
+      installed_launcher: true, launcher_preflight: { launcher: '/tmp/prefix/bin/swico', target: '/tmp/prefix/dist/cli.js', version: packageJson.version, help_checked: true }, host_network_control_reachable: true, network_sandbox_denied: true,
+      sandbox_verified: true, hostile_probes_passed: true, cancellation_passed: true, unknown_outcome_reconciliation_passed: true,
       scenario: 'installed-agent-coding-loop', action_count: 6, result_count: 6, settlement_count: 1,
       final_diff_sha256: 'b'.repeat(64), completed_at: new Date().toISOString(),
     }
     await writeFile(evidence, JSON.stringify(valid))
     assert.equal((await readInstalledAgentEvidence({ SWICO_CLI_AGENT_E2E_EVIDENCE: evidence })).state, 'ready')
+    await writeFile(evidence, JSON.stringify({ ...valid, unknown_outcome_reconciliation_passed: false }))
+    assert.equal((await readInstalledAgentEvidence({ SWICO_CLI_AGENT_E2E_EVIDENCE: evidence })).state, 'unverified')
     await writeFile(evidence, JSON.stringify({ ...valid, version: '0.0.0' }))
     assert.equal((await readInstalledAgentEvidence({ SWICO_CLI_AGENT_E2E_EVIDENCE: evidence })).state, 'unverified')
   } finally { await rm(root, { recursive: true, force: true }) }

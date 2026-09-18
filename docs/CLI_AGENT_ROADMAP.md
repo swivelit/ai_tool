@@ -49,8 +49,9 @@ The dedicated Linux hostile-isolation workflow now provides native bubblewrap
 evidence. The remaining promotion gate is the installed-artifact harness in
 `cli/scripts/accept-installed-agent.mjs`; it must be run on the same Linux
 platform against the canonical tarball and must produce current evidence for
-the bounded coding loop and exactly-once settlement. Only after both gates
-pass may an agent pilot use:
+the bounded coding loop, hostile actions, cancellation/process-tree cleanup,
+unknown-outcome reconciliation, and exactly-once settlement. Only after both
+gates pass may an agent pilot use:
 
 ```dotenv
 SWICO_CLI_ENABLED=true

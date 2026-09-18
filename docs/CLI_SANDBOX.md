@@ -6,7 +6,7 @@ all desktop platforms are ready. Swico has no unsandboxed agent fallback.
 ## Evaluated runtimes
 
 * macOS Seatbelt (`sandbox-exec`) is a system primitive available on Intel
-  and Apple Silicon. The current 0.2.6 progressive diagnostic on this Intel
+  and Apple Silicon. The current 0.2.8 progressive diagnostic on this Intel
   development host reports a policy-level denial for the deny-default control
   and `SIGABRT` for later runtime profiles. The shipped diagnostic now keeps
   those outcomes distinct; generated profiles still do not reach hostile
@@ -48,15 +48,19 @@ npm run acceptance:installed-agent -- \
   --evidence /absolute/path/swico-installed-agent-evidence.json
 ```
 
-The harness launches the installed `swico` command through a PTY, uses only a
-local planner fixture, requires the real bubblewrap verification, performs a
-bounded edit/test/repair cycle, and checks exactly-once action/result/run
-settlement. It is not a provider or billing acceptance. Pointing
+The harness performs a global-style install into a disposable prefix, validates
+the exact launcher and package version before opening a PTY, uses only a local
+planner fixture, requires the real bubblewrap verification, performs a bounded
+edit/test/repair cycle, exercises hostile filesystem/environment/network
+actions, cancels a descendant process tree, and simulates a lost result
+acknowledgement to prove the journal does not replay an uncertain mutation. It
+checks exactly-once action/result/run settlement. It is not a provider or
+billing acceptance. Pointing
 `SWICO_CLI_AGENT_E2E_EVIDENCE` at the resulting evidence file makes
 `swico release-readiness --json` report `agent_e2e_ready=ready` and
 `agent_pilot_ready=ready` only when the current package/runtime and sandbox
-also match the evidence. Missing, stale, or mismatched evidence remains
-unverified.
+also match the evidence, including the cancellation and unknown-outcome
+checks. Missing, stale, or mismatched evidence remains unverified.
 
 ## Proof required before enabling an agent
 

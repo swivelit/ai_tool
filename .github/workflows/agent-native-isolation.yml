@@ -106,6 +106,18 @@ jobs:
             --artifact "$artifact" \
             --evidence "$RUNNER_TEMP/swico-installed-agent-evidence.json"
         working-directory: cli
+      - name: Require installed-agent release evidence
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          SWICO_CLI_AGENT_E2E_EVIDENCE="$RUNNER_TEMP/swico-installed-agent-evidence.json" \
+            node dist/cli.js release-readiness --json > "$RUNNER_TEMP/swico-agent-release-readiness.json"
+          readiness_status=$?
+          set -e
+          cat "$RUNNER_TEMP/swico-agent-release-readiness.json"
+          node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/swico-agent-release-readiness.json", "utf8")); if (process.argv[1] !== "0" || report.checks?.agent_sandbox_ready !== "ready" || report.checks?.agent_e2e_ready !== "ready" || report.checks?.agent_pilot_ready !== "ready") { console.error(JSON.stringify(report, null, 2)); process.exit(1); }' "$readiness_status"
+        working-directory: cli
       - name: Upload hostile verification report
         if: always()
         uses: actions/upload-artifact@v4
@@ -114,4 +126,5 @@ jobs:
           path: |
             ${{ runner.temp }}/swico-linux-sandbox.json
             ${{ runner.temp }}/swico-installed-agent-evidence.json
+            ${{ runner.temp }}/swico-agent-release-readiness.json
           if-no-files-found: warn

@@ -36,8 +36,13 @@ export type InstalledAgentEvidence = {
   platform: string
   architecture: string
   installed_launcher: true
+  launcher_preflight: { launcher: string; target: string; version: string; help_checked: true }
+  host_network_control_reachable: true
+  network_sandbox_denied: true
   sandbox_verified: true
   hostile_probes_passed: true
+  cancellation_passed: true
+  unknown_outcome_reconciliation_passed: true
   scenario: 'installed-agent-coding-loop'
   action_count: number
   result_count: number
@@ -61,6 +66,13 @@ export async function readInstalledAgentEvidence(env: NodeJS.ProcessEnv = proces
       && value.platform === process.platform
       && value.architecture === process.arch
       && value.installed_launcher === true
+      && typeof value.launcher_preflight === 'object' && value.launcher_preflight !== null
+      && (value.launcher_preflight as { version?: unknown }).version === packageManifest.version
+      && (value.launcher_preflight as { help_checked?: unknown }).help_checked === true
+      && value.host_network_control_reachable === true
+      && value.network_sandbox_denied === true
+      && value.cancellation_passed === true
+      && value.unknown_outcome_reconciliation_passed === true
       && value.sandbox_verified === true
       && value.hostile_probes_passed === true
       && value.scenario === 'installed-agent-coding-loop'
@@ -69,8 +81,8 @@ export async function readInstalledAgentEvidence(env: NodeJS.ProcessEnv = proces
       && value.settlement_count === 1
       && value.final_diff_sha256 !== undefined && /^[0-9a-f]{64}$/.test(value.final_diff_sha256)
       && Number.isFinite(completed) && completed > Date.now() - 7 * 24 * 60 * 60 * 1_000 && completed <= Date.now() + 5 * 60 * 1_000
-    if (!valid) return { state: 'unverified', reason: 'Installed-agent acceptance evidence is malformed, stale, or does not match this package/runtime.' }
-    return { state: 'ready', reason: 'The installed launcher completed the bounded coding-loop and exactly-once settlement acceptance.', evidence: value as InstalledAgentEvidence }
+    if (!valid) return { state: 'unverified', reason: 'Installed-agent acceptance evidence is malformed, stale, incomplete, or does not match this package/runtime.' }
+    return { state: 'ready', reason: 'The installed launcher completed the bounded coding-loop, hostile-action, cancellation, unknown-outcome, and exactly-once settlement acceptance.', evidence: value as InstalledAgentEvidence }
   } catch { return { state: 'unverified', reason: 'Installed-agent acceptance evidence could not be read.' } }
 }
 
