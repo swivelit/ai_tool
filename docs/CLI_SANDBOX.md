@@ -64,12 +64,15 @@ symlink escape. A platform is verified only if every required allow/deny
 expectation passes. The report records the runtime platform, architecture,
 Node version, and timestamp but never stores secrets.
 
-The dedicated Linux CI acceptance job prepares only its ephemeral GitHub host
+The dedicated Linux CI acceptance job is
+`.github/workflows/agent-native-isolation.yml`; it prepares only its ephemeral GitHub host
 by recording these settings and, when the host permits it, enabling
 unprivileged user namespaces and clearing Ubuntu's user-namespace AppArmor
 restriction for that disposable job. This is not a Swico runtime change and
 is not a recommended user-machine workaround. A strict native job still fails
 unless `verified=true` and every hostile probe ran. Linux operators must
 configure host policy administratively and run the hostile probes on each
-supported architecture; Windows and this development macOS host currently
-fail closed.
+supported architecture. This workflow is intentionally separate from ordinary
+CLI/package CI and npm artifact publication: a green public CLI release does
+not establish local-agent native readiness. Windows and this development macOS
+host currently fail closed.

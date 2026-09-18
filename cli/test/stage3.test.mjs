@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadConfig } from '../dist/configuration.js'
-import { classifyLinuxNamespaceFailure, classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, linuxNamespaceDiagnostics, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
+import { classifyLinuxNamespaceFailure, classifyMacDiagnosticResult, createSandboxAdapter, diagnoseMacSandbox, linuxBubblewrapArgs, linuxBubblewrapReadinessArgs, linuxNamespaceDiagnostics, linuxSystemRuntimeBinds, macRuntimeDiagnostic, runSandboxProbe, verifySandbox } from '../dist/sandbox.js'
 import { WorktreeManager } from '../dist/worktrees.js'
 import { MutatingWorkerCoordinator } from '../dist/multi_agent.js'
 import { loadPermissionProfile, savePermissionProfile } from '../dist/permissions.js'
@@ -143,6 +144,24 @@ test('Linux AppArmor loopback namespace failure has an actionable classification
   assert.equal(classifyLinuxNamespaceFailure('bwrap: Creating new namespace failed: Operation not permitted', {
     unprivileged_userns_clone: '0', max_user_namespaces: '28633', apparmor_restrict_unprivileged_userns: 'unavailable',
   }), 'linux_userns_restricted')
+})
+
+test('bubblewrap readiness and execution share existence-aware dynamic runtime mounts', () => {
+  const binds = linuxSystemRuntimeBinds()
+  const readiness = linuxBubblewrapReadinessArgs()
+  for (const path of ['/usr', '/lib', '/lib64']) {
+    if (!existsSync(path)) continue
+    assert.ok(binds.some(bind => bind.source === path && bind.target === path), `${path} should be mounted when present`)
+    const index = readiness.indexOf(path)
+    assert.notEqual(index, -1, `${path} should be present in readiness args`)
+  }
+  const execution = linuxBubblewrapArgs(process.cwd(), ['/usr/bin/true'])
+  for (const bind of binds) {
+    assert.ok(execution.includes(bind.source), `${bind.source} should be present in execution args`)
+    assert.ok(execution.includes(bind.target), `${bind.target} should be present in execution args`)
+  }
+  assert.ok(readiness.includes('--unshare-net'))
+  assert.equal(readiness.at(-1), '/usr/bin/true')
 })
 
 test('sandbox readiness exposes why a platform is unavailable instead of claiming enforcement', async () => {

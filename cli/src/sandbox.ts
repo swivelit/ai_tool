@@ -90,9 +90,53 @@ export function classifyLinuxNamespaceFailure(detail: string, host: LinuxNamespa
   return 'namespace_unavailable'
 }
 
+export type LinuxSystemRuntimeBind = { source: string; target: string }
+
+const linuxSystemRuntimePaths = ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/usr/local']
+
+/**
+ * Return the read-only host system paths required to start ordinary dynamic
+ * executables inside an otherwise empty bubblewrap root. This is shared by
+ * readiness and real execution so the probe cannot drift from production.
+ */
+export function linuxSystemRuntimeBinds(): LinuxSystemRuntimeBind[] {
+  return linuxSystemRuntimePaths.flatMap(path => {
+    try { realpathSync(path); return [{ source: path, target: path }] }
+    catch { return [] }
+  })
+}
+
+function linuxBubblewrapNamespaceArgs(): string[] {
+  const args = ['--die-with-parent', '--new-session', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc']
+  for (const bind of linuxSystemRuntimeBinds()) args.push('--ro-bind', bind.source, bind.target)
+  return args
+}
+
+export function linuxBubblewrapReadinessArgs(): string[] {
+  return [...linuxBubblewrapNamespaceArgs(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-home', '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--setenv', 'HOME', '/tmp/swico-home', '--unshare-net', '--', '/usr/bin/true']
+}
+
+export function linuxBubblewrapArgs(workspaceRoot: string, argv: string[], policy: SandboxPolicy = 'workspace-write', network: NetworkPolicy = 'disabled', environment?: NodeJS.ProcessEnv, probeMounts: Array<{ source: string; target: string }> = []): string[] {
+  const root = safeRoot(workspaceRoot), args = linuxBubblewrapNamespaceArgs()
+  args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-sandbox', '--dir', '/workspace', '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/tmp/swico-home', '--dir', '/tmp/swico-home')
+  // Verification outside/home paths are intentionally namespace-only. Do
+  // not bind their host directories: a read-only bind would grant precisely
+  // the read access the negative probes are meant to reject. Read-only
+  // system binds make the namespace path exist while keeping it non-writable
+  // and separate from the host fixture.
+  args.push('--ro-bind', '/usr', '/swico-probe-outside', '--ro-bind', '/usr', '/swico-probe-home')
+  for (const mount of probeMounts) {
+    if (mount.target.startsWith('/workspace/')) args.push('--ro-bind', safeRoot(mount.source), mount.target)
+  }
+  for (const [name, value] of Object.entries(safeEnvironment(environment))) if (name !== 'HOME' && value !== undefined) args.push('--setenv', name, value)
+  if (network === 'disabled') args.push('--unshare-net')
+  args.push(policy === 'workspace-write' ? '--bind' : '--ro-bind', root, '/workspace', '--', argv[0], ...argv.slice(1))
+  return args
+}
+
 function bubblewrapDiagnostic(): { ready: boolean; diagnostic: SandboxDiagnostic; reason: string } {
   if (!commandExists('true') && !commandExists('/usr/bin/true')) return { ready: false, diagnostic: 'runtime_startup_failure', reason: 'bubblewrap is installed but the known-startable readiness executable is missing.' }
-  try { execFileSync('bwrap', ['--die-with-parent', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--ro-bind', '/usr', '/usr', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-home', '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--setenv', 'HOME', '/tmp/swico-home', '--unshare-net', '--', '/usr/bin/true'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create least-privilege mount, user, PID, and network namespaces.' } }
+  try { execFileSync('bwrap', linuxBubblewrapReadinessArgs(), { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 2_000 }); return { ready: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create least-privilege mount, user, PID, and network namespaces.' } }
   catch (error) {
     const detail = errorOutput(error), startupFailure = /enoent|no such file|cannot execute|exec format/i.test(detail), host = linuxNamespaceDiagnostics()
     const diagnostic = startupFailure ? 'runtime_startup_failure' : classifyLinuxNamespaceFailure(detail, host)
@@ -237,24 +281,7 @@ class LinuxBubblewrap implements SandboxAdapter {
   constructor(private readonly workspaceRoot: string) {}
   status(): SandboxStatus { return { implementation: 'linux-bubblewrap', available: true, diagnostic: 'ready', reason: 'bubblewrap is installed and will create a mount, user, PID, and network namespace; hostile verification is still required before agent use.', policy: 'workspace-write', network: 'disabled', writable_roots: ['/workspace', '/tmp'], ...capabilities(true), runtime_version: 'bubblewrap (system)' } }
   private args(argv: string[], policy: SandboxPolicy, network: NetworkPolicy, environment?: NodeJS.ProcessEnv, probeMounts: Array<{ source: string; target: string }> = []): string[] {
-    const root = safeRoot(this.workspaceRoot), args = ['--die-with-parent', '--new-session', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--ro-bind', '/usr', '/usr']
-    for (const path of ['/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/usr/local']) {
-      try { realpathSync(path); args.push('--ro-bind', path, path) } catch { /* optional system directory */ }
-    }
-    args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/tmp/swico-sandbox', '--dir', '/workspace', '--chdir', '/workspace', '--clearenv', '--setenv', 'HOME', '/tmp/swico-home', '--dir', '/tmp/swico-home')
-    // Verification outside/home paths are intentionally namespace-only. Do
-    // not bind their host directories: a read-only bind would grant precisely
-    // the read access the negative probes are meant to reject. Read-only
-    // system binds make the namespace path exist while keeping it non-writable
-    // and separate from the host fixture.
-    args.push('--ro-bind', '/usr', '/swico-probe-outside', '--ro-bind', '/usr', '/swico-probe-home')
-    for (const mount of probeMounts) {
-      if (mount.target.startsWith('/workspace/')) args.push('--ro-bind', safeRoot(mount.source), mount.target)
-    }
-    for (const [name, value] of Object.entries(safeEnvironment(environment))) if (name !== 'HOME' && value !== undefined) args.push('--setenv', name, value)
-    if (network === 'disabled') args.push('--unshare-net')
-    args.push(policy === 'workspace-write' ? '--bind' : '--ro-bind', root, '/workspace', '--', argv[0], ...argv.slice(1))
-    return args
+    return linuxBubblewrapArgs(this.workspaceRoot, argv, policy, network, environment, probeMounts)
   }
   wrap(argv: string[], policy: SandboxPolicy = 'workspace-write', network: NetworkPolicy = 'disabled'): { command: string; args: string[] } { return { command: 'bwrap', args: this.args(argv, policy, network) } }
   spawn(argv: string[], options: SpawnOptions & { policy?: SandboxPolicy; network?: NetworkPolicy; probeMounts?: Array<{ source: string; target: string }> }): ChildProcess {
