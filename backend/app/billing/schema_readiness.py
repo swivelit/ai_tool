@@ -25,6 +25,8 @@ class BillingSchemaReadiness:
 
 
 _REQUIRED_COLUMNS = {
+    "video_job": ("payment_id", "state", "fence", "deadline"),
+    "video_outbox": ("kind", "state", "due_at"),
     "usage_charge": ("tester_credit_window_id",),
     "weekly_tester_credit_window": (
         "id", "user_id", "credit_bucket", "period_start", "period_end",

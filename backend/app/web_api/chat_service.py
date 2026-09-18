@@ -1439,6 +1439,11 @@ def prepare_web_turn(
             request_triag_settings = TriagSettings()
     authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
+        for target_id in (continue_message_id, edit_message_id, regenerate_message_id):
+            if target_id:
+                target = session.get(WebChatMessage, target_id)
+                if target and target.user_id == user_id and continuation_metadata_dict(target).get("video"):
+                    raise EditRequestError("video_not_regenerable", "Video cards cannot be edited, continued or regenerated. Use Create video.", 409)
         if forced_swico_tier is not None:
             requested_tier = str(forced_swico_tier).strip().lower()
             if requested_tier not in SWICO_TIER_IDS:

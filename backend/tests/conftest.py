@@ -108,6 +108,10 @@ from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, CliAgent
 WEB_MODELS = [CliPendingAction, CliAgentStep, CliAgentRun, CliSession, CliDeviceGrant, WebKnowledgeNode, WebKnowledgeTriplet, WebKnowledgeChunk, WebKnowledgeDocument, WebCodeEdge, WebCodeSymbol, WebCodeFile, WebCodeRepository, WebEvidenceItem, WebAnswerCheck, WebUsageStage, WebRetrievalTrace, ProcessedWebhook, SubscriptionUsageLedger, SubscriptionUsageWindow, ReferralReward, ReferralAttribution, SubscriptionEntitlement, ReferralCode, WalletLedger, UsageCharge, WeeklyTesterCreditWindow, WebMessageFeedback, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, WebGuestSession, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences, SubscriptionPreference]
 
 
+from app.video.models import VideoControl, VideoJob, VideoOutbox, VideoQuota, VideoTemplate
+WEB_MODELS[:0] = [VideoOutbox, VideoJob, VideoQuota, VideoTemplate, VideoControl]
+
+
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
     token = f"dev:{uid}:{email or ''}" if email else f"dev:{uid}"
     return {"Authorization": f"Bearer {token}"}

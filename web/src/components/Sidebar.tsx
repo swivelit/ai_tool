@@ -74,6 +74,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     </div>
     {inRouter ? <Link className="rail-action cli-sidebar-link" to="/swico-cli" aria-label="Swico CLI" title="Swico CLI" onClick={close}><SquareTerminal size={19} /><span>Swico CLI</span></Link> : <a className="rail-action cli-sidebar-link" href="/swico-cli" aria-label="Swico CLI" title="Swico CLI" onClick={close}><SquareTerminal size={19} /><span>Swico CLI</span></a>}
     <div className="sidebar-primary">
+      <a className="rail-action" href="/videos" onClick={close}><Plus size={19} /><span>Create video</span></a>
       {iconButton('New chat', <MessageSquarePlus size={19} />, newChat, 'new-chat-button')}
       {collapsed && !searchOpen
         ? <button type="button" className="search-action" aria-label="Search chats" title="Search chats" onClick={openSearch}><Search size={19} /><span>Search chats</span></button>

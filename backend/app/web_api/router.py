@@ -847,6 +847,7 @@ def _serialize_message(
             }
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
+        "video": metadata.get("video") if isinstance(metadata.get("video"), dict) else None,
         "request_id": row.request_id, "tier": tier,
         "tier_label": SWICO_TIER_LABELS[tier] if tier else "Swico",
         "input_tokens": row.input_tokens, "output_tokens": row.output_tokens,
@@ -5456,6 +5457,8 @@ def verify_payment(payload: VerifyPaymentRequest, session: Session = Depends(get
     if order.status not in _TERMINAL_PAYMENT_STATUSES:
         order.status = "captured"
     fulfill_payment_once(session, order)
+    if order.purchase_type == "video_template":
+        return {"status": order.status, "credited": False, "purchase_type": "video_template", "fulfillment_status": order.fulfillment_status}
     if order.purchase_type == "subscription":
         return {
             "status": "fulfilled", "credited": False, "purchase_type": "subscription",
@@ -5526,6 +5529,14 @@ async def razorpay_webhook(request: Request):
             else:
                 if int(order_entity.get("amount_paid", -1)) != order.gross_amount_paise or order_entity.get("currency") != "INR" or order_entity.get("status") != "paid":
                     raise HTTPException(400, "Paid order details do not match.")
+                if order.purchase_type == "video_template":
+                    captured = [p for p in RazorpayClient().fetch_order_payments(provider_order_id).get("items", []) if p.get("status") == "captured"]
+                    if len(captured) != 1:
+                        raise HTTPException(409, "Captured payment requires reconciliation")
+                    _validate_captured_payment(order, captured[0])
+                    if order.provider_payment_id and order.provider_payment_id != captured[0].get("id"):
+                        raise HTTPException(409, "Payment ID does not match")
+                    order.provider_payment_id = captured[0]["id"]
             if order.status not in _TERMINAL_PAYMENT_STATUSES:
                 order.status = "captured"
             credit_payment_once(session, order)
@@ -5555,7 +5566,7 @@ async def razorpay_webhook(request: Request):
             if refund.get("currency") not in {None, "INR"}:
                 raise HTTPException(400, "Refund currency does not match.")
             amount = int(refund.get("amount", -1))
-            if amount <= 0 or order.refunded_amount_paise + amount > order.gross_amount_paise:
+            if amount <= 0:
                 raise HTTPException(400, "Refund amount does not match.")
             try:
                 order_metadata = json.loads(order.metadata_json or "{}")
@@ -5563,6 +5574,8 @@ async def razorpay_webhook(request: Request):
                 order_metadata = {}
             processed_refund_ids = set(order_metadata.get("processed_refund_ids") or [])
             if refund_id not in processed_refund_ids:
+                if order.refunded_amount_paise + amount > order.gross_amount_paise:
+                    raise HTTPException(400, "Refund amount does not match.")
                 reverse_credit_for_refund(session, order, order.refunded_amount_paise + amount)
                 processed_refund_ids.add(refund_id)
                 order_metadata["processed_refund_ids"] = sorted(processed_refund_ids)

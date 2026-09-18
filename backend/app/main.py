@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .video.transfers import VideoTransferLimit
+
 import asyncio
 import base64
 import hmac
@@ -390,6 +392,7 @@ if cors_errors:
     CORS_CONFIGURATION_ERROR = "; ".join(cors_errors)
 
 app = FastAPI(title="Swico Backend")
+app.add_middleware(VideoTransferLimit)
 RUNTIME_STATUS: Dict[str, Any] = {
     "status": "starting",
     "services": {},
@@ -402,6 +405,12 @@ if os.getenv("WEB_APP_ENABLED", "false").strip().lower() in {"1", "true", "yes",
 
     app.include_router(web_api_router)
     app.include_router(cli_api_router)
+    from .video.router import router as video_router, worker as video_worker_router
+    from .video.maintenance import start_maintenance, stop_maintenance
+    app.include_router(video_router)
+    app.include_router(video_worker_router)
+    app.add_event_handler("startup", start_maintenance)
+    app.add_event_handler("shutdown", stop_maintenance)
 
 if openwakeword_router is not None:
     app.include_router(openwakeword_router)

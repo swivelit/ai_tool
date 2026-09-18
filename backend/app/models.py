@@ -294,13 +294,14 @@ class PaymentOrder(SQLModel, table=True):
     __table_args__ = (
         Index("ix_payment_order_user_created", "user_id", "created_at"),
         CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_payment_order_credit_bucket"),
-        CheckConstraint("purchase_type IN ('topup', 'subscription')", name="ck_payment_order_purchase_type"),
+        CheckConstraint("purchase_type IN ('topup', 'subscription', 'video_template')", name="ck_payment_order_purchase_type"),
         CheckConstraint("purchase_type <> 'subscription' OR credited_amount_micros = 0", name="ck_payment_order_subscription_no_wallet_credit"),
+        CheckConstraint("(purchase_type = 'video_template' AND credit_bucket IS NULL AND gross_amount_paise = 2500 AND credited_amount_micros = 0 AND platform_share_paise = 0) OR (purchase_type <> 'video_template' AND credit_bucket IS NOT NULL)", name="ck_payment_order_video_product"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
-    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
+    credit_bucket: Optional[str] = Field(default="chat", max_length=16, sa_column=Column(String(16).evaluates_none(), nullable=True, server_default="chat"))
     provider: str = Field(default="razorpay", max_length=24)
     provider_order_id: Optional[str] = Field(default=None, unique=True, max_length=80)
     provider_payment_id: Optional[str] = Field(default=None, unique=True, max_length=80)
@@ -1679,3 +1680,7 @@ class Job(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+# Register website-only video metadata for Alembic and isolated test databases.
+from .video.models import VideoControl, VideoJob, VideoOutbox, VideoQuota, VideoTemplate  # noqa: E402,F401

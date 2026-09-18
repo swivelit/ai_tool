@@ -235,6 +235,12 @@ def reconcile_razorpay_orders(
                 outcome["provider_refunded_amount_paise"] = total
                 if apply:
                     reverse_credit_for_refund(session, order, total)
+                    if order.purchase_type == "video_template":
+                        import json
+                        metadata = json.loads(order.metadata_json or "{}")
+                        metadata["processed_refund_ids"] = sorted(set(metadata.get("processed_refund_ids", [])) | {str(item["id"]) for item in processed if item.get("id")})
+                        order.metadata_json = json.dumps(metadata, sort_keys=True)
+                        session.add(order)
         results.append(outcome)
     if apply:
         session.commit()

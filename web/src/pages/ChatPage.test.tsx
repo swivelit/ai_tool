@@ -74,6 +74,39 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+it('opens the persisted video chat card from an authenticated email deep link without generation', async () => {
+  mockApi()
+  const id = '11111111-1111-1111-1111-111111111111'
+  window.history.replaceState({}, '', `/?video=${id}`)
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.includes('/videos/jobs/')) return { id, thread_id:'video-thread', state:'expired', expires_at:'2020-01-01T00:00:00Z' } as never
+    if (path.includes('/video-thread/messages')) return { items:[{ id:'video-message', thread_id:'video-thread', role:'assistant', content:'Your AI-edited video', status:'complete', video:{ job_id:id, version:1 } }] } as never
+    return { items:[], has_more:false } as never
+  })
+  const view = render(<ChatPage />)
+  try {
+    expect(await screen.findByText(/Expired — the temporary video/)).toBeInTheDocument()
+    expect(streamChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name:'Regenerate answer' })).not.toBeInTheDocument()
+  } finally { view.unmount(); window.history.replaceState({}, '', '/') }
+})
+
+it('does not let a delayed video deep link override the user selecting New chat', async () => {
+  mockApi()
+  const pending = deferred<{ thread_id:string }>()
+  const original = vi.mocked(apiJson).getMockImplementation()!
+  window.history.replaceState({}, '', '/?video=11111111-1111-1111-1111-111111111111')
+  vi.mocked(apiJson).mockImplementation(async (...args) => args[1].includes('/videos/jobs/') ? pending.promise as never : original(...args))
+  const view = render(<ChatPage />)
+  try {
+    await screen.findByRole('textbox', { name:'Message Swico' })
+    await userEvent.click(screen.getAllByRole('button', { name:'New chat' })[0])
+    await act(async () => { pending.resolve({ thread_id:'stale-video-thread' }); await pending.promise })
+    expect(vi.mocked(apiJson).mock.calls.some(call => call[1].includes('/stale-video-thread/messages'))).toBe(false)
+  } finally { view.unmount(); window.history.replaceState({}, '', '/') }
+})
+
 const uploaded = {
   id:'upload-1', name:'notes.txt', media_type:'text/plain', size_bytes:5,
   created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),

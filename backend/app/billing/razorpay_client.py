@@ -22,6 +22,12 @@ _RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 class RazorpayClient:
     base_url = "https://api.razorpay.com/v1"
 
+    def create_refund(self, payment_id: str, amount: int, receipt: str) -> dict[str, Any]:
+        # Official normal-refund contract. Stable receipt; no invented headers.
+        if not payment_id.startswith("pay_") or not 0 < amount <= 2500 or len(receipt) > 40:
+            raise PaymentValidationError("Invalid video refund request")
+        return self._request("POST", f"/payments/{payment_id}/refund", json={"amount": amount, "speed": "normal", "receipt": receipt})
+
     def __init__(
         self, key_id: str | None = None, key_secret: str | None = None,
         *, sleep: Any = time.sleep, random_uniform: Any = random.uniform,

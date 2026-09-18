@@ -8,6 +8,7 @@ import { CliAuthorizePage } from './pages/CliAuthorizePage'
 import { CliSessionsPage } from './pages/CliSessionsPage'
 import { CliGuidePage } from './pages/CliGuidePage'
 import { CloudTasksPage } from './pages/CloudTasksPage'
+import { VideosPage } from './pages/VideosPage'
 
 const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ default: module.LegalPage })))
 
@@ -24,6 +25,7 @@ export function App() {
     } catch { return '/' }
   })()
   return <Routes>
+    <Route path="/videos" element={user ? <VideosPage /> : <Navigate to="/login?returnTo=%2Fvideos" replace />} />
     <Route path="/cli/authorize" element={<CliAuthorizePage />} />
     <Route path="/settings/cli-sessions" element={user ? <CliSessionsPage /> : <Navigate to={`/login?returnTo=${encodeURIComponent(`${location.pathname}${location.search}`)}`} replace />} />
     <Route path="/tasks" element={user ? <CloudTasksPage /> : <Navigate to={`/login?returnTo=%2Ftasks`} replace />} />
@@ -35,7 +37,7 @@ export function App() {
     <Route path="/swico-cli" element={<CliGuidePage isAuthenticated={Boolean(user)} />} />
     <Route path="/login" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="login" />} />
     <Route path="/signup" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="signup" />} />
-    <Route path="/" element={user ? <ChatPage /> : <GuestChatPage />} />
+    <Route path="/" element={user ? <ChatPage /> : new URLSearchParams(location.search).has('video') ? <Navigate to={`/login?returnTo=${encodeURIComponent('/' + location.search)}`} replace /> : <GuestChatPage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
 }

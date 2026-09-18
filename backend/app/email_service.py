@@ -71,7 +71,7 @@ class EmailDeliverySendError(RuntimeError):
 
 
 class EmailSender(Protocol):
-    def send(self, *, to_email: str, subject: str, text_body: str) -> None:
+    def send(self, *, to_email: str, subject: str, text_body: str, message_id: str | None = None) -> None:
         ...
 
 
@@ -221,11 +221,13 @@ class SmtpEmailSender:
     def __init__(self, settings: SmtpSettings | None = None) -> None:
         self.settings = settings or get_smtp_settings()
 
-    def send(self, *, to_email: str, subject: str, text_body: str) -> None:
+    def send(self, *, to_email: str, subject: str, text_body: str, message_id: str | None = None) -> None:
         message = EmailMessage()
         message["From"] = self.settings.from_email
         message["To"] = to_email
         message["Subject"] = subject
+        if message_id:
+            message["Message-ID"] = message_id
         message.set_content(text_body)
 
         if self.settings.use_tls:

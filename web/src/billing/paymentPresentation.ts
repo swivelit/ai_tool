@@ -25,6 +25,9 @@ export function paymentPresentation(payment: PaymentHistory): PaymentPresentatio
     timestampLabel: completedTimestamp ? 'Payment completed' as const : 'Checkout created' as const,
   }
 
+  if (payment.purchase_type === 'video_template') {
+    return { ...base, heading: `Template video · ${status.replaceAll('_', ' ')}`, detail: 'Standalone video purchase. No Chat or Voice credits are added. See video history for delivery/refund status.', amountLabel: completedTimestamp ? 'Gross amount paid' : 'Selected checkout amount', showRefundAmount: payment.refunded_amount_paise > 0 }
+  }
   if (payment.purchase_type === 'subscription') {
     if (status === 'fulfilled' || status === 'captured' || status === 'credited') {
       return { ...base, heading: 'Subscription fulfilled', detail: 'Prepaid subscription active or queued; no automatic renewal.', amountLabel: 'Gross amount paid' }

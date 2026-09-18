@@ -942,6 +942,16 @@ useEffect(() => {
     pendingAttachmentKeysRef.current.clear()
     draftRef.current = ''; setDraft(''); setDraftVoiceTurnId(null); resetSearch(); setHighlightMessageId(null); clearActiveAttachments(); setRepository(null); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`)
   }
+  useEffect(() => {
+    const video = new URLSearchParams(window.location.search).get('video')
+    if (!user || !video || !/^[a-f0-9-]{36}$/.test(video)) return
+    const controller = new AbortController()
+    const navigationGeneration = navigationGenerationRef.current
+    void apiJson<{ thread_id: string | null }>(user, `/api/web/videos/jobs/${video}`, { signal: controller.signal }).then(value => {
+      if (!controller.signal.aborted && navigationGeneration === navigationGenerationRef.current && value.thread_id) { activeRef.current = value.thread_id; setActive(value.thread_id) }
+    }).catch(() => { if (!controller.signal.aborted && navigationGeneration === navigationGenerationRef.current) setError('Video conversation unavailable for this account.') })
+    return () => controller.abort()
+  }, [user])
   const selectSearch = (result: SearchResult) => {
     if (!result.thread_id) return
     invalidateNavigation()

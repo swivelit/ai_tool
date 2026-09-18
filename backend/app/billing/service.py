@@ -209,14 +209,17 @@ def fulfill_payment_once(session: Session, order: PaymentOrder):
                     session.add(order)
                 return existing
         return fulfill_subscription_payment(session, order)
-    return _credit_payment_once_topup(session, order)
+    if order.purchase_type == "video_template":
+        from ..video.service import fulfill_video
+        return fulfill_video(session, order)
+    if order.purchase_type == "topup":
+        return _credit_payment_once_topup(session, order)
+    raise PaymentValidationError("Unknown payment product")
 
 
 def credit_payment_once(session: Session, order: PaymentOrder):
     """Backward-compatible entry point that dispatches by purchase type."""
-    if order.purchase_type == "subscription":
-        return fulfill_payment_once(session, order)
-    return _credit_payment_once_topup(session, order)
+    return fulfill_payment_once(session, order)
 
 
 def credit_payment_once_topup(session: Session, order: PaymentOrder) -> WalletLedger:
@@ -1032,6 +1035,11 @@ def recover_stale_usage_reservations(
 
 
 def reverse_credit_for_refund(session: Session, order: PaymentOrder, new_refunded_amount_paise: int) -> int:
+    if order.purchase_type == "video_template":
+        from ..video.service import video_refund
+        return video_refund(session, order, new_refunded_amount_paise)
+    if order.purchase_type not in {"topup", "subscription"}:
+        raise PaymentValidationError("Unknown payment product")
     if order.purchase_type == "subscription":
         total_refunded = min(max(0, int(new_refunded_amount_paise)), int(order.gross_amount_paise))
         order.refunded_amount_paise = max(order.refunded_amount_paise, total_refunded)

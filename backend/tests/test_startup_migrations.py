@@ -129,7 +129,7 @@ def test_weekly_tester_credit_migration_preserves_billing_data_and_constraints(t
         assert connection.execute(text("SELECT COUNT(*) FROM user WHERE id=901")).scalar_one() == 1
         assert connection.execute(text("SELECT COUNT(*) FROM usage_charge WHERE id='migration-charge'")).scalar_one() == 1
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == "20260917_cli_cloud_artifacts"
+        assert version == "20260918_website_video"
 
     foreign_keys = inspector.get_foreign_keys("usage_charge")
     assert any(

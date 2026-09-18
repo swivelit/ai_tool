@@ -72,6 +72,17 @@ def financial_audit(
             active_reserved_by_wallet[(int(charge.user_id), str(charge.credit_bucket))] += max(0, int(charge.reserved_micros))
 
     findings: list[dict[str, Any]] = []
+    from ..video.models import VideoJob, VideoOutbox
+    video_orders = {row.id: row for row in orders if row.purchase_type == "video_template"}
+    video_jobs = {row.payment_id: row for row in session.exec(select(VideoJob)).all() if row.payment_id}
+    for category, items in (
+        ("video_payment_without_job", [{"internal_id": key, "status": row.status} for key, row in video_orders.items() if key not in video_jobs]),
+        ("video_capture_unfulfilled", [{"internal_id": key, "status": row.status} for key, row in video_orders.items() if row.status == "captured" and ensure_utc(row.updated_at) < payment_cutoff]),
+        ("video_refund_attention", [{"internal_id": row.id, "status": row.state} for row in session.exec(select(VideoOutbox)).all() if row.kind == "refund" and row.state in {"failed", "manual_review", "ambiguous"}]),
+    ):
+        finding = _finding(category, items)
+        if finding:
+            findings.append(finding)
     candidates = (
         _finding("negative_wallet_balance", (_item(row, current, timestamp="updated_at") for row in wallets if int(row.balance_micros) < 0)),
         _finding("negative_wallet_reservation", (_item(row, current, timestamp="updated_at") for row in wallets if int(row.reserved_micros) < 0)),
@@ -92,7 +103,7 @@ def financial_audit(
     captured = [
         row for row in orders
         if row.status == "captured" and ensure_utc(row.updated_at) < payment_cutoff
-        and row.purchase_type != "subscription"
+        and row.purchase_type == "topup"
         and str(row.id) not in payment_credit_refs
     ]
     finding = _finding("captured_payment_uncredited", (_item(row, current, timestamp="updated_at") for row in captured))
@@ -130,7 +141,7 @@ def financial_audit(
     credited_without_ledger = [
         row for row in orders
         if row.status in {"credited", "partially_refunded", "refunded"}
-        and row.purchase_type != "subscription"
+        and row.purchase_type == "topup"
         and str(row.id) not in payment_credit_refs
     ]
     finding = _finding(
@@ -174,7 +185,7 @@ def financial_audit(
             reversed_by_order[str(row.reference_id)] += -min(0, int(row.amount_micros))
     short_refunds = []
     for row in orders:
-        if row.purchase_type == "subscription" or not row.gross_amount_paise or not row.refunded_amount_paise:
+        if row.purchase_type != "topup" or not row.gross_amount_paise or not row.refunded_amount_paise:
             continue
         expected = (
             int(row.credited_amount_micros) * int(row.refunded_amount_paise)

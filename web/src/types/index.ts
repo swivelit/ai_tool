@@ -90,6 +90,7 @@ export type AudioRecorderState = {
 /** `voice` is retained only for deserializing historical dictation rows. */
 export type InputMode = 'text' | 'voice' | 'dictation' | 'realtime_voice'
 export type Message = {
+  video?: { job_id: string; version: number } | null;
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
   request_id: string | null; tier: SwicoTier | null; tier_label: string;
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
@@ -227,7 +228,7 @@ export type PaymentStatus = {
   platform_share_paise: number; refunded_amount_paise: number; status: string;
   provider_payment_id: string | null; created_at: string; paid_at: string | null;
   refunded_at: string | null; updated_at: string;
-  purchase_type?: 'topup' | 'subscription'; subscription_plan_code?: string | null;
+  purchase_type?: 'topup' | 'subscription' | 'video_template'; subscription_plan_code?: string | null;
   fulfillment_status?: string;
 }
 
@@ -329,7 +330,7 @@ export type PaymentHistory = {
   credit_reversal_micros: number; status: string; created_at: string;
   updated_at: string; paid_at: string | null; refunded_at: string | null;
   payment_received: boolean; credit_applied: boolean;
-  purchase_type?: 'topup' | 'subscription'; subscription_plan_code?: string | null;
+  purchase_type?: 'topup' | 'subscription' | 'video_template'; subscription_plan_code?: string | null;
   fulfillment_status?: string;
   token_estimate?: TokenEstimate; reversal_token_estimate?: TokenEstimate;
   voice_estimate?: VoiceCreditEstimate;

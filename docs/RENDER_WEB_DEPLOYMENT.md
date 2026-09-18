@@ -2,6 +2,17 @@
 
 Do not create a Blueprint for the existing production resources. They were created manually; update them in the Render dashboard.
 
+## Website template videos (separately gated)
+
+See [VIDEO_MAC_SETUP.md](VIDEO_MAC_SETUP.md) for the exact existing-service settings,
+Mac commands, migration and drain procedure, and [VIDEO_RELEASE_CHECKLIST.md](VIDEO_RELEASE_CHECKLIST.md)
+for native/provider/legal prerequisites. No new Render service, Redis, cron, disk,
+public Mac endpoint or static-site secret is required. Both video switches remain
+false until acceptance. The new head is `20260918_website_video` after
+`20260917_cli_cloud_artifacts`; preserve existing migration ownership. Revised
+video legal text needs fresh approval; the previous publication digest is not
+approval for this change. Do not change existing CLI/Windows/weekly-credit settings.
+
 ## Swico Free staged rollout
 
 Swico Free remains disabled by default and must use the existing API service;

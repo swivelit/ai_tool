@@ -1,0 +1,231 @@
+{
+  "publication": {
+    "businessIdentity": "Swivel Technologies, a partnership, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India",
+    "supportEmail": "support@swiveltechnologies.in",
+    "billingSupportEmail": "billing@swiveltechnologies.in",
+    "privacyEmail": "privacy@swiveltechnologies.in",
+    "publicationStatus": "unreviewed"
+  },
+  "pages": {
+    "terms": {
+      "title": "Terms and Conditions",
+      "summary": "Rules for using Swico",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Eligibility and accounts",
+          "body": "These Terms and Conditions govern access to and use of Swico, including its website, applications, artificial-intelligence features, voice features, Token Credits, payment functions and related services. Swico is operated by Swivel Technologies, a partnership having its registered address at No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India.\n\nYou must be at least 18 years old and legally capable of entering into a binding contract to use Swico. Swico is not intended for children. You must provide accurate and current account information and are responsible for protecting your login credentials, devices and authentication methods. Inform support promptly if you reasonably suspect unauthorised access.\n\nYou may not create an account using false information, impersonate another person, transfer an account without permission or use another person's account without authority. We may request reasonable verification before changing account information, processing a privacy request, issuing a refund or restoring access. By using Swico or buying Token Credits, you agree to these Terms and the other policies published by Swico."
+        },
+        {
+          "heading": "Adult template-video consent",
+          "body": "When enabled, website template videos are limited to consenting adults. You must have permission from every supplied source subject and rights to the uploaded photos. Sexual, abusive, misleading-verification and deceptive impersonation uses are prohibited. Outputs are visibly marked AI-edited. The service replaces explicitly selected template roles; it does not generate new scenes, clothing, actions or speech. Versioned source-face and adult consent is required for each request."
+        },
+        {
+          "heading": "Acceptable use",
+          "body": "You must not use Swico to violate any law, court order, contractual duty, intellectual-property right, privacy right or other legal right; facilitate fraud, impersonation, harassment, threats, exploitation or abuse; distribute malware, spam or malicious code; gain unauthorised access to accounts, systems, prompts, source code, infrastructure or confidential information; bypass security, usage, payment or Token Credit controls; disrupt the Service; or submit content that you are not authorised to use.\n\nYou must not rely on generated content as the sole basis for medical, legal, financial, employment, credit, insurance, law-enforcement or other high-impact decisions about a person, or misrepresent generated content as verified professional advice, an official communication or a guaranteed factual statement.\n\nYou retain responsibility for prompts, files, audio and other material that you submit. You grant Swivel Technologies and its service providers a limited right to host, transmit and process that material only as reasonably necessary to provide, secure, support and improve the Service, comply with law and enforce these Terms. Do not submit passwords, payment-card numbers, government identifiers, trade secrets or other highly sensitive information unless a feature clearly requires it and you are authorised to provide it.\n\nWe may investigate suspected misuse and restrict, suspend or terminate access where reasonably necessary to protect users, comply with law, prevent fraud or security harm, enforce these Terms or protect the Service."
+        },
+        {
+          "heading": "Token credits and billing",
+          "body": "Swico uses prepaid Token Credits to measure access to chargeable AI and related features. Token Credits are digital usage capacity only. They are not money, a bank deposit, stored value, cryptocurrency, securities, transferable property or a right to cash. They cannot be withdrawn, transferred between users, exchanged outside Swico or redeemed for cash except through an eligible refund under the Cancellation and Refund Policy.\n\nFor each top-up, 50% of the gross amount paid is allocated to non-withdrawable, non-transferable Token Credit usage capacity and 50% is allocated to the platform and service component. The current preset top-ups are ₹15 and ₹299. Custom whole-rupee top-ups may be offered within the server-configured range. The amount, applicable taxes and checkout terms displayed before confirmation govern the transaction.\n\nToken Credit consumption varies according to the selected Swico mode, input and output usage, speech or language processing and the applicable service-pricing configuration. Public usage, allowance and balance displays use tokens or estimated token equivalents; they are estimates, not guaranteed numbers of messages, words, minutes or provider tokens.\n\nPayments may be processed by Razorpay or another disclosed payment provider. Top-ups are one-time purchases unless a future checkout expressly identifies a recurring plan and obtains separate consent. Refunds, failed payments, duplicate payments, reversals and chargebacks are governed by the Cancellation and Refund Policy. An approved refund may require corresponding unused Token Credits to be frozen, reversed or deducted."
+        },
+        {
+          "heading": "Website subscriptions and referral rewards",
+          "body": "Website subscriptions are prepaid, one-time and non-auto-renewing. Chat and Voice are separate plans and may be purchased independently: 1 month costs ₹1,500, 6 months costs ₹8,000 and 1 year costs ₹12,000, subject to the server-authoritative checkout. Each complete seven-day window begins at the entitlement start time. Chat allowance is displayed as a server-calculated token estimate and Voice allowance as an estimated token equivalent because Voice may include speech processing and AI response generation. Unused allowance does not roll over. If the subscription ends during a partial final week, the final allowance is prorated according to the duration shown at checkout. The checkout display and server confirmation remain authoritative.\n\nReferral attribution must be claimed before the referred user's first successful subscription. Self-referrals, repeated attribution, changing a referrer, duplicate or abusive activity, failed or refunded payments and top-ups do not qualify. A referrer receives at most one reward for the referred user's first qualifying subscription, in the same Chat or Voice bucket purchased: a 1 month subscription gives 1 week, a 6 months subscription gives 3 weeks and a 1 year subscription gives 2 calendar months. Referral rewards are usage entitlements only: they are non-cash, non-transferable and cannot be withdrawn or added to a wallet."
+        },
+        {
+          "heading": "Service availability",
+          "body": "Swico is a developing digital service. We may add, remove or modify features, providers, models, limits, interfaces, pricing methods and technical requirements. Material changes affecting paid usage will be communicated through the website, application, account notice or updated policies as reasonably appropriate.\n\nWe aim to keep Swico available, but continuous or error-free operation is not guaranteed. Access may be interrupted by maintenance, updates, internet or cloud failures, provider outages, payment delays, security incidents, legal requirements, capacity limits or events outside our reasonable control.\n\nThird-party services may be necessary for authentication, hosting, payment processing, AI generation, speech processing, email delivery and error monitoring. Their availability and performance are not fully under our control. We may impose fair-use, safety, technical or account limits and may discontinue a feature where reasonably necessary.\n\nYou may stop using Swico at any time. Account deletion is currently handled through a verified privacy request rather than a self-service website control. Certain payment, ledger, security and legal records may be retained where required by law or reasonably necessary to resolve disputes and protect the Service."
+        },
+        {
+          "heading": "Liability and disputes",
+          "body": "AI-generated outputs can be inaccurate, incomplete, outdated, offensive or unsuitable. You must independently review important information and obtain qualified professional advice where appropriate. Swico does not guarantee that outputs are correct, unique, non-infringing or fit for a particular purpose.\n\nTo the maximum extent permitted by law, Swico is provided on an as-available basis without implied warranties that may lawfully be excluded. Nothing in these Terms excludes a warranty, remedy or consumer right that cannot legally be excluded.\n\nNeither party is liable for indirect, incidental, special, exemplary or consequential loss, including loss of profit, opportunity, data or reputation, where such exclusion is permitted by law. To the maximum extent permitted by law, Swivel Technologies' aggregate liability arising from the Service will not exceed the greater of the amount paid to Swico during the three months immediately before the event giving rise to the claim or Rs.1,000. This limitation does not apply where liability cannot legally be limited, including fraud, wilful misconduct or a non-excludable statutory obligation.\n\nThese Terms are governed by the laws of India. The parties should first attempt in good faith to resolve a dispute through written notice and discussion for at least 30 days. Subject to mandatory consumer-forum jurisdiction and other rights that cannot be waived, courts at Chennai, Tamil Nadu will have jurisdiction. Questions may be sent to support@swiveltechnologies.in."
+        }
+      ]
+    },
+    "privacy": {
+      "title": "Privacy Policy",
+      "summary": "How information is handled",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Template-video processing and temporary media",
+          "body": "Video source photos are privately relayed through the existing temporary cache to an operator-controlled Intel Mac for face analysis and editing. Metadata is stripped. Photos, face embeddings and generated frames are not added to chat memory, RAG, analytics or a reusable face library. Unpaid sources expire within ten minutes; admitted sources are removed on completion or within the bounded four-hour job window. Generated videos are available through authenticated access for ten minutes from first readiness, then become expired history cards. The Mac removes customer scratch files after each attempt and on restart. An offline computer cannot delete files at an exact wall-clock time. Cache expiry does not establish deletion from managed snapshots/backups, whose residual-retention policy must be disclosed by the operator before launch. Unlinking is not a guarantee of SSD secure erasure. User-downloaded copies cannot be revoked. Non-media financial and job records are retained for accounting and support."
+        },
+        {
+          "heading": "Information collected",
+          "body": "This Privacy Policy explains how Swivel Technologies processes personal data in connection with Swico. Depending on the features used, we may collect account and profile information such as name, email address, Firebase user identifier, authentication metadata, place, time zone, assistant preferences and reply language.\n\nWe may collect authentication and security records such as one-time-password records, hashed verification values, attempt counts, timestamps and login events; chat and content information such as prompts, messages, generated responses, conversation titles, uploaded content, archive or deletion status and the provider or mode used; and voice information such as audio, transcripts and related metadata when a speech or voice feature is used.\n\nWe may also collect billing and Token Credit information such as top-up amount, order and payment identifiers, transaction status, refund identifiers, allocation, Token Credit balance, usage charges, pricing snapshots and reconciliation information. Swico does not ordinarily receive full payment-card credentials from the payment provider.\n\nUsage and technical information may include provider or model selection, input and output usage, route, browser or application information, device and operating-system information, timestamps, IP or network information where logged, diagnostic events, security signals and error records. Support and privacy-request information may include contact details, request content, verification information, attachments, correspondence and resolution records."
+        },
+        {
+          "heading": "How information is used",
+          "body": "We process information to create, authenticate, secure and administer accounts; receive prompts and provide AI, speech, language and related features; maintain chat history and preferences; calculate Token Credit usage; process top-ups and refunds; reconcile transactions; provide customer support; respond to privacy and grievance requests; prevent fraud, abuse and security incidents; diagnose errors; maintain reliability and backups; enforce our Terms; protect users and third parties; and comply with legal, accounting, tax, payment and regulatory obligations.\n\nWe may analyse service information to improve quality, safety, performance and user experience where permitted. Where consent is the basis for a particular activity, you may withdraw consent through an available control or by contacting us. Withdrawal does not affect processing already lawfully completed and may prevent us from continuing a feature for which the information is necessary.\n\nWe will not use personal data for a materially unrelated purpose without appropriate notice and consent where required."
+        },
+        {
+          "heading": "Service providers",
+          "body": "We use service providers to operate Swico. Depending on the feature and configuration, these may include Firebase or Google for authentication; Render and PostgreSQL infrastructure for website, API and database hosting; Razorpay for payment processing, refunds and reconciliation; configured third-party AI, speech and language processing providers; an email or SMTP provider for one-time passwords and service communications; and Sentry, only if enabled, for error and performance monitoring.\n\nThese providers may process account identifiers, prompts, relevant conversation context, audio or transcripts, generated content, transaction information, technical metadata or error information to the extent needed for their service. The provider used may depend on the requested feature, language, mode, availability and configuration.\n\nProviders may operate infrastructure in India or other countries. Personal data may therefore be processed outside India, subject to applicable legal restrictions and safeguards. We may also disclose information when reasonably necessary to comply with law, respond to valid legal process, investigate fraud or security incidents, protect rights and safety, complete a business restructuring or obtain professional advice."
+        },
+        {
+          "heading": "Retention and deletion",
+          "body": "We retain personal data only for as long as reasonably necessary for the purpose for which it was collected, to provide an active account, complete transactions, protect security, resolve disputes or comply with applicable law.\n\nAccount and profile information is generally retained while the account is active and for a reasonable period after closure to complete deletion, prevent fraud and resolve disputes. Chat content is generally retained until deleted by the user or the account is closed, subject to backup cycles, security requirements and legal obligations. Authentication and one-time-password records are retained for a limited period needed for verification, abuse prevention and security review.\n\nPayment, Token Credit, ledger, refund and invoice-related records are retained for the period required by applicable tax, accounting, payment and legal obligations. Support, privacy and grievance correspondence is retained while the request is open and for a reasonable period afterward. Security and technical logs are retained for the period required by applicable law and operational security needs. Backup copies are overwritten or deleted through the applicable backup cycle, but immediate deletion from every backup may not be technically possible.\n\nWhen information is no longer required, we will delete, anonymise or securely isolate it, subject to applicable law and technical limitations. Provider-side retention may also be governed by each provider's contract, configuration and legal obligations."
+        },
+        {
+          "heading": "Your choices and contact",
+          "body": "Subject to applicable law and reasonable verification, you may request information about personal data being processed; correction, completion or updating of inaccurate information; erasure of information no longer required where retention is not permitted or required; withdrawal of consent for consent-based processing; grievance redressal; and other rights available under applicable law.\n\nAccount deletion is not currently available as a self-service website control. Submit a verified request to privacy@swiveltechnologies.in. We may ask for information reasonably necessary to confirm identity and protect the account.\n\nPrivacy and grievance contact: Grievance Officer / Privacy Contact, Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Email: privacy@swiveltechnologies.in. Phone: +91 84380 74230.\n\nWe aim to acknowledge a privacy or grievance request within 48 hours and respond within the period required by applicable law. Swico is intended only for persons aged 18 or older. If you believe a child's personal data has been submitted, contact us so that we can investigate and take appropriate action. We may update this Policy to reflect changes in the Service, providers, law or processing practices."
+        }
+      ]
+    },
+    "refunds": {
+      "title": "Cancellation and Refund Policy",
+      "summary": "Payment, cancellation, and refund information",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Standalone template-video failures and refunds",
+          "body": "A template video is a separate ₹25 total purchase, not Chat or Voice credit. A verified captured payment funds one job. If a paid generation cannot be delivered within its bounded recovery window, or its result is lost before the promised access window ends, a full original-source refund is initiated. Pending or submitted refund status is not confirmation that the payment provider or bank has completed the refund. Ambiguous provider responses and partial refunds require reconciliation or manual review; refund actions are never blindly repeated. Complimentary attempts are restored once for infrastructure failure or cancellation before processing, not for user cancellation after processing starts. No video refund is converted into Chat or Voice credit."
+        },
+        {
+          "heading": "Token-credit allocation",
+          "body": "Each successful top-up is divided so that 50% of the gross amount becomes non-withdrawable, non-transferable Token Credit usage capacity and 50% is allocated to the Swico platform and service component.\n\nToken Credits are digital usage capacity and are not cash, stored value or transferable property. Their consumption depends on the selected AI provider, model, input and output usage, speech usage and service-pricing configuration.\n\nA top-up is delivered after the payment provider confirms a successful payment and Swico applies the corresponding Token Credits. A payment shown as pending is not treated as successfully delivered until confirmation and allocation are complete."
+        },
+        {
+          "heading": "Eligibility for refunds",
+          "body": "A refund request should ordinarily be submitted within 7 calendar days after payment. This window does not limit any right or remedy that cannot lawfully be excluded.\n\nA full or partial refund may be approved for a duplicate payment for the same intended top-up; a captured payment not credited to the Swico account where the issue cannot be corrected within a reasonable time; an incorrect amount charged because of a verified Swico or payment-integration error; a material technical failure that prevented delivery or meaningful use and could not be resolved; an unauthorised payment subject to reasonable verification; an eligible unused portion of Token Credit usage capacity; or another circumstance in which a refund is required by applicable law.\n\nA change of mind after substantial use, dissatisfaction based only on the style or content of a valid AI response, or exhaustion of Token Credits through valid usage will not ordinarily qualify for a refund. Every request will be considered fairly in light of recorded delivery, usage and applicable law."
+        },
+        {
+          "heading": "Partial usage and cancellations",
+          "body": "Top-ups are one-time digital purchases. They cannot normally be cancelled after successful payment and allocation, but an eligible refund may be requested.\n\nWhere some Token Credits have been used, a refund may be reduced to reflect Token Credit usage capacity already consumed, the part of the platform and service component reasonably attributable to service already delivered, applicable tax or payment treatment and any previous refund, chargeback, reversal or promotional adjustment connected with the same payment. We will not impose an arbitrary deduction; the calculation will be based on recorded usage, the original allocation and applicable law.\n\nWhere no digital service was delivered, or where a refund is required by law, the platform and service component will be considered as part of the eligible refund. Before a refund is initiated, corresponding unused Token Credits may be frozen or reversed. If the balance is insufficient because credits were used after the request, the refund may be adjusted to reconcile the account.\n\nDo not pursue both a merchant refund and a chargeback for the same amount without informing us. Duplicate recovery may lead to account restriction and reasonable recovery action."
+        },
+        {
+          "heading": "Subscription refund handling",
+          "body": "Website subscriptions are prepaid and do not renew automatically. A full refund cancels unused or future subscription entitlement and an unstarted referral reward caused by that purchase. A partial subscription refund is recorded for manual review; Swico does not automatically invent time or allowance proration. If a referral reward has already been used, its audit trail is preserved and manual review may be required. Subscription allowance is never converted into wallet credit."
+        },
+        {
+          "heading": "Processing times",
+          "body": "We aim to acknowledge a refund request within 48 hours during support operations and ordinarily aim to communicate a decision within 7 business days after receiving all information reasonably required to review it.\n\nWhen approved, a refund is sent to the original payment method unless law or the payment provider requires another method. Swico cannot guarantee the time taken by the bank, card network, UPI system or payment provider after initiation. Normal Razorpay refunds generally take about 5 to 10 working days to be processed or reflected, depending on the payment method and bank.\n\nA refund may take longer when identity or payment ownership cannot be verified, a payment is still pending, a chargeback exists, the provider requests additional information, fraud is suspected or legal review is required."
+        },
+        {
+          "heading": "How to request support",
+          "body": "Send a refund or billing request to billing@swiveltechnologies.in. Include the Swico account email, Razorpay payment ID or order ID, amount and date, reason for the request, whether Token Credits were used, relevant screenshots or error details and any other information reasonably required to verify the transaction.\n\nSwico Billing Support: billing@swiveltechnologies.in; phone +91 84380 74230. Proposed support hours are Monday to Saturday, 10:00 a.m. to 6:00 p.m. Indian Standard Time, excluding public holidays in Tamil Nadu.\n\nThis Policy may be updated for operational, legal or payment-provider changes. The version in effect on the payment date will ordinarily apply, except where a later rule is required by law or is more favourable to the customer."
+        }
+      ]
+    },
+    "contact": {
+      "title": "Contact and Support",
+      "summary": "Ways to reach the Swico team",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Support channel",
+          "body": "General questions, account-access issues, technical problems and feedback may be sent to support@swiveltechnologies.in or reported by phone at +91 84380 74230.\n\nSupport requests may be submitted at any time. Proposed support hours are Monday to Saturday, 10:00 a.m. to 6:00 p.m. Indian Standard Time, excluding public holidays in Tamil Nadu. Do not send passwords, one-time passwords, complete card details or unnecessary identity documents by email."
+        },
+        {
+          "heading": "Billing support",
+          "body": "Questions concerning top-ups, payment status, duplicate payments, Token Credit allocation, refunds or chargebacks may be sent to billing@swiveltechnologies.in or reported by phone at +91 84380 74230.\n\nInclude the account email, order or payment identifier, amount, date and a clear description. We may request additional verification before disclosing payment information or processing an adjustment."
+        },
+        {
+          "heading": "Privacy requests",
+          "body": "Requests for access, correction, erasure, consent withdrawal, account deletion or privacy grievance redressal may be sent to privacy@swiveltechnologies.in.\n\nPrivacy and grievance contact: Grievance Officer / Privacy Contact, Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Phone: +91 84380 74230.\n\nWe may verify identity and account ownership before acting on a request. The business should insert the appointed Grievance Officer's name in the public contact information where required by applicable law."
+        },
+        {
+          "heading": "Response expectations",
+          "body": "We aim to acknowledge consumer and support complaints within 48 hours and aim to resolve ordinary consumer complaints within 30 days, subject to complexity, verification, third-party processing and legal requirements.\n\nUrgent security reports are prioritised. Billing resolutions may depend on Razorpay, the user's bank or another payment participant. Privacy grievances will be handled within the period required by applicable data-protection law.\n\nThese are service targets and not guarantees of a particular outcome. We will keep the requester reasonably informed where additional time or information is required."
+        },
+        {
+          "heading": "Business details",
+          "body": "Legal business name: Swivel Technologies. Business structure: Partnership. Trading and product name: Swico. Registered address: No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Country: India. Customer-care phone: +91 84380 74230. Website: https://swico.in.\n\nA customer may also use any consumer grievance mechanism available under applicable Indian law. Contacting Swico first may allow an issue to be resolved more quickly."
+        }
+      ]
+    },
+    "ai": {
+      "title": "AI Use and Limitations Policy",
+      "summary": "Important guidance for AI-generated responses",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Accuracy and verification",
+          "body": "Swico generates responses using artificial-intelligence systems. Outputs are probabilistic and may be inaccurate, incomplete, outdated, inconsistent, fabricated, biased, offensive or unsuitable for the intended purpose.\n\nSwico does not independently verify every statement, citation, translation, calculation, recommendation or generated item. You must review important outputs, check original sources and use human judgment before acting or sharing the result. A confident tone does not mean that an answer is correct.\n\nTranslation and speech features may mishear, omit or change meaning, particularly with accents, slang, mixed-language speech, background noise, names or technical terminology. Generated content may resemble existing material. You are responsible for checking whether a proposed use requires permission, attribution, factual verification or professional review."
+        },
+        {
+          "heading": "Professional advice",
+          "body": "Swico is not a doctor, lawyer, accountant, financial adviser, therapist, emergency service or other licensed professional. Outputs are for general informational and productivity purposes and do not replace qualified professional advice, diagnosis, treatment or representation.\n\nDo not rely on Swico as the sole basis for medical, legal, financial, tax, safety, employment, credit, insurance or other high-impact decisions. For a medical, safety or other emergency, contact the appropriate emergency service or qualified professional. Swico does not continuously monitor conversations and cannot guarantee escalation.\n\nYou remain responsible for decisions, actions, communications, filings, purchases and other outcomes based on Swico outputs."
+        },
+        {
+          "heading": "Provider processing",
+          "body": "A request may be processed by third-party AI, speech or language providers selected according to the feature, language, mode, availability and configuration. These include configured third-party AI, speech and language processing providers.\n\nPrompts, relevant conversation context, audio, transcripts, generated responses and usage metadata may be transmitted to the selected provider to perform the requested function. Authentication, hosting, payment, email and monitoring providers may also process limited information as described in the Privacy Policy.\n\nDo not submit information that you are not authorised to share. Avoid sending highly confidential or sensitive information unless necessary and clearly supported by the feature. Provider availability, model behaviour, safety controls, pricing and retention practices may change. Swico may change the provider used for a request while continuing to comply with its published privacy commitments and applicable law."
+        },
+        {
+          "heading": "Cancellation and partial usage",
+          "body": "AI and speech requests may consume Token Credits as processing occurs. Usage may include input, cached input, output, speech or related provider costs even when the result is short, interrupted, refused, incomplete or not useful to the user.\n\nClosing the page, losing connectivity or cancelling after processing has begun may not stop provider usage already incurred. Where Swico can reliably detect that no service was delivered, it may restore or adjust Token Credits.\n\nRefund requests are governed by the Cancellation and Refund Policy. Dissatisfaction with the style or substance of a valid AI response does not automatically entitle the user to a refund, but verified technical failures and other eligible circumstances will be reviewed fairly."
+        },
+        {
+          "heading": "Reporting a concern",
+          "body": "Report harmful output, technical problems or misuse to support@swiveltechnologies.in; billing errors to billing@swiveltechnologies.in; and privacy or grievance concerns to privacy@swiveltechnologies.in. You may also call +91 84380 74230.\n\nInclude enough information to investigate, but do not resend sensitive data unnecessarily. We may review relevant account, request, output, usage and technical records to investigate a report, improve safeguards, prevent abuse or comply with law. Reporting does not guarantee removal, refund or a particular outcome."
+        }
+      ]
+    },
+    "delivery": {
+      "title": "Digital Service Delivery / Shipping Policy",
+      "summary": "How digital Token Credits and AI services are delivered",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Temporary AI-edited video delivery",
+          "body": "Video generation is asynchronous. After paid or complimentary admission, the website shows actual queue position and a measured estimate range, not a delivery guarantee. An offline worker pauses the queue and new admission. Results appear in an authenticated chat card and video history. A ready email contains a login-protected link and exact expiry, never a media attachment. SMTP delivery and inbox arrival are not guaranteed and do not extend the ten-minute download window. Save a local copy before expiry if you wish to retain it."
+        },
+        {
+          "heading": "Digital delivery",
+          "body": "Swico provides digital services only. No physical product is packed, shipped or delivered, and no physical shipping charge applies unless a future checkout expressly states otherwise.\n\nA successful top-up delivers Token Credit usage capacity to the Swico account associated with the transaction. The service is accessed through the Swico website or application using the authenticated account."
+        },
+        {
+          "heading": "Delivery timing",
+          "body": "Token Credits are normally applied automatically after Razorpay or the applicable payment provider confirms that the payment has been successfully captured and Swico completes internal verification.\n\nDelivery is usually completed within a few minutes, but may be delayed by bank or UPI status, payment-provider processing, webhook delay, network failure, fraud or security review, maintenance, account mismatch or another technical issue.\n\nA pending, authorised or unconfirmed transaction is not treated as final delivery. Do not repeatedly pay for the same top-up while an earlier payment is still being verified."
+        },
+        {
+          "heading": "Confirmation and access",
+          "body": "Successful delivery may be shown through an updated Token Credit balance, payment-history entry, in-application confirmation or other account record.\n\nThe user is responsible for signing in with the same account used for the purchase. Token Credits cannot ordinarily be transferred to another account.\n\nAccess to AI features may also depend on internet connectivity, provider availability, browser or device compatibility, account status, safety controls and sufficient Token Credits."
+        },
+        {
+          "heading": "Delivery problems",
+          "body": "If a payment was captured but Token Credits are not visible after a reasonable period, contact billing@swiveltechnologies.in with the account email, payment ID or order ID, amount, date and relevant screenshots.\n\nWe will attempt to reconcile the payment and either apply the correct Token Credits, explain that the payment failed or remains pending, reverse an incorrect allocation or process an eligible refund under the Cancellation and Refund Policy.\n\nPayment-provider and bank posting times are outside Swico's full control. Users should also review their bank or payment-provider status before making a duplicate payment."
+        }
+      ]
+    },
+    "pricing": {
+      "title": "Pricing and Token Credits",
+      "summary": "Token Credit estimates and payment allocation",
+      "effectiveDate": "2026-07-17",
+      "version": "1.0",
+      "sections": [
+        {
+          "heading": "Standalone website template videos",
+          "body": "When explicitly enabled, one template-video generation costs ₹25 total (2500 paise), independently of subscriptions and Chat/Voice credits. Verified Free-tier website accounts may purchase this product; this does not grant paid CLI access. Explicit video-unlimited accounts pay no per-video fee but remain subject to safety, capacity, consent and availability. Eligible existing weekly testers receive five complimentary attempts per configured local day, by default Asia/Kolkata. This video allowance does not spend or reset weekly Chat credits. Exhausted complimentary quota never automatically opens paid checkout. Source preflight and a supported-operation confirmation precede admission/payment."
+        },
+        {
+          "heading": "Gross top-up price",
+          "body": "Swico currently supports one-time top-up packages of ₹15 and ₹299, plus custom whole-rupee top-ups within the server-configured range. The current packages and amount displayed at checkout govern the purchase. Prices are shown in Indian Rupees. Applicable taxes or mandatory charges, if any, must be displayed before the user confirms payment.\n\nFor every top-up, 50% of the gross amount becomes non-withdrawable, non-transferable Token Credit usage capacity and 50% is allocated to the Swico platform and service component. Token Credit usage is presented as token estimates rather than as cash or a guaranteed monetary allowance.\n\nSwico does not create a recurring subscription from a top-up unless a future checkout clearly states that it is recurring and separately obtains the user's consent."
+        },
+        {
+          "heading": "Website subscriptions",
+          "body": "Website subscriptions are offered separately for Chat and Voice at the plan and price shown in the current server-authoritative checkout: 1 month for ₹1,500, 6 months for ₹8,000, or 1 year for ₹12,000. They are prepaid and non-auto-renewing. Each complete seven-day window begins at the entitlement start timestamp and provides a server-calculated token allowance for Chat or an estimated token equivalent for Voice. Unused allowance does not roll over. The final partial week before exact calendar-month expiry is prorated as displayed. Referral rewards follow the first-subscription mapping: 1 month gives 1 week, 6 months gives 3 weeks and 1 year gives 2 calendar months. Rewards are non-cash, non-transferable and cannot be withdrawn."
+        },
+        {
+          "heading": "50/50 allocation",
+          "body": "For every top-up, 50% of the gross amount becomes non-withdrawable, non-transferable Token Credit usage capacity and 50% is allocated to the Swico platform and service component.\n\nThe platform and service component supports access to the application, hosting, authentication, payment processing, security, support, provider routing, software operation and related service costs.\n\nToken Credits are not cash, wallet money, a bank balance, stored value, cryptocurrency, securities or transferable property. They cannot be withdrawn or transferred and can be used only for eligible Swico services, subject to the Terms and the Cancellation and Refund Policy."
+        },
+        {
+          "heading": "Swico mode token estimates",
+          "body": "Swico may show estimated input-only, output-only, blended or remaining-token figures. These figures are for explanation and comparison only.\n\nActual consumption varies according to the AI provider, model and Swico mode; the number and type of input, cached-input and output tokens; conversation context; speech, audio, transcription or language processing; provider pricing and service configuration; and rounding or technical accounting rules.\n\nA displayed token figure is not a guarantee of a fixed number of messages, responses, words, audio minutes or third-party provider tokens. Two requests of similar visible length may consume different amounts. The final Token Credit deduction shown in Swico's usage or ledger record controls, subject to correction of a verified accounting error."
+        },
+        {
+          "heading": "Refund display",
+          "body": "Payment and refund history may show the gross top-up amount, Token Credit allocation, platform and service allocation, amount refunded, Token Credits reversed and transaction status.\n\nAn approved refund may be full or partial. Corresponding unused Token Credits may be frozen or reversed before or when the refund is initiated.\n\nRefund eligibility, deductions, processing and expected bank posting times are explained in the Cancellation and Refund Policy. Questions should be sent to billing@swiveltechnologies.in."
+        }
+      ]
+    }
+  }
+}

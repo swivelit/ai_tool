@@ -4,6 +4,12 @@
 !.env.example
 .venv/
 backend/.venv/
+.venv-video/
+.swico-video/
+**/worker.token
+swico_video_node/*.onnx
+swico_video_node/*.mp4
+swico_video_node/.assets/
 
 # Python/runtime artifacts
 __pycache__/

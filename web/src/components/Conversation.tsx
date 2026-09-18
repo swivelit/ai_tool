@@ -25,6 +25,8 @@ import { PromptToolbar } from './PromptToolbar'
 import { continuationMarkdown, stitchContinuationMarkdown } from '../continuationMarkdown'
 import { SourceCitations } from './SourceCitations'
 import { ResponseQualityPanel } from './ResponseQualityPanel'
+import { VideoCard } from '../video/VideoCard'
+import '../video/video.css'
 
 const BOTTOM_THRESHOLD_PX = 120
 
@@ -467,6 +469,7 @@ function MessageView({ message, retry, continueResponse, continuationActive, reg
     void submitFeedback(message, rating).catch(() => setFeedback(previous))
   }
 
+  if (message.video) return <VideoCard jobId={message.video.job_id} />
   if (message.role === 'user') return <article className={`message user ${highlighted ? 'search-highlight' : ''}`} data-message-id={message.id}>
     {!!message.attachments?.length && <div className="message-attachments">{message.attachments.map(attachment => <AttachmentCard attachment={attachment} key={attachment.id} />)}</div>}
 
