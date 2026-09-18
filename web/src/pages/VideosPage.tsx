@@ -106,8 +106,8 @@ export function VideosPage() {
       </form>
       {job?.state === 'validated' && <section><h2>Confirm supported edit</h2><pre>{JSON.stringify(job.options, null, 2)}</pre><p>Payment/allowance is only reserved after you confirm. Queue time depends on measured Mac performance.</p>
         <p>{caps.allowance.unlimited ? 'Unlimited complimentary allowance (capacity limits apply)' : `${caps.allowance.remaining} complimentary attempts remain. Reset ${new Date(caps.allowance.reset_at).toLocaleString()}.`}</p>
-        <button disabled={busy || !(caps.allowance.unlimited || caps.allowance.remaining)} onClick={() => { void admit('complimentary') }}>Use complimentary attempt</button>
-        <button disabled={busy || !caps.paid_enabled} onClick={() => { void admit('paid') }}>Pay ₹25 total for this video</button></section>}
+        <button disabled={busy || !caps.available || !(caps.allowance.unlimited || caps.allowance.remaining)} onClick={() => { void admit('complimentary') }}>Use complimentary attempt</button>
+        <button disabled={busy || !caps.available || !caps.paid_enabled} onClick={() => { void admit('paid') }}>Pay ₹25 total for this video</button></section>}
     </>}
     {job && <VideoCard key={job.id} jobId={job.id} />}
     {job && ['expired', 'failed', 'cancelled', 'refunded', 'refund_pending', 'ready'].includes(job.state) && <button onClick={() => { setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)]); setJob(null); setPhotos({}); setConsent(false); setError(''); requestKey.current = crypto.randomUUID() }}>Start a new request with fresh consent</button>}

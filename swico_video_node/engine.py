@@ -9,25 +9,37 @@ from fractions import Fraction
 from pathlib import Path
 from .models import audit
 from .storage import atomic, hash_file, read, root, template_dir
+from .runtime import capture, tool, tool_identity, native_host, identity_file, minimal_environment
 
 
 def runtime_identity():
-    from importlib.metadata import version
+    from importlib.metadata import version, distribution
     if sys.version_info[:2] != (3, 12):
         raise ValueError("Native video runtime requires the separate Python 3.12 environment")
     expected = {}
+    records = {}
     for line in (Path(__file__).parent / "requirements-intel.lock").read_text().splitlines():
         if "==" in line and not line.startswith("#"):
             name, wanted = line.split("==", 1)
             if version(name) != wanted:
                 raise ValueError("Native dependency changed: " + name + "; reinstall pinned environment and re-benchmark")
             expected[name] = wanted
-    return {"python": sys.version.split()[0], "packages": expected}
+            from .storage import digest
+            record=distribution(name).read_text("RECORD")
+            if not record: raise ValueError("Installed wheel RECORD missing: "+name)
+            records[name]=digest(record.encode())
+    native_host()
+    import platform
+    return {"schema": 2, "python": sys.version.split()[0], "python_sha256": identity_file(Path(sys.executable).resolve()),
+            "packages": expected, "wheel_records":records,"system": platform.system(), "machine": platform.machine(),
+            "os": platform.platform(), "tools": tool_identity(),
+            "cpu": capture(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]).strip(),
+            "settings": {"providers": ["cpu"], "threads": 4, "enhance_blend": 20,
+                         "encode": "libx264/crf18/medium/yuv420p/audio-copy", "roles": "original-frame-independent"}}
 
 
 def probe(path: Path):
-    result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], capture_output=True, timeout=30, check=True)
-    data = json.loads(result.stdout)
+    data = json.loads(capture([tool("ffprobe"), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]))
     video = next(s for s in data["streams"] if s["codec_type"] == "video")
     duration = float(video.get("duration", data["format"]["duration"]))
     fps = Fraction(video["avg_frame_rate"])
@@ -36,8 +48,8 @@ def probe(path: Path):
     if Fraction(video["r_frame_rate"]) != fps or video["width"] % 2 or video["height"] % 2:
         raise ValueError("Initial profile requires constant frame rate and even dimensions; prepare a reviewed CFR master locally")
     # Reject unexpected per-frame PTS, rather than silently changing VFR timing.
-    frames = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)], capture_output=True, timeout=30, check=True)
-    points = [float(f["best_effort_timestamp_time"]) for f in json.loads(frames.stdout)["frames"]]
+    frames = capture([tool("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)], limit=512*1024)
+    points = [float(f["best_effort_timestamp_time"]) for f in json.loads(frames)["frames"]]
     if len(points) > 1800 or any(abs((b-a) - 1/float(fps)) > .002 for a,b in zip(points, points[1:])):
         raise ValueError("Unsupported timing: frame PTS are not constant")
     return {"width": video["width"], "height": video["height"], "fps": str(fps), "frames": len(points), "duration_seconds": duration}
@@ -122,10 +134,18 @@ class Engine:
         meta = manifest["media"]
         target = directory / "master.mp4"
         cap = self.cv.VideoCapture(str(target))
-        encoder = subprocess.Popen(["ffmpeg","-nostdin","-v","error","-y","-f","rawvideo","-pixel_format","bgr24",
+        encoder = subprocess.Popen([tool("ffmpeg"),"-nostdin","-v","error","-y","-f","rawvideo","-pixel_format","bgr24",
             "-video_size",f"{meta['width']}x{meta['height']}","-framerate",meta["fps"],"-i","pipe:0","-i",str(target),
             "-map","0:v:0","-map","1:a?","-c:v","libx264","-crf","18","-preset","medium","-pix_fmt","yuv420p",
-            "-c:a","copy","-map_metadata","-1","-movflags","+faststart",str(output)], stdin=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            "-c:a","copy","-map_metadata","-1","-movflags","+faststart",str(output)], stdin=subprocess.PIPE,stderr=subprocess.PIPE,env=minimal_environment())
+        import threading
+        error_tail = bytearray()
+        def drain_errors():
+            with encoder.stderr:
+                while chunk := encoder.stderr.read(4096):
+                    error_tail.extend(chunk)
+                    if len(error_tail)>8192: del error_tail[:-8192]
+        reader=threading.Thread(target=drain_errors,daemon=True);reader.start()
         start = time.monotonic()
         try:
             for index in range(meta["frames"]):
@@ -161,15 +181,17 @@ class Engine:
                 progress("swap",int(90*(index+1)/meta["frames"]))
             encoder.stdin.close()
             if encoder.wait(timeout=120):
-                raise ValueError("render_failed")
+                from .runtime import RuntimeFailure, safe_error
+                raise RuntimeFailure("encode " + json.dumps(safe_error(RuntimeError(error_tail.decode('utf8','replace')), 'ffmpeg')))
         finally:
             cap.release()
             if encoder.poll() is None:
                 encoder.kill(); encoder.wait(timeout=10)
+            reader.join(timeout=2)
         result = probe(output)
         if output.stat().st_size > 16777216 or result["frames"] != meta["frames"] or abs(result["duration_seconds"] - meta["duration_seconds"]) > .1:
             raise ValueError("render_failed")
-        subprocess.run(["ffmpeg","-nostdin","-v","error","-i",str(output),"-f","null","-"],check=True,timeout=60,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        capture([tool("ffmpeg"),"-nostdin","-v","error","-i",str(output),"-f","null","-"],timeout=60)
         return time.monotonic()-start
 
 

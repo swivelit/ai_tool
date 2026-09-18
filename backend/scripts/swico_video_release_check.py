@@ -13,7 +13,7 @@ from app.database import SessionLocal, engine
 from app.email_service import email_delivery_runtime_status
 from app.video.config import settings, TEMPLATE_IDS
 from app.video.models import VideoControl, VideoTemplate
-from app.video.service import healthy
+from app.video.service import healthy,templates_current
 from app.video.cache import cache
 from app.video.policy import video_policy_ready
 
@@ -31,7 +31,7 @@ def check():
         with SessionLocal() as session:
             row=session.get(VideoControl,1)
             checks["worker_current_native_calibration"]=bool(row and healthy(row))
-            checks["two_templates_published"]=set(session.exec(select(VideoTemplate.id)).all())==set(TEMPLATE_IDS)
+            checks["two_templates_published"]=templates_current(session,row)
         checks["cache_headroom"]=cache().health()["available"]
         checks["smtp"]=email_delivery_runtime_status(require_otp_secret=False)["configured"]
         checks["razorpay_configured"]=bool(os.getenv("RAZORPAY_KEY_ID") and os.getenv("RAZORPAY_KEY_SECRET") and os.getenv("RAZORPAY_WEBHOOK_SECRET"))

@@ -1,4 +1,156 @@
-# Website video implementation evidence — 2026-09-18
+# Website video corrective implementation evidence — 2026-09-18
+
+## Current corrective pass (not native/provider acceptance)
+
+Starting HEAD: `04cca915041da9968aaff60a2d897c44703d713c`,
+`feat(video): add paid template face swaps with an Intel Mac worker`.
+CLI package remains `@swiveltechnologies/swico` **0.2.8** in both manifests.
+Read `SWICO_VIDEO_PRODUCTION_FIX_CODEX_PROMPT.md` and the independent review in
+full. No applicable AGENTS.md was present. Preserved the user's pre-existing
+deleted original prompt and untracked correction/review documents.
+
+No deployment, push, publication, customer email, provider charge/refund,
+credential rotation, template publication, weight download or production DB
+access occurred. Android, Windows inference, CLI runtime, subscriptions,
+Chat/Voice/weekly billing, ₹25 video price and 600-second READY retention were
+not changed. CLI changes are confined to its developer launcher-preflight harness
+and regression tests. Existing CI/artifact/provenance dependencies stay intact.
+
+### Root causes and software corrections
+
+1. Windows preflight rejected a `.js` target using Unix execute bits before its
+   version assertion, and its fixture did not represent a Windows launcher.
+   Windows now validates the public `.cmd` shim and confined JS target, invokes
+   the existing reviewed `cmd.exe` quoting helper, checks exact version and real
+   help. POSIX execute/symlink checks remain. Tests include spaces and `&`.
+   Actual Windows rerun remains required; this developer Mac is not Windows CI.
+2. Mac bootstrap assumed unavailable Homebrew/global Python. It now supports
+   MacPorts Python 3.12 (or explicit absolute native interpreter), pip-less venv
+   management through py312-pip, binary-only locked wheels, safe reuse/refusal
+   of existing environments, resumable pinned engine checkout and full used
+   headless dependency-import smoke. It never downloads weights automatically.
+3. Both launchd and the sanitized rendering child omitted MacPorts. One reviewed
+   absolute-tool resolver now serves foreground, service, templates, benchmark
+   and render paths. It checks native slices, executability, versions, binary/
+   linked-library hashes and real synthetic libx264 encode/probe/decode. Parent
+   secrets are not inherited. Replacement requires explicit review/recalibration.
+4. Doctor formerly stopped at missing assets before testing authentication.
+   Authenticated read-only health now runs independently with classified errors.
+   Backend table presence, singleton initialization, active worker and matching
+   templates are independent. LaunchAgent loaded/running/PID/last-exit/liveness
+   and backend state are separate; exact full configuration changes require stop.
+5. Calibration was not bound to the current execution runtime. Schema 2 binds
+   model/code/template/tracks/rights, native host, Python patch/binary, locked
+   package RECORD identities, encode policy and reviewed tools/libraries.
+   Stale/old/malformed/nonfinite/unreviewed records fail before publication.
+   Both templates are validated before any metadata POST. Worker heartbeat and
+   backend admission/release checks compare exact profile/runtime/QA identities.
+   Already accepted stale attempts settle via existing allowance/refund handling.
+6. Rights audit now reports code plus all nine assets and exact local paths;
+   genuine permissive licence grants are distinct from restricted-model commercial
+   permissions. No approvals supplied. Benchmarks record initial load separately
+   from first-render and warm measurements, and private owned scratch is cleaned
+   on exit/cancel/next startup. Queue estimates include non-preemptible preflight
+   time and publication reserves its bounded share of the deadline.
+7. Website validated-job purchase controls now respect worker availability after
+   reload. Legal comparison is read-only; published pages/approval stay unchanged.
+
+### Exact actual checks
+
+Developer host: **Darwin 26.6.2 / x86_64**, backend test Python **3.14.7**, Node
+**20.19.6**. This is NOT the operator's Intel MacPorts/Python 3.12 video machine.
+
+| Command / environment | Result |
+|---|---|
+| `cd backend; SWICO_TEST_VALKEY_SERVER=/tmp/swico-video-valkey.aCmjXU/valkey-8.0.2/src/valkey-server .venv/bin/python -m pytest -q` | **2,229 passed, 10 skipped**, 189.87s |
+| Same environment, `pytest tests/test_website_video.py tests/test_video_valkey.py tests/test_startup_migrations.py -q` | **58 passed**, 33.97s |
+| `TEST_DATABASE_URL=postgresql+psycopg://hari@127.0.0.1:55483/swico_video_test APP_ENV=test .venv/bin/python -m pytest tests/test_video_postgres.py tests/test_website_video.py tests/test_cli_postgres_lifecycle.py -q` (backend) | **56 passed**, 9.26s, actual disposable Postgres |
+| `backend/.venv/bin/python -m pytest swico_video_node/tests -q` (root) | **75 passed**, 7.66s, contract mocks plus actual POSIX supervisor/descendant tests |
+| `bash -n swico_video_node/scripts/setup_macos.sh` | PASS |
+| CLI: `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` | PASS; **152 tests passed**, zero failures/skips |
+| CLI: `npm run release:check -- --keep-artifact` | PASS, canonical clean-prefix installed artifact |
+| Web: `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test -- --run` | PASS; **592 tests / 45 files** |
+| Web: `npx playwright test e2e/videos.spec.ts --project=chromium` | **4 passed**, 11s; real Chromium, mocked API/auth |
+| Web: `npm run build` with existing CI public Firebase/API fixtures | PASS |
+| Tracked AND untracked secret scan, product-language, legal-publication, 5 workflow YAML parses, `git diff --check` | PASS; actionlint unavailable |
+
+Existing full-suite skips were not turned into passes; actual Postgres cases ran
+separately above. Initial sandbox-restricted attempts could not bind fixture
+sockets/start disposable Valkey; they were rerun with permission, not skipped or
+weakened. The local disposable PostgreSQL server was stopped after the final
+head check; its disposable files were preserved. No migration commands were run
+against production. Provider and SMTP responses in these suites are
+controlled doubles, not provider TEST acceptance or delivered messages.
+
+Canonical artifact: `cli/swiveltechnologies-swico-0.2.8.tgz`.
+SHA-256: `9108fe8855f4aa5411ea54c1689cc3a4f2b7e855b86dc402734ef9631c9b34f1`.
+Nothing was published. The required GitHub Windows job must rerun on this change;
+local artifact success does not assert its result or enable any agent feature.
+
+**Actual local codec evidence:** existing developer Intel FFmpeg 7.1.1 performed
+synthetic libx264 encode, ffprobe and full decode through `configure_tools()` in
+temporary private storage. FFmpeg binary SHA-256:
+`bb47a7e9d1133462d7810f90c92437f1489da3de90cd703090ce0baa3242c2b9`.
+This used the developer's existing `/usr/local/Cellar` tool, NOT an installed
+MacPorts worker, and is NOT face-model inference. No lasting runtime config made.
+
+**Dependency evidence:** inspected detached FaceFusion
+`03d49d0c7de095a41628a74d94a146214f82837a` and direct/transitive headless API use.
+`pip download --only-binary=:all: --platform macosx_14_0_x86_64 --python-version 3.12 --implementation cp --abi cp312 -r swico_video_node/requirements-intel.lock`
+resolved **16 locked wheels** into a temporary directory. Availability is not
+native installation/import/ONNX acceptance. No lock pins or weights changed.
+
+### Migration and operator release status
+
+**No migration added or modified.** Already-deployed head remains
+`20260918_website_video`. `alembic heads` and `current` agreed on the disposable
+database; fresh/upgrade migration regressions passed. Never downgrade/stamp/reset
+the deployed revision. Retain the video-aware payment dispatcher for rollback.
+
+**IMPLEMENTED / TESTED**, but **NOT production-ready**. NOT RUN: native Windows
+CI rerun, full native Intel/Python 3.12 MacPorts setup/imports/ONNX inference,
+both licensed templates with single/both-role full-clip QA and genuine measured
+calibration, foreground/LaunchAgent real-job parity, Razorpay TEST capture/refund,
+authorized inbox delivery and deployed-cache policy/load acceptance. Genuine
+model/code/template/audio rights and fresh legal publication approval are also
+operator prerequisites. No measurements, permissions or approvals were invented.
+
+Exact novice MacPorts/setup/init/rights/templates/benchmark/service commands,
+all existing Render values, read-only release checks and rollback:
+[VIDEO_MAC_SETUP.md](VIDEO_MAC_SETUP.md). Independent acceptance/evidence classes,
+local provider TEST procedure and legal diff/approval workflow:
+[VIDEO_ACCEPTANCE.md](VIDEO_ACCEPTANCE.md).
+
+Render NOW: **`SWICO_VIDEO_ENABLED=false` and
+`SWICO_VIDEO_PAID_CHECKOUT_ENABLED=false`**; preserve all other product/billing/
+weekly-credit values. No new service/cache/cron. Do not rotate credentials:
+compare the actual Mac's `init` digest with backend-only configuration as an
+explicit operator step. Re-enable only after the separately documented real
+acceptance and approval gates. No change was deployed by this pass.
+
+Rollback: disable both video admission flags, retain authenticated drain and
+video-aware settlement/refund maintenance, wait out fixed retention, then stop
+the Mac if appropriate. No DB downgrade, old payment dispatcher or refund replay.
+
+### Paths changed in this corrective pass
+
+- `cli/scripts/accept-installed-agent.mjs`, `cli/test/installed_agent_harness.test.mjs`
+- `swico_video_node/{__main__,bootstrap,calibration,diagnostics,engine,models,runtime,service,storage,templates,worker}.py`
+- `swico_video_node/scripts/setup_macos.sh`, `swico_video_node/tests/test_hardening.py`
+- `backend/app/video/{router,service}.py`, `backend/scripts/swico_video_release_check.py`, `backend/tests/test_website_video.py`
+- `web/src/pages/{VideosPage.tsx,VideosPage.test.tsx}`
+- `scripts/video_legal_diff.py`
+- `docs/{VIDEO_MAC_SETUP,VIDEO_ACCEPTANCE,VIDEO_RELEASE_CHECKLIST,VIDEO_IMPLEMENTATION_REPORT}.md`
+
+Suggested commit: `fix(video): unblock Intel Mac setup and harden production readiness`
+
+---
+
+## Historical first implementation report (preceding commit, NOT this pass)
+
+The following original counts/migration creation/path list describe the earlier
+feature implementation only. The corrective pass and current evidence above
+supersede them; no second migration or recreated subsystem was introduced.
 
 ## Baseline and outcome
 

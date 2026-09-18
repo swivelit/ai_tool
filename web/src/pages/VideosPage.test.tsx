@@ -52,3 +52,11 @@ it('restores an already validated request after reload without another upload or
   expect(screen.getByText('Job resume-job')).toBeInTheDocument()
   expect(screen.getByText('Use complimentary attempt')).toBeEnabled()
 })
+
+it('keeps validated history visible but refuses purchase while worker setup is unavailable', async () => {
+  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: false, paid_enabled: true, policy_version: 'v1', allowance: { unlimited: true, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: false }] } : { items: [{ id: 'paused-job', state: 'validated', options: { swap: 'male', enhance: 'off', caption: '' } }] }))
+  render(<MemoryRouter><VideosPage /></MemoryRouter>)
+  expect(await screen.findByText('Job paused-job')).toBeInTheDocument()
+  expect(screen.getByText('Use complimentary attempt')).toBeDisabled()
+  expect(screen.getByText('Pay ₹25 total for this video')).toBeDisabled()
+})

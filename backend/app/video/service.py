@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
@@ -44,14 +45,34 @@ def control(session: Session) -> VideoControl:
 
 
 def healthy(row: VideoControl) -> bool:
-    caps = json.loads(row.capabilities_json)
+    try: caps = json.loads(row.capabilities_json)
+    except (ValueError,TypeError): return False
+    if not isinstance(caps,dict):return False
+    calibrations=caps.get("calibrations")
+    if not isinstance(calibrations,dict) or set(calibrations)!={"couple-01","couple-02"} or any(not isinstance(v,str) or not re.fullmatch(r"[a-f0-9]{64}",v) for v in calibrations.values()):return False
+    if not isinstance(caps.get("runtime_sha256"),str) or not re.fullmatch(r"[a-f0-9]{64}",caps["runtime_sha256"]):return False
     return bool(row.worker_seen_at and (now() - utc(row.worker_seen_at)).total_seconds() <= settings().stale
-                and caps.get("ready") is True and caps.get("native_inference_verified") is True)
+                and caps.get("ready") is True and caps.get("native_inference_verified") is True
+                and caps.get("calibration_schema")==2)
 
 
-def admission(session: Session) -> VideoControl:
+def template_current(row: VideoControl, metadata: dict) -> bool:
+    caps=json.loads(row.capabilities_json)
+    return bool(healthy(row) and metadata.get("calibration_schema")==2
+                and metadata.get("profile_sha256")==caps.get("profile_hash")
+                and metadata.get("runtime_sha256")==caps.get("runtime_sha256")
+                and metadata.get("qa_evidence_sha256")==caps.get("calibrations",{}).get(metadata.get("id")))
+
+
+def templates_current(session, row):
+    records=session.exec(select(VideoTemplate)).all()
+    return bool(row and {r.id for r in records}=={"couple-01","couple-02"}
+                and all(template_current(row,json.loads(r.metadata_json)) for r in records))
+
+
+def admission(session: Session, *, templates_required=True) -> VideoControl:
     row = control(session)
-    if not settings().enabled or not healthy(row):
+    if not settings().enabled or not healthy(row) or (templates_required and not templates_current(session,row)):
         raise HTTPException(503, "Video admission paused: verified worker unavailable")
     if not video_policy_ready():
         raise HTTPException(503, "Video admission paused: current video policy publication approval required")
@@ -194,6 +215,10 @@ def public_job(session: Session, job: VideoJob) -> dict:
     state = "expired" if job.expires_at and utc(job.expires_at) <= now() else job.state
     row = session.get(VideoControl, 1)
     ahead = session.exec(select(VideoJob).where(VideoJob.state.in_({"queued", "processing"}), VideoJob.admitted_at < job.admitted_at).order_by(VideoJob.admitted_at)).all() if job.admitted_at else []
+    # Non-preemptible preflight already running uses this same single Mac. Bound
+    # its remaining cost by its actual fixed deadline, not invented timings.
+    preflight=session.exec(select(VideoJob).where(VideoJob.state=="preflighting",VideoJob.id!=job.id)).first()
+    busy_seconds=max(0,(utc(preflight.deadline)-now()).total_seconds()) if preflight else 0
     durations = []
     for item in [*ahead, job]:
         metadata = json.loads(item.frozen_json)
@@ -206,7 +231,7 @@ def public_job(session: Session, job: VideoJob) -> dict:
     return {"id": job.id, "template_id": job.template_id, "state": state, "phase": job.phase, "progress": job.progress,
             "error": job.error, "funding": job.funding, "thread_id": job.thread_id, "options": json.loads(job.options_json),
             "queue_position": len(ahead) + 1 if job.state == "queued" else None,
-            "eta_seconds": [round(sum(x[i] for x in durations)) for i in (0, 1)] if durations and row and healthy(row) and job.state in {"queued", "processing"} else None,
+            "eta_seconds": [round(sum(x[i] for x in durations)+(busy_seconds if i else 0)) for i in (0, 1)] if durations and row and healthy(row) and job.state in {"queued", "processing"} else None,
             "eta_confidence": "calibrated_range_not_SLA" if durations else "calibrating", "paused": not (row and healthy(row)),
             "expires_at": utc(job.expires_at).isoformat() if job.expires_at else None,
             "refund_status": refund.state if refund else None, "notification_status": email.state if email else None}

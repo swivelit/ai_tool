@@ -53,10 +53,13 @@ def video(monkeypatch, client):
     monkeypatch.setattr(routes,"cache",lambda:store)
     monkeypatch.setattr("app.video.cache.cache",lambda:store)
     monkeypatch.setattr(maintenance,"cache",lambda:store)
-    metadata={"id":"couple-01","title":"Fixture (not approved real media)","warm_seconds":[10,12,13],"profile_sha256":"a"*64}
+    metadata={"id":"couple-01","title":"Fixture (not approved real media)","warm_seconds":[10,12,13],"profile_sha256":"a"*64,
+              "calibration_schema":2,"runtime_sha256":"b"*64,"qa_evidence_sha256":"c"*64}
     with SessionLocal() as session:
-        session.add(VideoControl(worker_seen_at=now(),worker_boot="test-boot-identity",capabilities_json=json.dumps({"ready":True,"native_inference_verified":True,"profile_hash":"a"*64})))
+        session.add(VideoControl(worker_seen_at=now(),worker_boot="test-boot-identity",capabilities_json=json.dumps({"ready":True,"native_inference_verified":True,"profile_hash":"a"*64,
+                    "calibration_schema":2,"runtime_sha256":"b"*64,"calibrations":{"couple-01":"c"*64,"couple-02":"c"*64}})))
         session.add(VideoTemplate(id="couple-01",title=metadata["title"],manifest_hash="a"*64,metadata_json=json.dumps(metadata)))
+        session.add(VideoTemplate(id="couple-02",title=metadata["title"],manifest_hash="a"*64,metadata_json=json.dumps({**metadata,"id":"couple-02"})))
         session.commit()
     yield client,user,auth,store
     app.dependency_overrides.pop(get_current_user,None)
@@ -317,6 +320,91 @@ def test_profile_change_after_preflight_blocks_new_payment(video):
         row=session.get(VideoControl,1);metadata=json.loads(row.capabilities_json);metadata["profile_hash"]="b"*64
         row.capabilities_json=json.dumps(metadata);session.add(row);session.commit()
     assert client.post(f"/api/web/videos/jobs/{job}/admit",json={"funding":"paid"}).status_code==409
+
+
+@pytest.mark.parametrize("field,value",[("runtime_sha256","d"*64),("calibration_schema",1),("qa_evidence_sha256","e"*64)])
+def test_stale_published_runtime_disables_new_requests_without_affecting_owner_control(video,field,value):
+    client,_,_,_=video
+    job=create(client)
+    with SessionLocal() as session:
+        template=session.get(VideoTemplate,"couple-01")
+        data=json.loads(template.metadata_json);data[field]=value;template.metadata_json=json.dumps(data)
+        session.add(template);session.commit()
+    assert client.get("/api/web/videos/capabilities").json()["available"] is False
+    response=client.post("/api/web/videos/jobs",json={"template_id":"couple-01","request_key":str(uuid4()),"consent":True,"adult":True,"policy_version":AUP_VERSION})
+    assert response.status_code==503
+    assert client.get(f"/api/web/videos/jobs/{job}").status_code==200
+    assert client.post(f"/api/web/videos/jobs/{job}/cancel").status_code==200
+    with SessionLocal() as session: assert not session.exec(select(PaymentOrder)).all()
+
+
+def test_worker_health_authentication_is_independent_of_flags_and_control_row(video,monkeypatch):
+    client,_,_,_=video
+    monkeypatch.setenv("SWICO_VIDEO_ENABLED","false")
+    monkeypatch.setenv("SWICO_VIDEO_PAID_CHECKOUT_ENABLED","false")
+    with SessionLocal() as session:
+        session.delete(session.get(VideoControl,1));session.commit()
+    response=client.get("/api/video-worker/v1/health",headers=headers())
+    assert response.status_code==200
+    assert response.json()=={"authenticated":True,"schema_ready":True,"control_initialized":False,"worker_active":False,"templates_current":False}
+    assert client.get("/api/video-worker/v1/health",headers={**headers(),"Authorization":"Bearer wrong"}).status_code==401
+
+
+def test_old_worker_heartbeat_refused_and_readiness_can_be_withdrawn(video):
+    client,_,_,_=video
+    old={"boot_id":"test-boot-identity","ready":True,"native_inference_verified":True,"revision":"test","profile_hash":"a"*64,"disk_free_bytes":3000000000}
+    assert client.post("/api/video-worker/v1/heartbeat",headers=headers(),json=old).status_code==422
+    current={**old,"ready":False,"native_inference_verified":False,"calibration_schema":2,"runtime_sha256":"b"*64,"calibrations":{}}
+    assert client.post("/api/video-worker/v1/heartbeat",headers=headers(),json=current).status_code==200
+    assert not client.get("/api/web/videos/capabilities").json()["available"]
+
+
+@pytest.mark.parametrize("timing",[float("nan"),float("inf"),-1,0,5000])
+def test_publication_rejects_invalid_or_impossible_timings_with_checkout_disabled(video,monkeypatch,timing):
+    client,_,_,_=video
+    monkeypatch.setenv("SWICO_VIDEO_ENABLED","false")
+    monkeypatch.setenv("SWICO_VIDEO_PAID_CHECKOUT_ENABLED","false")
+    payload={"id":"couple-01","title":"Fixture only","template_sha256":"a"*64,"tracks_sha256":"a"*64,"profile_sha256":"a"*64,
+             "rights_evidence_sha256":"a"*64,"qa_evidence_sha256":"c"*64,"runtime_sha256":"b"*64,"calibration_schema":2,
+             "warm_seconds":[10,11,12,10,11,12],"cold_seconds":[15,15],"startup_seconds":2,"duration_seconds":5,
+             "width":640,"height":480,"profile":"quality-cpu"}
+    assert client.post("/api/video-worker/v1/templates",headers=headers(),json=payload).status_code==200
+    payload["warm_seconds"][0]=timing
+    assert client.post("/api/video-worker/v1/templates",headers={**headers(),"Content-Type":"application/json"},content=json.dumps(payload)).status_code==422
+
+
+def test_queued_job_stale_runtime_restores_allowance_without_render(video,monkeypatch):
+    client,user,auth,_=video
+    monkeypatch.setenv("SWICO_VIDEO_UNLIMITED_EMAILS","")
+    monkeypatch.setenv("SWICO_WEEKLY_TESTER_CREDITS_ENABLED","true")
+    monkeypatch.setenv("SWICO_WEEKLY_TESTER_EMAILS",user.email)
+    job=create(client)
+    assert client.post(f"/api/web/videos/jobs/{job}/admit",json={"funding":"complimentary"}).status_code==200
+    with SessionLocal() as session:
+        row=session.get(VideoControl,1);caps=json.loads(row.capabilities_json);caps["runtime_sha256"]="e"*64
+        row.capabilities_json=json.dumps(caps);session.add(row);session.commit()
+    assert client.post("/api/video-worker/v1/claim",headers=headers()).json()["job"] is None
+    with SessionLocal() as session:
+        assert session.get(VideoJob,job).quota_state=="restored"
+        assert session.exec(select(VideoQuota)).one().used==0
+
+
+def test_busy_preflight_included_in_queue_estimate_and_paid_queue_claims_first(video):
+    client,user,auth,_=video
+    job=create(client)
+    client.post(f"/api/web/videos/jobs/{job}/admit",json={"funding":"complimentary"})
+    with SessionLocal() as session:
+        original=session.get(VideoJob,job)
+        busy=VideoJob(user_id=user.id,request_key=str(uuid4()),request_hash="f"*64,email=user.email,template_id="couple-01",
+                      manifest_hash=original.manifest_hash,frozen_json=original.frozen_json,state="preflighting",deadline=now()+timedelta(seconds=100))
+        session.add(busy);session.commit()
+        busy_id=busy.id
+    estimate=client.get(f"/api/web/videos/jobs/{job}").json()["eta_seconds"]
+    assert estimate[1]>=100
+    assert client.post("/api/video-worker/v1/claim",headers=headers()).json()["job"] is None
+    with SessionLocal() as session:
+        busy=session.get(VideoJob,busy_id);busy.state="preflight_queued";session.add(busy);session.commit()
+    assert client.post("/api/video-worker/v1/claim",headers=headers()).json()["job"]["id"]==job
     with SessionLocal() as session: assert not session.exec(select(PaymentOrder)).all()
 
 

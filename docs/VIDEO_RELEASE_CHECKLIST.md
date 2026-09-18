@@ -64,9 +64,12 @@ termination. These are NOT native face inference or likeness acceptance.
   No claimed CUDA/MPS/CoreML acceleration. Record OS/CPU/dependency versions.
 - [ ] Both template track maps reviewed frame-by-frame; all background people excluded.
   Test one role and both independently, cuts, profile views and cup/hand occlusion.
-- [ ] At least three actual warm full-clip trials per template/profile plus cold/load
-  measurements; inspect likeness, mouth/eyes/flicker and A/V synchronization. No
-  invented p90 or sample timings. Missing template stays disabled.
+- [ ] At least three actual warm full-clip trials per template/enhancement variant
+  plus first-render and separately measured Engine-load duration; inspect likeness,
+  mouth/eyes/flicker and A/V synchronization. First-render is NOT a fresh-process
+  cold-cache claim. Schema-2 evidence must match the current Python, packages,
+  tools/libraries, hardware, policy, model and reviewed template identity. No
+  invented p90 or sample timings. Missing/stale template stays disabled.
 - [ ] Real worker lease loss/cancel/restart kills descendants; no stale completion;
   failed/dropped media transfer cannot create READY; process lock rejects duplicate run.
 - [ ] Provider TEST credentials explicitly supplied for fixed-price orders,

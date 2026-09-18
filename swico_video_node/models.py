@@ -7,6 +7,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 from .storage import ENGINE_COMMIT, atomic, canonical, confined, digest, hash_file, read, root
+from .runtime import identity_file
 
 # Inventory follows the PINNED code, not today's mutable model catalogue.
 ASSETS = {
@@ -29,8 +30,9 @@ def skeleton():
         for name, (kind, note) in ASSETS.items()]}
 
 
-def evidence(record: dict):
-    for field in ("permission", "licence"):
+def evidence(record: dict, *, restricted=False):
+    fields = ("licence",) if record.get("permission_basis")=="applicable_licence" and not restricted else ("permission", "licence")
+    for field in fields:
         path = confined(root() / "rights" / record.get(field + "_file", ""), root() / "rights")
         if not path.is_file() or path.stat().st_size < 20 or hash_file(path) != record.get(field + "_sha256"):
             raise ValueError(f"Missing genuine {field} document/hash in local rights directory")
@@ -47,13 +49,13 @@ def audit(*, require_files=True):
     if len(assets) != len(ASSETS) or {a.get("file") for a in assets} != set(ASSETS):
         raise ValueError("Complete model dependency inventory required")
     for asset in assets:
-        evidence(asset)
+        evidence(asset, restricted=asset["file"] in {"inswapper_128.onnx","arcface_w600k_r50.onnx","retinaface_10g.onnx"})
         expected_source = f"https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/{asset['file']}"
         if asset.get("source") != expected_source or not re.fullmatch(r"[a-f0-9]{64}", asset.get("sha256", "")):
             raise ValueError("Reviewed upstream source and actual SHA-256 required: " + asset["file"])
         if require_files:
             path = root() / "engine/facefusion/.assets/models" / asset["file"]
-            if not path.is_file() or hash_file(path) != asset["sha256"]:
+            if not path.is_file() or identity_file(path) != asset["sha256"]:
                 raise ValueError("Model missing or modified: " + asset["file"])
     if require_files:
         checkout = root() / "engine/facefusion"
@@ -61,9 +63,41 @@ def audit(*, require_files=True):
         dirty = subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"], text=True)
         if commit != ENGINE_COMMIT or dirty:
             raise ValueError("Engine checkout modified; re-review required")
-    implementation = {name: hash_file(Path(__file__).parent / name) for name in ("engine.py", "models.py", "templates.py", "requirements-intel.lock")}
+    implementation = {name: hash_file(Path(__file__).parent / name) for name in ("engine.py", "models.py", "templates.py", "runtime.py", "calibration.py", "requirements-intel.lock")}
     return {"profile_hash": digest(canonical({"manifest": manifest, "implementation": implementation})), "asset_count": len(assets), "rights_evidence_verified": True,
             "legal_conclusion": "Operator/counsel responsibility; document integrity is not a licence grant"}
+
+
+def audit_report():
+    """Complete actionable local inventory; no inferred grants or first-error loop."""
+    manifest_path=root()/"models.json"
+    report={"ready":False,"manifest":str(manifest_path),"rights_directory":str(root()/"rights"),"items":[],
+            "legal_conclusion":"Document integrity is not a legal grant. Restricted weights require right-holder commercial permission."}
+    try: manifest=read(manifest_path)
+    except (OSError,ValueError):
+        report["blockers"]=["Run init; models.json missing or invalid"]
+        return report
+    records={a.get("file"):a for a in manifest.get("assets",[]) if isinstance(a,dict)}
+    for name in ("code_review",*ASSETS):
+        record=manifest.get("code_review",{}) if name=="code_review" else records.get(name,{})
+        missing=[]
+        restricted=name in {"inswapper_128.onnx","arcface_w600k_r50.onnx","retinaface_10g.onnx"}
+        fields=("licence",) if record.get("permission_basis")=="applicable_licence" and not restricted else ("permission","licence")
+        for field in ("reviewer","reviewed_at",*[f+suffix for f in fields for suffix in ("_file","_sha256")]):
+            if not record.get(field): missing.append(field)
+        try: evidence(record,restricted=restricted)
+        except (ValueError,OSError) as exc: missing.append(str(exc))
+        if name!="code_review":
+            if not re.fullmatch(r"[a-f0-9]{64}",record.get("sha256","")): missing.append("actual asset sha256")
+            path=root()/"engine/facefusion/.assets/models"/name
+            if not path.is_file(): missing.append("model bytes not installed")
+            elif hash_file(path)!=record.get("sha256"): missing.append("model bytes hash mismatch")
+        report["items"].append({"asset":name,"restricted_commercial_grant_required":restricted,"blockers":missing})
+    try:
+        report.update(audit());report["ready"]=True
+    except (ValueError,OSError,subprocess.SubprocessError) as exc:
+        report["blockers"]=[str(exc)[:300]]
+    return report
 
 
 def install():

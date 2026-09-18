@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { windowsShimInvocation } from './windows-launcher.mjs'
 
 const execFileAsync = promisify(execFile)
 const packageName = '@swiveltechnologies/swico'
@@ -38,7 +39,7 @@ function pathIsInside(root, candidate) {
  * separate makes broken installs fail with a useful diagnostic instead of the
  * opaque node-pty `execvp(3)` message.
  */
-export async function validateInstalledLauncher({ launcher, prefix, expectedVersion }) {
+export async function validateInstalledLauncher({ launcher, prefix, expectedVersion, jsTarget }) {
   let launcherStat
   try {
     launcherStat = await lstat(launcher)
@@ -50,17 +51,31 @@ export async function validateInstalledLauncher({ launcher, prefix, expectedVers
   let target
   try { target = await realpath(launcher) } catch { throw new Error(`installed launcher has a broken symlink: ${launcher}`) }
   const resolvedPrefix = await realpath(prefix)
+  if (!pathIsInside(resolvedPrefix, join(await realpath(dirname(launcher)), basename(launcher)))) throw new Error('installed launcher escapes temporary prefix')
   if (!pathIsInside(resolvedPrefix, target)) throw new Error(`installed launcher escapes temporary prefix: ${target}`)
+  // Windows npm installs a .cmd shim, not an executable JavaScript symlink.
+  // Validate BOTH the public shim and its declared package target. Never execFile
+  // a raw .js file on Windows, and never pretend chmod provides Windows ACLs.
+  if (process.platform === 'win32') {
+    if (!launcher.toLowerCase().endsWith('.cmd')) throw new Error('installed Windows launcher must be the public .cmd shim')
+    const expectedTarget = jsTarget ?? join(prefix, 'node_modules', ...packageName.split('/'), 'dist', 'cli.js')
+    try { target = await realpath(expectedTarget) } catch { throw new Error('installed launcher JavaScript target missing') }
+    if (!pathIsInside(resolvedPrefix, target)) throw new Error('installed launcher target escapes temporary prefix')
+  }
   const targetStat = await lstat(target)
   if (!targetStat.isFile()) throw new Error(`installed launcher target is not a file: ${target}`)
-  if ((targetStat.mode & 0o111) === 0) throw new Error(`installed launcher is not executable: ${target}`)
+  if (process.platform !== 'win32' && (targetStat.mode & 0o111) === 0) throw new Error(`installed launcher is not executable: ${target}`)
   const source = await readFile(target, 'utf8')
   if (!source.startsWith('#!/usr/bin/env node')) throw new Error(`installed launcher target has an unexpected shebang: ${target}`)
 
   const commandEnv = { ...process.env, SWICO_CLI_CONFIG_FILE: join(prefix, 'missing-user.toml') }
-  const versionResult = await run(launcher, ['--version'], { cwd: prefix, env: commandEnv, timeout: 10_000 })
+  const invoke = args => {
+    const call = process.platform === 'win32' ? windowsShimInvocation(launcher, args) : { command: launcher, args, options: {} }
+    return run(call.command, call.args, { ...call.options, cwd: prefix, env: commandEnv, timeout: 10_000 })
+  }
+  const versionResult = await invoke(['--version'])
   if (versionResult.stdout.trim() !== expectedVersion) throw new Error(`installed launcher version mismatch: expected ${expectedVersion}, got ${versionResult.stdout.trim()}`)
-  const helpResult = await run(launcher, ['--help'], { cwd: prefix, env: commandEnv, timeout: 10_000 })
+  const helpResult = await invoke(['--help'])
   if (!/Usage:\s+swico/i.test(helpResult.stdout)) throw new Error('installed launcher --help did not identify the Swico CLI')
   return { launcher, target, version: versionResult.stdout.trim(), help_checked: true }
 }

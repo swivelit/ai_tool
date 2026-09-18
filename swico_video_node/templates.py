@@ -104,12 +104,22 @@ def approved(identifier, *, calibrated=False):
                 "profile_sha256":audit()["profile_hash"],"rights_sha256":digest(canonical(manifest["rights"]))}
     if manifest.get("approval") != expected:
         raise ValueError("Template/roles/profile/rights changed or unreviewed")
-    if calibrated and (not manifest.get("benchmark") or manifest["benchmark"].get("approval_hash") != digest(canonical(expected)) or set(manifest["benchmark"].get("variants", {})) != {"off", "natural"}):
-        raise ValueError("Full-clip native calibration/quality review required")
+    if calibrated:
+        from .calibration import validate
+        from .engine import runtime_identity
+        validate(manifest.get("benchmark"), expected, runtime_identity())
     return manifest
 
 
 def benchmark(runs):
+    from .storage import exclusive, cleanup_benchmarks
+    with exclusive():
+        cleanup_benchmarks()
+        try: return _benchmark(runs)
+        finally: cleanup_benchmarks()
+
+
+def _benchmark(runs):
     from .engine import Engine
     import platform, tempfile
     if platform.system() != "Darwin" or platform.machine() != "x86_64" or runs < 3:
@@ -122,28 +132,37 @@ def benchmark(runs):
     for identifier in TEMPLATES:
         manifest=approved(identifier)
         variants = {}
-        with tempfile.TemporaryDirectory(prefix="benchmark-",dir=root()) as temp:
-            output=Path(temp)/"review.mp4"
+        import uuid
+        directory=root()/"benchmarks"/str(uuid.uuid4())
+        directory.mkdir(mode=0o700)
+        try:
+            output=directory/"review.mp4"
             for enhance in ("off", "natural"):
                 options = {"swap":"both", "enhance":enhance, "caption":""}
-                cold=engine.render(identifier,sources,options,output)
+                first=engine.render(identifier,sources,options,output)
                 timings=[engine.render(identifier,sources,options,output) for _ in range(runs)]
                 print(f"Review {enhance} enhancement locally before continuing: {output}\nCheck likeness, eyes/mouth, flicker, occlusion, cuts, background, both roles and audio sync.")
                 if input("Type QA-PASS only after watching the actual result: ") != "QA-PASS":
                     raise ValueError("Quality acceptance missing")
-                variants[enhance] = {"warm_seconds":timings, "cold_seconds":cold}
-        manifest["benchmark"]={"warm_seconds":[value for variant in variants.values() for value in variant["warm_seconds"]],"variants":variants,"load_seconds":load,"runtime":engine.runtime,"machine":platform.machine(),
+                variants[enhance] = {"warm_seconds":timings, "first_render_seconds":first,"quality_review":"operator-reviewed"}
+        finally: shutil.rmtree(directory)
+        # Shared Engine sessions are reused. "First render" is NOT a fresh
+        # process cold-start benchmark. Initial model-load time is separate.
+        manifest["benchmark"]={"schema":2,"runtime_sha256":digest(canonical(engine.runtime)),"warm_seconds":[value for variant in variants.values() for value in variant["warm_seconds"]],"variants":variants,"load_seconds":load,"runtime":engine.runtime,"machine":platform.machine(),
                                "os":platform.platform(),"approval_hash":digest(canonical(manifest["approval"])),"quality_review":"operator-reviewed","recorded_at":time.time()}
         atomic(template_dir(identifier)/"manifest.json",manifest)
 
 
 def publish(api):
-    for identifier in TEMPLATES:
-        manifest=approved(identifier,calibrated=True)
+    # Check the entire catalogue locally before any metadata side effect. A stale
+    # second template must not leave a half-updated publication after a tool change.
+    manifests=[(identifier,approved(identifier,calibrated=True)) for identifier in TEMPLATES]
+    for identifier,manifest in manifests:
         approval=manifest["approval"]
         api.post("/templates",{"id":identifier,"title":manifest["title"],"template_sha256":approval["template_sha256"],
             "tracks_sha256":approval["tracks_sha256"],"profile_sha256":approval["profile_sha256"],
             "rights_evidence_sha256":approval["rights_sha256"],"qa_evidence_sha256":digest(canonical(manifest["benchmark"])),
-            "warm_seconds":manifest["benchmark"]["warm_seconds"],"cold_seconds":[v["cold_seconds"] for v in manifest["benchmark"]["variants"].values()],
+            "calibration_schema":2,"runtime_sha256":manifest["benchmark"]["runtime_sha256"],
+            "warm_seconds":manifest["benchmark"]["warm_seconds"],"cold_seconds":[v["first_render_seconds"] for v in manifest["benchmark"]["variants"].values()],
             "startup_seconds":manifest["benchmark"]["load_seconds"],"profile":"quality-cpu",
             **{k:manifest["media"][k] for k in ("width","height","duration_seconds")}})

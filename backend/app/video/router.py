@@ -76,11 +76,11 @@ def capabilities(session: Session = Depends(get_session), auth: AuthUser = Depen
     control = session.get(VideoControl, 1)
     templates = {t.id: t for t in session.exec(select(VideoTemplate)).all()}
     return {"enabled": settings().enabled, "paid_enabled": settings().paid,
-            "available": bool(settings().enabled and svc.video_policy_ready() and control and svc.healthy(control)),
+            "available": bool(settings().enabled and svc.video_policy_ready() and control and svc.templates_current(session,control)),
             "price_paise": settings().price, "policy_version": AUP_VERSION, "allowance": svc.allowance(session, auth, user),
             "source_max_retention_seconds": settings().max_age, "output_ttl_seconds": settings().ttl,
             "templates": [{"id": key, "title": templates[key].title if key in templates else "Couple scene " + key[-1],
-                           "available": key in templates, "metadata": json.loads(templates[key].metadata_json) if key in templates else None} for key in TEMPLATE_IDS]}
+                           "available": bool(key in templates and control and svc.template_current(control,json.loads(templates[key].metadata_json))), "metadata": json.loads(templates[key].metadata_json) if key in templates else None} for key in TEMPLATE_IDS]}
 
 
 @router.post("/jobs", status_code=201)
@@ -102,7 +102,7 @@ def create(payload: Create, session: Session = Depends(get_session), auth: AuthU
     template = session.get(VideoTemplate, payload.template_id)
     if template is None:
         raise HTTPException(409, "Template has not been approved and calibrated")
-    if json.loads(template.metadata_json).get("profile_sha256") != json.loads(control.capabilities_json).get("profile_hash"):
+    if not svc.template_current(control,json.loads(template.metadata_json)):
         raise HTTPException(503, "Template calibration does not match the active worker profile")
     try:
         options = instructions(payload.instructions)
@@ -166,7 +166,7 @@ def preflight(job_id: str, session: Session = Depends(get_session), auth: AuthUs
 @router.post("/jobs/{job_id}/admit")
 def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = svc.owner(session, auth)
-    control = svc.admission(session)
+    control = svc.admission(session,templates_required=False)
     job = svc.owned_job(session, user.id, job_id)
     if job.state in svc.ACTIVE:
         if (payload.funding == "paid") != (job.funding == "paid"):
@@ -176,8 +176,10 @@ def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), 
     if job.state != "validated" or svc.utc(job.deadline) <= now():
         raise HTTPException(409, "A current successful Mac preflight is required")
     template = session.get(VideoTemplate, job.template_id)
-    if template.manifest_hash != job.manifest_hash or json.loads(job.frozen_json).get("profile_sha256") != json.loads(control.capabilities_json).get("profile_hash"):
+    if template.manifest_hash != job.manifest_hash or not svc.template_current(control,json.loads(job.frozen_json)):
         raise HTTPException(409, "Template changed; repeat validation")
+    if not svc.templates_current(session,control):
+        raise HTTPException(503,"Worker template metadata stale; no payment taken")
     if payload.funding == "paid" and not settings().paid:
         raise HTTPException(503, "Paid video checkout is disabled")
     if payload.funding == "complimentary":
@@ -284,16 +286,24 @@ class Register(Strict):
     revision: str = Field(max_length=64)
     profile_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     disk_free_bytes: int = Field(ge=0)
+    calibration_schema: Literal[2]
+    runtime_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    calibrations: dict[str,str] = Field(max_length=2)
 
 
 @worker.get("/health", dependencies=[Depends(worker_auth)])
 def worker_health(session: Session = Depends(get_session)):
-    row = session.get(VideoControl, 1)
-    return {"authenticated": True, "schema_ready": row is not None, "worker_active": bool(row and svc.healthy(row))}
+    from sqlalchemy import inspect
+    schema=all(inspect(session.get_bind()).has_table(t) for t in ("video_control","video_template","video_job","video_quota","video_outbox"))
+    row = session.get(VideoControl, 1) if schema else None
+    return {"authenticated": True, "schema_ready": schema, "control_initialized":row is not None,
+            "worker_active": bool(row and svc.healthy(row)),"templates_current":bool(schema and row and svc.templates_current(session,row))}
 
 
 @worker.post("/heartbeat", dependencies=[Depends(worker_auth)])
 def worker_heartbeat(payload: Register, session: Session = Depends(get_session)):
+    if payload.ready and (set(payload.calibrations)!=set(TEMPLATE_IDS) or any(not re.fullmatch(r"[a-f0-9]{64}",v) for v in payload.calibrations.values())):
+        raise HTTPException(422,"Current calibration identity required for both templates")
     row = svc.control(session)
     if row.worker_boot and row.worker_boot != payload.boot_id and row.worker_seen_at and (now() - svc.utc(row.worker_seen_at)).total_seconds() < settings().stale:
         raise HTTPException(409, "Another video worker instance is active")
@@ -313,17 +323,20 @@ class Publish(Strict):
     qa_evidence_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     warm_seconds: list[float] = Field(min_length=6, max_length=60)
     cold_seconds: list[float] = Field(min_length=2, max_length=2)
-    startup_seconds: float = Field(ge=0, le=600)
+    startup_seconds: float = Field(gt=0, le=600)
     duration_seconds: float = Field(ge=1, le=30)
     width: int = Field(ge=64, le=1920)
     height: int = Field(ge=64, le=1920)
     profile: Literal["quality-cpu"]
+    calibration_schema: Literal[2]
+    runtime_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 @worker.post("/templates", dependencies=[Depends(worker_auth)])
 def publish(payload: Publish, session: Session = Depends(get_session)):
     svc.control(session)
-    if any(not 1 <= x or (x + payload.startup_seconds)*1.3 > settings().max_age / settings().capacity for x in [*payload.warm_seconds, *payload.cold_seconds]):
+    import math
+    if any(not math.isfinite(x) or not 0 < x or (x + payload.startup_seconds)*1.3 > (settings().max_age-600) / settings().capacity for x in [*payload.warm_seconds, *payload.cold_seconds]):
         raise HTTPException(422, "Calibration exceeds bounded queue deadline")
     metadata = payload.model_dump()
     template = session.get(VideoTemplate, payload.id) or VideoTemplate(id=payload.id, title=payload.title, manifest_hash="", metadata_json="{}")
@@ -347,6 +360,10 @@ def claim(request: Request, session: Session = Depends(get_session)):
         job = session.exec(select(VideoJob).where(VideoJob.state == "preflight_queued", VideoJob.deadline > now()).order_by(VideoJob.created_at).with_for_update(skip_locked=True)).first()
     if job is None:
         return {"job": None}
+    if not svc.template_current(row,json.loads(job.frozen_json)):
+        svc.fail(session,job,"template_changed")
+        session.commit()
+        return {"job":None}  # Restore/refund safely, never render stale profile.
     job.attempt += 1
     job.fence, job.lease_until = secrets.token_hex(32), now() + timedelta(seconds=45)
     job.state = "processing" if job.state == "queued" else "preflighting"

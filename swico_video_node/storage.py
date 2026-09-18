@@ -6,6 +6,7 @@ import secrets
 import shutil
 import tempfile
 from pathlib import Path
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 ENGINE_COMMIT = "03d49d0c7de095a41628a74d94a146214f82837a"
@@ -99,6 +100,29 @@ def cleanup_jobs():
         confined(path, root() / "jobs")
         if path.is_dir():
             shutil.rmtree(path)
+
+
+@contextmanager
+def exclusive():
+    """Same lock for setup/review/service changes and the serving worker."""
+    import fcntl
+    root().mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (root()/"worker.lock").open("a+") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise ValueError("Worker is active; explicitly stop/drain before changing its runtime") from None
+        yield lock
+
+
+def cleanup_benchmarks():
+    """Only our private UUID scratch, including residue of an interrupted run."""
+    import uuid
+    directory = root()/"benchmarks"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for path in directory.iterdir():
+        try: uuid.UUID(path.name)
+        except ValueError: continue
+        confined(path, directory)
+        if path.is_dir(): shutil.rmtree(path)
 
 
 def rotate_token():

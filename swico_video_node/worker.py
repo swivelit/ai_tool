@@ -17,7 +17,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from .storage import atomic, canonical, cleanup_jobs, confined, digest, hash_file, read, root, template_dir
+from .storage import atomic, canonical, cleanup_jobs, cleanup_benchmarks, confined, digest, hash_file, read, root, template_dir
+from .runtime import minimal_environment, safe_error, tools
 from .models import audit
 from . import __version__
 
@@ -60,16 +61,18 @@ class Api:
 def readiness():
     from .templates import approved
     from .engine import runtime_identity
-    runtime_identity()
+    runtime=runtime_identity()
     result=audit()
+    calibrations={}
     for name in ("couple-01","couple-02"):
-        approved(name,calibrated=True)
+        calibrations[name]=digest(canonical(approved(name,calibrated=True)["benchmark"]))
     if platform.system()!="Darwin" or platform.machine()!="x86_64":
         raise ValueError("Worker native platform must be Intel macOS")
     free=shutil.disk_usage(root()).free
     if free < 2*1024**3:
         raise ValueError("At least 2 GiB local free space required")
-    return {"ready":True,"native_inference_verified":True,"revision":__version__,"profile_hash":result["profile_hash"],"disk_free_bytes":free}
+    return {"ready":True,"native_inference_verified":True,"revision":__version__,"profile_hash":result["profile_hash"],"disk_free_bytes":free,
+            "calibration_schema":2,"runtime_sha256":digest(canonical(runtime)),"calibrations":calibrations}
 
 
 def terminate_tree(process):
@@ -113,24 +116,36 @@ def child_process(directory: Path):
     from .templates import approved
     directory=confined(directory,root()/"jobs")
     job=read(directory/"request.json")
+    stage="calibration"
     try:
         local=approved(job["template"]["id"],calibrated=True)
         if local["approval"]["template_sha256"]!=job["template"]["template_sha256"] or local["approval"]["profile_sha256"]!=job["template"]["profile_sha256"] or local["approval"]["tracks_sha256"]!=job["template"]["tracks_sha256"]:
             raise ValueError("template_changed")
+        if local["benchmark"]["runtime_sha256"]!=job["template"].get("runtime_sha256") or digest(canonical(local["benchmark"]))!=job["template"].get("qa_evidence_sha256"):
+            raise ValueError("template_changed")
+        stage="engine_import_onnx_load"
         engine=Engine()
+        stage="source_validation"
         paths={role:directory/(role+".jpg") for role in job["inputs"]}
         engine.sources(paths)
         engine.caption(job["options"]["caption"])
         if job["state"]=="preflighting":
             result={"outcome":"valid"}
         else:
+            stage="native_render_encode"
             engine.render(job["template"]["id"],paths,job["options"],directory/"output.mp4",
                           lambda phase,percent:atomic(directory/"progress.json",{"phase":phase,"percent":percent}))
             result={"outcome":"ready","sha256":hash_file(directory/"output.mp4")}
     except Exception as exc:
+        atomic(root()/"logs/last-native-error.json",safe_error(exc,stage))
         allowed={"source_face_count","source_quality","safety_rejected","caption_unsupported","template_changed"}
         result={"outcome":"invalid" if job["state"]=="preflighting" else "failed","reason":str(exc) if str(exc) in allowed else "render_failed"}
     atomic(directory/"result.json",result)
+
+
+def child_environment(read_fd):
+    tools()  # Refuse missing/replaced tools before admitting native child startup.
+    return {**minimal_environment(),"SWICO_VIDEO_PARENT_FD":str(read_fd)}
 
 
 def execute(api,job,stop,lock_fd):
@@ -151,9 +166,19 @@ def execute(api,job,stop,lock_fd):
                 raise ValueError("Input hash mismatch")
             (directory/(role+".jpg")).write_bytes(data)
         read_fd,write_fd=os.pipe()
-        safe={"PATH":"/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin","HOME":str(Path.home()),"LANG":"en_US.UTF-8","SWICO_VIDEO_DATA_DIR":str(root()),"SWICO_VIDEO_PARENT_FD":str(read_fd)}
+        safe=child_environment(read_fd)
         process=subprocess.Popen([sys.executable,"-m","swico_video_node","_process",str(directory)],env=safe,
-                                 start_new_session=True,pass_fds=(read_fd,lock_fd),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                                 cwd=Path(__file__).resolve().parents[1],start_new_session=True,pass_fds=(read_fd,lock_fd),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        # Do not retain arbitrary native stderr (may include customer paths). A
+        # bounded reader classifies it, so import failures are diagnosable too.
+        def drain():
+            tail=bytearray()
+            with process.stderr:
+                while chunk:=process.stderr.read(4096):
+                    tail.extend(chunk)
+                    if len(tail)>8192:del tail[:-8192]
+            if tail:atomic(root()/"logs/last-child-stderr.json",safe_error(RuntimeError(tail.decode("utf8","replace")),"native_child"))
+        reader=threading.Thread(target=drain,daemon=True);reader.start()
         os.close(read_fd);read_fd=None
         deadline=datetime.fromisoformat(job["deadline"]).timestamp()
         while process.poll() is None:
@@ -161,7 +186,11 @@ def execute(api,job,stop,lock_fd):
                 raise RuntimeError("Worker stopping/deadline")
             progress=read(directory/"progress.json") if (directory/"progress.json").exists() else {"phase":"validation","percent":0}
             api.post(f"/jobs/{job['id']}/heartbeat",progress,job)
-            api.post("/heartbeat",{**heartbeat_info,"boot_id":api.boot})
+            current=readiness()
+            if any(current[k]!=heartbeat_info[k] for k in ("profile_hash","runtime_sha256","calibrations")):
+                raise ValueError("Runtime changed during processing; stop and reconcile")
+            api.post("/heartbeat",{**current,"boot_id":api.boot})
+            atomic(root()/"liveness.json",{"pid":os.getpid(),"parent_pid":os.getppid(),"time":time.time()})
         if process.returncode or not (directory/"result.json").exists():
             raise RuntimeError("Native child failed")
         result=read(directory/"result.json")
@@ -177,6 +206,7 @@ def execute(api,job,stop,lock_fd):
     finally:
         if process:
             terminate_tree(process)
+            reader.join(timeout=3)
         for descriptor in (read_fd,write_fd):
             if descriptor is not None:os.close(descriptor)
         # No customer media survives a worker iteration, even on failed transfer.
@@ -190,7 +220,9 @@ def run():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     except BlockingIOError:
         raise ValueError("Another local Swico video worker owns the lock") from None
-    cleanup_jobs()
+    cleanup_jobs();cleanup_benchmarks()
+    from .service import startup_logs
+    startup_logs()
     logger=logging.getLogger("swico_video_node")
     handler=logging.handlers.RotatingFileHandler(root()/"logs/worker.log",maxBytes=1024*1024,backupCount=3)
     logger.addHandler(handler);logger.setLevel(logging.INFO)
@@ -200,12 +232,18 @@ def run():
     api=Api();delay=2
     while not stop.is_set():
         try:
+            atomic(root()/"liveness.json",{"pid":os.getpid(),"parent_pid":os.getppid(),"time":time.time()})
             api.post("/heartbeat",{**readiness(),"boot_id":api.boot})
             job=api.post("/claim",{}).get("job")
             if job:
                 execute(api,job,stop,lock.fileno())
             delay=2
         except Exception as exc:
-            logger.warning("worker_cycle_failed class=%s",type(exc).__name__)
+            logger.warning("worker_cycle_failed %s",json.dumps(safe_error(exc,"worker_cycle")))
+            # Immediately withdraw stale readiness, even on runtime changes.
+            # Fenced in-flight cleanup/settlement endpoints do not require ready.
+            try: api.post("/heartbeat",{"boot_id":api.boot,"ready":False,"native_inference_verified":False,"revision":__version__,
+                                       "profile_hash":"0"*64,"disk_free_bytes":0,"runtime_sha256":"0"*64,"calibration_schema":2,"calibrations":{}})
+            except Exception: pass
             delay=min(60,delay*2)
         stop.wait(delay)
