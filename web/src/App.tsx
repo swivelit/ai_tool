@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/useAuth'
 import { ChatPage } from './pages/ChatPage'
@@ -8,11 +8,27 @@ import { CliAuthorizePage } from './pages/CliAuthorizePage'
 import { CliSessionsPage } from './pages/CliSessionsPage'
 import { CliGuidePage } from './pages/CliGuidePage'
 import { CloudTasksPage } from './pages/CloudTasksPage'
+import {applyColorStyle,applyCustomColors,applyTheme,resolveColorStyle,resolveCustomColors,resolveTheme,type ColorStyle,type CustomColors,type Theme,} from './theme'
 
 const LegalPage = lazy(() => import('./pages/LegalPage').then(module => ({ default: module.LegalPage })))
 
 export function App() {
   const { user, loading } = useAuth()
+  const [theme, setTheme] = useState<Theme>(resolveTheme)
+  const [colorStyle, setColorStyle] = useState<ColorStyle>(resolveColorStyle)
+  const [customColors, setCustomColors] = useState<CustomColors>(resolveCustomColors)
+  useEffect(() => {
+    applyTheme(theme)
+  }, [theme])
+
+  useEffect(() => {
+    applyColorStyle(colorStyle)
+  }, [colorStyle])
+
+  useEffect(() => {
+    applyCustomColors(customColors)
+  }, [customColors])
+
   const location = useLocation()
   if (loading) return <div className="app-loading"><div className="orb">S</div></div>
   const returnTo = new URLSearchParams(location.search).get('returnTo')
@@ -35,7 +51,14 @@ export function App() {
     <Route path="/swico-cli" element={<CliGuidePage isAuthenticated={Boolean(user)} />} />
     <Route path="/login" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="login" />} />
     <Route path="/signup" element={user ? <Navigate to={safeReturnTo} replace /> : <LoginPage initialMode="signup" />} />
-    <Route path="/" element={user ? <ChatPage /> : <GuestChatPage />} />
+    <Route
+      path="/"
+      element={
+        user
+          ? <ChatPage theme={theme} setTheme={setTheme} colorStyle={colorStyle} setColorStyle={setColorStyle} customColors={customColors} setCustomColors={setCustomColors}/>
+          : <GuestChatPage />
+      }
+    />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
 }

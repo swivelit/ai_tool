@@ -36,6 +36,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   const focusSearchAfterRenderRef = useRef(false)
   const closeRef = useRef<HTMLButtonElement>(null)
   const accountButtonRef = useRef<HTMLButtonElement>(null)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
   const inRouter = useInRouterContext()
   const groups = useMemo(() => groupThreads(threads), [threads])
   const openSearch = useCallback(() => {
@@ -55,7 +56,30 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     }
     window.addEventListener('keydown', shortcuts); return () => window.removeEventListener('keydown', shortcuts)
   }, [close, open, openSearch])
-  useEffect(() => { if (open) closeRef.current?.focus() }, [open])
+  useEffect(() => {
+      if (!open) setAccount(false)
+      if (open) closeRef.current?.focus()
+     }, [open])
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!account) return
+
+      const target = event.target as Node
+
+      if (
+        !accountButtonRef.current?.contains(target) &&
+        !accountMenuRef.current?.contains(target)
+      ) {
+        setAccount(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick)
+    }
+  }, [account])
   useEffect(() => {
     if (!focusSearchAfterRenderRef.current || (collapsed && !searchOpen)) return
     focusSearchAfterRenderRef.current = false
@@ -108,7 +132,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     <div className="sidebar-bottom">
       <button className="credit-card" disabled={billingExempt} onClick={addCredit} aria-label={billingExempt ? 'Token credits. Unlimited.' : `Add token credits. ${estimatedBalanceName}.`}><span><small>Token credits</small><strong>{billingExempt ? 'Unlimited' : wallet ? estimatedTokenLabel(estimatedTokens) : 'Calculating…'}</strong></span>{!billingExempt && <b><Plus size={14} /> Add tokens</b>}</button>
       <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
-        {account && <div className="account-menu" role="menu">
+        {account && <div ref={accountMenuRef} className="account-menu" role="menu">
           <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>
           <button role="menuitem" onClick={() => { toggleTheme(); setAccount(false) }}><SunMoon size={16} />Toggle theme</button>
           <button role="menuitem" onClick={signOut}><LogOut size={16} />Sign out</button>

@@ -8,7 +8,7 @@ import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
 import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
-import { applyColorStyle, applyCustomColors, applyTheme, resolveColorStyle, resolveCustomColors, resolveTheme, type ColorStyle, type CustomColors, type Theme, } from '../theme'
+import type { ColorStyle, CustomColors, Theme } from '../theme'
 import { useVoiceReply } from '../hooks/useVoiceReply'
 import type { VoiceTurnDone } from '../hooks/useRealtimeVoice'
 import { frontendRelease } from '../config/publicConfig'
@@ -63,7 +63,21 @@ function attachmentKey(attachment: ComposerAttachment): string {
   return 'local_id' in attachment ? attachment.local_id : attachment.id
 }
 
-export function ChatPage() {
+export function ChatPage({
+  theme,
+  setTheme,
+  colorStyle,
+  setColorStyle,
+  customColors,
+  setCustomColors,
+}: {
+  theme: Theme
+  setTheme: (theme: Theme) => void
+  colorStyle: ColorStyle
+  setColorStyle: (colorStyle: ColorStyle) => void
+  customColors: CustomColors
+  setCustomColors: (colors: CustomColors) => void
+}) {
   const { user, signOut } = useAuth()
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null)
   const [threads, setThreads] = useState<Thread[]>([]); const [hasMore, setHasMore] = useState(false)
@@ -83,11 +97,7 @@ export function ChatPage() {
   const [pendingReferralCode, setPendingReferralCode] = useState('')
   const [voiceMode, setVoiceMode] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
-  const [theme, setTheme] = useState<Theme>(resolveTheme)
-  const [colorStyle, setColorStyle] = useState<ColorStyle>(resolveColorStyle)
-  const [customColors, setCustomColors] = useState<CustomColors>(
-  resolveCustomColors,
-)
+  
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
   const [cancellationReady, setCancellationReady] = useState(false)
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
@@ -428,14 +438,6 @@ export function ChatPage() {
     const timer = window.setTimeout(() => setHighlightMessageId(null), 4000)
     return () => window.clearTimeout(timer)
   }, [highlightMessageId])
-  useEffect(() => { applyTheme(theme) }, [theme])
-  useEffect(() => {
-  applyColorStyle(colorStyle)
-}, [colorStyle])
-
-useEffect(() => {
-  applyCustomColors(customColors)
-}, [customColors])
   useEffect(() => { setDraftVoiceTurnId(null) }, [active])
   useEffect(() => { localStorage.setItem('swico-sidebar-collapsed', String(collapsed)) }, [collapsed])
   useEffect(() => {

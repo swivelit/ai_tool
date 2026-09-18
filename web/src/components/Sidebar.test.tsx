@@ -90,3 +90,45 @@ it('places the public Swico CLI link before New chat and exposes collapsed acces
   expect(cliLink).toHaveAttribute('title', 'Swico CLI')
   expect(cliLink.compareDocumentPosition(newChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 })
+it('closes the account menu when clicking outside', () => {
+  renderSidebar()
+
+  fireEvent.click(screen.getByRole('button', { name: /Hari/i }))
+
+  expect(screen.getByRole('menu')).toBeInTheDocument()
+
+  fireEvent.mouseDown(document.body)
+
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})
+
+it('closes the account menu when the sidebar closes', () => {
+  const { rerender } = renderSidebar({ open: true })
+
+  fireEvent.click(screen.getByRole('button', { name: /Hari/i }))
+
+  expect(screen.getByRole('menu')).toBeInTheDocument()
+
+  rerender(
+    <MemoryRouter>
+      <Sidebar {...props} open={false} />
+    </MemoryRouter>
+  )
+
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})
+
+it('closes the account menu and opens Settings', () => {
+  const openSettings = vi.fn()
+
+  renderSidebar({ openSettings })
+
+  fireEvent.click(screen.getByRole('button', { name: /Hari/i }))
+
+  expect(screen.getByRole('menu')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }))
+
+  expect(openSettings).toHaveBeenCalledTimes(1)
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})
