@@ -17,7 +17,10 @@ def local(tmp_path,monkeypatch):
 
 @pytest.mark.parametrize("arguments",[
     ["--help"],["init","--help"],["models","audit","--help"],["models","install","--help"],
+    ["models","evidence","status","--help"],["models","evidence","add","--help"],
+    ["models","provenance","status","--help"],["models","provenance","record","--help"],
     ["templates","import","--help"],["templates","prepare","--help"],["templates","review","--help"],
+    ["templates","rights","status","--help"],["templates","rights","add","--help"],
     ["templates","publish","--help"],["benchmark","--help"],["doctor","--help"],["run","--help"],
     ["service","--help"],["rotate-token","--help"],
 ])

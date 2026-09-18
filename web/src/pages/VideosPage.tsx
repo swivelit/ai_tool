@@ -87,6 +87,7 @@ export function VideosPage() {
     finally { if (id === generation.current) { setBusy(false); submitting.current = false } }
   }
   const required = swap === 'both' ? ['male', 'female'] : [swap]
+  const paidAvailable = !!caps && (caps.paid_available ?? (caps.paid_enabled && caps.available))
   return <main className="videos-page"><Link to="/">← Back to chat</Link><h1>Create video</h1>
     <p>Put consenting adult faces into a reviewed short template. This is face replacement, not text-to-video. Processing is asynchronous.</p>
     {error && <p role="alert">{error}</p>}
@@ -107,7 +108,8 @@ export function VideosPage() {
       {job?.state === 'validated' && <section><h2>Confirm supported edit</h2><pre>{JSON.stringify(job.options, null, 2)}</pre><p>Payment/allowance is only reserved after you confirm. Queue time depends on measured Mac performance.</p>
         <p>{caps.allowance.unlimited ? 'Unlimited complimentary allowance (capacity limits apply)' : `${caps.allowance.remaining} complimentary attempts remain. Reset ${new Date(caps.allowance.reset_at).toLocaleString()}.`}</p>
         <button disabled={busy || !caps.available || !(caps.allowance.unlimited || caps.allowance.remaining)} onClick={() => { void admit('complimentary') }}>Use complimentary attempt</button>
-        <button disabled={busy || !caps.available || !caps.paid_enabled} onClick={() => { void admit('paid') }}>Pay ₹25 total for this video</button></section>}
+        {caps.paid_enabled && !paidAvailable && <p role="status">Paid video checkout is configured but currently unavailable because the verified worker, legal or template gates are closed.</p>}
+        <button disabled={busy || !paidAvailable} onClick={() => { void admit('paid') }}>Pay ₹25 total for this video</button></section>}
     </>}
     {job && <VideoCard key={job.id} jobId={job.id} />}
     {job && ['expired', 'failed', 'cancelled', 'refunded', 'refund_pending', 'ready'].includes(job.state) && <button onClick={() => { setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)]); setJob(null); setPhotos({}); setConsent(false); setError(''); requestKey.current = crypto.randomUUID() }}>Start a new request with fresh consent</button>}

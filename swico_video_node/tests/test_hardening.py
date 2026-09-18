@@ -171,6 +171,7 @@ def test_actual_template_publication_rejects_changed_calibration_before_http(loc
     profile={"profile_hash":"fixture-model"}
     monkeypatch.setattr(templates,"audit",lambda:profile)
     monkeypatch.setattr(templates,"evidence",lambda _:None)
+    monkeypatch.setattr(templates,"template_assertions",lambda _:None)
     monkeypatch.setattr(engine,"runtime_identity",lambda:identity)
     for identifier in storage.TEMPLATES:
         directory=storage.template_dir(identifier);directory.mkdir()

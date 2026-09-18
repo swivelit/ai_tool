@@ -75,8 +75,11 @@ def capabilities(session: Session = Depends(get_session), auth: AuthUser = Depen
     user = svc.owner(session, auth)
     control = session.get(VideoControl, 1)
     templates = {t.id: t for t in session.exec(select(VideoTemplate)).all()}
-    return {"enabled": settings().enabled, "paid_enabled": settings().paid,
-            "available": bool(settings().enabled and svc.video_policy_ready() and control and svc.templates_current(session,control)),
+    config = settings()
+    effective_available = bool(config.enabled and svc.video_policy_ready() and control and svc.templates_current(session,control))
+    paid_available = bool(effective_available and config.paid)
+    return {"enabled": config.enabled, "paid_enabled": config.paid, "paid_configured": config.paid,
+            "paid_available": paid_available, "available": effective_available,
             "price_paise": settings().price, "policy_version": AUP_VERSION, "allowance": svc.allowance(session, auth, user),
             "source_max_retention_seconds": settings().max_age, "output_ttl_seconds": settings().ttl,
             "templates": [{"id": key, "title": templates[key].title if key in templates else "Couple scene " + key[-1],

@@ -126,13 +126,38 @@ the actual operator-owned results. Capture only metadata/timings; no faces/secre
 
 ## Genuine model and template prerequisites
 
-Run `models audit` to get all ten review objects (code + nine models), exact local
-manifest paths and blockers. A missing technical file is separate from missing
-commercial permission. Permissive applicable licence grants can suffice if their
-conditions apply; restricted pretrained weights need the right holder's grant.
-Original video and audio rights, source-adult consent, human track review and
-result QA are additional independent requirements. Neither owner legal-page
-attestation nor a code licence supplies those rights.
+The operator workflow is command-driven and never requires editing private JSON.
+Use the installed worker interpreter and real documents selected locally:
+
+```bash
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+"$VIDEO_PYTHON" -m swico_video_node models evidence status
+"$VIDEO_PYTHON" -m swico_video_node models provenance status
+"$VIDEO_PYTHON" -m swico_video_node templates rights status --id couple-01
+"$VIDEO_PYTHON" -m swico_video_node templates rights status --id couple-02
+```
+
+Import genuine licence/permission bytes with `models evidence add` and
+`templates rights add`; those commands copy into private storage, hash the copied
+bytes, back up and atomically update the local record. They reject symlinks and
+special files and never print source paths. The three restricted InsightFace
+weights always require separate actual right-holder permission evidence; an
+`applicable_licence` basis is never a bypass. A technical `.hash` sidecar is only
+an expected-byte check and never a commercial grant.
+
+For each fixed model, explicitly retrieve the bounded upstream technical sidecar
+and record it only after review:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models provenance status --fetch
+"$VIDEO_PYTHON" -m swico_video_node models provenance record --asset 2dfan4.onnx --confirm-technical-hash
+```
+
+Repeat for the complete inventory, then run `models audit`. Missing technical files
+remain separate from missing commercial permission. Original video/audio rights,
+source-adult consent, human track review and result QA are additional independent
+requirements. Neither owner legal-page attestation nor a code licence supplies
+those rights.
 
 Pinned source inspected:
 `03d49d0c7de095a41628a74d94a146214f82837a` (FaceFusion 3.0.1).

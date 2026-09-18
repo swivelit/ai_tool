@@ -79,7 +79,15 @@ termination. These are NOT native face inference or likeness acceptance.
   LaunchAgent acceptance before authorizing complimentary and then paid acceptance.
 - [ ] All model/engine assets have independently checked source, exact digest and
   genuine commercial-permission/licence evidence; full dependency chain reviewed.
+- [ ] Model evidence was imported with `models evidence add`, technical `.hash`
+  provenance was explicitly reviewed/recorded, and `models audit` reports every
+  blocker with no manual edits to `models.json`. Technical hash evidence is not
+  commercial authorization.
 - [ ] Both real templates and audio have commercial modification/distribution rights.
+- [ ] Both imported manifests use `templates rights add` with genuine licence and
+  permission documents plus explicit video-modification, resulting-video-
+  distribution and audio-rights confirmations. Rights updates invalidated old
+  approval/calibration and `master.mp4` remained unchanged.
 - [ ] Current website legal/pricing/privacy/refund text has fresh accountable
   publication approval. `videoLegalDraft.json` is intentionally `unreviewed`, with
   no approval record. The currently released `legalContent.json` and its existing

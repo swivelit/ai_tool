@@ -88,7 +88,8 @@ If native Python 3.12 and supported tools are **already** deliberately installed
 through another route, MacPorts is not mandatory:
 
 ```bash
-bash swico_video_node/scripts/setup_macos.sh --check --python /absolute/path/to/python3.12
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+bash swico_video_node/scripts/setup_macos.sh --check --python "$VIDEO_PYTHON"
 ```
 
 Replace the path with that actual installation; do not paste a nonexistent example.
@@ -398,54 +399,83 @@ resolution/duration/rate/timing errors, stop at the named reason; this command
 does not auto-crop, stretch or trim. `template_probe_failed` calls for `tools status`
 and local source inspection, not credential rotation or nonexistent diagnostic logs.
 
-### Genuine rights, then model install/audit
+### Genuine rights, technical provenance, then model install/audit
 
-Fill each imported `templates/couple-0N/manifest.json` rights record with genuine
-VIDEO and AUDIO evidence before prepare/review. Successful import is NOT inference,
-template approval, commercial authorization or calibration. Then complete the
-model evidence gate below; no restricted weight download occurs before it passes.
+Successful import is NOT inference, template approval, commercial authorization or
+calibration. Do not edit `models.json` or either template manifest by hand. The
+commands below copy the real documents into the private rights directory, hash the
+copied bytes, make a private backup, and update JSON atomically. They never upload a
+document or call a provider. Use a Finder picker so a literal example path cannot be
+mistaken for a real command:
 
 ```bash
-.venv-video/bin/python -m swico_video_node models audit
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+LICENCE_FILE="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine model licence evidence")')"
+PERMISSION_FILE="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine commercial permission evidence")')"
+printf 'Enter the real accountable reviewer name or role: '; read -r REVIEWER
+printf 'Enter the real review date (YYYY-MM-DD): '; read -r REVIEWED_AT
+"$VIDEO_PYTHON" -m swico_video_node models evidence add \
+  --asset code_review --reviewer "$REVIEWER" \
+  --reviewed-at "$REVIEWED_AT" --licence-file "$LICENCE_FILE" --permission-file "$PERMISSION_FILE"
 ```
 
-The report names `models.json`, `rights/`, code review and ALL nine assets with
-missing fields/files. A blocked report is expected now. Default private manifest:
-`~/Library/Application Support/SwicoVideo/models.json`; documents:
-`~/Library/Application Support/SwicoVideo/rights/`. Respect `SWICO_VIDEO_DATA_DIR`
-if deliberately customized. Edit that local manifest, not repository assets. For each
-asset and code review supply genuine reviewer/date and documents:
-`reviewer`, `reviewed_at` (YYYY-MM-DD), `licence_file`, `licence_sha256`,
-`permission_file`, `permission_sha256`. Document paths are relative to `rights/`.
-Supply actual independently verified model `sha256`; fixed provenance URLs cannot
-be substituted. `shasum -a 256 /absolute/path/to/document` hashes an actual document;
-it does not grant rights.
+Repeat the command for every asset, using a real reviewer/date each time. For
+genuinely applicable permissive components only, the permission file may be omitted
+with this explicit basis:
 
-For genuinely permissive components an applicable licence with its conditions may
-serve as the permission basis: explicitly set `permission_basis=applicable_licence`
-and retain reviewer/date/licence document/hash. This is NOT accepted for the three
-restricted InsightFace pretrained swapper/embedding/detector assets; those require
-actual right-holder commercial permission. A code MIT licence or owner attestation
-cannot grant restricted weights. Review conversion, distribution and service-use
-conditions for every remaining model; no grant is supplied by this repository.
-
-Inventory: inswapper_128, arcface_w600k_r50, retinaface_10g, 2dfan4, fan_68_5,
-dfl_xseg, bisenet_resnet_34, gfpgan_1.4, open_nsfw (all .onnx).
-Imported classifier modules are not invoked or loaded; no demographic classifier.
-
-After actual permissions and hashes have been supplied:
 ```bash
-.venv-video/bin/python -m swico_video_node models install --profile quality-cpu
+printf 'Enter the real reviewer and review date again when they differ: '; read -r REVIEWER REVIEWED_AT
+"$VIDEO_PYTHON" -m swico_video_node models evidence add \
+  --asset 2dfan4.onnx --reviewer "$REVIEWER" --reviewed-at "$REVIEWED_AT" \
+  --licence-file "$LICENCE_FILE" --permission-basis applicable_licence
 ```
-**Checkpoint:** install exits 0 after checking genuine evidence and exact bytes.
-On a rights/checksum/download error, stop and fix the identified asset; do not
-substitute another model or infer permission. Then:
+
+Never use that basis for `inswapper_128.onnx`, `arcface_w600k_r50.onnx` or
+`retinaface_10g.onnx`. Those restricted pretrained weights require separate,
+genuine right-holder commercial permission evidence as well as licence evidence.
+Possession, a filename, a licence keyword or a technical hash is not permission.
+Check bounded local status at any time:
+
 ```bash
-.venv-video/bin/python -m swico_video_node models audit
+"$VIDEO_PYTHON" -m swico_video_node models evidence status
 ```
-**Checkpoint:** `ready=true`, all nine model assets plus code review accepted.
-Audit proves document/file integrity, not the legal sufficiency of permission.
-Restricted assets/documents stay local and out of Git.
+
+FaceFusion 3.0.1 uses a fixed adjacent `.hash` release sidecar for each exact
+`.onnx` source. Provenance is technical only. The read-only status command does
+not contact the network; `--fetch` explicitly retrieves only small HTTPS sidecars
+from the pinned GitHub path and never downloads model bytes:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models provenance status
+"$VIDEO_PYTHON" -m swico_video_node models provenance status --fetch
+```
+
+After independently reviewing that the sidecar belongs to the pinned source,
+record one asset at a time with an explicit acknowledgement. This writes only the
+technical expected SHA-256; it does not write rights evidence or legal approval:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models provenance record \
+  --asset 2dfan4.onnx --confirm-technical-hash
+```
+
+Repeat for all nine assets. Then run the strict audit. Its blockers name the next
+command or missing real-world evidence and do not print private source paths:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models audit
+```
+
+Only after actual permissions, licence review and technical hashes are complete:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models install --profile quality-cpu
+"$VIDEO_PYTHON" -m swico_video_node models audit
+```
+
+Download success proves only that bytes match the recorded technical hashes. It
+does not prove commercial authorization. No restricted weight download occurs
+before the existing rights gate passes.
 
 ## 7. Both real templates and human track review
 
@@ -465,8 +495,26 @@ Require the same checkpoint for the second template before reviewing either.
 Initial masters: CFR, even 64–1920px, 1–30sec, 1–60fps. Caption: printable ASCII,
 100 characters. Unsupported input/options are rejected before checkout.
 
-In each `templates/couple-0N/manifest.json`, fill the `rights` object with the same
-genuine document fields above covering VIDEO modification/distribution AND AUDIO.
+Record imported template rights through the safe command below. It requires
+separate genuine evidence for the licence and permission plus three explicit
+assertions: permission to modify the video, permission to use/distribute the
+resulting video, and permission for the audio in that output. Face consent is not
+movie or audio copyright permission. The command never changes `master.mp4`.
+
+```bash
+TEMPLATE_LICENCE="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine template licence evidence")')"
+TEMPLATE_PERMISSION="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine template video/audio permission evidence")')"
+printf 'Enter the real template reviewer and review date: '; read -r TEMPLATE_REVIEWER TEMPLATE_REVIEWED_AT
+"$VIDEO_PYTHON" -m swico_video_node templates rights add --id couple-01 \
+  --reviewer "$TEMPLATE_REVIEWER" --reviewed-at "$TEMPLATE_REVIEWED_AT" \
+  --licence-file "$TEMPLATE_LICENCE" --permission-file "$TEMPLATE_PERMISSION" \
+  --confirm-video-modification --confirm-video-distribution --confirm-audio-rights
+"$VIDEO_PYTHON" -m swico_video_node templates rights status --id couple-01
+```
+
+Repeat with `couple-02` and genuine evidence. Rights changes invalidate approval
+and calibration, so record rights before preparation/review. Unknown IDs, missing
+masters/manifests and incomplete assertions fail closed. No metadata is published.
 Open the local review folders from Mac Terminal:
 ```bash
 open "${SWICO_VIDEO_DATA_DIR:-$HOME/Library/Application Support/SwicoVideo}/templates/couple-01/review"

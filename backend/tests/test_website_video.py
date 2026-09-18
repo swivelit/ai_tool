@@ -418,6 +418,16 @@ def test_unapproved_video_policy_never_reuses_existing_chat_approval(video,monke
     assert response.status_code==503
 
 
+def test_capabilities_distinguish_configured_paid_from_effectively_available(video,monkeypatch):
+    client,_,_,_=video
+    monkeypatch.setattr(svc,"video_policy_ready",lambda:False)
+    capabilities=client.get("/api/web/videos/capabilities").json()
+    assert capabilities["paid_enabled"] is True
+    assert capabilities["paid_configured"] is True
+    assert capabilities["paid_available"] is False
+    assert capabilities["available"] is False
+
+
 def test_exhausted_allowance_does_not_extend_unpaid_photo_ttl(video,monkeypatch):
     client,_,_,store=video
     job=create(client)

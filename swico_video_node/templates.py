@@ -7,8 +7,9 @@ import time
 from fractions import Fraction
 from pathlib import Path
 from .storage import TEMPLATES, atomic, canonical, digest, hash_file, read, root, template_dir
-from .models import audit, evidence
-from .template_errors import TemplateError
+from .models import audit, evidence, template_assertions
+from .rights import EvidenceError, backup_json, remove_created, store_document, validate_review_metadata
+from .template_errors import ACTIONS, TemplateError
 
 
 def import_template(identifier, file, title):
@@ -102,6 +103,84 @@ def normalize(file, output):
             "rights_approved": False, "template_approved": False, "calibrated": False}
 
 
+def rights_status(identifier):
+    """Report safe local template-rights state without private paths or contents."""
+    try:
+        directory = template_dir(identifier)
+    except ValueError:
+        raise TemplateError("template_rights_unknown") from None
+    manifest_path = directory / "manifest.json"
+    master = directory / "master.mp4"
+    if not directory.is_dir() or manifest_path.is_symlink() or master.is_symlink() or not manifest_path.is_file() or not master.is_file():
+        raise TemplateError("template_rights_manifest_missing")
+    manifest = read(manifest_path)
+    rights = manifest.get("rights", {})
+    try:
+        evidence(rights)
+        template_assertions(rights)
+        ready = True
+        blockers = []
+    except EvidenceError as exc:
+        ready = False
+        blockers = [exc.code]
+    return {"id": identifier, "ready": ready, "rights_approved": bool(ready and manifest.get("approval")),
+            "template_approved": bool(manifest.get("approval")), "calibrated": bool(manifest.get("benchmark")),
+            "blockers": blockers, "stored_evidence": {field: rights.get(field + "_file", "").split("/")[-1]
+                                                         for field in ("permission", "licence") if rights.get(field + "_file")},
+            "legal_conclusion": "Evidence integrity is not legal sufficiency; human rights review remains required."}
+
+
+def add_rights(identifier, reviewer, reviewed_at, licence_file, permission_file,
+               *, confirm_video_modification=False, confirm_video_distribution=False, confirm_audio_rights=False):
+    """Copy genuine template evidence, invalidate approval/calibration, and publish atomically."""
+    try:
+        directory = template_dir(identifier)
+    except ValueError:
+        raise TemplateError("template_rights_unknown") from None
+    manifest_path = directory / "manifest.json"
+    master = directory / "master.mp4"
+    if not directory.is_dir() or manifest_path.is_symlink() or master.is_symlink() or not manifest_path.is_file() or not master.is_file():
+        raise TemplateError("template_rights_manifest_missing")
+    if not all((confirm_video_modification, confirm_video_distribution, confirm_audio_rights)):
+        raise TemplateError("template_rights_missing")
+    try:
+        reviewer, reviewed_at = validate_review_metadata(reviewer, reviewed_at)
+        manifest = read(manifest_path)
+        before_master = hash_file(master)
+        created = []
+        try:
+            permission_name, permission_hash, was_created = store_document(permission_file, "template-" + identifier)
+            if was_created: created.append(permission_name)
+            licence_name, licence_hash, was_created = store_document(licence_file, "template-" + identifier)
+            if was_created: created.append(licence_name)
+            rights = {"rights_scope": "template", "reviewer": reviewer, "reviewed_at": reviewed_at,
+                      "permission_file": permission_name, "permission_sha256": permission_hash,
+                      "licence_file": licence_name, "licence_sha256": licence_hash,
+                      "video_modification_confirmed": True, "video_distribution_confirmed": True,
+                      "audio_rights_confirmed": True}
+            manifest["rights"] = rights
+            # Rights changes invalidate old human review and native calibration.
+            manifest["approval"], manifest["benchmark"] = None, None
+            backup = backup_json(manifest_path, "template-" + identifier)
+            atomic(manifest_path, manifest)
+        except Exception:
+            remove_created(created)
+            raise
+        if hash_file(master) != before_master:
+            raise EvidenceError("template_rights_update_failed")
+        return {"updated": True, "id": identifier, "backup": bool(backup), "rights_approved": False,
+                "template_approved": False, "calibrated": False,
+                "stored_evidence": {"permission": permission_name.split("/")[-1], "licence": licence_name.split("/")[-1]},
+                "legal_conclusion": "Recorded assertions and document hashes are not legal approval."}
+    except TemplateError:
+        raise
+    except EvidenceError as exc:
+        code = exc.code if exc.code in ACTIONS else "template_rights_evidence_failed"
+        raise TemplateError(code) from None
+    except (OSError, ValueError, KeyError):
+        raise TemplateError("template_rights_update_failed") from None
+
+
 def prepare(identifier):
     from .engine import Engine, iou
     engine = Engine()
@@ -152,7 +231,8 @@ def prepare(identifier):
 def review(identifier):
     directory = template_dir(identifier)
     manifest, tracks = read(directory/"manifest.json"), read(directory/"tracks.json")
-    evidence(manifest["rights"])  # Must cover video modification/distribution AND audio.
+    evidence(manifest["rights"])
+    template_assertions(manifest["rights"])  # Video, distribution and audio are separate assertions.
     print(f"Inspect ALL numbered annotated frames in {directory / 'review'} locally. Never upload them.\nTrack roles are not inferred. Check each cut, background person and occlusion.")
     for track in tracks["roles"]:
         frames = [i for i,f in enumerate(tracks["frames"]) if any(str(t["track"])==track for t in f["faces"])]
@@ -179,6 +259,7 @@ def approved(identifier, *, calibrated=False):
     directory = template_dir(identifier)
     manifest = read(directory/"manifest.json")
     evidence(manifest["rights"])
+    template_assertions(manifest["rights"])
     expected = {"template_sha256":hash_file(directory/"master.mp4"),"tracks_sha256":hash_file(directory/"tracks.json"),
                 "profile_sha256":audit()["profile_hash"],"rights_sha256":digest(canonical(manifest["rights"]))}
     if manifest.get("approval") != expected:

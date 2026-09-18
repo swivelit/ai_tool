@@ -5,7 +5,7 @@ export type VideoJob = {
   refund_status: string | null; notification_status?: string | null; options: { swap: string; enhance: string; caption: string };
 }
 export type VideoCapabilities = {
-  enabled: boolean; paid_enabled: boolean; available: boolean; price_paise: number; policy_version: string;
+  enabled: boolean; paid_enabled: boolean; paid_configured?: boolean; paid_available?: boolean; available: boolean; price_paise: number; policy_version: string;
   allowance: { unlimited: boolean; remaining: number | null; reset_at: string };
   templates: { id: string; title: string; available: boolean }[];
 }

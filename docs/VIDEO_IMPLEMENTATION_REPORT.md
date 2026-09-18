@@ -1,5 +1,35 @@
 # Website video corrective implementation evidence — 2026-09-18
 
+## Local rights/provenance onboarding hardening — this pass
+
+The production worker already has imported masters and the deployed schema is
+already `20260918_website_video`; no migration is added or changed here. This pass
+adds local-only operator tooling rather than asking a novice to edit
+`models.json` or a template manifest:
+
+- `models evidence status/add` copies genuine evidence into private mode-0600
+  storage, hashes the copied bytes, creates a private timestamped backup and
+  atomically updates the manifest. Symlinks, special files, path escapes, trivial
+  and oversized documents are rejected. The tool never interprets a licence or
+  creates a legal grant.
+- FaceFusion's pinned model implementation uses adjacent fixed `.hash` release
+  sidecars. `models provenance status` is local/read-only by default;
+  `--fetch` retrieves only bounded HTTPS sidecars from the fixed GitHub path, and
+  `provenance record --confirm-technical-hash` is an explicit technical-only
+  acknowledgement. It never downloads ONNX bytes and cannot set commercial
+  permission.
+- `templates rights status/add` supports only `couple-01` and `couple-02`, requires
+  genuine licence/permission evidence and explicit video-modification,
+  resulting-video-distribution and audio-rights assertions. It invalidates
+  approval/calibration atomically without changing `master.mp4`.
+- `models audit` now reports bounded reason codes and next steps without absolute
+  private paths. The website capabilities response separates configured paid
+  checkout from effective paid availability, and the release checker reports
+  prerequisites, rollout safety, configured flags, release state and blockers.
+
+These changes do not publish templates, install restricted weights, charge, email,
+call a provider, change Render configuration or change weekly credits.
+
 ## Current stable-CFR / template diagnostics correction
 
 Starting clean HEAD: `c429bab41b3471282a4cad637558630dda1210cf`.
