@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import time
 from fractions import Fraction
+import math
 from pathlib import Path
 from .storage import TEMPLATES, atomic, canonical, digest, hash_file, read, root, template_dir
 from .models import audit, evidence, template_assertions
@@ -130,6 +131,122 @@ def rights_status(identifier):
             "legal_conclusion": "Evidence integrity is not legal sufficiency; human rights review remains required."}
 
 
+def _embedding_similarity(left, right) -> float:
+    try:
+        a, b = list(left), list(right)
+        if not a or len(a) != len(b):
+            return 0.0
+        dot = sum(float(x) * float(y) for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(float(x) * float(x) for x in a))
+        norm_b = math.sqrt(sum(float(x) * float(x) for x in b))
+        return max(0.0, min(1.0, (dot / (norm_a * norm_b) + 1.0) / 2.0)) if norm_a and norm_b else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _association_score(box, embedding, prior) -> float:
+    """Score continuity without inferring gender or assigning a role."""
+    a, b = box, prior["box"]
+    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = max(0, a[2] - a[0]) * max(0, a[3] - a[1]) + max(0, b[2] - b[0]) * max(0, b[3] - b[1]) - intersection
+    overlap = float(intersection / area) if area else 0.0
+    prior_box = prior["box"]
+    center_now = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+    center_before = ((prior_box[0] + prior_box[2]) / 2, (prior_box[1] + prior_box[3]) / 2)
+    scale = max(1.0, math.hypot(prior_box[2] - prior_box[0], prior_box[3] - prior_box[1]))
+    motion = max(0.0, 1.0 - math.hypot(center_now[0] - center_before[0], center_now[1] - center_before[1]) / (scale * 2.5))
+    identity = _embedding_similarity(embedding, prior.get("embedding")) if embedding is not None and prior.get("embedding") is not None else 0.0
+    return 0.45 * overlap + 0.30 * motion + 0.25 * identity
+
+
+def _track_ids(tracks: dict) -> set[str]:
+    if not isinstance(tracks, dict) or not isinstance(tracks.get("frames"), list) or not isinstance(tracks.get("roles"), dict):
+        raise TemplateError("template_tracks_invalid")
+    seen: set[str] = set()
+    for frame in tracks["frames"]:
+        if not isinstance(frame, dict) or not isinstance(frame.get("faces"), list) or type(frame.get("shot")) is not int or frame["shot"] < 0:
+            raise TemplateError("template_tracks_invalid")
+        for face in frame["faces"]:
+            if not isinstance(face, dict) or type(face.get("track")) is not int or not isinstance(face.get("box"), list) or len(face["box"]) != 4:
+                raise TemplateError("template_tracks_invalid")
+            if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in face["box"]):
+                raise TemplateError("template_tracks_invalid")
+            if face["box"][2] <= face["box"][0] or face["box"][3] <= face["box"][1]:
+                raise TemplateError("template_tracks_invalid")
+            seen.add(str(face["track"]))
+    if set(tracks["roles"]) != seen or any(value not in {"male", "female", "exclude"} for value in tracks["roles"].values()):
+        raise TemplateError("template_tracks_invalid")
+    for frame in tracks["frames"]:
+        selected = [tracks["roles"][str(face["track"])] for face in frame["faces"] if tracks["roles"][str(face["track"])] != "exclude"]
+        if len(selected) != len(set(selected)):
+            raise TemplateError("template_tracks_overlap")
+    return seen
+
+
+def tracks_status(identifier):
+    try:
+        directory = template_dir(identifier)
+    except ValueError:
+        raise TemplateError("template_tracks_unknown") from None
+    path = directory / "tracks.json"
+    if path.is_symlink() or not path.is_file():
+        raise TemplateError("template_tracks_missing")
+    tracks = read(path)
+    ids = _track_ids(tracks)
+    counts = {track: sum(1 for frame in tracks["frames"] for face in frame["faces"] if str(face["track"]) == track) for track in sorted(ids, key=int)}
+    manifest = read(directory / "manifest.json")
+    approved_now = bool(manifest.get("approval"))
+    calibrated_now = bool(manifest.get("benchmark"))
+    return {"id": identifier, "frames": len(tracks["frames"]), "tracks": [{"id": track, "frames": counts[track], "role": tracks["roles"][track]} for track in sorted(ids, key=int)],
+            "review_required": not approved_now, "approval_present": approved_now,
+            "calibration_present": calibrated_now, "approval_invalidated": False}
+
+
+def correct_tracks(identifier, operation, track_id: int, *, role: str | None = None, at_frame: int | None = None):
+    """Apply one bounded human track correction and invalidate old review."""
+    try:
+        directory = template_dir(identifier)
+    except ValueError:
+        raise TemplateError("template_tracks_unknown") from None
+    manifest_path, tracks_path = directory / "manifest.json", directory / "tracks.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink() or not tracks_path.is_file() or tracks_path.is_symlink():
+        raise TemplateError("template_tracks_missing")
+    tracks = read(tracks_path)
+    ids = _track_ids(tracks)
+    old = str(track_id)
+    if old not in ids:
+        raise TemplateError("template_track_unknown")
+    if operation in {"reassign", "exclude"}:
+        new_role = "exclude" if operation == "exclude" else role
+        if new_role not in {"male", "female", "exclude"}:
+            raise TemplateError("template_track_role_invalid")
+        tracks["roles"][old] = new_role
+    elif operation == "split":
+        if at_frame is None or at_frame <= 0 or at_frame >= len(tracks["frames"]):
+            raise TemplateError("template_track_split_invalid")
+        new_id = str(max((int(value) for value in ids), default=0) + 1)
+        moved = 0
+        for index, frame in enumerate(tracks["frames"]):
+            if index >= at_frame:
+                for face in frame["faces"]:
+                    if str(face["track"]) == old:
+                        face["track"] = int(new_id); moved += 1
+        if not moved:
+            raise TemplateError("template_track_split_invalid")
+        tracks["roles"][new_id] = "exclude"
+    else:
+        raise TemplateError("template_track_operation_invalid")
+    _track_ids(tracks)
+    manifest = read(manifest_path)
+    backup = backup_json(manifest_path, "template-" + identifier)
+    atomic(tracks_path, tracks)
+    manifest["approval"], manifest["benchmark"] = None, None
+    atomic(manifest_path, manifest)
+    return {"updated": True, "id": identifier, "operation": operation, "track": track_id,
+            "backup": bool(backup), "review_required": True, "approval_invalidated": True,
+            "calibration_invalidated": True}
+
+
 def add_rights(identifier, reviewer, reviewed_at, licence_file, permission_file,
                *, confirm_video_modification=False, confirm_video_distribution=False, confirm_audio_rights=False):
     """Copy genuine template evidence, invalidate approval/calibration, and publish atomically."""
@@ -182,7 +299,7 @@ def add_rights(identifier, reviewer, reviewed_at, licence_file, permission_file,
 
 
 def prepare(identifier):
-    from .engine import Engine, iou
+    from .engine import Engine
     engine = Engine()
     directory = template_dir(identifier)
     manifest = read(directory / "manifest.json")
@@ -204,13 +321,23 @@ def prepare(identifier):
             current, used = [], set()
             for face in engine.faces(frame):
                 box = [round(float(x),2) for x in face.bounding_box]
-                candidates = [(iou(box,p["box"]),p) for p in previous if p["track"] not in used]
-                score, prior = max(candidates,default=(0,None),key=lambda x:x[0])
-                if score < .45:
+                candidates = []
+                for prior in previous:
+                    if prior["track"] in used:
+                        continue
+                    score = _association_score(box, getattr(face, "normed_embedding", None), prior)
+                    candidates.append((score, prior))
+                candidates.sort(key=lambda value: value[0], reverse=True)
+                score, prior = candidates[0] if candidates else (0, None)
+                ambiguous = len(candidates) > 1 and score - candidates[1][0] < .08
+                if score < .45 or ambiguous:
                     track_id += 1
                 identity = prior["track"] if score >= .45 else track_id
+                if ambiguous:
+                    identity = track_id
                 used.add(identity)
-                current.append({"track":identity,"box":box})
+                embedding = getattr(face, "normed_embedding", None)
+                current.append({"track":identity,"box":box,"embedding":embedding})
                 x1,y1,x2,y2 = map(int,box)
                 engine.cv.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),1)
                 engine.cv.putText(frame,f"track {identity}",(x1,max(15,y1)),engine.cv.FONT_HERSHEY_SIMPLEX,.45,(0,255,0),1)
@@ -222,7 +349,8 @@ def prepare(identifier):
         cap.release()
     if index != manifest["media"]["frames"]:
         raise ValueError("Decoded frame count changed")
-    atomic(directory/"tracks.json",{"frames":frames,"roles":{str(i):"exclude" for i in range(1,track_id+1)}})
+    public_frames = [{"shot": frame["shot"], "faces": [{"track": face["track"], "box": face["box"]} for face in frame["faces"]]} for frame in frames]
+    atomic(directory/"tracks.json",{"frames":public_frames,"roles":{str(i):"exclude" for i in range(1,track_id+1)}})
     manifest["approval"],manifest["benchmark"] = None,None
     atomic(directory/"manifest.json",manifest)
     return {"frames":index,"tracks":track_id,"review_directory":str(review_dir)}

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
 
 from swico_video_node import models, storage, templates
+from swico_video_node.templates import _association_score
 from swico_video_node.rights import EvidenceError
 
 
@@ -133,6 +135,51 @@ def test_provenance_uses_bounded_hash_sidecars_without_model_download(local, mon
     assert record["provenance"]["sha256"] == record["sha256"]
 
 
+def test_legacy_crc32_sidecar_is_recorded_without_becoming_model_sha256(local, monkeypatch):
+    monkeypatch.setattr(models, "_fetch_sidecar", lambda name: (models.model_hash_source(name), "a948738e"))
+    report = models.provenance_status(fetch=True)
+    item = next(value for value in report["items"] if value["asset"] == "2dfan4.onnx")
+    assert item["upstream"] == {"algorithm": "crc32", "value": "a948738e", "url": models.model_hash_source("2dfan4.onnx")}
+    assert item["upstream_sha256"] is None and item["matches_local_expected"] is None
+    result = models.record_provenance("2dfan4.onnx", confirm_technical_hash=True)
+    assert result["algorithm"] == "crc32" and result["sha256"] is None
+    record = next(item for item in storage.read(local / "models.json")["assets"] if item["file"] == "2dfan4.onnx")
+    assert record["sha256"] == ""
+    assert record["provenance"]["algorithm"] == "crc32"
+    assert record["provenance"]["value"] == "a948738e"
+
+
+def test_independently_reviewed_sha256_route_is_explicit_and_does_not_download(local, monkeypatch):
+    called = []
+    monkeypatch.setattr(models, "_fetch_sidecar", lambda *_args: called.append(True))
+    digest = "b" * 64
+    result = models.record_expected_sha256("2dfan4.onnx", digest, "fixture reviewer", "2026-09-19", confirm=True)
+    assert result["sha256"] == digest and not called
+    record = next(item for item in storage.read(local / "models.json")["assets"] if item["file"] == "2dfan4.onnx")
+    assert record["sha256"] == digest
+    assert record["provenance"]["expected_sha256"]["source"] == "independent_operator_review"
+    with pytest.raises(EvidenceError, match="provenance_sha256_invalid"):
+        models.record_expected_sha256("2dfan4.onnx", "a948738e", "fixture", "2026-09-19", confirm=True)
+
+
+def test_expected_sha256_can_be_derived_from_local_model_file_without_install(local, tmp_path):
+    model_file = tmp_path / "reviewed-model.onnx"
+    model_file.write_bytes(b"synthetic model bytes; not a real restricted weight")
+    expected = __import__("hashlib").sha256(model_file.read_bytes()).hexdigest()
+    result = models.record_expected_sha256("2dfan4.onnx", None, "fixture reviewer", "2026-09-19",
+                                          confirm=True, model_file=str(model_file))
+    assert result["sha256"] == expected
+    record = next(item for item in storage.read(local / "models.json")["assets"] if item["file"] == "2dfan4.onnx")
+    assert record["provenance"]["expected_sha256"]["source"] == "independent_operator_reviewed_bytes"
+    model_file.write_bytes(b"changed outside worker storage")
+    assert record["sha256"] == expected
+    link = tmp_path / "model-link.onnx"
+    link.symlink_to(model_file)
+    with pytest.raises(EvidenceError, match="evidence_source_symlink"):
+        models.record_expected_sha256("fan_68_5.onnx", None, "fixture reviewer", "2026-09-19",
+                                      confirm=True, model_file=str(link))
+
+
 def test_provenance_rejects_unallowlisted_url_and_oversized_sidecar(local, monkeypatch):
     monkeypatch.setattr(models, "model_hash_source", lambda _name: "http://metadata.invalid/model.hash")
     with pytest.raises(EvidenceError, match="provenance_fetch_failed"):
@@ -149,6 +196,37 @@ def test_provenance_rejects_unallowlisted_url_and_oversized_sidecar(local, monke
         models._fetch_sidecar("2dfan4.onnx")
 
 
+def test_provenance_accepts_fixed_github_cdn_redirect_and_labels_crc32(local, monkeypatch):
+    class Response:
+        headers = {"Content-Length": "8"}
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _limit): return b"a948738e"
+
+    redirect = urllib.error.HTTPError(
+        models.model_hash_source("2dfan4.onnx"), 302, "redirect", {"Location": "https://release-assets.githubusercontent.com/github-production-release-asset/fixture?sig=bounded"}, None,
+    )
+    class Opener:
+        calls = 0
+        def open(self, _request, timeout=0):
+            self.calls += 1
+            if self.calls == 1: raise redirect
+            return Response()
+    opener = Opener()
+    monkeypatch.setattr(models.urllib.request, "build_opener", lambda *_args: opener)
+    url, value = models._fetch_sidecar("2dfan4.onnx")
+    assert url.startswith("https://release-assets.githubusercontent.com/") and value == "a948738e"
+
+
+def test_provenance_rejects_cdn_redirect_to_private_or_downgraded_destination(local, monkeypatch):
+    class Opener:
+        def open(self, _request, timeout=0):
+            raise urllib.error.HTTPError(models.model_hash_source("2dfan4.onnx"), 302, "redirect", {"Location": "http://127.0.0.1/secret"}, None)
+    monkeypatch.setattr(models.urllib.request, "build_opener", lambda *_args: Opener())
+    with pytest.raises(EvidenceError, match="provenance_redirect_invalid"):
+        models._fetch_sidecar("2dfan4.onnx")
+
+
 def test_audit_report_is_actionable_without_private_absolute_paths(local):
     report = models.audit_report()
     encoded = json.dumps(report)
@@ -157,3 +235,40 @@ def test_audit_report_is_actionable_without_private_absolute_paths(local):
     assert str(local) not in encoded
     assert "model_expected_hash_missing" in encoded and "model_bytes_not_installed" in encoded
     assert "template_rights_manifest_missing" in encoded and report["ready"] is False
+
+
+def test_track_correction_is_bounded_atomic_and_invalidates_review(local):
+    directory = storage.template_dir("couple-01")
+    directory.mkdir(parents=True)
+    master = directory / "master.mp4"
+    master.write_bytes(b"permanent master")
+    storage.atomic(directory / "manifest.json", {"id": "couple-01", "rights": {}, "approval": {"old": True}, "benchmark": {"old": True}})
+    storage.atomic(directory / "tracks.json", {"frames": [
+        {"shot": 0, "faces": [{"track": 1, "box": [0, 0, 10, 10]}]},
+        {"shot": 0, "faces": [{"track": 1, "box": [1, 0, 11, 10]}]},
+        {"shot": 1, "faces": [{"track": 1, "box": [30, 0, 40, 10]}]},
+    ], "roles": {"1": "male"}})
+    before = storage.hash_file(master)
+    assert templates.tracks_status("couple-01")["tracks"][0]["frames"] == 3
+    result = templates.correct_tracks("couple-01", "split", 1, at_frame=2)
+    assert result["approval_invalidated"]
+    assert storage.hash_file(master) == before
+    tracks = storage.read(directory / "tracks.json")
+    assert tracks["roles"] == {"1": "male", "2": "exclude"}
+    assert tracks["frames"][2]["faces"][0]["track"] == 2
+    assert storage.read(directory / "manifest.json")["approval"] is None
+    templates.correct_tracks("couple-01", "reassign", 2, role="female")
+    assert storage.read(directory / "tracks.json")["roles"]["2"] == "female"
+    with pytest.raises(Exception, match="template_track_unknown"):
+        templates.correct_tracks("couple-01", "exclude", 99)
+
+
+def test_track_association_uses_local_feature_and_rejects_ambiguous_geometry():
+    prior = {"box": [10, 10, 40, 40], "embedding": [1.0, 0.0, 0.0]}
+    same_identity = _association_score([10, 10, 40, 40], [1.0, 0.0, 0.0], prior)
+    crossing_identity = _association_score([10, 10, 40, 40], [0.0, 1.0, 0.0], prior)
+    assert same_identity > crossing_identity
+    # A human review path must not silently choose between equally plausible
+    # faces; the render/prepare callers apply their documented margin.
+    assert abs(_association_score([10, 10, 40, 40], [1.0, 0.0], {"box": [10, 10, 40, 40], "embedding": None}) -
+               _association_score([10, 10, 40, 40], [0.0, 1.0], {"box": [10, 10, 40, 40], "embedding": None})) < .08

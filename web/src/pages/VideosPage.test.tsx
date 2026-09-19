@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { expect, it, vi } from 'vitest'
 import { VideosPage } from './VideosPage'
@@ -59,4 +59,41 @@ it('keeps validated history visible but refuses purchase while worker setup is u
   expect(await screen.findByText('Job paused-job')).toBeInTheDocument()
   expect(screen.getByText('Use complimentary attempt')).toBeDisabled()
   expect(screen.getByText('Pay ₹25 total for this video')).toBeDisabled()
+})
+
+it('offers resume for one existing checkout without creating a new request', async () => {
+  const checkout = { id: 'checkout-job', state: 'checkout', phase: 'checkout', progress: 0, error: '', funding: 'paid', template_id: 'couple-01', options: { swap: 'male', enhance: 'off', caption: '' }, checkout_expires_at: new Date(Date.now() + 60_000).toISOString() }
+  const calls: string[] = []
+  mock.api.mockImplementation((_user: unknown, path: string, options?: RequestInit) => {
+    calls.push(`${options?.method ?? 'GET'} ${path}`)
+    if (path.endsWith('capabilities')) return Promise.resolve({ available: false, paid_enabled: true, paid_available: false, policy_version: 'v1', consent_version: 'fixture', allowance: { unlimited: false, remaining: 0, reset_at: new Date().toISOString() }, templates: [] })
+    if (path.endsWith('/admit')) return Promise.resolve({ job: checkout, checkout: null })
+    return Promise.resolve({ items: [checkout] })
+  })
+  render(<MemoryRouter><VideosPage /></MemoryRouter>)
+  expect(await screen.findByRole('button', { name: 'Resume payment' })).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Resume payment' }))
+  await waitFor(() => expect(calls.filter(value => value.includes('/admit')).length).toBe(1))
+  expect(calls.filter(value => value === 'POST /api/web/videos/jobs').length).toBe(0)
+})
+
+it('clears a role photo when an invalid replacement is selected', async () => {
+  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: true, enabled: true, paid_enabled: false, policy_version: 'v1', consent_version: 'fixture', allowance: { unlimited: true, remaining: null, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: true }] } : { items: [] }))
+  render(<MemoryRouter><VideosPage /></MemoryRouter>)
+  const input = await screen.findByLabelText('Male role photo') as HTMLInputElement
+  fireEvent.change(input, { target: { files: [new File(['ok'], 'photo.jpg', { type: 'image/jpeg' })] } })
+  expect(input.files).toHaveLength(1)
+  fireEvent.change(input, { target: { files: [] } })
+  expect(input).toBeInvalid()
+  expect(screen.getByText(/non-empty JPEG/)).toBeInTheDocument()
+})
+
+it('supports explicit local photo removal before preflight', async () => {
+  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: true, enabled: true, paid_enabled: false, policy_version: 'v1', consent_version: 'fixture', allowance: { unlimited: true, remaining: null, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: true }] } : { items: [] }))
+  render(<MemoryRouter><VideosPage /></MemoryRouter>)
+  const input = await screen.findByLabelText('Male role photo') as HTMLInputElement
+  fireEvent.change(input, { target: { files: [new File(['ok'], 'photo.jpg', { type: 'image/jpeg' })] } })
+  expect(await screen.findByRole('button', { name: 'Remove male photo' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Remove male photo' }))
+  expect(screen.getByText('Validate photos on Mac (no charge)')).toBeDisabled()
 })

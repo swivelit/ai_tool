@@ -143,6 +143,15 @@ def deliver_one():
         error = type(exc).__name__  # Never log provider bodies, photos, tokens, addresses.
         state = "pending" if kind == "ready_email" else "ambiguous"
     with SessionLocal() as session:
+        # Refund reconciliation follows the same PaymentOrder -> VideoJob ->
+        # VideoOutbox order as webhook fulfillment.  The earlier outbox lease
+        # was committed before the provider call, so it is not held here.
+        order = None
+        job = None
+        if refund_total is not None:
+            job_row = session.get(VideoJob, job_id)
+            order = session.exec(select(PaymentOrder).where(PaymentOrder.id == (job_row.payment_id if job_row else None)).with_for_update()).first()
+            job = session.exec(select(VideoJob).where(VideoJob.id == job_id).with_for_update()).first()
         intent = session.exec(select(VideoOutbox).where(VideoOutbox.id == intent_id).with_for_update()).one()
         # A webhook may have completed it while the POST was in flight.
         if intent.state == "processed":
@@ -153,8 +162,11 @@ def deliver_one():
         intent.due_at = now() + timedelta(seconds=min(120, 15 * 2 ** intent.attempts))
         session.add(intent)
         if refund_total is not None:
-            job = session.get(VideoJob, job_id)
-            order = session.exec(select(PaymentOrder).where(PaymentOrder.id == job.payment_id).with_for_update()).one()
+            if order is None or job is None:
+                intent.state, intent.error = "manual_review", "payment_identity_missing"
+                session.add(intent)
+                session.commit()
+                return
             reverse_credit_for_refund(session, order, refund_total)
             metadata = json.loads(order.metadata_json or "{}")
             metadata["processed_refund_ids"] = sorted(set(metadata.get("processed_refund_ids", [])) | {provider_id})

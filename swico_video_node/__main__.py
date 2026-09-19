@@ -20,7 +20,12 @@ def main():
     p.add_argument("--licence-file",required=True);p.add_argument("--permission-file");p.add_argument("--permission-basis",choices=["applicable_licence"])
     p=sub.add_parser("provenance");provenance_sub=p.add_subparsers(dest="provenance_operation",required=True)
     p=provenance_sub.add_parser("status");p.add_argument("--fetch",action="store_true",help="Explicitly fetch only bounded fixed .hash sidecars; never model weights")
-    p=provenance_sub.add_parser("record");p.add_argument("--asset",required=True);p.add_argument("--confirm-technical-hash",action="store_true")
+    p=provenance_sub.add_parser("record");p.add_argument("--asset",required=True)
+    p.add_argument("--confirm-technical-hash",action="store_true")
+    hash_source=p.add_mutually_exclusive_group()
+    hash_source.add_argument("--sha256",help="Explicit independently reviewed full-model SHA-256; never downloads model bytes")
+    hash_source.add_argument("--model-file",help="Local model file to hash; never installs or uploads the file")
+    p.add_argument("--reviewer");p.add_argument("--reviewed-at",help="YYYY-MM-DD review date for --sha256")
     p=commands.add_parser("templates");sub=p.add_subparsers(dest="operation",required=True)
     for action in ("inspect", "normalize"):
         p=sub.add_parser(action);p.add_argument("--file",required=True)
@@ -30,6 +35,11 @@ def main():
     p=rights_sub.add_parser("add");p.add_argument("--id",choices=["couple-01","couple-02"],required=True);p.add_argument("--reviewer",required=True);p.add_argument("--reviewed-at",required=True)
     p.add_argument("--licence-file",required=True);p.add_argument("--permission-file",required=True)
     p.add_argument("--confirm-video-modification",action="store_true");p.add_argument("--confirm-video-distribution",action="store_true");p.add_argument("--confirm-audio-rights",action="store_true")
+    p=sub.add_parser("tracks");tracks_sub=p.add_subparsers(dest="tracks_operation",required=True)
+    p=tracks_sub.add_parser("status");p.add_argument("--id",choices=["couple-01","couple-02"],required=True)
+    p=tracks_sub.add_parser("reassign");p.add_argument("--id",choices=["couple-01","couple-02"],required=True);p.add_argument("--track",type=int,required=True);p.add_argument("--role",choices=["male","female","exclude"],required=True)
+    p=tracks_sub.add_parser("exclude");p.add_argument("--id",choices=["couple-01","couple-02"],required=True);p.add_argument("--track",type=int,required=True)
+    p=tracks_sub.add_parser("split");p.add_argument("--id",choices=["couple-01","couple-02"],required=True);p.add_argument("--track",type=int,required=True);p.add_argument("--at-frame",type=int,required=True)
     for action in ("import","prepare","review"):
         p=sub.add_parser(action);p.add_argument("--id",choices=["couple-01","couple-02"],required=True)
         if action=="import":
@@ -65,11 +75,17 @@ def main():
                     with exclusive():
                         result=add_evidence(args.asset,args.reviewer,args.reviewed_at,args.licence_file,args.permission_file,args.permission_basis)
             elif args.operation=="provenance":
-                from .models import provenance_status, record_provenance
+                from .models import provenance_status, record_expected_sha256, record_provenance
                 if args.provenance_operation=="status": result=provenance_status(fetch=args.fetch)
                 else:
                     from .storage import exclusive
-                    with exclusive(): result=record_provenance(args.asset,confirm_technical_hash=args.confirm_technical_hash)
+                    with exclusive():
+                        if args.sha256 or args.model_file:
+                            if not args.reviewer or not args.reviewed_at:
+                                raise ValueError("--reviewer and --reviewed-at are required with --sha256 or --model-file")
+                            result=record_expected_sha256(args.asset,args.sha256,args.reviewer,args.reviewed_at,confirm=args.confirm_technical_hash,model_file=args.model_file)
+                        else:
+                            result=record_provenance(args.asset,confirm_technical_hash=args.confirm_technical_hash)
             else:
                 from .storage import exclusive
                 with exclusive(): result=install()
@@ -91,6 +107,12 @@ def main():
                                                     confirm_video_modification=args.confirm_video_modification,
                                                     confirm_video_distribution=args.confirm_video_distribution,
                                                     confirm_audio_rights=args.confirm_audio_rights)
+            elif args.operation=="tracks":
+                if args.tracks_operation=="status": result=templates.tracks_status(args.id)
+                else:
+                    from .storage import exclusive
+                    with exclusive():
+                        result=templates.correct_tracks(args.id,args.tracks_operation,args.track,role=getattr(args,"role",None),at_frame=getattr(args,"at_frame",None))
             elif args.operation=="publish":
                 from .worker import Api
                 result=templates.publish(Api())

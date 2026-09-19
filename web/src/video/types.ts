@@ -1,6 +1,6 @@
 export type VideoJob = {
   id: string; template_id: string; state: string; phase: string; progress: number;
-  error: string; funding: string; thread_id: string | null; expires_at: string | null;
+  error: string; funding: string; thread_id: string | null; expires_at: string | null; checkout_expires_at?: string | null;
   queue_position: number | null; eta_seconds: [number, number] | null; paused: boolean;
   refund_status: string | null; notification_status?: string | null; provenance_id?: string; options: { swap: string; enhance: string; caption: string };
 }

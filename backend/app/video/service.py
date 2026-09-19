@@ -215,6 +215,10 @@ def fulfill_video(session: Session, order: PaymentOrder):
 
 
 def video_refund(session: Session, order: PaymentOrder, total: int) -> int:
+    # Refund state uses one lock order everywhere: PaymentOrder -> VideoJob ->
+    # VideoOutbox.  The external provider call is always outside this DB
+    # transaction; this only protects the durable result bookkeeping.
+    order = session.exec(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update()).one()
     order.refunded_amount_paise = max(order.refunded_amount_paise, min(total, order.gross_amount_paise))
     order.status = "refunded" if order.refunded_amount_paise == order.gross_amount_paise else "partially_refunded"
     order.updated_at = now()
@@ -222,7 +226,10 @@ def video_refund(session: Session, order: PaymentOrder, total: int) -> int:
         order.refunded_at = now()
     job = session.exec(select(VideoJob).where(VideoJob.payment_id == order.id).with_for_update()).one()
     job.state, job.fence, job.lease_until = "refunded" if order.status == "refunded" else "refund_pending", "", None
-    intent = outbox(session, job, "refund")
+    intent = session.exec(select(VideoOutbox).where(VideoOutbox.job_id == job.id, VideoOutbox.kind == "refund").with_for_update()).first()
+    if intent is None:
+        intent = VideoOutbox(job_id=job.id, kind="refund")
+        session.add(intent)
     intent.state = "processed" if order.status == "refunded" else "manual_review"
     session.add(intent)
     session.add(job)
@@ -247,6 +254,9 @@ def public_job(session: Session, job: VideoJob) -> dict:
             durations.append((max(0, min(values) - remaining), max(0, max(values) * 1.3 - remaining)))
     refund = session.exec(select(VideoOutbox).where(VideoOutbox.job_id == job.id, VideoOutbox.kind == "refund")).first()
     email = session.exec(select(VideoOutbox).where(VideoOutbox.job_id == job.id, VideoOutbox.kind == "ready_email")).first()
+    checkout_expires_at = None
+    if job.state == "checkout" and job.admitted_at:
+        checkout_expires_at = (utc(job.admitted_at) + timedelta(seconds=300)).isoformat()
     return {"id": job.id, "template_id": job.template_id, "state": state, "phase": job.phase, "progress": job.progress,
             "error": job.error, "funding": job.funding, "thread_id": job.thread_id, "options": json.loads(job.options_json),
             "provenance_id": provenance_id(job.id),
@@ -254,4 +264,5 @@ def public_job(session: Session, job: VideoJob) -> dict:
             "eta_seconds": [round(sum(x[i] for x in durations)+(busy_seconds if i else 0)) for i in (0, 1)] if durations and row and healthy(row) and job.state in {"queued", "processing"} else None,
             "eta_confidence": "calibrated_range_not_SLA" if durations else "calibrating", "paused": not (row and healthy(row)),
             "expires_at": utc(job.expires_at).isoformat() if job.expires_at else None,
+            "checkout_expires_at": checkout_expires_at,
             "refund_status": refund.state if refund else None, "notification_status": email.state if email else None}

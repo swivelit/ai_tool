@@ -130,7 +130,7 @@ The operator workflow is command-driven and never requires editing private JSON.
 Use the installed worker interpreter and real documents selected locally:
 
 ```bash
-VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$PWD/.venv-video/bin/python}"
 "$VIDEO_PYTHON" -m swico_video_node models evidence status
 "$VIDEO_PYTHON" -m swico_video_node models provenance status
 "$VIDEO_PYTHON" -m swico_video_node templates rights status --id couple-01
@@ -146,18 +146,33 @@ weights always require separate actual right-holder permission evidence; an
 an expected-byte check and never a commercial grant.
 
 For each fixed model, explicitly retrieve the bounded upstream technical sidecar
-and record it only after review:
+and record it only after review. The legacy FaceFusion sidecar is CRC32, not a
+full-model SHA-256; the output labels that distinction:
 
 ```bash
 "$VIDEO_PYTHON" -m swico_video_node models provenance status --fetch
 "$VIDEO_PYTHON" -m swico_video_node models provenance record --asset 2dfan4.onnx --confirm-technical-hash
 ```
 
-Repeat for the complete inventory, then run `models audit`. Missing technical files
+If an independently reviewed full-model SHA-256 is available, record it explicitly:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models provenance record \
+  --asset 2dfan4.onnx --model-file "$(osascript -e 'POSIX path of (choose file with prompt "Choose the independently reviewed model file")')" \
+  --reviewer "$REVIEWER" --reviewed-at "$REVIEWED_AT" --confirm-technical-hash
+```
+
+This hashes the selected local file and never installs or uploads it. The direct
+`--sha256` form is also supported for an already independently verified digest;
+never invent one or substitute a CRC32 sidecar. Repeat for the complete inventory only with real
+evidence, then run `models audit`. Missing technical files
 remain separate from missing commercial permission. Original video/audio rights,
 source-adult consent, human track review and result QA are additional independent
 requirements. Neither owner legal-page attestation nor a code licence supplies
-those rights.
+those rights. For crossings, occlusions, shot cuts or re-entry, use the bounded
+`templates tracks status`, `reassign`, `exclude` or `split --at-frame` commands
+instead of editing `tracks.json`; every correction invalidates the old approval
+and benchmark.
 
 Pinned source inspected:
 `03d49d0c7de095a41628a74d94a146214f82837a` (FaceFusion 3.0.1).

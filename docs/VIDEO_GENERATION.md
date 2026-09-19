@@ -90,7 +90,11 @@ and audio modification/distribution rights require separate evidence. Counsel
 must assess the complete pipeline; no alternative weights are automatically cleared.
 
 Templates are imported locally. `prepare` detects cuts and associates detections
-within shots by spatial overlap, producing annotated frames and editable tracks.
+within shots using bounded box motion plus local face features, with an ambiguity
+stop rather than a confident guess. It produces annotated frames and editable
+tracks. Use `templates tracks status`, `reassign`, `exclude` or `split` for
+crossings, re-entry and occlusion corrections; these commands are local,
+atomic, never change `master.mp4`, and invalidate approval/calibration.
 `review` requires explicit male/female/exclude labels and per-frame review; these
 are reviewed role tracks, not performer names or identity recognition. Bad joins
 must be split/corrected locally before approval. Background tracks default exclude.

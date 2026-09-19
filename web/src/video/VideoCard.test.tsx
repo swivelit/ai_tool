@@ -50,3 +50,9 @@ it('ignores a stale status response after switching jobs', async () => {
   await act(async () => resolve(job))
   await waitFor(() => expect(screen.getByText('new job failure')).toBeInTheDocument())
 })
+
+it('shows processing ETA independently of queue position', async () => {
+  mock.api.mockResolvedValue({ ...job, state: 'processing', phase: 'rendering', queue_position: null, eta_seconds: [61, 121], paused: false })
+  render(<VideoCard jobId="job1" />)
+  expect(await screen.findByText(/Estimated 2–3 minutes/)).toBeInTheDocument()
+})

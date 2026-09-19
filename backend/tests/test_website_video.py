@@ -475,6 +475,32 @@ def test_capabilities_distinguish_configured_paid_from_effectively_available(vid
     assert capabilities["available"] is False
 
 
+def test_existing_checkout_can_be_resumed_while_new_admission_is_paused(video, monkeypatch):
+    client, _, _, _ = video
+    job_id, _, _ = paid_fixture(video, monkeypatch)
+    monkeypatch.setenv("SWICO_VIDEO_ENABLED", "false")
+    resumed = client.post(f"/api/web/videos/jobs/{job_id}/admit", json={"funding": "paid"})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["job"]["state"] == "checkout"
+    assert resumed.json()["checkout"]["provider_order_id"] == "order_video"
+
+
+def test_expired_checkout_is_not_reopened_or_reordered(video, monkeypatch):
+    client, _, _, _ = video
+    job_id, _, _ = paid_fixture(video, monkeypatch)
+    with SessionLocal() as session:
+        row = session.get(VideoJob, job_id)
+        row.admitted_at = now() - timedelta(seconds=301)
+        session.add(row)
+        session.commit()
+    resumed = client.post(f"/api/web/videos/jobs/{job_id}/admit", json={"funding": "paid"})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["checkout"] is None
+    assert resumed.json()["job"]["state"] == "failed"
+    with SessionLocal() as session:
+        assert len(session.exec(select(PaymentOrder)).all()) == 1
+
+
 def test_exhausted_allowance_does_not_extend_unpaid_photo_ttl(video,monkeypatch):
     client,_,_,store=video
     job=create(client)

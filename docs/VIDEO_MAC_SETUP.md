@@ -88,7 +88,7 @@ If native Python 3.12 and supported tools are **already** deliberately installed
 through another route, MacPorts is not mandatory:
 
 ```bash
-VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$PWD/.venv-video/bin/python}"
 bash swico_video_node/scripts/setup_macos.sh --check --python "$VIDEO_PYTHON"
 ```
 
@@ -409,7 +409,7 @@ document or call a provider. Use a Finder picker so a literal example path canno
 mistaken for a real command:
 
 ```bash
-VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$HOME/Library/Application Support/SwicoVideo/.venv-video/bin/python}"
+VIDEO_PYTHON="${SWICO_VIDEO_PYTHON:-$PWD/.venv-video/bin/python}"
 LICENCE_FILE="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine model licence evidence")')"
 PERMISSION_FILE="$(osascript -e 'POSIX path of (choose file with prompt "Choose the genuine commercial permission evidence")')"
 printf 'Enter the real accountable reviewer name or role: '; read -r REVIEWER
@@ -441,9 +441,12 @@ Check bounded local status at any time:
 ```
 
 FaceFusion 3.0.1 uses a fixed adjacent `.hash` release sidecar for each exact
-`.onnx` source. Provenance is technical only. The read-only status command does
-not contact the network; `--fetch` explicitly retrieves only small HTTPS sidecars
-from the pinned GitHub path and never downloads model bytes:
+`.onnx` source. The pinned legacy sidecars use FaceFusion's CRC32 format (for
+example `a948738e` for `2dfan4`), not a padded SHA-256. Some newer sidecars may
+be full SHA-256 and the command labels the algorithm. Provenance is technical
+only. The read-only status command does not contact the network; `--fetch`
+explicitly retrieves only small HTTPS sidecars from the pinned GitHub path and
+never downloads model bytes:
 
 ```bash
 "$VIDEO_PYTHON" -m swico_video_node models provenance status
@@ -451,15 +454,31 @@ from the pinned GitHub path and never downloads model bytes:
 ```
 
 After independently reviewing that the sidecar belongs to the pinned source,
-record one asset at a time with an explicit acknowledgement. This writes only the
-technical expected SHA-256; it does not write rights evidence or legal approval:
+record its algorithm-labelled technical provenance with an explicit
+acknowledgement. A CRC32 sidecar is recorded as CRC32 and cannot satisfy the
+full-model SHA-256 install gate:
 
 ```bash
 "$VIDEO_PYTHON" -m swico_video_node models provenance record \
   --asset 2dfan4.onnx --confirm-technical-hash
 ```
 
-Repeat for all nine assets. Then run the strict audit. Its blockers name the next
+If a real reviewer has independently inspected the complete model bytes and
+recorded a genuine full-model SHA-256, the safer novice route is to choose the
+local model file directly. This computes the digest without copying, installing,
+uploading or downloading model bytes:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node models provenance record \
+  --asset 2dfan4.onnx --model-file "$(osascript -e 'POSIX path of (choose file with prompt "Choose the independently reviewed model file")')" \
+  --reviewer "$REVIEWER" --reviewed-at "$REVIEWED_AT" \
+  --confirm-technical-hash
+```
+
+The direct `--sha256` form is available for a reviewer who already has a
+verified digest, but never paste a guess or a sidecar CRC32 value. If the
+independent full-model SHA-256 is unavailable, leave the asset blocked. Repeat
+for all nine assets only when evidence exists. Then run the strict audit. Its blockers name the next
 command or missing real-world evidence and do not print private source paths:
 
 ```bash
@@ -491,6 +510,21 @@ guaranteed by resolved wheels. Only after success run:
 .venv-video/bin/python -m swico_video_node templates prepare --id couple-02
 ```
 Require the same checkpoint for the second template before reviewing either.
+
+Inspect and correct ambiguous local tracks without editing JSON by hand:
+
+```bash
+.venv-video/bin/python -m swico_video_node templates tracks status --id couple-01
+.venv-video/bin/python -m swico_video_node templates tracks reassign --id couple-01 --track 2 --role female
+.venv-video/bin/python -m swico_video_node templates tracks exclude --id couple-01 --track 3
+.venv-video/bin/python -m swico_video_node templates tracks split --id couple-01 --track 1 --at-frame 180
+```
+
+Use `status` first. `split` creates a new excluded track at the selected decoded
+frame; reassign it only after inspecting the annotated frames. These commands are
+local, bounded and atomic. They never alter `master.mp4`; every correction
+invalidates template approval and calibration, so `review` and a real benchmark
+must be repeated. No role is inferred from gender or demographics.
 
 Initial masters: CFR, even 64–1920px, 1–30sec, 1–60fps. Caption: printable ASCII,
 100 characters. Unsupported input/options are rejected before checkout.

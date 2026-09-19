@@ -21,7 +21,7 @@ def local(tmp_path,monkeypatch):
     ["models","provenance","status","--help"],["models","provenance","record","--help"],
     ["templates","import","--help"],["templates","prepare","--help"],["templates","review","--help"],
     ["templates","rights","status","--help"],["templates","rights","add","--help"],
-    ["templates","publish","--help"],["benchmark","--help"],["doctor","--help"],["run","--help"],
+    ["templates","publish","--help"],["templates","tracks","--help"],["benchmark","--help"],["doctor","--help"],["run","--help"],
     ["service","--help"],["rotate-token","--help"],
 ])
 def test_required_runnable_commands(arguments):

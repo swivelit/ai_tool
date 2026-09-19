@@ -5,13 +5,16 @@ permission remains an independent, operator/counsel-owned gate.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
+import hashlib
+import os
 import re
+import stat
 import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from .rights import EvidenceError, backup_json, evidence_file_status, store_document, validate_review_metadata
 from .storage import ENGINE_COMMIT, TEMPLATES, atomic, canonical, digest, hash_file, read, root, template_dir
@@ -21,6 +24,9 @@ MODEL_HOST = "github.com"
 MODEL_RELEASE_TAG = "models-3.0.0"
 MODEL_RELEASE_BASE = f"https://{MODEL_HOST}/facefusion/facefusion-assets/releases/download/{MODEL_RELEASE_TAG}"
 PROVENANCE_MAX_BYTES = 16 * 1024
+MODEL_MAX_BYTES = 1024 * 1024 * 1024
+PROVENANCE_MAX_REDIRECTS = 3
+PROVENANCE_HOSTS = frozenset({"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"})
 RESTRICTED_ASSETS = frozenset({"inswapper_128.onnx", "arcface_w600k_r50.onnx", "retinaface_10g.onnx"})
 
 ASSETS = {
@@ -41,7 +47,7 @@ _NEXT = {
     "permission_evidence_missing": "Import genuine separate commercial permission evidence with models evidence add.",
     "licence_evidence_missing": "Import the applicable genuine licence evidence with models evidence add.",
     "restricted_permission_required": "Restricted weights require actual right-holder commercial permission; a licence keyword is not a grant.",
-    "model_expected_hash_missing": "Run models provenance status --fetch, then explicitly record the fixed upstream sidecar with provenance record.",
+    "model_expected_hash_missing": "Obtain an independently reviewed full-model SHA-256 and record it with models provenance record --sha256; a legacy CRC32 sidecar is not a model SHA-256.",
     "model_bytes_not_installed": "After evidence and technical review pass, explicitly run models install --profile quality-cpu.",
     "model_bytes_hash_mismatch": "Stop; investigate the installed bytes against the reviewed technical hash.",
     "model_source_unreviewed": "Review the pinned FaceFusion source and record fixed provenance; do not substitute another URL.",
@@ -205,8 +211,9 @@ def audit(*, require_files=True):
         evidence(asset, restricted=name in RESTRICTED_ASSETS)
         if asset.get("source") != model_source(name) or not re.fullmatch(r"[a-f0-9]{64}", asset.get("sha256", "")):
             raise ValueError("Reviewed upstream source and actual SHA-256 required: " + name)
-        provenance = asset.get("provenance")
-        if provenance and provenance.get("sha256") and provenance.get("sha256") != asset.get("sha256"):
+        provenance = asset.get("provenance") or {}
+        expected = provenance.get("expected_sha256")
+        if expected and expected.get("value") != asset.get("sha256"):
             raise ValueError("Technical provenance does not match expected SHA-256: " + name)
         if require_files:
             path = root() / "engine/facefusion/.assets/models" / name
@@ -299,33 +306,87 @@ def audit_report():
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
+    def redirect_request(self, req, fp, code, msg, headers, newurl=None):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+def _allowed_resource_url(name: str, url: str) -> bool:
+    """Allow only the fixed FaceFusion release asset and its GitHub CDN hop."""
+    if name not in ASSETS:
+        return False
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.hostname not in PROVENANCE_HOSTS or port not in (None, 443):
+        return False
+    fixed = urlsplit(model_source(name))
+    if parsed.hostname == MODEL_HOST:
+        return not parsed.query and (parsed.path == fixed.path or parsed.path == urlsplit(model_hash_source(name)).path)
+    # GitHub release assets use an opaque, signed path.  The host is fixed and
+    # the redirect is followed only from the fixed github.com URL, never from
+    # an operator-supplied URL.
+    return parsed.hostname in {"release-assets.githubusercontent.com", "objects.githubusercontent.com"} and bool(parsed.path)
+
+
+def _open_fixed_resource(name: str, url: str, *, timeout: int = 10):
+    if not _allowed_resource_url(name, url):
         raise EvidenceError("provenance_fetch_failed")
+    opener = urllib.request.build_opener(_NoRedirect())
+    current = url
+    for _ in range(PROVENANCE_MAX_REDIRECTS + 1):
+        request = urllib.request.Request(current, headers={"Accept": "application/octet-stream, text/plain", "User-Agent": "swico-video-provenance/2"})
+        try:
+            return current, opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                raise
+            location = exc.headers.get("Location")
+            exc.close()
+            if not location:
+                raise EvidenceError("provenance_redirect_invalid")
+            next_url = urljoin(current, location)
+            if not _allowed_resource_url(name, next_url):
+                raise EvidenceError("provenance_redirect_invalid")
+            current = next_url
+    raise EvidenceError("provenance_redirect_limit")
+
+
+def _bounded_response(response, limit: int) -> bytes:
+    length = response.headers.get("Content-Length")
+    if length and (not length.isdigit() or int(length) > limit):
+        raise EvidenceError("provenance_response_invalid")
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise EvidenceError("provenance_response_invalid")
+    return body
+
+
+def _sidecar_details(name: str) -> tuple[str, str, str]:
+    """Return final URL, algorithm and the upstream sidecar value."""
+    url = model_hash_source(name)
+    try:
+        final_url, response = _open_fixed_resource(name, url)
+        with response:
+            body = _bounded_response(response, PROVENANCE_MAX_BYTES)
+        value = body.decode("ascii").strip()
+        if re.fullmatch(r"[a-fA-F0-9]{8}", value):
+            return final_url, "crc32", value.lower()
+        if re.fullmatch(r"[a-fA-F0-9]{64}", value):
+            return final_url, "sha256", value.lower()
+        raise EvidenceError("provenance_response_invalid")
+    except EvidenceError:
+        raise
+    except (OSError, UnicodeError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
+        raise EvidenceError("provenance_fetch_failed") from None
 
 
 def _fetch_sidecar(name: str) -> tuple[str, str]:
-    url = model_hash_source(name)
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.netloc != MODEL_HOST or not re.fullmatch(r"/facefusion/facefusion-assets/releases/download/models-3\.0\.0/[a-z0-9_.-]+\.hash", parsed.path):
-        raise EvidenceError("provenance_fetch_failed")
-    try:
-        request = urllib.request.Request(url, headers={"Accept": "text/plain", "User-Agent": "swico-video-provenance/1"})
-        opener = urllib.request.build_opener(_NoRedirect())
-        with opener.open(request, timeout=10) as response:
-            length = response.headers.get("Content-Length")
-            if length and (not length.isdigit() or int(length) > PROVENANCE_MAX_BYTES):
-                raise EvidenceError("provenance_response_invalid")
-            body = response.read(PROVENANCE_MAX_BYTES + 1)
-        if len(body) > PROVENANCE_MAX_BYTES:
-            raise EvidenceError("provenance_response_invalid")
-        match = re.fullmatch(r"\s*([a-fA-F0-9]{64})\s*", body.decode("ascii"))
-        if not match:
-            raise EvidenceError("provenance_response_invalid")
-        return url, match.group(1).lower()
-    except EvidenceError:
-        raise
-    except (OSError, UnicodeError, ValueError, urllib.error.URLError):
-        raise EvidenceError("provenance_fetch_failed") from None
+    final_url, _algorithm, value = _sidecar_details(name)
+    return final_url, value
 
 
 def provenance_status(*, fetch=False):
@@ -338,16 +399,21 @@ def provenance_status(*, fetch=False):
     for name in ASSETS:
         record = records.get(name, {})
         item = {"asset": name, "source": model_source(name), "sidecar": model_hash_source(name),
-                "local_expected_sha256": record.get("sha256") or None, "technical_only": True}
+                "local_expected_sha256": record.get("sha256") or None, "technical_only": True,
+                "commercial_authorization": "not inferred"}
         if fetch:
             try:
-                _, upstream = _fetch_sidecar(name)
-                item["upstream_sha256"] = upstream
-                item["matches_local_expected"] = bool(record.get("sha256") == upstream)
+                final_url, upstream = _fetch_sidecar(name)
+                algorithm = "crc32" if len(upstream) == 8 else "sha256"
+                item["upstream"] = {"algorithm": algorithm, "value": upstream, "url": final_url}
+                item["upstream_sha256"] = upstream if algorithm == "sha256" else None
+                item["upstream_crc32"] = upstream if algorithm == "crc32" else None
+                item["matches_local_expected"] = None if algorithm != "sha256" else bool(record.get("sha256") == upstream)
             except EvidenceError as exc:
                 item["error"] = exc.code
         else:
             item["upstream_sha256"] = None
+            item["upstream_crc32"] = None
             item["fetch"] = "Pass --fetch to retrieve only this bounded .hash sidecar; ONNX bytes are never downloaded."
         items.append(item)
     return {"scheme": "facefusion_hash_sidecar", "release_tag": MODEL_RELEASE_TAG, "items": items,
@@ -366,14 +432,98 @@ def record_provenance(asset: str, *, confirm_technical_hash: bool):
         record = _asset_record(manifest, asset)
         if not record:
             raise EvidenceError("model_asset_unknown")
-        record["sha256"] = upstream
-        record["provenance"] = {"scheme": "facefusion_hash_sidecar", "url": url, "sha256": upstream,
-                                 "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                                 "technical_only": True}
+        algorithm = "crc32" if len(upstream) == 8 else "sha256"
+        provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+        provenance.update({"scheme": "facefusion_hash_sidecar", "url": url, "algorithm": algorithm,
+                           "value": upstream, "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                           "technical_only": True, "commercial_authorization": "not inferred"})
+        if algorithm == "sha256":
+            current = record.get("sha256", "")
+            if current and current != upstream:
+                raise EvidenceError("provenance_sha256_conflict")
+            record["sha256"] = upstream
+            # Retain the historical field for older local reports while the
+            # algorithm-labelled fields above remain authoritative.
+            provenance["sha256"] = upstream
+            provenance["expected_sha256"] = {"algorithm": "sha256", "value": upstream, "source": "fixed_upstream_sidecar"}
+        record["provenance"] = provenance
         backup = backup_json(path, "models")
         atomic(path, manifest)
-        return {"updated": True, "asset": asset, "sha256": upstream, "backup": bool(backup),
+        return {"updated": True, "asset": asset, "sha256": upstream if algorithm == "sha256" else None,
+                "algorithm": algorithm, "upstream_value": upstream, "backup": bool(backup),
                 "technical_only": True, "legal_authorization": "not supplied by this command"}
+    except EvidenceError:
+        raise
+    except (OSError, ValueError, KeyError):
+        raise EvidenceError("model_evidence_update_failed") from None
+
+
+def _local_model_sha256(source_name: str) -> str:
+    """Hash an operator-supplied model file without copying or installing it."""
+    try:
+        source = Path(source_name).expanduser()
+        absolute = Path(os.path.abspath(source))
+        if any(part.is_symlink() for part in (absolute, *absolute.parents)):
+            raise EvidenceError("evidence_source_symlink")
+        resolved = absolute.resolve(strict=True)
+        info = resolved.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise EvidenceError("evidence_source_not_regular")
+        if not 1 <= info.st_size <= MODEL_MAX_BYTES:
+            raise EvidenceError("evidence_source_size_invalid")
+        descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        result = hashlib.sha256()
+        total = 0
+        with os.fdopen(descriptor, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                total += len(chunk)
+                if total > MODEL_MAX_BYTES:
+                    raise EvidenceError("evidence_source_size_invalid")
+                result.update(chunk)
+        if total != info.st_size:
+            raise EvidenceError("evidence_source_changed")
+        return result.hexdigest()
+    except EvidenceError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        raise EvidenceError("evidence_source_missing") from None
+
+
+def record_expected_sha256(asset: str, value: str | None, reviewer: str, reviewed_at: str, *, confirm: bool,
+                           model_file: str | None = None):
+    """Record an independently reviewed full-model SHA-256; never downloads bytes."""
+    if asset not in ASSETS:
+        raise EvidenceError("provenance_asset_unknown")
+    if not confirm:
+        raise EvidenceError("provenance_confirmation_required")
+    if model_file:
+        if value:
+            raise EvidenceError("provenance_sha256_invalid")
+        value = _local_model_sha256(model_file)
+    if not re.fullmatch(r"[a-fA-F0-9]{64}", value or ""):
+        raise EvidenceError("provenance_sha256_invalid")
+    reviewer, reviewed_at = validate_review_metadata(reviewer, reviewed_at)
+    path = root() / "models.json"
+    try:
+        manifest = read(path)
+        record = _asset_record(manifest, asset)
+        if not record:
+            raise EvidenceError("model_asset_unknown")
+        current = record.get("sha256", "")
+        normalized = value.lower()
+        if current and current != normalized:
+            raise EvidenceError("provenance_sha256_conflict")
+        record["sha256"] = normalized
+        provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+        provenance["expected_sha256"] = {"algorithm": "sha256", "value": normalized,
+                                          "source": "independent_operator_reviewed_bytes" if model_file else "independent_operator_review",
+                                          "reviewer": reviewer,
+                                          "reviewed_at": reviewed_at, "technical_only": True}
+        record["provenance"] = provenance
+        backup = backup_json(path, "models")
+        atomic(path, manifest)
+        return {"updated": True, "asset": asset, "sha256": normalized, "backup": bool(backup),
+                "technical_only": True, "commercial_authorization": "not inferred"}
     except EvidenceError:
         raise
     except (OSError, ValueError, KeyError):
@@ -391,13 +541,16 @@ def install():
         target = destination / asset["file"]
         if target.exists() and hash_file(target) == asset["sha256"]:
             continue
+        if target.is_symlink():
+            raise ValueError("Model destination is a symlink")
         temporary = target.with_suffix(".download")
         try:
-            with urllib.request.urlopen(asset["source"], timeout=60) as response, temporary.open("wb") as out:
+            _final_url, response = _open_fixed_resource(asset["file"], asset["source"], timeout=60)
+            with response, temporary.open("wb") as out:
                 total = 0
                 while chunk := response.read(1024 * 1024):
                     total += len(chunk)
-                    if total > 1024 ** 3:
+                    if total > MODEL_MAX_BYTES:
                         raise ValueError("Model download exceeds bound")
                     out.write(chunk)
             if hash_file(temporary) != asset["sha256"]:

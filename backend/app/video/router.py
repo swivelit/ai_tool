@@ -190,13 +190,20 @@ def preflight(job_id: str, session: Session = Depends(get_session), auth: AuthUs
 @router.post("/jobs/{job_id}/admit")
 def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = svc.owner(session, auth)
-    control = svc.admission(session,templates_required=False)
     job = svc.owned_job(session, user.id, job_id)
+    if job.state == "checkout" and job.admitted_at and (now() - svc.utc(job.admitted_at)).total_seconds() > 300:
+        # Never create a second provider order for a dismissed/expired hold.
+        # If a late capture is later observed, the existing refund path handles
+        # it; an unpaid hold becomes a visible terminal failure now.
+        svc.fail(session, job, "checkout_expired", infrastructure=True)
+        session.commit()
+        return {"job": svc.public_job(session, job), "checkout": None}
     if job.state in svc.ACTIVE:
         if (payload.funding == "paid") != (job.funding == "paid"):
             raise HTTPException(409, "Funding choice changed")
         order = session.get(PaymentOrder, job.payment_id) if job.payment_id else None
         return {"job": svc.public_job(session, job), "checkout": checkout(order) if order and order.provider_order_id else None}
+    control = svc.admission(session,templates_required=False)
     if job.state != "validated" or svc.utc(job.deadline) <= now():
         raise HTTPException(409, "A current successful Mac preflight is required")
     if not svc.consent_current(json.loads(job.frozen_json)):

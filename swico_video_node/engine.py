@@ -108,7 +108,7 @@ class Engine:
 
     def render(self, template_id: str, paths: dict, options: dict, output: Path, progress=lambda *_:None, provenance: str | None = None):
         from PIL import Image, ImageDraw, ImageFont
-        from .templates import approved
+        from .templates import _association_score, approved
         from .provenance import draw_disclosure, metadata_args, provenance_id, verify_output
         manifest = approved(template_id)
         directory = template_dir(template_id)
@@ -132,6 +132,10 @@ class Engine:
                     if len(error_tail)>8192: del error_tail[:-8192]
         reader=threading.Thread(target=drain_errors,daemon=True);reader.start()
         start = time.monotonic()
+        # Keep the last observed local face feature for each human-reviewed
+        # template track. Geometry remains the primary constraint; features
+        # help with crossings and short re-entry, but never infer a role.
+        track_history = {}
         try:
             for index in range(meta["frames"]):
                 success, original = cap.read()
@@ -146,11 +150,19 @@ class Engine:
                     role = tracks["roles"].get(str(target_info["track"]), "exclude")
                     if role not in source:
                         continue
-                    matches = [(iou(target_info["box"], f.bounding_box), i, f) for i,f in enumerate(faces)]
-                    score, face_index, face = max(matches, default=(0,-1,None), key=lambda x:x[0])
-                    if score < .65 or face_index in used:
+                    prior = track_history.get(str(target_info["track"]), {"box": target_info["box"], "embedding": None})
+                    matches = [(_association_score(target_info["box"], getattr(candidate, "normed_embedding", None), prior), i, candidate)
+                               for i, candidate in enumerate(faces) if i not in used]
+                    matches.sort(key=lambda item: item[0], reverse=True)
+                    score, face_index, face = matches[0] if matches else (0, -1, None)
+                    ambiguous = len(matches) > 1 and score - matches[1][0] < .08
+                    if score < .42 or ambiguous or face_index in used:
                         raise ValueError("template_changed")
                     used.add(face_index)
+                    track_history[str(target_info["track"])] = {
+                        "box": [float(value) for value in face.bounding_box],
+                        "embedding": getattr(face, "normed_embedding", None),
+                    }
                     changed = self.swapper.swap_face(source[role], face, original.copy())
                     if options["enhance"] == "natural":
                         changed = self.enhancer.enhance_face(face, changed)

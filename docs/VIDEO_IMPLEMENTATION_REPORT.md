@@ -13,11 +13,14 @@ adds local-only operator tooling rather than asking a novice to edit
   and oversized documents are rejected. The tool never interprets a licence or
   creates a legal grant.
 - FaceFusion's pinned model implementation uses adjacent fixed `.hash` release
-  sidecars. `models provenance status` is local/read-only by default;
-  `--fetch` retrieves only bounded HTTPS sidecars from the fixed GitHub path, and
-  `provenance record --confirm-technical-hash` is an explicit technical-only
-  acknowledgement. It never downloads ONNX bytes and cannot set commercial
-  permission.
+  sidecars. The legacy sidecar contract is CRC32 (for example `a948738e`), while
+  any full SHA-256 is labelled separately. `models provenance status` is
+  local/read-only by default; `--fetch` retrieves only bounded HTTPS sidecars
+  from the fixed GitHub path, and `provenance record --confirm-technical-hash`
+  records technical provenance without downloading ONNX bytes or granting
+  commercial permission. Independently reviewed full-model SHA-256 evidence is
+  recorded only through the explicit `--model-file` (or already reviewed
+  `--sha256`) route with reviewer/date metadata.
 - `templates rights status/add` supports only `couple-01` and `couple-02`, requires
   genuine licence/permission evidence and explicit video-modification,
   resulting-video-distribution and audio-rights assertions. It invalidates
@@ -29,6 +32,31 @@ adds local-only operator tooling rather than asking a novice to edit
 
 These changes do not publish templates, install restricted weights, charge, email,
 call a provider, change Render configuration or change weekly credits.
+
+## Follow-up workflow hardening — actual checkout `1a6297f1`
+
+This follow-up preserves the deployed `20260918_website_video` schema and adds no
+migration. The exact fixed FaceFusion sidecar is now read as algorithm-labelled
+technical provenance: the legacy eight-hex CRC32 value cannot be padded or used
+as a model SHA-256, while a complete independently reviewed model SHA-256 has a
+separate explicit recording route. Fixed GitHub release redirects are bounded to
+HTTPS GitHub release hosts; model bytes are never downloaded by status commands.
+
+The website now exposes the effective paid-availability distinction, resumes the
+same unexpired checkout order, closes expired holds without making another order,
+keeps owner control during admission pauses, polls only active/short-lived
+refund/email settlement, and renders supported edit instructions as plain
+language. Local track correction commands use feature-assisted continuity with
+an ambiguity stop and invalidate old review/calibration. Refund bookkeeping uses
+the PaymentOrder → VideoJob → VideoOutbox lock order.
+
+Final local evidence for this checkout: the full worker suite was 195 passed;
+the full backend suite was 2237 passed, 13 skipped; the full web suite was 595
+passed; targeted web tests were 12 passed; the affected backend video/release
+suite was 55 passed, 4 skipped; and the canonical public web build passed with
+non-secret CI fixture values. No native Intel inference, model installation,
+real Razorpay capture/refund, SMTP delivery, or production database/cache test
+was performed in this environment.
 
 ## Current stable-CFR / template diagnostics correction
 

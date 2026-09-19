@@ -1,5 +1,29 @@
 # Video release checklist and evidence classes
 
+## Current local onboarding commands
+
+The worker's model and template evidence is local-only and must be added through
+the bounded commands below; never edit `models.json` or a template manifest by
+hand. `models provenance status` is offline by default. Its optional `--fetch`
+mode retrieves only fixed, small FaceFusion sidecars and labels legacy CRC32
+separately from a full-model SHA-256. A technical hash never supplies a licence
+or commercial permission.
+
+```bash
+.venv-video/bin/python -m swico_video_node models evidence status
+.venv-video/bin/python -m swico_video_node models provenance status
+.venv-video/bin/python -m swico_video_node templates rights status --id couple-01
+.venv-video/bin/python -m swico_video_node templates tracks status --id couple-01
+```
+
+After a real reviewer has selected genuine documents with Finder, use
+`models evidence add` and `templates rights add` with their actual paths and
+the explicit assertions. For an independently checked complete model file,
+record its exact 64-hex SHA-256 with `models provenance record --sha256`; do not
+replace it with a CRC32 sidecar or a guessed value. Track corrections use the
+`templates tracks reassign|exclude|split` commands and invalidate approval and
+calibration, so review and benchmark must be repeated.
+
 Implementation is not permission to deploy. No templates, weights, role labels,
 commercial grants or measured clip timings are supplied by this repository.
 Do not turn on paid checkout based on mocks or a schema check alone.
