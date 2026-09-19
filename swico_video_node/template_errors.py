@@ -18,6 +18,7 @@ ACTIONS = {
     "template_output_existing": "Choose a new output filename; existing files and symlinks are never overwritten.",
     "template_output_invalid": "Choose a new .mp4 filename in an existing local directory.",
     "template_normalize_failed": "Check tools status and source inspection. No final output was published; original input is unchanged.",
+    "benchmark_source_invalid": "Choose an existing readable JPEG, PNG or WebP source photo; blank paths, directories, symlinks and empty files are rejected before native model startup.",
     "template_import_failed": "Check private storage permissions/free space and retry. No completed template was published.",
     "template_operation_failed": "Check local tools, template rights and reviewed track records for this operation; no approval is implied.",
     "template_rights_missing": "Use templates rights add with genuine licence, permission and the three explicit video/audio rights confirmations.",

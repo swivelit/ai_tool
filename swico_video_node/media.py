@@ -14,6 +14,8 @@ from .template_errors import TemplateError
 
 MAX_BYTES = 200 * 1024 * 1024
 MAX_FRAMES = 1800
+PHOTO_MAX_BYTES = 5 * 1024 * 1024
+PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 # At most one millisecond time-base tick plus ffprobe decimal rounding (1us).
 # Never grant an entire frame of slack even when the time base is coarse.
 MAX_JITTER = Fraction(1, 1000)
@@ -45,6 +47,23 @@ def local_source(file):
     except (OSError, RuntimeError, ValueError) as exc:
         if isinstance(exc, TemplateError): raise
         raise TemplateError("template_source_invalid") from None
+
+
+def local_benchmark_photo(file):
+    """Validate a selected benchmark photo before loading native dependencies."""
+    if not isinstance(file, str) or not file.strip():
+        raise ValueError("benchmark_source_invalid")
+    try:
+        candidate = Path(file).expanduser()
+        if candidate.is_symlink() or candidate.suffix.lower() not in PHOTO_SUFFIXES:
+            raise ValueError("benchmark_source_invalid")
+        source = candidate.resolve(strict=True)
+        info = source.stat()
+        if not stat.S_ISREG(info.st_mode) or not os.access(source, os.R_OK) or not 0 < info.st_size <= PHOTO_MAX_BYTES:
+            raise ValueError("benchmark_source_invalid")
+        return source
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("benchmark_source_invalid") from None
 
 
 def copy_master(source, destination):

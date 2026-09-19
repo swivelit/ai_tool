@@ -1,7 +1,6 @@
 """Bounded in-memory media handling; never invoke a repository command or spool."""
 import hashlib
 import io
-import re
 import struct
 import warnings
 from PIL import Image, ImageOps
@@ -48,7 +47,7 @@ def instructions(text: str) -> dict:
         result[key] = value
     if result["swap"] not in {"both", "male", "female"} or result["enhance"] not in {"off", "natural"}:
         raise ValueError("Unsupported swap or enhance instruction")
-    if len(result["caption"]) > 100 or re.search(r"[\x00-\x1f\x7f]", result["caption"]):
+    if len(result["caption"]) > 100 or any(ord(character) < 32 or ord(character) > 126 for character in result["caption"]):
         raise ValueError("Caption must be at most 100 printable characters")
     return result
 

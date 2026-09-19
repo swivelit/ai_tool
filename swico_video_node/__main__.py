@@ -51,6 +51,11 @@ def main():
     sub.add_parser("status")
     p=sub.add_parser("configure");p.add_argument("--ffmpeg");p.add_argument("--ffprobe")
     commands.add_parser("run")
+    p=commands.add_parser("engine", help="Inspect or explicitly recover the pinned private FaceFusion checkout")
+    engine_sub=p.add_subparsers(dest="engine_operation",required=True)
+    engine_sub.add_parser("status", help="Read-only pinned engine status")
+    p=engine_sub.add_parser("recover", help="Archive an invalid checkout and recreate the pinned revision")
+    p.add_argument("--recreate", action="store_true", help="Required confirmation for archive/recreate")
     commands.add_parser("rotate-token", help="Stop/drain first; prints only the new digest for Render")
     p=commands.add_parser("service");p.add_argument("operation",choices=["install","status","stop","uninstall"])
     p=commands.add_parser("_process",help=argparse.SUPPRESS);p.add_argument("directory")
@@ -92,6 +97,14 @@ def main():
         elif args.command=="tools":
             from .runtime import configure_tools,tools
             result=tools() if args.operation=="status" else configure_tools(args.ffmpeg,args.ffprobe)
+        elif args.command=="engine":
+            from .engine_status import recover, status
+            if args.engine_operation == "status":
+                result = status()
+            elif not args.recreate:
+                raise ValueError("Engine recovery is destructive to the checkout path; pass --recreate after stopping the worker")
+            else:
+                result = recover(recreate=True)
         elif args.command=="templates":
             from . import templates
             if args.operation=="inspect":

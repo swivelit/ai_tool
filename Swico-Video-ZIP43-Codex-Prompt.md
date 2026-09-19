@@ -1,0 +1,72 @@
+Use high effort and work from the current Swico `ai_tool` repository root. Complete the remaining website-video code, tests and operational fixes in one sustained implementation pass. Build on the existing implementation; do not restart it, return a staged roadmap or stop after a plan. Finish everything possible with available code/resources and identify actual external prerequisites precisely.
+
+Read applicable repository instructions and inspect the current revision/working tree first. Preserve unrelated changes. The review was of `ai_tool-main(43).zip`; recheck findings against the actual current checkout before editing. Do not assume the old report's `1a6297f1` or `c429bab4` is the current revision.
+
+SCOPE AND FIXED REQUIREMENTS
+
+- Website/video backend/Intel Mac worker only. Existing Render API/website/PostgreSQL/private `WEB_UPLOAD_CACHE_URL` Valkey, existing Windows Swico Free node and one Intel Mac. No new hosting, service, cron, public Mac port, tunnel, GPU provider or video API. No Android, ordinary CLI, Chat-credit, subscription or Windows-node changes.
+- Keep ₹25 total / 2500 paise per paid template generation, output available for 600 seconds from first READY, existing SMTP notification to verified account email, durable queue/refund recovery and private chat output.
+- Keep `harishajidasan@gmail.com` unlimited complimentary video use, existing weekly tester membership at five complimentary video attempts/day Asia/Kolkata, and unchanged ₹40 weekly Chat credits. One active request/account and actual machine capacity remain enforced. Remove the ordinary six-preflights/hour product cap for the explicitly configured unlimited account while retaining resource protection.
+- Templates `couple-01` and `couple-02` stay on the Mac; website publishes icons/metadata. One native inference job at a time; outbound HTTPS polling only.
+
+CURRENT VERIFIED OPERATOR CHECKPOINT — DO NOT REPEAT SETUP UNNECESSARILY
+
+Render: migration current=head `20260918_website_video`; cache headroom, SMTP configuration, Razorpay configuration, worker digest and schema all pass. Weekly tester check has enabled=true, allowance_micros=40000000, three subjects and ok=true. Both video flags are currently true but readiness fails on exact legal publication, current native calibration and two published templates. Runbook must instruct disabling both flags now while preserving settlement; no migration or new service is needed merely for these blockers.
+
+Actual Mac: `/Users/admin/Documents/swico_server/ai_tool`, Intel x86_64 macOS26.7, Python3.12.14, MacPorts and FFmpeg/ffprobe9.0.1, repo `.venv-video`. Prerequisite check passes; locked package installation/pip check passes. Bootstrap then reports `Dirty/wrong engine checkout; inspect/archive explicitly, no reset performed`. API doctor reports authenticated=true, schema/control=true, worker_active=false, templates_current=false. Runtime/tools report true; nine model records lack evidence, hashes and installed bytes. Both template master/manifest pairs already exist but lack permission evidence. Do not re-import or delete them.
+
+The LaunchAgent is loaded/running but not ready; there is no evidence of a crash. Benchmark source path inputs were blank and failed on missing evidence. No native inference/quality or timing success exists. Preserve token/digest; do not call init/rotate-token or reinstall the working host toolchain to troubleshoot these failures.
+
+PRESERVE ALREADY-COMPLETED FIXES
+
+ZIP43 already distinguishes legacy CRC32 from SHA-256, permits bounded GitHub asset redirects, supports provenance record --sha256/--model-file with reviewer/date, provides track status/split/reassign/exclude, resumes checkout, retries transient status failures, displays processing ETA, clears old invalid photo selections and shows previews, and fixes the earlier refund-finalization lock order. Review and retain these rather than recreating them.
+
+TASK A — ENGINE INTEGRITY DIAGNOSIS AND SAFE RECOVERY
+
+1. Inspect bootstrap.py, diagnostics.py, models.py, storage.py, runtime and service startup. `engine_checkout()` combines dirty status and wrong HEAD. Expected FaceFusion commit is `03d49d0c7de095a41628a74d94a146214f82837a` under `root()/engine/facefusion`, separate from the main Git checkout.
+2. Add one shared read-only engine status function used by bootstrap/doctor/audit. Report expected/actual commit, missing/non-repository/wrong-revision/tracked-change/untracked-change separately, with bounded redacted summaries. It must run even when model evidence is missing; don't let missing rights hide engine corruption/changes. Do not imply `runtime=true` proves engine integrity.
+3. Add an explicit conservative archive/recreate command or a fully validated operator recovery path. It must hold the existing worker lock, refuse unsafe paths/symlinks, confirm the worker is stopped, preserve the complete old checkout in a unique private archive and recreate only the pinned engine. Preserve token, config, masters, rights, model manifests, tool configuration and any archived model bytes. A clean pinned checkout should be a no-op. Do not git-reset/clean, alter ignore settings to conceal changes or silently trust modifications. Keep partial/network-failed recovery resumable and diagnosable.
+4. Reorder bootstrap checks where appropriate so a known invalid engine is diagnosed before unnecessarily repeating expensive dependency downloads, without weakening binary/native requirements. Provide exact existing-install commands from actual CLI help and remove stale first-install instructions for this checkpoint.
+5. Check launch/service diagnostics distinguish loaded, running, local liveness and serving readiness. Report blocked prerequisites usefully without creating a restart/retry loop the operator mistakes for availability. Starting a service must not claim native readiness.
+
+TASK B — MODEL/TEMPLATE ONBOARDING AND BENCHMARK USABILITY
+
+1. Keep algorithm-labelled CRC32 and independently reviewed expected full-model SHA-256 distinct. Preserve explicit --sha256/--model-file functionality and existing genuine evidence requirements. No fabricated hashes, automatic grants or model download from status commands. Ensure useful existing-state-safe commands for all nine assets plus engine code review. Technical file integrity is not proof of publisher authenticity or commercial permission.
+2. Fix template-specific remediation: missing template permission currently recommends `models evidence add`; it must say `templates rights add --id couple-01` or couple-02 with the appropriate fields. Distinguish absent bytes, expected hash, documentation, reviewer metadata and engine integrity.
+3. Validate local prerequisites before asking for benchmark consent/photos. Reject blank paths, directories, unreadable files, unsupported inputs and inappropriate symlinks before constructing Engine. Blank input currently becomes the repository directory through Path('').resolve(). Provide convenient file selection if useful, while preserving explicit user consent and actual visual QA.
+4. Preserve the existing two imported masters. Review the new track correction implementation, validation and approval/calibration invalidation; ensure corrections cannot leave unusable orphan track roles or inconsistent state, and retain a recoverable record of changed tracks. Do not automate role mapping or QA acceptance.
+5. Exercise male-only/female-only/both swaps, enhancement off/natural, captions, occlusion/cuts/background exclusion, disclosure and audio sync on actual Mac/approved assets when available. Preserve current rendering/quality/runtime bindings and actual measured calibration; do not fabricate timings or sign QA hashes. No new inference backend or silent dependency upgrade.
+
+TASK C — FIX ADMISSION CONCURRENCY WITHOUT BREAKING CHECKOUT RECOVERY
+
+1. Reproduce the ZIP43 lock inversion: router.admit() calls owned_job(FOR UPDATE) before admission()->control(FOR UPDATE), while cancel/fenced/maintenance take VideoControl before VideoJob. This is a possible PostgreSQL deadlock on concurrent initial admission and cancellation/sweep. Use a consistent control-before-job order without applying fresh-admission gates to existing owner checkout recovery. Taking the serialization lock and checking availability are separate concerns.
+2. Preserve idempotent reuse of the same unexpired Razorpay order, expired-hold closeout, funding mismatch rejection, no second order on retry, and late-capture refund handling. Keep earlier corrected PaymentOrder→VideoJob→VideoOutbox refund ordering; audit interactions rather than fixing one inversion by creating another.
+3. Add deterministic concurrent admission/cancel/sweep tests using disposable real PostgreSQL and transaction synchronization. SQLite is not concurrency proof. No production DB tests, resets or stamp/downgrade.
+4. Address unpaid preflight starvation: photos expire 600 seconds from creation while paid renders have priority. Use current readiness/queue estimates for truthful validation availability or bounded reservation before accepting uploads likely to expire; never charge expired input, silently extend retention or add infrastructure. Keep existing paid jobs and source deletion guarantees.
+
+TASK D — COMPLETE REMAINING WEBSITE UX AND BROWSER VERIFICATION
+
+1. Refresh capabilities and allowance after complimentary admission, cancellation/restoration, new request, daily reset and worker recovery. Add retry for the initial capabilities fetch and bounded focus/online refresh. Protect account ownership and stale response handling. Current refresh occurs only on mount and successful paid verification.
+2. Make VideoCard polling single-flight with exactly one owned timer. Focus/online can currently start a fetch while another is active, producing overlapping timers and out-of-order state regressions. Reject stale responses across cancel/mutations, account changes and unmount. Add deferred-response tests that deterministically reproduce the race, not only immediately resolved mocks. Preserve expiry and bounded settlement polling.
+3. Finish local photo selection checks: zero-byte/unsupported MIME selection must not contradict the displayed error text. Preserve authoritative backend image decoding, preview cleanup and old-photo clearing.
+4. Add the requested supported-instructions prompt field wired to the strict existing parser with understandable examples and confirmation. Role/enhancement/caption controls alone are not a prompt field. Keep supported face replacement scope explicit; no claims of arbitrary scene/action/speech generation or unimplemented Unicode caption support.
+5. Expand local Playwright acceptance to assert all eight named/versioned consent fields, asynchronous validation, actual mocked Razorpay modal/order reuse/dismissal, uncertain verification/webhook recovery, reload, quota/reset refresh, transient/overlapping polling, owner isolation and immutable expiry. Current resume unit coverage returning checkout:null does not exercise modal reopening.
+6. Wire the local mocked Chromium video suite into existing CI. The normal workflow currently does not execute it. No production accounts, customers or transactions in automated browser tests.
+
+TASK E — POLICY PUBLICATION AND RELEASE HANDOFF
+
+1. Existing documents and publication helper already exist. Read current videoLegalDraft/legalContent/attestation validation; don't create duplicate policy packs. The old published checker passes but the video gate is false because pages differ. Correct stale hardcoded hashes and checkout claims in VIDEO_ACCEPTANCE and other docs; compute current fingerprints via the helper.
+2. A real owner can review the candidate with `scripts/video_legal_diff.py` and `publish-video-legal.py --owner-attestation --approver-role ... --approval-date ... --dry-run`. Make the exact non-mutating candidate concrete. Do not fabricate the user's attestations or publish without genuine authority/review. Explain the actual helper confirmation flags and which two canonical files need commit/deployment to API and website. Policy publication does not grant model/movie/audio rights.
+3. Preserve disabled-admission drain/settlement. No new service, cache, cron or migration unless an actual necessary code change requires a reviewed additive migration. Current schema is already head. Leave default flags false and provide one final activation for the complete verified feature.
+4. Missing actual rights, reviewed assets, local Mac access or provider credentials must be recorded as specific external prerequisites while you complete all unrelated code/test/doc work. Do not stop halfway through implementation because you cannot run an external acceptance test.
+
+VALIDATION AND FINAL DELIVERABLES
+
+- Run meaningful focused tests for engine status/recovery preserving state, benchmark input rejection, evidence remediation, PostgreSQL lock ordering, preflight admission, polling races, quota refresh, prompt grammar and checkout recovery.
+- Fix the surviving worker unit test `test_output_metadata_verification_requires_exact_disclosure`: it injects fake capture but still resolves native macOS tools on Linux. Mock/inject the correct test seam while retaining production native validation. Current review result is 195 passed, 1 failed on Linux; do not label historical 195-pass output as current proof.
+- Run required worker/backend/frontend gates and the local mocked video browser suite. Use isolated real PostgreSQL/Valkey only where required. No skipped/fake native results or test weakening to declare ready.
+- Run actual Mac face inference, template quality, foreground/service operation and measured calibration only when the real environment and approved assets are accessible. Configured SMTP/Razorpay is not actual delivery/capture/refund. Provider tests need isolated test credentials and an explicitly authorized recipient; do not send real-customer emails or initiate real charges as tests.
+- Deliver code fixes, tests/CI changes, updated Mac/Render/acceptance docs and a current implementation report. State what was already fixed, what you changed, actual commands/results, external blockers and exact operator next steps. Supply a suggested commit message.
+- Do all implementation in one pass. Do not automatically commit, push, deploy, rotate credentials, sign policy/model/template permissions or mark unseen output QA-PASS.
+
+Suggested commit message: `fix(video): recover Mac engine setup and close release readiness gaps`.

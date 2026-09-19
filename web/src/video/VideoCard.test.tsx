@@ -56,3 +56,16 @@ it('shows processing ETA independently of queue position', async () => {
   render(<VideoCard jobId="job1" />)
   expect(await screen.findByText(/Estimated 2–3 minutes/)).toBeInTheDocument()
 })
+
+it('coalesces focus refresh while a status request is already pending', async () => {
+  let resolve!: (value: unknown) => void
+  mock.api.mockResolvedValue({ ...job, state: 'processing', phase: 'rendering', eta_seconds: [5, 10] })
+  mock.api.mockImplementationOnce(() => new Promise(r => { resolve = r }))
+  render(<VideoCard jobId="job1" />)
+  await waitFor(() => expect(mock.api).toHaveBeenCalledTimes(1))
+  window.dispatchEvent(new Event('focus'))
+  window.dispatchEvent(new Event('online'))
+  expect(mock.api).toHaveBeenCalledTimes(1)
+  await act(async () => resolve({ ...job, state: 'processing', phase: 'rendering', eta_seconds: [5, 10] }))
+  expect(await screen.findByText(/Estimated 1–1 minutes/)).toBeInTheDocument()
+})

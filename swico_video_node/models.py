@@ -53,9 +53,25 @@ _NEXT = {
     "model_source_unreviewed": "Review the pinned FaceFusion source and record fixed provenance; do not substitute another URL.",
     "engine_checkout_missing": "Run the existing explicit setup/engine checkout step, then rerun models audit.",
     "engine_checkout_changed": "Review the pinned engine checkout again; do not reset it automatically.",
+    "engine_wrong_revision": "Run engine status and the explicit engine recovery command; do not reset or clean the checkout.",
+    "engine_tracked_changes": "Review or archive tracked engine changes before recovery; do not silently trust them.",
+    "engine_untracked_changes": "Review or archive untracked engine changes before recovery; do not silently trust them.",
+    "engine_not_repository": "Inspect the separate engine directory; only an empty first-run directory may be initialized by bootstrap.",
+    "engine_path_symlink": "Inspect the engine path and remove the unsafe symlink only through operator-reviewed recovery.",
     "template_rights_missing": "Run templates rights add with genuine licence/permission evidence and all three explicit assertions.",
     "template_rights_manifest_missing": "Verify the already imported template has its private master.mp4 and manifest.json; do not re-import a reviewed master.",
 }
+
+
+def _template_next(identifier: str, blocker: str) -> str:
+    """Keep template remediation pointed at template evidence, not models."""
+    if blocker in {"template_rights_missing", "permission_evidence_missing", "licence_evidence_missing",
+                   "reviewer_missing", "reviewed_at_missing"}:
+        return (f"Run templates rights add --id {identifier} --reviewer '<real reviewer or role>' "
+                "--reviewed-at YYYY-MM-DD --licence-file FILE --permission-file FILE "
+                "--confirm-video-modification --confirm-video-distribution --confirm-audio-rights "
+                "with genuine template evidence.")
+    return _NEXT.get(blocker, "Resolve the template rights blocker and rerun models audit.")
 
 
 def model_source(name: str) -> str:
@@ -66,6 +82,16 @@ def model_hash_source(name: str) -> str:
     if name not in ASSETS:
         raise EvidenceError("provenance_asset_unknown")
     return f"{MODEL_RELEASE_BASE}/{name.removesuffix('.onnx')}.hash"
+
+
+def _engine_issues(engine: dict) -> list[str]:
+    """Return an actionable issue even for a missing checkout with no git output."""
+    if engine.get("state") == "ready":
+        return []
+    if engine.get("issues"):
+        return list(engine["issues"])
+    state = engine.get("state", "engine_status_unavailable")
+    return ["engine_checkout_missing" if state == "missing" else state]
 
 
 def skeleton():
@@ -220,14 +246,10 @@ def audit(*, require_files=True):
             if not path.is_file() or identity_file(path) != asset["sha256"]:
                 raise ValueError("Model missing or modified: " + name)
     if require_files:
-        checkout = root() / "engine/facefusion"
-        try:
-            commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
-            dirty = subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"], text=True)
-        except (OSError, subprocess.SubprocessError):
-            raise ValueError("Pinned engine checkout missing or unavailable") from None
-        if commit != ENGINE_COMMIT or dirty:
-            raise ValueError("Engine checkout modified; re-review required")
+        from .engine_status import status as engine_status
+        checkout = engine_status()
+        if checkout["state"] != "ready":
+            raise ValueError("Engine checkout is not ready: " + ",".join(_engine_issues(checkout)))
     implementation = {name: hash_file(Path(__file__).parent / name) for name in (
         "engine.py", "media.py", "template_errors.py", "models.py", "rights.py", "templates.py", "runtime.py", "calibration.py", "requirements-intel.lock")}
     return {"profile_hash": digest(canonical({"manifest": manifest, "implementation": implementation})), "asset_count": len(assets), "rights_evidence_verified": True,
@@ -236,16 +258,23 @@ def audit(*, require_files=True):
 
 def audit_report():
     """Complete actionable local inventory without private absolute paths."""
+    from .engine_status import status as engine_status
+    engine = engine_status()
     report = {"ready": False, "manifest": "models.json", "rights_directory": "rights/", "items": [],
+              "engine": engine,
               "legal_conclusion": "Document integrity is not a legal grant. Restricted weights require right-holder commercial permission."}
     try:
         manifest = read(root() / "models.json")
     except (OSError, ValueError):
-        report["blockers"] = ["models_manifest_missing"]
-        report["next_steps"] = ["Run the existing local worker init command before adding evidence."]
+        report["blockers"] = list(dict.fromkeys(_engine_issues(engine) + ["models_manifest_missing"]))
+        report["next_steps"] = list(dict.fromkeys(
+            [_NEXT.get(item, "Inspect the separate engine checkout before continuing.") for item in report["blockers"]]
+            + ["Run the existing local worker init command before adding evidence."]
+        ))
         return report
     records = {a.get("file"): a for a in manifest.get("assets", []) if isinstance(a, dict)}
     all_blockers: list[str] = []
+    all_blockers.extend(_engine_issues(engine))
     for name in ("code_review", *ASSETS):
         record = manifest.get("code_review", {}) if name == "code_review" else records.get(name, {})
         restricted = name in RESTRICTED_ASSETS
@@ -289,19 +318,25 @@ def audit_report():
             blockers.append("template_rights_manifest_missing")
         blockers = list(dict.fromkeys(blockers))
         template_items.append({"id": identifier, "ready": not blockers, "blockers": blockers,
-                               "next_steps": [_NEXT.get(item, "Resolve the template rights blocker and rerun models audit.") for item in blockers]})
+                               "next_steps": [_template_next(identifier, item) for item in blockers]})
     report["templates"] = template_items
     report["template_blockers"] = list(dict.fromkeys(item for record in template_items for item in record["blockers"]))
     try:
         report.update(audit())
-        report["blockers"] = report["template_blockers"]
-        report["next_steps"] = [_NEXT.get(item, "Resolve the reported template-rights blocker and rerun models audit.")
-                                  for item in report["blockers"]]
+        report["blockers"] = list(dict.fromkeys(all_blockers + report["template_blockers"]))
+        report["next_steps"] = list(dict.fromkeys(
+            [_NEXT.get(item, "Resolve the reported model or engine blocker and rerun models audit.") for item in all_blockers]
+            + [step for record in template_items for step in record["next_steps"]]
+        ))
         report["ready"] = not report["blockers"]
     except (EvidenceError, ValueError, OSError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, EvidenceError) else "model_audit_blocked"
         report["blockers"] = list(dict.fromkeys(all_blockers + report["template_blockers"] + [code]))
-        report["next_steps"] = [_NEXT.get(item, "Resolve the reported review or installation blocker and rerun models audit.") for item in report["blockers"]]
+        report["next_steps"] = list(dict.fromkeys(
+            [_NEXT.get(item, "Resolve the reported review or installation blocker and rerun models audit.") for item in all_blockers]
+            + [step for record in template_items for step in record["next_steps"]]
+            + [_NEXT.get(code, "Resolve the reported review or installation blocker and rerun models audit.")]
+        ))
     return report
 
 
@@ -345,7 +380,12 @@ def _open_fixed_resource(name: str, url: str, *, timeout: int = 10):
             if exc.code not in {301, 302, 303, 307, 308}:
                 raise
             location = exc.headers.get("Location")
-            exc.close()
+            try:
+                exc.close()
+            except Exception:
+                # Some deterministic test doubles do not carry urllib's file
+                # handle; redirect safety does not depend on closing it.
+                pass
             if not location:
                 raise EvidenceError("provenance_redirect_invalid")
             next_url = urljoin(current, location)

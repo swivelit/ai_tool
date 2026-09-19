@@ -12,6 +12,7 @@ or commercial permission.
 ```bash
 .venv-video/bin/python -m swico_video_node models evidence status
 .venv-video/bin/python -m swico_video_node models provenance status
+.venv-video/bin/python -m swico_video_node engine status
 .venv-video/bin/python -m swico_video_node templates rights status --id couple-01
 .venv-video/bin/python -m swico_video_node templates tracks status --id couple-01
 ```
@@ -38,6 +39,9 @@ Do not turn on paid checkout based on mocks or a schema check alone.
   Require `/opt/local/bin/port version` before selfupdate or package commands.
   An already supported native alternative is valid; MacPorts is not mandatory.
 - [ ] Verify Python 3.12, pip, FFmpeg AND ffprobe, then ordinary bootstrap.
+- [ ] `engine status` reports the exact pinned FaceFusion revision with no
+  tracked/untracked changes. If not, stop the service and use the explicit
+  archive/recreate command; never reset or clean the checkout automatically.
   Synthetic codec/import success is not native model inference or calibration.
 - [ ] Init preserves the token; independently require doctor API authentication.
   Configured digest alone is not pairing. Overall readiness may remain false

@@ -8,15 +8,16 @@ ALREADY deployed at `20260918_website_video`; do not downgrade, stamp or reset.
 **Current operator checkpoint:** Tahoe 26.7/native Intel, MacPorts 2.12.6,
 Python 3.12.14, FFmpeg/ffprobe 9.0.1, `.venv-video`, locked dependencies and
 `tools status` now succeed according to the operator. Do not reinstall those or
-rotate credentials to diagnose a clip. Continue with pairing (section 5) and
-local inspection/import (section 6). Sections 1–4 remain for a genuinely new Mac.
-The current inspected checkout is `c429bab4`, CLI **0.2.9**.
+rotate credentials to diagnose a clip. Continue with pairing (section 6) and
+local inspection/import (section 7). Sections 1–5 remain for a genuinely new Mac.
+The current implementation checkout for this pass is `8f8d615d`, CLI **0.2.9**.
 
 ## Render NOW (operator only; no deployment was performed)
 
-The supplied production logs already show BOTH flags false. **No Render deploy
-is needed to install MacPorts or run the new shell check.** In Render → existing
-API service → Environment, confirm (do not repeatedly save unchanged values):
+The current operator checkpoint reports both flags enabled while readiness is
+blocked by legal, rights, calibration and native evidence. **Set both flags
+false now; no Render deploy is needed to install MacPorts or run the local
+checks.** In Render → existing API service → Environment, set and confirm:
 ```dotenv
 SWICO_VIDEO_ENABLED=false
 SWICO_VIDEO_PAID_CHECKOUT_ENABLED=false
@@ -51,8 +52,9 @@ No raw token in Render, website variables, command arguments, plist or emails.
 ## 1. Existing checkout and a dependency-free check (Mac Terminal)
 
 The video Mac is `admin@Admins-MacBook-Pro`, macOS Tahoe **26.7 / x86_64**.
-It is NOT the developer test machine. Current inspected main is `c429bab4`, CLI
-**0.2.9**; the old report's 0.2.8 is historical. Do not re-clone/reset or downgrade.
+It is NOT the developer test machine. The pinned FaceFusion engine is a
+separate private checkout under the worker data directory, not the main Git
+checkout. Do not re-clone/reset or downgrade either checkout.
 
 ```bash
 cd /Users/admin/Documents/swico_server/ai_tool
@@ -99,7 +101,42 @@ locations are checked. No silent fallback from a broken reviewed configuration.
 If `prerequisites=present`, proceed to step 4 with the same interpreter, skipping
 MacPorts installation. This is prerequisite presence, NOT video readiness.
 
-## 2. Actually install MacPorts (operator video Mac ONLY)
+## 2. Inspect or conservatively recover the pinned engine checkout
+
+Bootstrap diagnoses the separate FaceFusion checkout before downloading locked
+dependencies. A dirty, wrong-revision, non-repository or symlinked engine is
+never silently adopted. Run these read-only checks first:
+
+```bash
+cd /Users/admin/Documents/swico_server/ai_tool
+VIDEO_PYTHON="$PWD/.venv-video/bin/python"
+"$VIDEO_PYTHON" -m swico_video_node engine status
+"$VIDEO_PYTHON" -m swico_video_node doctor
+```
+
+The status reports only the relative engine location, expected/actual pinned
+commit and bounded change names. A clean checkout must report `state: ready`
+and commit `03d49d0c7de095a41628a74d94a146214f82837a`. Missing model rights do
+not hide engine corruption in `doctor` or `models audit`.
+
+If it is invalid, stop the LaunchAgent and inspect the changes. The explicit
+recovery command requires `--recreate`, holds the worker lock, refuses a loaded
+service, fetches the exact pinned commit into a private temporary checkout,
+archives the complete old checkout under private `engine/archives/`, and only
+then installs the new checkout. It preserves the token, configuration,
+templates, rights and model bytes:
+
+```bash
+"$VIDEO_PYTHON" -m swico_video_node service stop
+"$VIDEO_PYTHON" -m swico_video_node engine recover --recreate
+"$VIDEO_PYTHON" -m swico_video_node engine status
+```
+
+Network failure leaves the old checkout and any failed private temporary tree
+for inspection; it does not reset or clean operator files. Recovery is not
+rights, model, calibration or native-inference acceptance.
+
+## 3. Actually install MacPorts (operator video Mac ONLY)
 
 Do not retry the rejected Homebrew installer, install Rosetta, change system Python,
 disable Gatekeeper/SIP or enable auto-login. First verify the machine and CLT:
@@ -167,7 +204,7 @@ On an interrupted installation, inspect the Installer's error; complete the same
 verified installer explicitly and re-run `/opt/local/bin/port version` before
 continuing. An existing valid `port` skips installation entirely.
 
-## 3. Install Python/pip and FFmpeg (only AFTER port version works)
+## 4. Install Python/pip and FFmpeg (only AFTER port version works)
 
 This block deliberately installs host packages and is operator-invoked only:
 
@@ -193,7 +230,7 @@ stack. Official definitions: [python312](https://ports.macports.org/port/python3
 [ffmpeg](https://ports.macports.org/port/ffmpeg/). Version output is NOT codec or
 model acceptance. Re-run `setup_macos.sh --check`; require `prerequisites=present`.
 
-## 4. Existing isolated video bootstrap and tooling (Mac repo root)
+## 5. Existing isolated video bootstrap and tooling (Mac repo root)
 
 ```bash
 cd /Users/admin/Documents/swico_server/ai_tool
@@ -246,7 +283,7 @@ Tool replacement fails closed. Changed binaries/libraries/Python/package identit
 requires genuine re-calibration; do not edit old benchmark hashes. Moving identical
 verified tool bytes and libraries without changing identity does not invalidate it.
 
-## 5. Init, digest pairing and independent authentication
+## 6. Init, digest pairing and independent authentication
 
 ```bash
 .venv-video/bin/python -m swico_video_node init --worker-id intel-mac-01 --api-base https://ai-tool-rrau.onrender.com
@@ -289,7 +326,7 @@ Do not require a running worker to advance to local preparation. On a fresh DB,
 `schema_ready=true` with `control_initialized=false` can precede first metadata
 publication/heartbeat; no migration stamp/reset is needed to create the singleton.
 
-## 6. Inspect, explicitly normalize only if needed, then import locally
+## 7. Inspect, explicitly normalize only if needed, then import locally
 
 Media inspection/import does NOT need model weights or a successful API pairing.
 A 401 `credential_mismatch` is a separate Render digest-pairing issue. Keep the
@@ -496,7 +533,7 @@ Download success proves only that bytes match the recorded technical hashes. It
 does not prove commercial authorization. No restricted weight download occurs
 before the existing rights gate passes.
 
-## 7. Both real templates and human track review
+## 8. Both real templates and human track review
 
 After section 6: both imports, genuine model/template/audio rights and model audit
 must pass. Do not import either template again. Prepare each separately:
@@ -575,7 +612,7 @@ cannot replace that inspection or prove legal sufficiency.
 tracks remain excluded. Final single/both-identity likeness and temporal acceptance
 still require actual generated outputs; track metadata alone does not prove them.
 
-## 8. Actual benchmark, output review and capacity
+## 9. Actual benchmark, output review and capacity
 
 ```bash
 .venv-video/bin/python -m swico_video_node benchmark --all-templates --interactive-sources --runs 3
@@ -630,7 +667,7 @@ capacity to at least one and validate throughput again. Do not arbitrarily infla
 retention/deadlines or silently reduce quality. Paid queue claims precede queued
 preflights; a current non-preemptible preflight is included in uncertainty estimates.
 
-## 9. Publish bounded metadata, then foreground worker
+## 10. Publish bounded metadata, then foreground worker
 
 ```bash
 .venv-video/bin/python -m swico_video_node models audit
@@ -675,7 +712,7 @@ each role alone and both, off/natural, captions, background exclusion, original
 audio, reload/chat delivery, owner isolation, cancellation and exact 600-second
 expiry. Record actual results privately; no automatic acceptance is performed.
 
-## 10. Managed service (explicitly stop foreground first)
+## 11. Managed service (explicitly stop foreground first)
 
 Pause new admission if necessary, drain/settle accepted work, then Ctrl+C the
 foreground process and confirm it exited. Do not start two workers. In Mac repo root:
@@ -715,7 +752,7 @@ LaunchAgent starts after USER LOGIN, not before login/FileVault or after shutdow
 without login. caffeinate reduces idle sleep on AC; it cannot promise service while
 the lid is closed, the machine shuts down or the network is offline.
 
-## 11. Existing Render checks and release authorization
+## 12. Existing Render checks and release authorization
 
 In the EXISTING API Render Shell (no new deploy needed just to read status):
 ```bash
@@ -757,7 +794,7 @@ worker authentication and maintenance to drain/settle accepted work/refunds. Wai
 for the immutable output windows, then stop the Mac if appropriate. No downgrade,
 stamp, old dispatcher rollback, credential rotation or refund replay.
 
-## 12. Legal publication and source-face consent
+## 13. Legal publication and source-face consent
 
 The website records a versioned set of adult/source-face, photo-rights,
 synthetic-media, prohibited-use, retention and disclosure confirmations before

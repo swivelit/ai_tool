@@ -116,6 +116,12 @@ jobs:
           VITE_FIREBASE_PROJECT_ID: swico-ci
           VITE_FIREBASE_APP_ID: 1:1234567890:web:abcdef123456
           VITE_FIREBASE_MESSAGING_SENDER_ID: '1234567890'
+      - name: Install local Chromium for video browser contracts
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Run local mocked video browser contracts
+        run: npm run test:e2e -- --project=chromium e2e/videos.spec.ts
+        working-directory: web
 
   cli:
     strategy:

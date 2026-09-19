@@ -44,7 +44,15 @@ export function VideoCard({ jobId, initialJob = null, onJobChange }: Props) {
     let delay = 2500
     let settlementPolls = 0
     let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let inFlight = false
+    let refreshQueued = false
+    const schedule = (wait: number) => {
+      clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => { void poll() }, wait)
+    }
     const poll = async () => {
+      if (inFlight) { refreshQueued = true; return }
+      inFlight = true
       try {
         const value = await apiJson<VideoJob>(user, `/api/web/videos/jobs/${jobId}`, { signal: controller.signal })
         if (controller.signal.aborted || currentEpoch !== epoch.current) return
@@ -56,13 +64,19 @@ export function VideoCard({ jobId, initialJob = null, onJobChange }: Props) {
         const stillActive = !SETTLED.has(value.state) || notificationPending || refundPending
         if (stillActive && (settlementPolls < 20 || !SETTLED.has(value.state))) {
           if (notificationPending || refundPending) settlementPolls += 1
-          retryTimer = setTimeout(() => { void poll() }, delay)
+          schedule(delay)
         }
       } catch {
         if (controller.signal.aborted) return
         setError('Video status could not be refreshed. Retrying…')
         delay = Math.min(30000, Math.round(delay * 1.8))
-        retryTimer = setTimeout(() => { void poll() }, delay + Math.floor(Math.random() * 250))
+        schedule(delay + Math.floor(Math.random() * 250))
+      } finally {
+        inFlight = false
+        if (refreshQueued && !controller.signal.aborted) {
+          refreshQueued = false
+          void poll()
+        }
       }
     }
     const recover = () => {

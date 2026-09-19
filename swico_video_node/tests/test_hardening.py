@@ -220,6 +220,7 @@ def test_launchagent_install_status_stop_contract(local,tmp_path,monkeypatch):
     status=service.service("status")
     assert status["loaded"] and not status["running"] and not status["local_liveness"]
     assert status["backend"]["status"]=="credential_mismatch"
+    assert status["serving_ready"] is False and "native_readiness" in status
     assert service.service("stop")["stopped"]
     assert (local/"worker.token").exists()
 
@@ -268,13 +269,59 @@ def test_setup_macports_pipless_venv(local,monkeypatch):
 def test_setup_engine_wrong_dirty_or_interrupted_checkout(local,monkeypatch):
     directory=local/"engine/facefusion";(directory/".git").mkdir(parents=True)
     calls=[]
+    states=iter(({"state":"missing"},{"state":"engine_tracked_changes","issues":["engine_tracked_changes"]}))
+    monkeypatch.setattr(bootstrap,"engine_status",lambda:next(states))
     monkeypatch.setattr(bootstrap,"execute",lambda args,**kw:calls.append(args))
     monkeypatch.setattr(bootstrap.subprocess,"run",lambda *a,**kw:SimpleNamespace(returncode=1,stdout="HEAD\n"))
     monkeypatch.setattr(bootstrap.subprocess,"check_output",lambda args,**kw:"" if "status" in args else storage.ENGINE_COMMIT)
     assert bootstrap.engine_checkout()==directory
     assert any("fetch" in c for c in calls)
     monkeypatch.setattr(bootstrap.subprocess,"check_output",lambda *a,**kw:" M facefusion/code.py")
-    with pytest.raises(ValueError,match="Dirty/wrong"):bootstrap.engine_checkout()
+    with pytest.raises(ValueError,match="Unexpected engine directory"):bootstrap.engine_checkout()
+
+
+def test_engine_status_distinguishes_revision_and_workspace_changes(local):
+    from swico_video_node import engine_status
+    checkout = local / "engine" / "facefusion"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "fixture@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Fixture"], check=True)
+    (checkout / "tracked.txt").write_text("one")
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "fixture"], check=True)
+    (checkout / "tracked.txt").write_text("changed")
+    (checkout / "untracked.txt").write_text("new")
+    report = engine_status.status()
+    assert report["state"] == "engine_wrong_revision"
+    assert "engine_wrong_revision" in report["issues"]
+    assert "engine_tracked_changes" in report["issues"]
+    assert "engine_untracked_changes" in report["issues"]
+    assert str(local) not in json.dumps(report)
+
+
+def test_engine_recovery_archives_old_checkout_and_preserves_worker_state(local, monkeypatch):
+    from swico_video_node import engine_status
+    directory = local / "engine" / "facefusion"
+    directory.mkdir(parents=True)
+    (directory / "operator-note.txt").write_text("preserve this checkout")
+    token_before = (local / "worker.token").read_bytes()
+    config_before = (local / "config.json").read_bytes()
+    monkeypatch.setattr(engine_status, "status", lambda: {"state": "engine_wrong_revision", "issues": ["engine_wrong_revision"]})
+    def fake_git(args, **_kwargs):
+        if args[1] == "init":
+            Path(args[2]).mkdir(exist_ok=True)
+            (Path(args[2]) / ".git").mkdir()
+        elif args[1] == "-C" and args[3] == "checkout":
+            (Path(args[2]) / "pinned.txt").write_text(storage.ENGINE_COMMIT)
+    monkeypatch.setattr(engine_status, "_git", fake_git)
+    result = engine_status.recover(recreate=True)
+    assert result["recovered"] and result["archived"]
+    assert (directory / "pinned.txt").read_text() == storage.ENGINE_COMMIT
+    archived = list((local / "engine" / "archives").iterdir())
+    assert len(archived) == 1 and (archived[0] / "operator-note.txt").read_text() == "preserve this checkout"
+    assert (local / "worker.token").read_bytes() == token_before
+    assert (local / "config.json").read_bytes() == config_before
 
 
 def test_shell_explicit_python_with_spaces_and_no_brew(tmp_path):

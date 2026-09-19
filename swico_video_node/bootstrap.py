@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 from .storage import ENGINE_COMMIT, atomic, exclusive, root, hash_file
+from .engine_status import status as engine_status
 from .runtime import native_host, configure_tools, minimal_environment, safe_error, tools, encode_smoke
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,9 +53,13 @@ def environment(base, destination):
 def engine_checkout():
     directory=root()/"engine/facefusion"
     directory.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    if directory.exists() and not (directory/".git").is_dir():
+    current = engine_status()
+    if current["state"] == "ready":
+        return directory
+    empty_bootstrap_directory = current["state"] == "not_repository" and directory.is_dir() and not any(directory.iterdir())
+    if current["state"] not in {"missing"} and not empty_bootstrap_directory:
         raise ValueError("Unexpected engine directory: inspect/archive explicitly; never adopting it")
-    if not directory.exists(): execute(["git","init",directory])
+    if not directory.exists() or empty_bootstrap_directory: execute(["git","init",directory])
     commit=subprocess.run(["git","-C",directory,"rev-parse","HEAD"],capture_output=True,text=True,timeout=10)
     dirty=subprocess.check_output(["git","-C",directory,"status","--porcelain","--untracked-files=all"],text=True,timeout=10)
     if dirty or (commit.returncode==0 and commit.stdout.strip()!=ENGINE_COMMIT):
@@ -103,6 +108,10 @@ def main():
         encode_smoke(tools())
     else: configure_tools()
     with exclusive():
+        current_engine = engine_status()
+        empty_engine_directory = current_engine["state"] == "not_repository" and not any((root()/"engine/facefusion").iterdir())
+        if current_engine["state"] not in {"ready", "missing"} and not empty_engine_directory:
+            raise ValueError("Engine checkout is not valid; run engine status and explicit engine recover before dependency installation")
         python=environment(sys.executable,REPO/".venv-video")
         install_dependencies(python)
         engine_checkout()

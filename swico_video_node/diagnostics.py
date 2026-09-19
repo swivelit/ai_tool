@@ -34,11 +34,19 @@ def doctor(check_api=False):
     from .models import audit_report
     from .templates import approved
     from .runtime import tools
+    from .engine_status import status as engine_status
     result={"platform":platform.platform(),"architecture":platform.machine(),"python":platform.python_version(),
             "ready":False,"native_inference_verified":False,"checks":{},"blockers":[]}
     checks=result["checks"]
     # Pairing never depends on model files, templates, current flags or calibration.
     checks["api"]=api_check() if check_api else {"status":"not_requested"}
+    checks["engine"] = engine_status()
+    if checks["engine"].get("state") != "ready":
+        engine_state = checks["engine"].get("state", "unavailable")
+        engine_issues = checks["engine"].get("issues") or [
+            "engine_checkout_missing" if engine_state == "missing" else engine_state
+        ]
+        result["blockers"].append("engine: " + ", ".join(engine_issues))
     for name,call in (("runtime",runtime_identity),("tools",tools),("models",audit_report),
                       ("couple-01",lambda:approved("couple-01",calibrated=True)),
                       ("couple-02",lambda:approved("couple-02",calibrated=True))):

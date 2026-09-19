@@ -237,6 +237,20 @@ def test_audit_report_is_actionable_without_private_absolute_paths(local):
     assert "template_rights_manifest_missing" in encoded and report["ready"] is False
 
 
+def test_template_rights_remediation_does_not_point_to_model_evidence(local):
+    for identifier in storage.TEMPLATES:
+        directory = storage.template_dir(identifier)
+        directory.mkdir(parents=True)
+        (directory / "master.mp4").write_bytes(b"fixture master")
+        storage.atomic(directory / "manifest.json", {"id": identifier, "rights": {}})
+    report = models.audit_report()
+    for item in report["templates"]:
+        if "template_rights_manifest_missing" not in item["blockers"]:
+            continue
+        assert f"templates rights add --id {item['id']}" in " ".join(item["next_steps"])
+        assert "models evidence add" not in " ".join(item["next_steps"])
+
+
 def test_track_correction_is_bounded_atomic_and_invalidates_review(local):
     directory = storage.template_dir("couple-01")
     directory.mkdir(parents=True)

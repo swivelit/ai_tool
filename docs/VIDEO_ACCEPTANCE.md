@@ -4,6 +4,16 @@ Use alongside [VIDEO_MAC_SETUP.md](VIDEO_MAC_SETUP.md). Software tests, native
 model QA, rights, publication approval, provider acceptance and deploy readiness
 are independent. None is manufactured by a configured flag or hash.
 
+## Current ZIP43 follow-up evidence boundary
+
+The current source revision is `8f8d615d480e0786b084bce13bf1e1f5ee4e2b1a` and
+the CLI package remains 0.2.9. The separate engine checkout must be inspected
+with `engine status`; runtime/tool success alone does not prove that the pinned
+FaceFusion source is intact. A dirty or wrong engine is a release blocker and
+must be archived/recreated explicitly. This pass does not claim native Intel
+inference, template likeness QA, benchmark timing, SMTP delivery or payment
+provider capture/refund.
+
 ## Reproducible local software checks (no provider/customer calls)
 
 ### Template cadence and local preprocessing correction

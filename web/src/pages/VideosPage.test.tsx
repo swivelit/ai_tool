@@ -97,3 +97,17 @@ it('supports explicit local photo removal before preflight', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Remove male photo' }))
   expect(screen.getByText('Validate photos on Mac (no charge)')).toBeDisabled()
 })
+
+it('exposes the strict supported-instructions field and rejects empty or wrong MIME files', async () => {
+  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: true, enabled: true, paid_enabled: false, policy_version: 'v1', consent_version: 'fixture', allowance: { unlimited: true, remaining: null, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: true }] } : { items: [] }))
+  render(<MemoryRouter><VideosPage /></MemoryRouter>)
+  const instructions = await screen.findByLabelText('Supported edit instructions') as HTMLTextAreaElement
+  expect(instructions.value).toContain('swap: both')
+  fireEvent.change(instructions, { target: { value: 'make them dance' } })
+  expect(screen.getByText('Validate photos on Mac (no charge)')).toBeDisabled()
+  const input = screen.getByLabelText('Male role photo')
+  fireEvent.change(input, { target: { files: [new File([], 'empty.jpg', { type: 'image/jpeg' })] } })
+  expect(screen.getByText(/non-empty JPEG/)).toBeInTheDocument()
+  fireEvent.change(input, { target: { files: [new File(['x'], 'not-image.txt', { type: 'text/plain' })] } })
+  expect(screen.getByText(/non-empty JPEG/)).toBeInTheDocument()
+})

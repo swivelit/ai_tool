@@ -251,7 +251,7 @@ def test_late_capture_compensates_and_ambiguous_refund_not_reposted(video,monkey
     with SessionLocal() as session: assert session.exec(select(VideoOutbox)).one().state=="manual_review"
 
 
-@pytest.mark.parametrize("value",["make them dance","swap: stranger","caption: ok\nlocation: beach","swap: male\nswap: female","caption: "+"x"*101])
+@pytest.mark.parametrize("value",["make them dance","swap: stranger","caption: ok\nlocation: beach","swap: male\nswap: female","caption: "+"x"*101,"caption: 🙂"])
 def test_prompt_grammar_rejects_unsupported(value):
     with pytest.raises(ValueError):instructions(value)
 
@@ -509,6 +509,35 @@ def test_exhausted_allowance_does_not_extend_unpaid_photo_ttl(video,monkeypatch)
     monkeypatch.setenv("SWICO_WEEKLY_TESTER_CREDITS_ENABLED","false")
     assert client.post(f"/api/web/videos/jobs/{job}/admit",json={"funding":"complimentary"}).status_code==409
     assert store.expiries[job,"male"]==original
+
+
+def test_unlimited_account_bypasses_only_the_six_preflight_product_cap(video, monkeypatch):
+    client, _, _, _ = video
+    # The fixture user is configured as unlimited. Six completed requests must
+    # not turn the seventh idempotent-new request into a product-cap denial;
+    # the one-active-request and native-capacity guards remain independent.
+    for index in range(6):
+        job_id = create(client, f"unlimited-{index}")
+        with SessionLocal() as session:
+            row = session.get(VideoJob, job_id)
+            row.state = "cancelled"
+            session.add(row)
+            session.commit()
+    response = client.post("/api/web/videos/jobs", json=consent_payload("unlimited-seventh"))
+    assert response.status_code == 201, response.text
+
+
+def test_new_photo_preflight_is_refused_while_native_capacity_is_busy(video):
+    client, _, _, _ = video
+    busy_user = create_test_user("busy-owner", "busy-video@example.com")
+    with SessionLocal() as session:
+        session.add(VideoJob(user_id=busy_user.id, request_key="busy", request_hash="b" * 64, email=busy_user.email,
+                             template_id="couple-01", manifest_hash="a" * 64, frozen_json="{}",
+                             state="processing", deadline=now() + timedelta(seconds=100)))
+        session.commit()
+    response = client.post("/api/web/videos/jobs", json=consent_payload("capacity-blocked"))
+    assert response.status_code == 503
+    assert "temporarily busy" in response.text
 
 
 def test_cache_sweep_failure_does_not_block_refund_email_processing(monkeypatch):

@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from fractions import Fraction
 import math
 from pathlib import Path
@@ -213,6 +214,7 @@ def correct_tracks(identifier, operation, track_id: int, *, role: str | None = N
         raise TemplateError("template_tracks_missing")
     tracks = read(tracks_path)
     ids = _track_ids(tracks)
+    original_tracks = json.loads(json.dumps(tracks))
     old = str(track_id)
     if old not in ids:
         raise TemplateError("template_track_unknown")
@@ -238,12 +240,33 @@ def correct_tracks(identifier, operation, track_id: int, *, role: str | None = N
         raise TemplateError("template_track_operation_invalid")
     _track_ids(tracks)
     manifest = read(manifest_path)
-    backup = backup_json(manifest_path, "template-" + identifier)
-    atomic(tracks_path, tracks)
-    manifest["approval"], manifest["benchmark"] = None, None
-    atomic(manifest_path, manifest)
+    original_manifest = json.loads(json.dumps(manifest))
+    track_backup = backup_json(tracks_path, "template-" + identifier + "-tracks")
+    manifest_backup = backup_json(manifest_path, "template-" + identifier)
+    try:
+        atomic(tracks_path, tracks)
+        manifest["approval"], manifest["benchmark"] = None, None
+        history = manifest.setdefault("track_corrections", [])
+        if not isinstance(history, list):
+            raise TemplateError("template_tracks_invalid")
+        history.append({"operation": operation, "track": track_id, "at_frame": at_frame,
+                        "role": role if operation == "reassign" else ("exclude" if operation == "exclude" else None),
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "tracks_backup": track_backup})
+        manifest["track_corrections"] = history[-20:]
+        atomic(manifest_path, manifest)
+    except Exception:
+        # A correction is a paired tracks/manifest state change.  Restore the
+        # previous JSON values if either publication step fails, while keeping
+        # the private backups for operator recovery.
+        try:
+            atomic(tracks_path, original_tracks)
+            atomic(manifest_path, original_manifest)
+        except Exception:
+            raise TemplateError("template_tracks_recovery_required") from None
+        raise
     return {"updated": True, "id": identifier, "operation": operation, "track": track_id,
-            "backup": bool(backup), "review_required": True, "approval_invalidated": True,
+            "backup": bool(track_backup or manifest_backup), "review_required": True, "approval_invalidated": True,
             "calibration_invalidated": True}
 
 
@@ -409,12 +432,17 @@ def benchmark(runs):
 
 def _benchmark(runs):
     from .engine import Engine
+    from .media import local_benchmark_photo
     import platform, tempfile
     if platform.system() != "Darwin" or platform.machine() != "x86_64" or runs < 3:
         raise ValueError("Native Intel Mac and at least three warm runs required")
     if input("Both source adults consent and you have permission to run this local benchmark? Type CONSENT: ") != "CONSENT":
         raise ValueError("Source consent required")
-    sources = {role:Path(input(f"Local {role} source photo path: ")).expanduser().resolve(strict=True) for role in ("male","female")}
+    raw_sources = {role: input(f"Local {role} source photo path: ") for role in ("male", "female")}
+    # Validate every path before loading the native engine or consuming a
+    # benchmark run.  In particular, Path("").resolve() must never become the
+    # repository directory.
+    sources = {role: local_benchmark_photo(value) for role, value in raw_sources.items()}
     start=time.monotonic(); engine=Engine(); load=time.monotonic()-start
     engine.sources(sources)
     for identifier in TEMPLATES:

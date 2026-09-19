@@ -1,5 +1,43 @@
 # Website video corrective implementation evidence — 2026-09-18
 
+## ZIP43 follow-up — current implementation checkout
+
+This follow-up starts from `8f8d615d480e0786b084bce13bf1e1f5ee4e2b1a`; the
+published CLI remains 0.2.9 and the deployed database head remains
+`20260918_website_video`. It adds no migration and does not claim the supplied
+operator Mac has passed native inference or quality acceptance.
+
+The separate FaceFusion checkout now has one bounded read-only status contract
+used by bootstrap, doctor and model audit. It distinguishes missing,
+non-repository, wrong revision, tracked changes and untracked changes without
+printing the private home path. Explicit `engine recover --recreate` holds the
+worker lock, refuses a loaded LaunchAgent, fetches the pinned commit privately,
+archives the old checkout and preserves the worker token/configuration,
+templates, rights and model bytes. A failed fetch does not destroy the old
+checkout.
+
+Bootstrap checks that status before locked dependency installation. Service
+status separately reports LaunchAgent loaded/running, local liveness, native
+readiness, backend health and `serving_ready`; installing or starting a service
+is not readiness evidence.
+
+Website admission now serializes control-before-job on checkout admission, so
+owner recovery remains possible while fresh admission is paused. Unpaid photo
+preflight admission reports capacity and refuses a new upload when an accepted
+validation/render already occupies the single native machine; this avoids
+creating a ten-minute unpaid hold that is predictably likely to expire. The
+configured unlimited account bypasses only the six-preflights/hour product cap;
+active-request, queue and machine limits remain enforced.
+
+The website retries its initial capability/history load, refreshes owned
+capabilities on focus/online and job changes, coalesces status polling while a
+request is in flight, validates zero-byte/unsupported MIME selections, and
+exposes the strict supported `swap`/`enhance`/printable-ASCII `caption`
+instruction field. The backend remains authoritative and rejects non-ASCII
+caption control input as well.
+
+Actual local evidence for this follow-up is recorded below after execution.
+
 ## Local rights/provenance onboarding hardening — this pass
 
 The production worker already has imported masters and the deployed schema is

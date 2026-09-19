@@ -86,8 +86,10 @@ def capabilities(session: Session = Depends(get_session), auth: AuthUser = Depen
     config = settings()
     effective_available = bool(config.enabled and svc.video_policy_ready() and control and svc.templates_current(session,control))
     paid_available = bool(effective_available and config.paid)
+    preflight_available = svc.preflight_capacity(session)
     return {"enabled": config.enabled, "paid_enabled": config.paid, "paid_configured": config.paid,
             "paid_available": paid_available, "available": effective_available,
+            "preflight_available": preflight_available,
             "price_paise": settings().price, "policy_version": AUP_VERSION, "consent_version": VIDEO_CONSENT_VERSION,
             "allowance": svc.allowance(session, auth, user),
             "source_max_retention_seconds": settings().max_age, "output_ttl_seconds": settings().ttl,
@@ -98,17 +100,22 @@ def capabilities(session: Session = Depends(get_session), auth: AuthUser = Depen
 @router.post("/jobs", status_code=201)
 def create(payload: Create, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = svc.owner(session, auth)
-    control = svc.admission(session)
     fingerprint = svc.digest(payload.model_dump())
     prior = session.exec(select(VideoJob).where(VideoJob.user_id == user.id, VideoJob.request_key == payload.request_key)).first()
     if prior:
         if prior.request_hash != fingerprint:
             raise HTTPException(409, "Request key reused with changed inputs")
         return svc.public_job(session, prior)
+    control = svc.admission(session)
     outstanding = session.exec(select(VideoJob).where(VideoJob.user_id == user.id, VideoJob.state.not_in(svc.TERMINAL))).all()
     recent = session.exec(select(VideoJob.id).where(VideoJob.user_id == user.id, VideoJob.created_at > now() - timedelta(hours=1))).all()
-    if outstanding or len(recent) >= 6:
-        raise HTTPException(429, "One outstanding request and six photo preflights per hour are allowed")
+    unlimited = auth.email.strip().casefold() in settings().unlimited
+    if outstanding:
+        raise HTTPException(429, "One outstanding request is allowed")
+    if not unlimited and len(recent) >= 6:
+        raise HTTPException(429, "Six photo preflights per hour are allowed")
+    if not svc.preflight_capacity(session):
+        raise HTTPException(503, "Photo validation is temporarily busy behind an accepted render; try again when the displayed capacity recovers")
     if len(session.exec(select(VideoJob.id).where(VideoJob.state.not_in(svc.TERMINAL))).all()) >= settings().capacity:
         raise HTTPException(429, "Video queue is full")
     template = session.get(VideoTemplate, payload.template_id)
@@ -190,6 +197,10 @@ def preflight(job_id: str, session: Session = Depends(get_session), auth: AuthUs
 @router.post("/jobs/{job_id}/admit")
 def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = svc.owner(session, auth)
+    # All paths that may update an existing job serialize on VideoControl
+    # first.  Existing checkout recovery intentionally happens before the
+    # fresh-admission gate, so disabling new admissions cannot strand a hold.
+    control = svc.control(session)
     job = svc.owned_job(session, user.id, job_id)
     if job.state == "checkout" and job.admitted_at and (now() - svc.utc(job.admitted_at)).total_seconds() > 300:
         # Never create a second provider order for a dismissed/expired hold.
@@ -203,7 +214,7 @@ def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), 
             raise HTTPException(409, "Funding choice changed")
         order = session.get(PaymentOrder, job.payment_id) if job.payment_id else None
         return {"job": svc.public_job(session, job), "checkout": checkout(order) if order and order.provider_order_id else None}
-    control = svc.admission(session,templates_required=False)
+    control = svc.admission(session,templates_required=False, locked_control=control)
     if job.state != "validated" or svc.utc(job.deadline) <= now():
         raise HTTPException(409, "A current successful Mac preflight is required")
     if not svc.consent_current(json.loads(job.frozen_json)):

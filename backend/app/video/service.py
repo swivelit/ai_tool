@@ -89,13 +89,23 @@ def templates_current(session, row):
                 and all(template_current(row,json.loads(r.metadata_json)) for r in records))
 
 
-def admission(session: Session, *, templates_required=True) -> VideoControl:
-    row = control(session)
+def admission(session: Session, *, templates_required=True, locked_control: VideoControl | None = None) -> VideoControl:
+    row = locked_control or control(session)
     if not settings().enabled or not healthy(row) or (templates_required and not templates_current(session,row)):
         raise HTTPException(503, "Video admission paused: verified worker unavailable")
     if not video_policy_ready():
         raise HTTPException(503, "Video admission paused: current video policy publication approval required")
     return row
+
+
+def preflight_capacity(session: Session) -> bool:
+    """Only accept unpaid photo uploads when validation can start safely.
+
+    A render or an already queued/running validation owns the one native
+    machine.  Rejecting before job creation avoids creating a ten-minute
+    upload hold that is predictably likely to expire behind paid work.
+    """
+    return session.exec(select(VideoJob.id).where(VideoJob.state.in_({"preflight_queued", "preflighting", "processing"})).limit(1)).first() is None
 
 
 def owned_job(session: Session, user_id: int, job_id: str) -> VideoJob:

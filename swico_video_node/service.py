@@ -57,12 +57,22 @@ def service(action):
     status=inspect_service(domain)
     if action=="status":
         from .diagnostics import api_check
+        from .worker import readiness
         try:
             live=read(root()/"liveness.json")
             fresh=0<=time.time()-live["time"]<45 and status["pid"] in {live["pid"],live.get("parent_pid")}
             if fresh: os.kill(live["pid"],0)
         except (OSError,ValueError,KeyError,TypeError): fresh=False
-        return {**status,"local_liveness":fresh,"backend":api_check(),"plist":str(path),"logs":str(root()/"logs")}
+        try:
+            native = {"ready": True, **readiness()}
+        except Exception as exc:
+            from .runtime import safe_error
+            native = {"ready": False, **safe_error(exc, "native_readiness")}
+        backend = api_check()
+        serving = bool(status["running"] and fresh and backend.get("authenticated") and
+                       backend.get("worker_active") and backend.get("templates_current") and native.get("ready"))
+        return {**status,"local_liveness":fresh,"native_readiness":native,"serving_ready":serving,
+                "backend":backend,"plist":str(path),"logs":str(root()/"logs")}
     if action=="install":
         runtime_identity()  # The absolute interpreter must be the native locked venv.
         tools()  # Same pinned identity used in rendering-child/template paths.
