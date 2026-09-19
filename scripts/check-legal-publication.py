@@ -90,7 +90,7 @@ def legal_content_fingerprint(data: dict[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def _approval_findings(publication: dict[str, Any], content_fingerprint: str) -> list[str]:
+def _approval_findings(publication: dict[str, Any], content_fingerprint: str, owner_attestation_path: Path | None = None) -> list[str]:
     status = _value(publication, "publicationStatus")
     approval = publication.get("approval") if isinstance(publication.get("approval"), dict) else {}
     approval_type = _value(approval, "approvalType")
@@ -120,7 +120,7 @@ def _approval_findings(publication: dict[str, Any], content_fingerprint: str) ->
             errors.append("approved legal-content SHA-256 does not match current publishable content")
 
         try:
-            attestation = OWNER_ATTESTATION.read_text(encoding="utf-8")
+            attestation = (owner_attestation_path or OWNER_ATTESTATION).read_text(encoding="utf-8")
         except OSError:
             errors.append("owner-attested publication requires docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md")
         else:
@@ -161,7 +161,7 @@ def _approval_findings(publication: dict[str, Any], content_fingerprint: str) ->
     return errors
 
 
-def _stale_pricing_findings(data: dict[str, Any]) -> list[str]:
+def _stale_pricing_findings(data: dict[str, Any], owner_attestation_path: Path | None = None) -> list[str]:
     pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
     errors: list[str] = []
     terms_text = "\n".join(_strings(pages.get("terms", {})))
@@ -185,7 +185,7 @@ def _stale_pricing_findings(data: dict[str, Any]) -> list[str]:
             "Rs.100 and Rs.500 package set; exact owner/counsel-approved replacement wording is required"
         )
     try:
-        attestation = OWNER_ATTESTATION.read_text(encoding="utf-8")
+        attestation = (owner_attestation_path or OWNER_ATTESTATION).read_text(encoding="utf-8")
     except OSError:
         attestation = ""
     if "the ₹10, ₹50, ₹100 and ₹500 packages match the actual product" in attestation:
@@ -196,9 +196,13 @@ def _stale_pricing_findings(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def findings() -> list[str]:
+def findings(*, content_path: Path | None = None, app_path: Path | None = None,
+             owner_attestation_path: Path | None = None) -> list[str]:
+    content_path = content_path or CONTENT
+    app_path = app_path or APP
+    owner_attestation_path = owner_attestation_path or OWNER_ATTESTATION
     try:
-        data = json.loads(CONTENT.read_text(encoding="utf-8"))
+        data = json.loads(content_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"legal content cannot be read as JSON: {type(exc).__name__}"]
 
@@ -208,8 +212,8 @@ def findings() -> list[str]:
 
     if not _value(publication, "businessIdentity"):
         errors.append("missing business identity")
-    errors.extend(_approval_findings(publication, legal_content_fingerprint(data)))
-    errors.extend(_stale_pricing_findings(data))
+    errors.extend(_approval_findings(publication, legal_content_fingerprint(data), owner_attestation_path))
+    errors.extend(_stale_pricing_findings(data, owner_attestation_path))
 
     errors.extend(_email_findings("support email", _value(publication, "supportEmail", "supportContact")))
     errors.extend(_email_findings("billing-support email", _value(publication, "billingSupportEmail")))
@@ -256,7 +260,7 @@ def findings() -> list[str]:
                 errors.append(f"{slug}: contains {marker}")
 
     try:
-        app_source = APP.read_text(encoding="utf-8")
+        app_source = app_path.read_text(encoding="utf-8")
     except OSError:
         errors.append("missing canonical /pricing route")
     else:

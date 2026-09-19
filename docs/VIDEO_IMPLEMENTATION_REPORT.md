@@ -579,3 +579,21 @@ Commit message:
 - `web/src/video/VideoCard.tsx`
 - `web/src/video/types.ts`
 - `web/src/video/video.css`
+
+## Legal publication implementation note
+
+The final video legal candidate is intentionally separate from the already
+published canonical Chat policy. `scripts/publish-video-legal.py` performs an
+owner-attested, local-only publication: it preserves canonical business/contact
+fields, copies only the reviewed video page set, calculates the exact page
+SHA-256, validates the candidate with the existing checker, writes mode-0600
+backups, and atomically replaces the page and private attestation only after
+explicit confirmation. It never claims counsel approval or third-party rights.
+
+The website requires eight explicit source/adult/synthetic-media attestations
+under a versioned consent contract. The backend stores the versioned values in
+the existing frozen job record and revalidates them at admission. The worker
+requires a job-bound opaque provenance ID and disclosure header; the renderer
+adds a high-contrast `AI-EDITED / SYNTHETIC MEDIA - SWICO` label and bounded
+MP4 metadata. These controls do not replace genuine model, template, performer,
+audio or source-face rights evidence.

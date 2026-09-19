@@ -9,12 +9,31 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 from ..auth import AuthUser, get_owned_user, is_weekly_tester_user
 from ..models import PaymentOrder, WebChatMessage, WebChatThread
-from .config import settings
+from .config import AUP_VERSION, VIDEO_CONSENT_VERSION, settings
 from .policy import video_policy_ready
 from .models import VideoControl, VideoJob, VideoOutbox, VideoQuota, VideoTemplate, now
 
 TERMINAL = {"ready", "expired", "failed", "cancelled", "refund_pending", "refunded"}
 ACTIVE = {"checkout", "queued", "processing"}
+PROVENANCE_PREFIX = "swico-v1-"
+
+
+def provenance_id(job_id: str) -> str:
+    """Opaque, non-sensitive identifier stable for one generated job."""
+    return PROVENANCE_PREFIX + hashlib.sha256(("swico-video-output:v1:" + job_id).encode()).hexdigest()[:24]
+
+
+def consent_current(frozen: dict) -> bool:
+    consent = frozen.get("consent") if isinstance(frozen, dict) else None
+    required = (
+        "requester_adult", "source_faces_adult", "source_face_permission",
+        "source_photo_rights", "synthetic_media_acknowledged",
+        "prohibited_use_acknowledged", "retention_acknowledged",
+        "disclosure_acknowledged",
+    )
+    return bool(isinstance(consent, dict) and consent.get("version") == VIDEO_CONSENT_VERSION
+                and consent.get("policy_version") == AUP_VERSION
+                and all(consent.get(key) is True for key in required))
 
 
 def utc(value: datetime) -> datetime:
@@ -230,6 +249,7 @@ def public_job(session: Session, job: VideoJob) -> dict:
     email = session.exec(select(VideoOutbox).where(VideoOutbox.job_id == job.id, VideoOutbox.kind == "ready_email")).first()
     return {"id": job.id, "template_id": job.template_id, "state": state, "phase": job.phase, "progress": job.progress,
             "error": job.error, "funding": job.funding, "thread_id": job.thread_id, "options": json.loads(job.options_json),
+            "provenance_id": provenance_id(job.id),
             "queue_position": len(ahead) + 1 if job.state == "queued" else None,
             "eta_seconds": [round(sum(x[i] for x in durations)+(busy_seconds if i else 0)) for i in (0, 1)] if durations and row and healthy(row) and job.state in {"queued", "processing"} else None,
             "eta_confidence": "calibrated_range_not_SLA" if durations else "calibrating", "paused": not (row and healthy(row)),

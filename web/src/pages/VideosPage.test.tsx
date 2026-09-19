@@ -16,14 +16,14 @@ it('shows unavailable templates and does not allow checkout without preflight', 
 })
 
 it('requires explicit consent and selected role uploads for Mac preflight', async () => {
-  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: true, enabled: true, paid_enabled: true, price_paise: 2500, policy_version: 'v1', allowance: { unlimited: true, remaining: null, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: true }] } : { items: [] }))
+  mock.api.mockImplementation((_user: unknown, path: string) => Promise.resolve(path.endsWith('capabilities') ? { available: true, enabled: true, paid_enabled: true, price_paise: 2500, policy_version: 'v1', consent_version: 'video-source-consent-2026-09-19', allowance: { unlimited: true, remaining: null, reset_at: new Date().toISOString() }, templates: [{ id: 'couple-01', title: 'Couple scene 1', available: true }] } : { items: [] }))
   render(<MemoryRouter><VideosPage /></MemoryRouter>)
   const button = await screen.findByText('Validate photos on Mac (no charge)')
   expect(button).toBeDisabled()
   fireEvent.change(screen.getByLabelText('Male role photo'), { target: { files: [new File(['fixture'], 'photo.jpg', { type: 'image/jpeg' })] } })
   fireEvent.change(screen.getByLabelText('Female role photo'), { target: { files: [new File(['fixture'], 'photo2.jpg', { type: 'image/jpeg' })] } })
   expect(button).toBeDisabled()
-  fireEvent.click(screen.getByRole('checkbox'))
+  for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
   expect(button).toBeEnabled()
 })
 
@@ -37,7 +37,7 @@ it('keeps an interrupted upload visible instead of hiding an outstanding request
   render(<MemoryRouter><VideosPage /></MemoryRouter>)
   const button = await screen.findByText('Validate photos on Mac (no charge)')
   for (const label of ['Male role photo', 'Female role photo']) fireEvent.change(screen.getByLabelText(label), { target: { files: [new File(['fixture'], 'photo.jpg', { type: 'image/jpeg' })] } })
-  fireEvent.click(screen.getByRole('checkbox'))
+  for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
   // jsdom does not populate the native file-input validity state from File arrays.
   fireEvent.submit(button.closest('form')!)
   expect(await screen.findByText('Upload interrupted')).toBeInTheDocument()

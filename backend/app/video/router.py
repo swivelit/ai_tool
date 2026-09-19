@@ -16,7 +16,7 @@ from ..models import PaymentOrder
 from ..billing.razorpay_client import RazorpayClient
 from . import service as svc
 from .cache import cache
-from .config import AUP_VERSION, TEMPLATE_IDS, settings
+from .config import AUP_VERSION, TEMPLATE_IDS, VIDEO_CONSENT_VERSION, settings
 from .media import RAW_LIMIT, instructions, normalize_image, sha, validate_mp4
 from .models import VideoJob, VideoTemplate, VideoControl, now
 
@@ -34,7 +34,15 @@ class Create(Strict):
     instructions: str = Field(default="swap: both\nenhance: off", max_length=300)
     consent: Literal[True]
     adult: Literal[True]
+    source_faces_adult: Literal[True]
+    source_face_permission: Literal[True]
+    source_photo_rights: Literal[True]
+    synthetic_media_acknowledged: Literal[True]
+    prohibited_use_acknowledged: Literal[True]
+    retention_acknowledged: Literal[True]
+    disclosure_acknowledged: Literal[True]
     policy_version: Literal["video-adult-consent-2026-09-18"]
+    consent_version: Literal["video-source-consent-2026-09-19"]
 
 
 class Admit(Strict):
@@ -80,7 +88,8 @@ def capabilities(session: Session = Depends(get_session), auth: AuthUser = Depen
     paid_available = bool(effective_available and config.paid)
     return {"enabled": config.enabled, "paid_enabled": config.paid, "paid_configured": config.paid,
             "paid_available": paid_available, "available": effective_available,
-            "price_paise": settings().price, "policy_version": AUP_VERSION, "allowance": svc.allowance(session, auth, user),
+            "price_paise": settings().price, "policy_version": AUP_VERSION, "consent_version": VIDEO_CONSENT_VERSION,
+            "allowance": svc.allowance(session, auth, user),
             "source_max_retention_seconds": settings().max_age, "output_ttl_seconds": settings().ttl,
             "templates": [{"id": key, "title": templates[key].title if key in templates else "Couple scene " + key[-1],
                            "available": bool(key in templates and control and svc.template_current(control,json.loads(templates[key].metadata_json))), "metadata": json.loads(templates[key].metadata_json) if key in templates else None} for key in TEMPLATE_IDS]}
@@ -111,7 +120,19 @@ def create(payload: Create, session: Session = Depends(get_session), auth: AuthU
         options = instructions(payload.instructions)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
-    frozen = {**json.loads(template.metadata_json), "consent": {"policy_version": AUP_VERSION, "adult": True, "face_rights": True, "accepted_at": now().isoformat()}}
+    frozen = {**json.loads(template.metadata_json), "consent": {
+        "version": payload.consent_version,
+        "policy_version": payload.policy_version,
+        "requester_adult": payload.adult,
+        "source_faces_adult": payload.source_faces_adult,
+        "source_face_permission": payload.source_face_permission,
+        "source_photo_rights": payload.source_photo_rights,
+        "synthetic_media_acknowledged": payload.synthetic_media_acknowledged,
+        "prohibited_use_acknowledged": payload.prohibited_use_acknowledged,
+        "retention_acknowledged": payload.retention_acknowledged,
+        "disclosure_acknowledged": payload.disclosure_acknowledged,
+        "accepted_at": now().isoformat(),
+    }}
     job = VideoJob(user_id=user.id, request_key=payload.request_key, request_hash=fingerprint, email=auth.email.strip().casefold(),
                    template_id=template.id, manifest_hash=template.manifest_hash, frozen_json=svc.encode(frozen),
                    options_json=svc.encode(options), deadline=now() + timedelta(seconds=600))
@@ -178,6 +199,8 @@ def admit(job_id: str, payload: Admit, session: Session = Depends(get_session), 
         return {"job": svc.public_job(session, job), "checkout": checkout(order) if order and order.provider_order_id else None}
     if job.state != "validated" or svc.utc(job.deadline) <= now():
         raise HTTPException(409, "A current successful Mac preflight is required")
+    if not svc.consent_current(json.loads(job.frozen_json)):
+        raise HTTPException(409, "Fresh source-face consent is required before admission")
     template = session.get(VideoTemplate, job.template_id)
     if template.manifest_hash != job.manifest_hash or not svc.template_current(control,json.loads(job.frozen_json)):
         raise HTTPException(409, "Template changed; repeat validation")
@@ -378,7 +401,8 @@ def claim(request: Request, session: Session = Depends(get_session)):
     session.commit()
     return {"job": {"id": job.id, "state": job.state, "attempt": job.attempt, "fence": job.fence,
                     "deadline": svc.utc(job.deadline).isoformat(), "template": json.loads(job.frozen_json),
-                    "options": json.loads(job.options_json), "inputs": json.loads(job.inputs_json)}}
+                    "options": json.loads(job.options_json), "inputs": json.loads(job.inputs_json),
+                    "provenance_id": svc.provenance_id(job.id)}}
 
 
 class Progress(Strict):
@@ -416,6 +440,8 @@ async def output(job_id: str, request: Request, session: Session = Depends(get_s
     job = fenced(session, request, job_id)
     if job.state != "processing":
         raise HTTPException(409, "Not a render attempt")
+    if request.headers.get("x-video-provenance") != svc.provenance_id(job.id) or request.headers.get("x-video-disclosure") != "swico-ai-edited-v1":
+        raise HTTPException(422, "Verified Swico disclosure and provenance are required")
     try:
         validate_mp4(data)
         cache().put(job.id, "output", data, int(svc.utc(job.deadline).timestamp()))

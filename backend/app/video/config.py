@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 AUP_VERSION = "video-adult-consent-2026-09-18"
+VIDEO_CONSENT_VERSION = "video-source-consent-2026-09-19"
 TEMPLATE_IDS = ("couple-01", "couple-02")
 
 

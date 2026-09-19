@@ -60,6 +60,7 @@ export function VideoCard({ jobId }: { jobId: string }) {
     {error && <p role="alert">{error}</p>}
     {!job ? <p>Loading video status…</p> : <>
       <p>{expired ? 'Expired — the temporary video is no longer available.' : `${job.state} · ${job.phase}`}</p>
+      {job.provenance_id && <p>AI-edited / synthetic media · provenance {job.provenance_id}</p>}
       {!expired && job.state === 'processing' && <progress max={100} value={job.progress}>{job.progress}%</progress>}
       {job.queue_position && <p>Queue position {job.queue_position}. {job.paused ? 'Worker offline; queue paused.' : job.eta_seconds ? `Estimated ${Math.ceil(job.eta_seconds[0] / 60)}–${Math.ceil(job.eta_seconds[1] / 60)} minutes; not a guarantee.` : 'Calibrating estimate.'}</p>}
       {job.error && <p>{job.error.replaceAll('_', ' ')}</p>}

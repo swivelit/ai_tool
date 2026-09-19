@@ -13,7 +13,7 @@ from app.main import app
 from app.database import SessionLocal
 from app.models import PaymentOrder, WalletLedger, WebChatMessage
 from app.video import router as routes, service as svc, maintenance
-from app.video.config import AUP_VERSION, settings
+from app.video.config import AUP_VERSION, VIDEO_CONSENT_VERSION, settings
 from app.video.media import normalize_image, instructions, validate_mp4, sha
 from app.video.models import VideoControl, VideoJob, VideoTemplate, VideoQuota, VideoOutbox, now
 from app.billing.service import fulfill_payment_once, reverse_credit_for_refund
@@ -67,7 +67,10 @@ def video(monkeypatch, client):
 
 def headers(job=None):
     result={"Authorization":"Bearer test-worker-token","X-Worker-Id":"intel-mac-01","X-Worker-Boot":"test-boot-identity"}
-    if job: result.update({"X-Video-Fence":job["fence"],"X-Video-Attempt":str(job["attempt"])})
+    if job:
+        result.update({"X-Video-Fence":job["fence"],"X-Video-Attempt":str(job["attempt"])})
+        if job.get("provenance_id"):
+            result.update({"X-Video-Provenance":job["provenance_id"],"X-Video-Disclosure":"swico-ai-edited-v1"})
     return result
 
 
@@ -76,7 +79,7 @@ def image():
 
 
 def create(client,key=None):
-    response=client.post("/api/web/videos/jobs",json={"template_id":"couple-01","request_key":key or str(uuid4()),"instructions":"swap: male\nenhance: off","consent":True,"adult":True,"policy_version":AUP_VERSION})
+    response=client.post("/api/web/videos/jobs",json=consent_payload(key or str(uuid4()), "swap: male\nenhance: off"))
     assert response.status_code==201,response.text
     job=response.json()
     assert client.put(f"/api/web/videos/jobs/{job['id']}/photos/male",content=image()).status_code==200
@@ -87,9 +90,53 @@ def create(client,key=None):
     return job["id"]
 
 
+def consent_payload(request_key, instructions="swap: both\nenhance: off", **overrides):
+    payload={"template_id":"couple-01","request_key":request_key,"instructions":instructions,"consent":True,"adult":True,
+             "source_faces_adult":True,"source_face_permission":True,"source_photo_rights":True,
+             "synthetic_media_acknowledged":True,"prohibited_use_acknowledged":True,
+             "retention_acknowledged":True,"disclosure_acknowledged":True,
+             "policy_version":AUP_VERSION,"consent_version":VIDEO_CONSENT_VERSION}
+    payload.update(overrides)
+    return payload
+
+
 def mp4():
     # Structural fixture only; NEVER native inference/container decoder evidence.
     return b"".join(struct.pack(">I4s",8+len(v),k)+v for k,v in [(b"ftyp",b"isom0000"),(b"moov",b"videavc1"),(b"mdat",b"fixture")])
+
+
+def test_source_face_consent_is_complete_and_versioned_before_job_creation(video):
+    client, _, _, _ = video
+    payload = consent_payload(str(uuid4()))
+    payload.pop("source_photo_rights")
+    response = client.post("/api/web/videos/jobs", json=payload)
+    assert response.status_code == 422
+
+
+def test_stale_source_face_consent_cannot_be_admitted_or_charged(video):
+    client, _, _, _ = video
+    job_id = create(client)
+    with SessionLocal() as session:
+        row = session.get(VideoJob, job_id)
+        frozen = json.loads(row.frozen_json)
+        frozen["consent"]["version"] = "video-source-consent-old"
+        row.frozen_json = json.dumps(frozen)
+        session.add(row)
+        session.commit()
+    response = client.post(f"/api/web/videos/jobs/{job_id}/admit", json={"funding":"paid"})
+    assert response.status_code == 409
+    with SessionLocal() as session:
+        assert not session.exec(select(PaymentOrder)).all()
+
+
+def test_worker_output_requires_job_bound_disclosure_and_provenance(video):
+    client, _, _, _ = video
+    job_id = create(client)
+    assert client.post(f"/api/web/videos/jobs/{job_id}/admit", json={"funding":"complimentary"}).status_code == 200
+    claim = client.post("/api/video-worker/v1/claim", headers=headers()).json()["job"]
+    assert claim["provenance_id"].startswith("swico-v1-")
+    assert client.put(f"/api/video-worker/v1/jobs/{job_id}/output", headers={**headers(claim), "X-Video-Provenance":"swico-v1-000000000000000000000000"}, content=mp4()).status_code == 422
+    assert client.put(f"/api/video-worker/v1/jobs/{job_id}/output", headers=headers(claim), content=mp4()).status_code == 200
 
 
 def test_complete_free_delivery_and_immutable_expiry(video,monkeypatch):
@@ -331,7 +378,7 @@ def test_stale_published_runtime_disables_new_requests_without_affecting_owner_c
         data=json.loads(template.metadata_json);data[field]=value;template.metadata_json=json.dumps(data)
         session.add(template);session.commit()
     assert client.get("/api/web/videos/capabilities").json()["available"] is False
-    response=client.post("/api/web/videos/jobs",json={"template_id":"couple-01","request_key":str(uuid4()),"consent":True,"adult":True,"policy_version":AUP_VERSION})
+    response=client.post("/api/web/videos/jobs",json=consent_payload(str(uuid4())))
     assert response.status_code==503
     assert client.get(f"/api/web/videos/jobs/{job}").status_code==200
     assert client.post(f"/api/web/videos/jobs/{job}/cancel").status_code==200
@@ -414,7 +461,7 @@ def test_unapproved_video_policy_never_reuses_existing_chat_approval(video,monke
     monkeypatch.setattr(svc,"video_policy_ready",lambda:False)
     client,_,_,_=video
     assert client.get("/api/web/videos/capabilities").json()["available"] is False
-    response=client.post("/api/web/videos/jobs",json={"template_id":"couple-01","request_key":"policy-blocked","instructions":"swap: male","consent":True,"adult":True,"policy_version":AUP_VERSION})
+    response=client.post("/api/web/videos/jobs",json=consent_payload("policy-blocked", "swap: male"))
     assert response.status_code==503
 
 

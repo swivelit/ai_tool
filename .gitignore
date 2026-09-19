@@ -63,6 +63,7 @@ release-signing.properties
 private/
 *.legal-source.pdf
 *.legal-source.docx
+.swico-legal-publication-backups/
 keystores/
 mobile/android/key.properties
 mobile/android/app/*.jks

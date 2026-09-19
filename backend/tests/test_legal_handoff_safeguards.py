@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,7 @@ def _load_script(module_name: str, script_name: str):
 
 SOURCE_CHECKER = _load_script("check_legal_source_readiness", "check-legal-source-readiness.py")
 PUBLICATION_CHECKER = _load_script("check_legal_publication", "check-legal-publication.py")
+VIDEO_PUBLISHER = _load_script("publish_video_legal", "publish-video-legal.py")
 
 
 def _descriptions(findings: list[tuple[str, str]]) -> list[str]:
@@ -176,6 +178,54 @@ def test_legal_content_fingerprint_changes_for_material_page_edits():
     assert PUBLICATION_CHECKER.legal_content_fingerprint(copied) == original
     copied["pages"]["terms"]["sections"][0]["body"] += " Material change."
     assert PUBLICATION_CHECKER.legal_content_fingerprint(copied) != original
+
+
+def test_video_owner_publication_helper_dry_run_is_non_mutating(tmp_path: Path):
+    canonical_before = (ROOT / "web/src/content/legalContent.json").read_bytes()
+    attestation_before = (ROOT / "docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md").read_bytes()
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/publish-video-legal.py"), "--owner-attestation",
+         "--approver-role", "Accountable Product Owner", "--approval-date", "2026-09-19", "--dry-run"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "no files changed" in result.stdout
+    assert (ROOT / "web/src/content/legalContent.json").read_bytes() == canonical_before
+    assert (ROOT / "docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md").read_bytes() == attestation_before
+
+
+def test_video_owner_publication_candidate_is_exactly_checker_validated():
+    current = _publication_data()
+    draft = json.loads((ROOT / "web/src/content/videoLegalDraft.json").read_text(encoding="utf-8"))
+    candidate, fingerprint = VIDEO_PUBLISHER.build_candidate(
+        current, draft, PUBLICATION_CHECKER, "Accountable Product Owner", "2026-09-19", "SWICO-TEST-OWNER-1"
+    )
+    attestation = VIDEO_PUBLISHER.attestation_text("Accountable Product Owner", "2026-09-19", "SWICO-TEST-OWNER-1", fingerprint)
+    assert candidate["publication"]["approval"]["approvedLegalContentSha256"] == fingerprint
+    assert "Not reviewed or approved by legal counsel" in attestation
+    assert "SWICO-TEST-OWNER-1" in attestation
+
+
+def test_video_owner_publication_writes_temp_files_and_private_backup(tmp_path: Path, monkeypatch):
+    content_path = tmp_path / "legalContent.json"
+    attestation_path = tmp_path / "OWNER_LEGAL_PUBLICATION_ATTESTATION.md"
+    backup_path = tmp_path / "backups"
+    content_path.write_text(json.dumps(_publication_data()), encoding="utf-8")
+    attestation_path.write_text("old private record", encoding="utf-8")
+    monkeypatch.setattr(VIDEO_PUBLISHER, "CONTENT", content_path)
+    monkeypatch.setattr(VIDEO_PUBLISHER, "DRAFT", ROOT / "web/src/content/videoLegalDraft.json")
+    monkeypatch.setattr(VIDEO_PUBLISHER, "ATTESTATION", attestation_path)
+    monkeypatch.setattr(VIDEO_PUBLISHER, "BACKUPS", backup_path)
+    monkeypatch.setattr(sys, "argv", ["publish-video-legal.py", "--owner-attestation", "--approver-role", "Accountable Owner",
+                                       "--approval-date", "2026-09-19", "--confirm-authority",
+                                       "--confirm-not-counsel-reviewed", "--confirm-right-to-publish"])
+    assert VIDEO_PUBLISHER.main() == 0
+    published = json.loads(content_path.read_text(encoding="utf-8"))
+    assert published["publication"]["publicationStatus"] == "owner_approved"
+    assert published["pages"] == json.loads((ROOT / "web/src/content/videoLegalDraft.json").read_text(encoding="utf-8"))["pages"]
+    backups = list(backup_path.glob("*.bak"))
+    assert len(backups) == 2 and all(os.stat(path).st_mode & 0o077 == 0 for path in backups)
+    assert PUBLICATION_CHECKER.findings(content_path=content_path, app_path=ROOT / "web/src/App.tsx", owner_attestation_path=attestation_path) == []
 
 
 def test_matching_owner_fingerprint_and_attestation_can_pass(tmp_path: Path, monkeypatch):

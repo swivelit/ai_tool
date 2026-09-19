@@ -106,9 +106,10 @@ class Engine:
         if any(ord(c) < 32 or ord(c) > 126 for c in value) or len(value) > 100:
             raise ValueError("caption_unsupported")
 
-    def render(self, template_id: str, paths: dict, options: dict, output: Path, progress=lambda *_:None):
+    def render(self, template_id: str, paths: dict, options: dict, output: Path, progress=lambda *_:None, provenance: str | None = None):
         from PIL import Image, ImageDraw, ImageFont
         from .templates import approved
+        from .provenance import draw_disclosure, metadata_args, provenance_id, verify_output
         manifest = approved(template_id)
         directory = template_dir(template_id)
         source = self.sources(paths)
@@ -117,10 +118,11 @@ class Engine:
         meta = manifest["media"]
         target = directory / "master.mp4"
         cap = self.cv.VideoCapture(str(target))
+        output_provenance = provenance or provenance_id(provenance_id_for_render(template_id, output))
         encoder = subprocess.Popen([tool("ffmpeg"),"-nostdin","-v","error","-y","-f","rawvideo","-pixel_format","bgr24",
             "-video_size",f"{meta['width']}x{meta['height']}","-framerate",meta["fps"],"-i","pipe:0","-i",str(target),
             "-map","0:v:0","-map","1:a?","-c:v","libx264","-crf","18","-preset","medium","-pix_fmt","yuv420p",
-            "-c:a","copy","-map_metadata","-1","-movflags","+faststart",str(output)], stdin=subprocess.PIPE,stderr=subprocess.PIPE,env=minimal_environment())
+            "-c:a","copy","-map_metadata","-1",*metadata_args(output_provenance),"-movflags","+faststart",str(output)], stdin=subprocess.PIPE,stderr=subprocess.PIPE,env=minimal_environment())
         import threading
         error_tail = bytearray()
         def drain_errors():
@@ -157,7 +159,7 @@ class Engine:
                 image = Image.fromarray(self.np.clip(final,0,255).astype("uint8")[:,:,::-1])
                 draw = ImageDraw.Draw(image)
                 font = ImageFont.load_default(size=max(10, meta["height"]//28))
-                draw.text((8,8),"Swico · AI-edited",font=font,fill="white",stroke_width=1,stroke_fill="black")
+                draw_disclosure(draw, image.width, image.height, font)
                 if options["caption"]:
                     draw.text((8,meta["height"]-28),options["caption"],font=font,fill="white",stroke_width=1,stroke_fill="black")
                 encoder.stdin.write(self.np.array(image)[:,:,::-1].tobytes())
@@ -175,7 +177,13 @@ class Engine:
         if output.stat().st_size > 16777216 or result["frames"] != meta["frames"] or abs(result["duration_seconds"] - meta["duration_seconds"]) > .1:
             raise ValueError("render_failed")
         capture([tool("ffmpeg"),"-nostdin","-v","error","-i",str(output),"-f","null","-"],timeout=60)
+        verify_output(output, output_provenance)
         return time.monotonic()-start
+
+
+def provenance_id_for_render(template_id: str, output: Path) -> str:
+    """Use a non-user, local identity for benchmark renders."""
+    return f"benchmark:{template_id}:{output.name}"
 
 
 def iou(a,b):

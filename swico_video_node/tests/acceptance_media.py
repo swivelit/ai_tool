@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from swico_video_node import engine, runtime, storage, templates
+from swico_video_node import engine, provenance, runtime, storage, templates
 
 
 @pytest.fixture
@@ -83,3 +83,13 @@ def test_real_vfr_is_rejected_by_inspect_normalize_and_import(native,tmp_path):
         assert (report.get("reason") or report["error"]["reason"])=="template_vfr_unsupported"
     assert not output.exists() and not (node/"templates/couple-01").exists()
     assert not list(tmp_path.glob(".swico-normalize-*"))
+
+
+def test_real_ffmpeg_output_retains_synthetic_disclosure_metadata(native,tmp_path):
+    tools,_ = native
+    output = tmp_path / "disclosed.mp4"
+    identifier = provenance.provenance_id("native-codec-fixture")
+    runtime.capture([tools["ffmpeg"]["path"], "-nostdin", "-v", "error", "-n", "-f", "lavfi",
+                     "-i", "color=c=black:s=496x368:r=30:duration=1", "-c:v", "libx264",
+                     "-pix_fmt", "yuv420p", *provenance.metadata_args(identifier), str(output)], timeout=60)
+    assert provenance.verify_output(output, identifier)["disclosure"] == provenance.DISCLOSURE_TAG

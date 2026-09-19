@@ -9,6 +9,9 @@ import type { VideoCapabilities, VideoJob } from '../video/types'
 import '../video/video.css'
 
 type Checkout = { key_id: string; amount: number; currency: string; provider_order_id: string; internal_order_id: string }
+type ConsentKey = 'requesterAdult' | 'sourceFacesAdult' | 'sourceFacePermission' | 'sourcePhotoRights' | 'syntheticMedia' | 'prohibitedUse' | 'retention' | 'disclosure'
+type ConsentState = Record<ConsentKey, boolean>
+const emptyConsent: ConsentState = { requesterAdult: false, sourceFacesAdult: false, sourceFacePermission: false, sourcePhotoRights: false, syntheticMedia: false, prohibitedUse: false, retention: false, disclosure: false }
 export function VideosPage() {
   const { user } = useAuth()
   const [caps, setCaps] = useState<VideoCapabilities | null>(null)
@@ -17,7 +20,7 @@ export function VideosPage() {
   const [enhance, setEnhance] = useState('off')
   const [caption, setCaption] = useState('')
   const [photos, setPhotos] = useState<Record<string, File>>({})
-  const [consent, setConsent] = useState(false)
+  const [consent, setConsent] = useState<ConsentState>(emptyConsent)
   const [job, setJob] = useState<VideoJob | null>(null)
   const [jobs, setJobs] = useState<VideoJob[]>([])
   const [error, setError] = useState('')
@@ -27,7 +30,7 @@ export function VideosPage() {
   const requestKey = useRef(crypto.randomUUID())
   useEffect(() => {
     const id = ++generation.current
-    setJob(null); setJobs([]); setCaps(null); setPhotos({}); setConsent(false); setError(''); setBusy(false)
+    setJob(null); setJobs([]); setCaps(null); setPhotos({}); setConsent(emptyConsent); setError(''); setBusy(false)
     submitting.current = false; requestKey.current = crypto.randomUUID()
     if (!user) return
     const controller = new AbortController()
@@ -52,7 +55,8 @@ export function VideosPage() {
     setBusy(true); setError('')
     const id = generation.current
     try {
-      const result = await apiJson<VideoJob>(user, '/api/web/videos/jobs', { method: 'POST', body: JSON.stringify({ template_id: template, request_key: requestKey.current, instructions: `swap: ${swap}\nenhance: ${enhance}\ncaption: ${caption}`, consent, adult: consent, policy_version: caps.policy_version }) })
+      const allConsent = Object.values(consent).every(Boolean)
+      const result = await apiJson<VideoJob>(user, '/api/web/videos/jobs', { method: 'POST', body: JSON.stringify({ template_id: template, request_key: requestKey.current, instructions: `swap: ${swap}\nenhance: ${enhance}\ncaption: ${caption}`, consent: allConsent, adult: consent.requesterAdult, source_faces_adult: consent.sourceFacesAdult, source_face_permission: consent.sourceFacePermission, source_photo_rights: consent.sourcePhotoRights, synthetic_media_acknowledged: consent.syntheticMedia, prohibited_use_acknowledged: consent.prohibitedUse, retention_acknowledged: consent.retention, disclosure_acknowledged: consent.disclosure, policy_version: caps.policy_version, consent_version: caps.consent_version }) })
       if (id !== generation.current) return
       // Even an interrupted upload remains visible/cancellable; no hidden outstanding job.
       setJob(result)
@@ -87,6 +91,7 @@ export function VideosPage() {
     finally { if (id === generation.current) { setBusy(false); submitting.current = false } }
   }
   const required = swap === 'both' ? ['male', 'female'] : [swap]
+  const allConsent = Object.values(consent).every(Boolean)
   const paidAvailable = !!caps && (caps.paid_available ?? (caps.paid_enabled && caps.available))
   return <main className="videos-page"><Link to="/">← Back to chat</Link><h1>Create video</h1>
     <p>Put consenting adult faces into a reviewed short template. This is face replacement, not text-to-video. Processing is asynchronous.</p>
@@ -101,8 +106,17 @@ export function VideosPage() {
           <label>Enhancement <select value={enhance} onChange={e => setEnhance(e.target.value)}><option value="off">Off</option><option value="natural">Conservative natural</option></select></label>
           <label>Caption (optional; initial profile supports printable ASCII)<input maxLength={100} value={caption} onChange={e => setCaption(e.target.value)} /></label>
           <p>One clear face per photo. Metadata is stripped. No background identity, clothing, location, action or speech changes. Photos relay privately to the Mac and are deleted on completion, or within four hours of admission. Unpaid uploads expire after ten minutes. Results expire ten minutes after ready.</p>
-          <label><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} required />All depicted source people are adults and consent to this edit. I have rights to use these photos and accept the <a href="/legal/ai">acceptable-use policy</a> ({caps.policy_version}). No sexual, deceptive or abusive impersonation.</label>
-          <button type="submit" disabled={!consent || required.some(role => !photos[role])}>Validate photos on Mac (no charge)</button>
+          <fieldset className="video-consent"><legend>Required confirmations</legend>
+            <label><input type="checkbox" checked={consent.requesterAdult} onChange={e => setConsent(previous => ({ ...previous, requesterAdult: e.target.checked }))} />I am at least 18 years old and authorised to submit this request.</label>
+            <label><input type="checkbox" checked={consent.sourceFacesAdult} onChange={e => setConsent(previous => ({ ...previous, sourceFacesAdult: e.target.checked }))} />Every person depicted by a supplied source face is an adult.</label>
+            <label><input type="checkbox" checked={consent.sourceFacePermission} onChange={e => setConsent(previous => ({ ...previous, sourceFacePermission: e.target.checked }))} />Each depicted person gave permission for this specific face edit, or I hold clear specific authority to act for them.</label>
+            <label><input type="checkbox" checked={consent.sourcePhotoRights} onChange={e => setConsent(previous => ({ ...previous, sourcePhotoRights: e.target.checked }))} />I have the right to upload and use every source photo, including any applicable copyright, privacy and publicity permissions.</label>
+            <label><input type="checkbox" checked={consent.syntheticMedia} onChange={e => setConsent(previous => ({ ...previous, syntheticMedia: e.target.checked }))} />I understand the output is synthetic/AI-edited media, will carry a visible disclosure and provenance metadata, and must not be presented as authentic evidence.</label>
+            <label><input type="checkbox" checked={consent.prohibitedUse} onChange={e => setConsent(previous => ({ ...previous, prohibitedUse: e.target.checked }))} />I will not use this for minors, sexual abuse or exploitation, non-consensual intimate imagery, deceptive impersonation, fraud, false records, harassment or unlawful harm. I accept the <a href="/legal/ai">acceptable-use policy</a>.</label>
+            <label><input type="checkbox" checked={consent.retention} onChange={e => setConsent(previous => ({ ...previous, retention: e.target.checked }))} />I understand source uploads are temporary, are deleted under the published retention rules and are not a reusable face library.</label>
+            <label><input type="checkbox" checked={consent.disclosure} onChange={e => setConsent(previous => ({ ...previous, disclosure: e.target.checked }))} />I will not remove or obscure the disclosure or provenance identifier from a generated output.</label>
+          </fieldset>
+          <button type="submit" disabled={!allConsent || required.some(role => !photos[role])}>Validate photos on Mac (no charge)</button>
         </fieldset>
       </form>
       {job?.state === 'validated' && <section><h2>Confirm supported edit</h2><pre>{JSON.stringify(job.options, null, 2)}</pre><p>Payment/allowance is only reserved after you confirm. Queue time depends on measured Mac performance.</p>
@@ -112,7 +126,7 @@ export function VideosPage() {
         <button disabled={busy || !paidAvailable} onClick={() => { void admit('paid') }}>Pay ₹25 total for this video</button></section>}
     </>}
     {job && <VideoCard key={job.id} jobId={job.id} />}
-    {job && ['expired', 'failed', 'cancelled', 'refunded', 'refund_pending', 'ready'].includes(job.state) && <button onClick={() => { setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)]); setJob(null); setPhotos({}); setConsent(false); setError(''); requestKey.current = crypto.randomUUID() }}>Start a new request with fresh consent</button>}
+    {job && ['expired', 'failed', 'cancelled', 'refunded', 'refund_pending', 'ready'].includes(job.state) && <button onClick={() => { setJobs(previous => [job, ...previous.filter(item => item.id !== job.id)]); setJob(null); setPhotos({}); setConsent(emptyConsent); setError(''); requestKey.current = crypto.randomUUID() }}>Start a new request with fresh consent</button>}
     <h2>Your video history</h2>{jobs.filter(item => item.id !== job?.id).map(item => <VideoCard jobId={item.id} key={item.id} />)}
   </main>
 }

@@ -722,3 +722,38 @@ Rollback: set both flags false; retain the video-aware payment dispatcher, datab
 worker authentication and maintenance to drain/settle accepted work/refunds. Wait
 for the immutable output windows, then stop the Mac if appropriate. No downgrade,
 stamp, old dispatcher rollback, credential rotation or refund replay.
+
+## 12. Legal publication and source-face consent
+
+The website records a versioned set of adult/source-face, photo-rights,
+synthetic-media, prohibited-use, retention and disclosure confirmations before
+photo validation. Admission rechecks the stored version; changing or replaying
+old consent cannot open a job or payment. Keep both video flags false while
+these gates are incomplete.
+
+Run the local owner publication helper from the repository checkout, not from
+the Mac worker. First inspect the exact proposed pages without changing the
+canonical pages:
+
+```bash
+python scripts/video_legal_diff.py
+python scripts/publish-video-legal.py \
+  --owner-attestation \
+  --approver-role "REAL ACCOUNTABLE OWNER ROLE" \
+  --approval-date "YYYY-MM-DD" \
+  --dry-run
+```
+
+Replace the quoted values with real accountable-owner information. The helper
+rejects placeholders, shows old and proposed page SHA-256 values, validates the
+candidate, and changes nothing in dry-run mode. A real publication requires the
+same command without `--dry-run` plus
+`--confirm-authority --confirm-not-counsel-reviewed --confirm-right-to-publish`.
+It creates private backups before atomically replacing the legal pages and
+attestation. It is not counsel approval and does not create model, movie,
+performer, source-face or audio rights.
+
+The final order is: genuine rights evidence and grievance/takedown coverage;
+owner page review/publication; model audit/install; template preparation and
+frame/track review; native benchmark; complimentary QA; authorized Razorpay
+TEST/SMTP/cache-expiry acceptance; then separate paid rollout authorization.

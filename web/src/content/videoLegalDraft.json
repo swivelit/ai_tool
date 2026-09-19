@@ -10,8 +10,8 @@
     "terms": {
       "title": "Terms and Conditions",
       "summary": "Rules for using Swico",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Eligibility and accounts",
@@ -19,11 +19,11 @@
         },
         {
           "heading": "Adult template-video consent",
-          "body": "When enabled, website template videos are limited to consenting adults. You must have permission from every supplied source subject and rights to the uploaded photos. Sexual, abusive, misleading-verification and deceptive impersonation uses are prohibited. Outputs are visibly marked AI-edited. The service replaces explicitly selected template roles; it does not generate new scenes, clothing, actions or speech. Versioned source-face and adult consent is required for each request."
+          "body": "When enabled, website template videos are limited to consenting adults. You must be at least 18, confirm that every supplied source face depicts an adult, hold the right to upload and use each source photo, and have clear specific permission from each depicted person or authority to act for them. You must also have permission to modify and distribute the template video and its audio track. A checkbox acceptance is recorded with a consent version for each request. Possession of a photo or a movie template is not evidence of permission to modify, distribute or publish it. Sexual abuse or exploitation, non-consensual intimate imagery, minors, deceptive impersonation, fraud, false records and unlawful harm are prohibited. Outputs are synthetic/AI-edited media, carry a visible disclosure and a non-sensitive provenance identifier, and must not be presented as authentic evidence or have that disclosure removed. The service replaces explicitly selected template roles; it does not generate new scenes, clothing, actions or speech."
         },
         {
           "heading": "Acceptable use",
-          "body": "You must not use Swico to violate any law, court order, contractual duty, intellectual-property right, privacy right or other legal right; facilitate fraud, impersonation, harassment, threats, exploitation or abuse; distribute malware, spam or malicious code; gain unauthorised access to accounts, systems, prompts, source code, infrastructure or confidential information; bypass security, usage, payment or Token Credit controls; disrupt the Service; or submit content that you are not authorised to use.\n\nYou must not rely on generated content as the sole basis for medical, legal, financial, employment, credit, insurance, law-enforcement or other high-impact decisions about a person, or misrepresent generated content as verified professional advice, an official communication or a guaranteed factual statement.\n\nYou retain responsibility for prompts, files, audio and other material that you submit. You grant Swivel Technologies and its service providers a limited right to host, transmit and process that material only as reasonably necessary to provide, secure, support and improve the Service, comply with law and enforce these Terms. Do not submit passwords, payment-card numbers, government identifiers, trade secrets or other highly sensitive information unless a feature clearly requires it and you are authorised to provide it.\n\nWe may investigate suspected misuse and restrict, suspend or terminate access where reasonably necessary to protect users, comply with law, prevent fraud or security harm, enforce these Terms or protect the Service."
+          "body": "You must not use Swico to violate any law, court order, contractual duty, intellectual-property right, privacy right or other legal right; facilitate fraud, impersonation, harassment, threats, exploitation or abuse; create or distribute non-consensual intimate imagery or material involving minors; make deceptive impersonation, false-record or misleading-verification content; distribute malware, spam or malicious code; gain unauthorised access to accounts, systems, prompts, source code, infrastructure or confidential information; bypass security, usage, payment or Token Credit controls; disrupt the Service; or submit content that you are not authorised to use.\n\nYou must not rely on generated content as the sole basis for medical, legal, financial, employment, credit, insurance, law-enforcement or other high-impact decisions about a person, or misrepresent generated content as verified professional advice, an official communication or a guaranteed factual statement.\n\nYou retain responsibility for prompts, files, audio and other material that you submit. You grant Swivel Technologies and its service providers a limited right to host, transmit and process that material only as reasonably necessary to provide, secure, support and improve the Service, comply with law and enforce these Terms. Do not submit passwords, payment-card numbers, government identifiers, trade secrets or other highly sensitive information unless a feature clearly requires it and you are authorised to provide it.\n\nWe may investigate suspected misuse, restrict access to an output, preserve relevant records and suspend or terminate access where reasonably necessary to protect users, respond to a grievance or takedown request, comply with law, prevent fraud or security harm, enforce these Terms or protect the Service."
         },
         {
           "heading": "Token credits and billing",
@@ -46,12 +46,12 @@
     "privacy": {
       "title": "Privacy Policy",
       "summary": "How information is handled",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Template-video processing and temporary media",
-          "body": "Video source photos are privately relayed through the existing temporary cache to an operator-controlled Intel Mac for face analysis and editing. Metadata is stripped. Photos, face embeddings and generated frames are not added to chat memory, RAG, analytics or a reusable face library. Unpaid sources expire within ten minutes; admitted sources are removed on completion or within the bounded four-hour job window. Generated videos are available through authenticated access for ten minutes from first readiness, then become expired history cards. The Mac removes customer scratch files after each attempt and on restart. An offline computer cannot delete files at an exact wall-clock time. Cache expiry does not establish deletion from managed snapshots/backups, whose residual-retention policy must be disclosed by the operator before launch. Unlinking is not a guarantee of SSD secure erasure. User-downloaded copies cannot be revoked. Non-media financial and job records are retained for accounting and support."
+          "body": "Video source photos are privately relayed through the existing temporary cache to an operator-controlled Intel Mac for face analysis and editing. The source-face consent version, the requester's attestations, source hashes and job/provenance identifiers are recorded with the job; the service does not build a reusable face library. Metadata is stripped. Photos, face embeddings and generated frames are not added to chat memory, RAG or analytics. Unpaid sources expire within ten minutes; admitted sources are removed on completion or within the bounded four-hour job window. Generated videos are available through authenticated access for 600 seconds from first readiness, then become expired history cards. Every generated MP4 carries a visible AI-edited/synthetic-media disclosure and a non-sensitive provenance identifier; these are not authentication, a rights grant or a guarantee that a downloaded copy can be recalled. The Mac removes customer scratch files after each attempt and on restart. An offline computer cannot delete files at an exact wall-clock time. Cache expiry does not establish deletion from managed snapshots/backups, whose residual-retention policy must be disclosed by the operator before launch. Unlinking is not a guarantee of SSD secure erasure. User-downloaded copies cannot be revoked. Non-media financial and job records are retained for accounting and support."
         },
         {
           "heading": "Information collected",
@@ -71,15 +71,15 @@
         },
         {
           "heading": "Your choices and contact",
-          "body": "Subject to applicable law and reasonable verification, you may request information about personal data being processed; correction, completion or updating of inaccurate information; erasure of information no longer required where retention is not permitted or required; withdrawal of consent for consent-based processing; grievance redressal; and other rights available under applicable law.\n\nAccount deletion is not currently available as a self-service website control. Submit a verified request to privacy@swiveltechnologies.in. We may ask for information reasonably necessary to confirm identity and protect the account.\n\nPrivacy and grievance contact: Grievance Officer / Privacy Contact, Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Email: privacy@swiveltechnologies.in. Phone: +91 84380 74230.\n\nWe aim to acknowledge a privacy or grievance request within 48 hours and respond within the period required by applicable law. Swico is intended only for persons aged 18 or older. If you believe a child's personal data has been submitted, contact us so that we can investigate and take appropriate action. We may update this Policy to reflect changes in the Service, providers, law or processing practices."
+          "body": "Subject to applicable law and reasonable verification, you may request information about personal data being processed; correction, completion or updating of inaccurate information; erasure of information no longer required where retention is not permitted or required; withdrawal of consent for consent-based processing; grievance redressal; and other rights available under applicable law.\n\nAccount deletion is not currently available as a self-service website control. Submit a verified request to privacy@swiveltechnologies.in. We may ask for information reasonably necessary to confirm identity and protect the account.\n\nPrivacy and grievance contact: Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Email: privacy@swiveltechnologies.in. Phone: +91 84380 74230. If applicable law requires a named Grievance Officer, the appointed name and role will be published here before the affected rollout.\n\nWe prioritise reports involving minors, non-consensual intimate imagery, deceptive impersonation, privacy or immediate safety concerns. We will acknowledge and handle a privacy or grievance request within applicable law and provide reasonable status updates when verification or investigation takes time; no unsupported fixed deadline is promised. Swico is intended only for persons aged 18 or older. If you believe a child's personal data has been submitted, contact us so that we can investigate and take appropriate action. We may update this Policy to reflect changes in the Service, providers, law or processing practices."
         }
       ]
     },
     "refunds": {
       "title": "Cancellation and Refund Policy",
       "summary": "Payment, cancellation, and refund information",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Standalone template-video failures and refunds",
@@ -103,7 +103,7 @@
         },
         {
           "heading": "Processing times",
-          "body": "We aim to acknowledge a refund request within 48 hours during support operations and ordinarily aim to communicate a decision within 7 business days after receiving all information reasonably required to review it.\n\nWhen approved, a refund is sent to the original payment method unless law or the payment provider requires another method. Swico cannot guarantee the time taken by the bank, card network, UPI system or payment provider after initiation. Normal Razorpay refunds generally take about 5 to 10 working days to be processed or reflected, depending on the payment method and bank.\n\nA refund may take longer when identity or payment ownership cannot be verified, a payment is still pending, a chargeback exists, the provider requests additional information, fraud is suspected or legal review is required."
+          "body": "We will acknowledge and review a refund request within applicable law and reasonable support operations after receiving the information needed to verify it; we do not promise an unsupported fixed decision deadline.\n\nWhen approved, a refund is sent to the original payment method unless law or the payment provider requires another method. Swico cannot guarantee the time taken by the bank, card network, UPI system or payment provider after initiation.\n\nA refund may take longer when identity or payment ownership cannot be verified, a payment is still pending, a chargeback exists, the provider requests additional information, fraud is suspected or legal review is required."
         },
         {
           "heading": "How to request support",
@@ -114,8 +114,8 @@
     "contact": {
       "title": "Contact and Support",
       "summary": "Ways to reach the Swico team",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Support channel",
@@ -127,11 +127,11 @@
         },
         {
           "heading": "Privacy requests",
-          "body": "Requests for access, correction, erasure, consent withdrawal, account deletion or privacy grievance redressal may be sent to privacy@swiveltechnologies.in.\n\nPrivacy and grievance contact: Grievance Officer / Privacy Contact, Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Phone: +91 84380 74230.\n\nWe may verify identity and account ownership before acting on a request. The business should insert the appointed Grievance Officer's name in the public contact information where required by applicable law."
+          "body": "Requests for access, correction, erasure, consent withdrawal, account deletion or privacy grievance redressal may be sent to privacy@swiveltechnologies.in.\n\nPrivacy and grievance contact: Swivel Technologies, No. 1/23A, Gangai Amman Koil Street, Ramapuram, Chennai - 600089, Tamil Nadu, India. Phone: +91 84380 74230. If applicable law requires a named Grievance Officer, the appointed name and role will be published here before the affected rollout.\n\nWe may verify identity and account ownership before acting on a request."
         },
         {
           "heading": "Response expectations",
-          "body": "We aim to acknowledge consumer and support complaints within 48 hours and aim to resolve ordinary consumer complaints within 30 days, subject to complexity, verification, third-party processing and legal requirements.\n\nUrgent security reports are prioritised. Billing resolutions may depend on Razorpay, the user's bank or another payment participant. Privacy grievances will be handled within the period required by applicable data-protection law.\n\nThese are service targets and not guarantees of a particular outcome. We will keep the requester reasonably informed where additional time or information is required."
+          "body": "We will acknowledge and handle support or grievance complaints within applicable law and provide reasonable status updates when verification or investigation takes time; no unsupported fixed deadline is promised. Reports involving minors, non-consensual intimate imagery, deceptive impersonation, privacy or immediate safety concerns are prioritised. Billing resolutions may depend on Razorpay, the user's bank or another payment participant. Privacy grievances will be handled within the period required by applicable data-protection law."
         },
         {
           "heading": "Business details",
@@ -142,8 +142,8 @@
     "ai": {
       "title": "AI Use and Limitations Policy",
       "summary": "Important guidance for AI-generated responses",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Accuracy and verification",
@@ -162,20 +162,24 @@
           "body": "AI and speech requests may consume Token Credits as processing occurs. Usage may include input, cached input, output, speech or related provider costs even when the result is short, interrupted, refused, incomplete or not useful to the user.\n\nClosing the page, losing connectivity or cancelling after processing has begun may not stop provider usage already incurred. Where Swico can reliably detect that no service was delivered, it may restore or adjust Token Credits.\n\nRefund requests are governed by the Cancellation and Refund Policy. Dissatisfaction with the style or substance of a valid AI response does not automatically entitle the user to a refund, but verified technical failures and other eligible circumstances will be reviewed fairly."
         },
         {
+          "heading": "Synthetic media and provenance",
+          "body": "Website template-video outputs are synthetic/AI-edited media. Each generated MP4 is required to carry a prominent visible disclosure such as AI-EDITED / SYNTHETIC MEDIA - SWICO and a non-sensitive provenance identifier in media metadata where technically feasible. The identifier helps connect a result to Swico's bounded job records; it is not a watermark of ownership, a rights grant, a forensic guarantee or proof that the source material was authorised. Swico does not provide a feature to remove or suppress the disclosure. Do not present an output as an authentic recording, original evidence, or an unedited depiction."
+        },
+        {
           "heading": "Reporting a concern",
-          "body": "Report harmful output, technical problems or misuse to support@swiveltechnologies.in; billing errors to billing@swiveltechnologies.in; and privacy or grievance concerns to privacy@swiveltechnologies.in. You may also call +91 84380 74230.\n\nInclude enough information to investigate, but do not resend sensitive data unnecessarily. We may review relevant account, request, output, usage and technical records to investigate a report, improve safeguards, prevent abuse or comply with law. Reporting does not guarantee removal, refund or a particular outcome."
+          "body": "Report harmful output, suspected non-consensual intimate imagery, content involving a minor, deceptive impersonation, privacy concern or takedown request to privacy@swiveltechnologies.in; billing errors to billing@swiveltechnologies.in; and technical problems or other misuse to support@swiveltechnologies.in. You may also call +91 84380 74230.\n\nInclude the result identifier or authenticated account details when available, but do not resend sensitive data unnecessarily. We may temporarily restrict access, preserve relevant records, investigate and remove or disable an output where required by law or policy. We may review relevant account, request, output, usage and technical records to investigate a report, improve safeguards, prevent abuse or comply with law. Reporting does not guarantee removal, refund or a particular outcome."
         }
       ]
     },
     "delivery": {
       "title": "Digital Service Delivery / Shipping Policy",
       "summary": "How digital Token Credits and AI services are delivered",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Temporary AI-edited video delivery",
-          "body": "Video generation is asynchronous. After paid or complimentary admission, the website shows actual queue position and a measured estimate range, not a delivery guarantee. An offline worker pauses the queue and new admission. Results appear in an authenticated chat card and video history. A ready email contains a login-protected link and exact expiry, never a media attachment. SMTP delivery and inbox arrival are not guaranteed and do not extend the ten-minute download window. Save a local copy before expiry if you wish to retain it."
+          "body": "Video generation is asynchronous. After paid or complimentary admission, the website shows actual queue position and a measured estimate range, not a delivery guarantee. An offline worker pauses the queue and new admission. Results appear in an authenticated chat card and video history for 600 seconds from readiness. Every MP4 is synthetic/AI-edited, visibly disclosed and carries a non-sensitive provenance identifier where technically feasible. A ready email contains a login-protected link and exact expiry, never a media attachment. SMTP delivery and inbox arrival are not guaranteed and do not extend the 600-second download window. Save a local copy before expiry if you wish to retain it."
         },
         {
           "heading": "Digital delivery",
@@ -198,12 +202,12 @@
     "pricing": {
       "title": "Pricing and Token Credits",
       "summary": "Token Credit estimates and payment allocation",
-      "effectiveDate": "2026-07-17",
-      "version": "1.0",
+      "effectiveDate": "2026-09-19",
+      "version": "2.0",
       "sections": [
         {
           "heading": "Standalone website template videos",
-          "body": "When explicitly enabled, one template-video generation costs ₹25 total (2500 paise), independently of subscriptions and Chat/Voice credits. Verified Free-tier website accounts may purchase this product; this does not grant paid CLI access. Explicit video-unlimited accounts pay no per-video fee but remain subject to safety, capacity, consent and availability. Eligible existing weekly testers receive five complimentary attempts per configured local day, by default Asia/Kolkata. This video allowance does not spend or reset weekly Chat credits. Exhausted complimentary quota never automatically opens paid checkout. Source preflight and a supported-operation confirmation precede admission/payment."
+          "body": "When explicitly enabled, one template-video generation costs ₹25 total (2500 paise), independently of subscriptions and Chat/Voice credits. Verified Free-tier website accounts may purchase this product; this does not grant paid CLI access. Explicit video-unlimited accounts pay no per-video fee but remain subject to safety, capacity, consent and availability. Eligible existing weekly testers receive five complimentary attempts per configured local day, by default Asia/Kolkata. This video allowance does not spend or reset weekly Chat credits. Exhausted complimentary quota never automatically opens paid checkout. Source preflight and a supported-operation confirmation precede admission/payment. Generated videos remain visibly labelled synthetic/AI-edited and include a non-sensitive provenance identifier; the label is part of the product output and is not removable through Swico."
         },
         {
           "heading": "Gross top-up price",

@@ -133,3 +133,24 @@ active. Do not delete unresolved refund intents. Do not downgrade/stamp producti
 or roll back to a payment dispatcher without the video branch. Additive financial
 history must survive a code rollback; ordinary unrelated product configuration
 does not need to change.
+
+## Legal publication release gate
+
+The owner must use the local publication helper, not manual edits to
+`legalContent.json` or the attestation:
+
+```bash
+python scripts/publish-video-legal.py --owner-attestation \
+  --approver-role "REAL ACCOUNTABLE OWNER ROLE" --approval-date "YYYY-MM-DD" --dry-run
+```
+
+Only after the exact candidate is reviewed and real rights/takedown operations
+exist may the owner repeat it with the three confirmation flags. Run the legal
+publication checker and `python scripts/swico_video_release_check.py --pretty`
+afterward. A configured `paid_enabled` flag is not effective availability when
+the legal, worker, template, rights, cache or native gates are closed; keep the
+feature and paid checkout disabled until the checker reports a safe rollout.
+
+Consent attestations in the browser are not legal advice or a substitute for
+documentary adult/source-face, movie, performer or audio rights. Mock payment,
+mock email, synthetic media and configured hashes are not production evidence.

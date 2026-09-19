@@ -253,3 +253,27 @@ Razorpay TEST account. No extra hosted service/tunnel is required or authorized.
 - [Render environment changes](https://render.com/docs/configure-environment-variables)
 
 No reference is permission to bypass the explicit operator release gates.
+
+## Final legal publication and takedown acceptance
+
+The public video text must be published only from the reviewed
+`videoLegalDraft.json` candidate. Run `scripts/publish-video-legal.py` locally
+with a real accountable owner role and the exact page SHA-256. The helper's
+`--dry-run` is safe to use before rights evidence is complete; never type a
+sample name, placeholder date or literal example path as if it were evidence.
+The owner attestation explicitly says it was not reviewed or approved by legal
+counsel. A legal-page hash proves page integrity only.
+
+Before enabling either video flag, verify that the public text describes adult
+source-face consent, photo/video/audio rights, synthetic-media disclosure,
+600-second output expiry, grievance/takedown intake, ₹25 pricing and the
+existing refund/allowance behavior. The internal takedown runbook is in
+`docs/legal/video/GRIEVANCE_TAKEDOWN_RUNBOOK.md`; appoint and publish any
+legally required contact before relying on that route. Do not fabricate an
+officer, counsel review or third-party licence.
+
+Every generated MP4 must show `AI-EDITED / SYNTHETIC MEDIA - SWICO` and carry
+the opaque provenance metadata where the container preserves it. The output
+must never be represented as authentic evidence, and a user cannot request
+that Swico remove the disclosure. Consent is versioned and stored with the
+job; no pre-consent or stale job may be admitted.

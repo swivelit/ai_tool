@@ -45,6 +45,9 @@ class Api:
         headers={"Authorization":"Bearer "+self.token,"X-Worker-Id":"intel-mac-01","X-Worker-Boot":self.boot}
         if job:
             headers.update({"X-Video-Fence":job["fence"],"X-Video-Attempt":str(job["attempt"])})
+            if job.get("provenance_id"):
+                headers["X-Video-Provenance"] = job["provenance_id"]
+                headers["X-Video-Disclosure"] = "swico-ai-edited-v1"
         data=body if isinstance(body,bytes) else canonical(body) if body is not None else None
         headers["Content-Type"]="application/octet-stream" if isinstance(body,bytes) else "application/json"
         request=urllib.request.Request(self.config["api_base"]+"/api/video-worker/v1"+path,data=data,headers=headers,method=method)
@@ -134,7 +137,8 @@ def child_process(directory: Path):
         else:
             stage="native_render_encode"
             engine.render(job["template"]["id"],paths,job["options"],directory/"output.mp4",
-                          lambda phase,percent:atomic(directory/"progress.json",{"phase":phase,"percent":percent}))
+                          lambda phase,percent:atomic(directory/"progress.json",{"phase":phase,"percent":percent}),
+                          provenance=job["provenance_id"])
             result={"outcome":"ready","sha256":hash_file(directory/"output.mp4")}
     except Exception as exc:
         atomic(root()/"logs/last-native-error.json",safe_error(exc,stage))
